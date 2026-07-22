@@ -24,6 +24,17 @@ from anima.llm.usage import scoped_llm
 
 logger = logging.getLogger("anima.capabilities")
 
+# 论文体/工程黑话过滤：所有入口（rumination/owner/selfcode）创建能力都过此闸。
+_ACADEMIC_MARKERS = (
+    "噪音过滤", "核心概念", "溯源", "重构", "融合", "聚类", "诊断", "评估",
+    "迭代", "结构化", "系统化", "模块化", "知识图谱", "语义网络", "表征",
+    "特征工程", "维度", "指标", "链路", "闭环", "治理", "管控", "策略性",
+    "元认知", "自我解剖", "方法论", "框架", "机制", "范式", "抓手", "赋能",
+    "对齐", "落地", "沉淀", "复盘", "组合拳", "颗粒度", "水位", "天花板",
+    "漏斗", "中台", "数字化转型", "断点融合", "结构化降温", "视觉检索",
+    "偏见溯源诊断", "降解重构",
+)
+
 
 class CapabilityManager:
     """个人能力管理器。"""
@@ -70,6 +81,11 @@ class CapabilityManager:
         # 防碎碎念：名+描述+用法总内容至少 min_create_text_len
         total = len(name) + len(cap.get("description", "") or "") + len(cap.get("how_to_use", "") or "")
         if total < self.min_create_text_len:
+            return None
+        # 论文体/工程黑话过滤：防止能力库被腌成分析报告库
+        combined = name + (cap.get("description", "") or "") + (cap.get("how_to_use", "") or "")
+        if any(marker in combined for marker in _ACADEMIC_MARKERS):
+            logger.info("CapabilityManager: 丢弃论文体/工程黑话能力（name=%s）", name)
             return None
 
         caps = self._data.setdefault("capabilities", [])

@@ -20,6 +20,17 @@ from anima.llm.usage import scoped_llm
 
 logger = logging.getLogger("anima.rumination")
 
+# 论文体/工程黑话标记：反刍生成的能力名/描述若命中，直接丢弃，防能力库被腌成论文库。
+_ACADEMIC_MARKERS = (
+    "噪音过滤", "核心概念", "溯源", "重构", "融合", "聚类", "诊断", "评估",
+    "迭代", "结构化", "系统化", "模块化", "知识图谱", "语义网络", "表征",
+    "特征工程", "维度", "指标", "链路", "闭环", "治理", "管控", "策略性",
+    "元认知", "自我解剖", "方法论", "框架", "机制", "范式", "抓手", "赋能",
+    "对齐", "落地", "沉淀", "复盘", "组合拳", "颗粒度", "水位", "天花板",
+    "漏斗", "中台", "数字化转型", "断点融合", "结构化降温", "视觉检索",
+    "偏见溯源诊断", "降解重构",
+)
+
 
 def _extract_json(text: str) -> Optional[dict]:
     """从可能含噪声（前后文字、```json 围栏、Markdown）的文本里截取首个 JSON 对象并解析。
@@ -223,6 +234,10 @@ class RuminationEngine:
                 return
             name = (data.get("name") or "").strip()
             if len(name) < 2:
+                return
+            combined = name + (data.get("description") or "") + (data.get("how_to_use") or "")
+            if any(marker in combined for marker in _ACADEMIC_MARKERS):
+                logger.info("能力研究：丢弃论文体/工程黑话能力名（name=%s）", name)
                 return
             cap = {
                 "name": name,
