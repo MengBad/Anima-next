@@ -1,0 +1,3 @@
+"""AstrBot compatibility re-export."""
+from anima.compat.astrbot import AstrBotConfig, logger, llm_tool, filter, hook, Star, Context, AstrMessageEvent, MessageChain, MessageEventResult, Comp, Plain, Image, Reply, Record, File, BaseMessageComponent, Json, Xml, Node, Nodes, AtAll, register, EventMessageType, PermissionType, PlatformAdapterType, StarTools, get_astrbot_data_path, get_astrbot_temp_path, HtmlRenderer, GreedyStr, ProviderRequest, LLMResponse, FunctionToolManager, SessionServiceManager, TextPart, AiocqhttpMessageEvent
+from anima.compat.astrbot.core.agent.tool import FunctionTool, ToolExecResult, ToolSet

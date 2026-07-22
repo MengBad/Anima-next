@@ -1,0 +1,474 @@
+# Anima 配置声明式 Schema
+# ---------------------------------------------------------------------------
+# 用途：
+#   - 供其他 AI agent 自动填充配置（init --agent --spec）
+#   - 供人类快速了解每个字段的类型 / 默认值 / 是否必填 / 含义
+# 真实校验由 anima.core.config.AnimaConfig (pydantic) 执行，本文件仅作描述。
+# 必填 (required: true) 仅为「要让机器人真正可用」的最小集；其余均有安全默认值。
+
+meta:
+  version: "3.3"
+  required_minimal:
+    - llm.api_key          # 否则进入 echo 模式，不接 LLM
+    - permissions.owners   # 否则无人拥有 owner 权限（danger 功能不可用）
+
+fields:
+
+  qq:
+    enabled:
+      type: bool
+      default: true
+      required: false
+      hint: "false 时不连接 NapCat；用于隔离 staging，避免重复回复线上 QQ"
+    napcat_ws_url:
+      type: str
+      default: "ws://127.0.0.1:3001"
+      required: false
+      hint: "NapCat 反向 WebSocket 地址（同机默认 3001）"
+    napcat_http_url:
+      type: str
+      default: "http://127.0.0.1:3001"
+      required: false
+      hint: "NapCat HTTP API 地址（用于发送 / 上传文件）"
+    self_id:
+      type: int | null
+      default: null
+      required: false
+      hint: "机器人自身 QQ 号；启动后通常可自动获取，可留空"
+    access_token:
+      type: str | null
+      default: ""
+      required: false
+      secret: true
+      hint: "NapCat 鉴权 token（建议设置）"
+
+  llm:
+    endpoint:
+      type: str
+      default: "https://api.openai.com/v1"
+      required: false
+      hint: "OpenAI 兼容 Chat Completions 端点"
+    api_key:
+      type: str
+      default: ""
+      required: false            # 但建议必填，否则 echo 模式
+      secret: true
+      hint: "可用环境变量 ANIMA_LLM_API_KEY 覆盖"
+    model:
+      type: str
+      default: "gpt-4o-mini"
+      required: false
+      hint: "对话生成模型"
+    embedding_endpoint:
+      type: str | null
+      default: null
+      required: false
+      hint: "null => 同 endpoint"
+    embedding_model:
+      type: str
+      default: "text-embedding-3-small"
+      required: false
+    embedding_dim:
+      type: int
+      default: 1536
+      required: false
+    timeout:
+      type: float
+      default: 60.0
+      required: false
+      hint: "单次 LLM 请求超时（秒）"
+    retries:
+      type: int
+      default: 2
+      required: false
+      hint: "仅超时、限流和服务端错误的额外重试次数"
+    retry_backoff_sec:
+      type: float
+      default: 0.6
+      required: false
+      hint: "指数退避的首个等待秒数"
+
+  vector:
+    enabled:
+      type: bool
+      default: true
+      required: false
+      hint: "语义向量记忆；不可用时降级为 BM25 / 无语义召回"
+    db_path:
+      type: str
+      default: "data/anima.db"
+      required: false
+    embedding_backend:
+      type: str
+      default: "remote"
+      required: false
+      hint: "本期仅 remote（OpenAI 兼容 /embeddings）"
+    cache:
+      type: bool
+      default: true
+      required: false
+    embedding_endpoint:
+      type: str
+      default: "https://api.siliconflow.cn/v1"
+      required: false
+    embedding_model:
+      type: str
+      default: "BAAI/bge-m3"
+      required: false
+    embedding_dim:
+      type: int
+      default: 1024
+      required: false
+    embedding_api_key:
+      type: str
+      default: ""
+      required: false
+      secret: true
+    rerank_enabled:
+      type: bool
+      default: true
+      required: false
+    rerank_endpoint:
+      type: str
+      default: "https://api.siliconflow.cn/v1/rerank"
+      required: false
+    rerank_model:
+      type: str
+      default: "BAAI/bge-reranker-v2-m3"
+      required: false
+    rerank_api_key:
+      type: str
+      default: ""
+      required: false
+      secret: true
+    rerank_top_n:
+      type: int
+      default: 5
+      required: false
+
+  autonomy:
+    enabled:
+      type: bool
+      default: true
+      required: false
+      hint: "自主心跳 / 主动发言；owner 可一键 false 暂停"
+    heartbeat_tick_sec:
+      type: float
+      default: 30.0
+      required: false
+    cooldown_sec:
+      type: int
+      default: 90
+      required: false
+      hint: "每群 / 私聊冷却"
+    daily_max_per_group:
+      type: int
+      default: 20
+      required: false
+      hint: "每日自主条数 / 群（防刷屏护栏）"
+    ratio_max:
+      type: float
+      default: 0.30
+      required: false
+      hint: "占群发言比上限"
+    token_budget_per_day:
+      type: int
+      default: 0
+      required: false
+      hint: "0 = 不限制当日 LLM 用量；仍受冷却、权限和审批约束"
+    reply_only_when_mentioned:
+      type: bool
+      default: true
+      required: false
+      hint: "群聊仅当被 @、被回复或文本提到「哈基米」时回复；私聊始终回复"
+    active_reply_prob:
+      type: float
+      default: 0.04
+      required: false
+      hint: "通过门控后的主动插话概率"
+    active_silence_min_sec:
+      type: int
+      default: 600
+      required: false
+      hint: "群最近人类发言距今 ≥ 该秒数才考虑主动插话"
+    active_global_cooldown_sec:
+      type: int
+      default: 1800
+      required: false
+      hint: "全局两次主动发言最小间隔（防多群同时刷屏）"
+    active_min_group_messages:
+      type: int
+      default: 12
+      required: false
+      hint: "群内人类消息积累不足时，不触发主动发言"
+    active_daily_max_per_group:
+      type: int
+      default: 3
+      required: false
+      hint: "每群每天最多的非议程主动发言次数"
+    active_context_score_threshold:
+      type: float
+      default: 0.55
+      required: false
+      hint: "近期语境评分达到该值才允许生成主动发言"
+
+  drift:
+    delta_max:
+      type: float
+      default: 0.10
+      required: false
+      hint: "单次单参数人格漂移增量上限（§15.3）"
+    daily_budget:
+      type: float
+      default: 1.5
+      required: false
+      hint: "每日 general 反思池预算（≈30 条×0.05）"
+    self_correction_daily_budget:
+      type: float
+      default: 0.5
+      required: false
+      hint: "每日自我修正独立池（与 general 互不挤占）"
+    window_ceiling:
+      type: float
+      default: 4.0
+      required: false
+      hint: "7 日滚动累计漂移上限（两池合计；约 2.7×日 general 预算）"
+    similarity_floor:
+      type: float
+      default: 0.75
+      required: false
+      hint: "相对人格锚点相似度下限（嵌入余弦语义；Jaccard 自适应换算）"
+    valence_min:
+      type: float
+      default: -0.30
+      required: false
+      hint: "笔记启发式情绪价态下限"
+    valence_max:
+      type: float
+      default: 0.70
+      required: false
+      hint: "笔记启发式情绪价态上限"
+    checkpoints_keep:
+      type: int
+      default: 7
+      required: false
+      hint: "persona 快照保留份数"
+
+  permissions:
+    owners:
+      type: "list[int]"
+      default: []
+      required: false            # 建议必填
+      hint: "主人 QQ 号列表，拥有最高权限（含 danger）"
+    admins:
+      type: "list[int]"
+      default: []
+      required: false
+      hint: "管理员 QQ 号白名单"
+    readonly:
+      type: "list[int]"
+      default: []
+      required: false
+      hint: "只读用户（仅对话，不能触发工具 / 技能）"
+    banned:
+      type: "list[int]"
+      default: []
+      required: false
+      hint: "黑名单，直接拒答"
+    readonly_groups:
+      type: "list[int]"
+      default: []
+      required: false
+      hint: "只读群"
+    banned_groups:
+      type: "list[int]"
+      default: []
+      required: false
+      hint: "静默群"
+    group_policies:
+      type: "dict[str, dict]"
+      default: {}
+      required: false
+      hint: "gid -> {autonomy, tools, ...} 群维度策略覆盖"
+
+  persistence:
+    data_dir:
+      type: str
+      default: "data"
+      required: false
+    use_sqlite:
+      type: bool
+      default: true
+      required: false
+
+  compat:
+    astrbot_enabled:
+      type: bool
+      default: false
+      required: false
+      hint: "AstrBot 兼容插件层（Tier 1）；独立进程模式默认关闭"
+    astrbot_tier:
+      type: int
+      default: 1
+      required: false
+
+  conversation:
+    enabled:
+      type: bool
+      default: false
+      required: false
+      hint: "私聊连续消息语义收束开关；开启后在短窗口内只调用一次模型"
+    wait_sec:
+      type: float
+      default: 1.5
+      required: false
+      hint: "每条新增私聊消息后等待下一条输入的秒数"
+    max_wait_sec:
+      type: float
+      default: 8.0
+      required: false
+      hint: "单个语义回合最长等待秒数，防止持续输入永久不回复"
+
+  webui:
+    enabled:
+      type: bool
+      default: false
+      required: false
+      hint: "本地观测 API 开关；默认关闭"
+    host:
+      type: str
+      default: "127.0.0.1"
+      required: false
+      hint: "默认仅监听回环地址，禁止无认证直接暴露公网"
+    port:
+      type: int
+      default: 8088
+      required: false
+    token:
+      type: str
+      default: ""
+      required: false
+      secret: true
+      hint: "启用非回环监听时必须设置；请求使用 Authorization: Bearer <token>"
+
+  security:
+    require_approval_for_danger:
+      type: bool
+      default: true
+      required: false
+      hint: "danger 工具必须获得 owner 批准才会执行"
+    approval_ttl_sec:
+      type: float
+      default: 900
+      required: false
+      hint: "高危工具审批单有效期（秒）"
+
+  image_generation:
+    enabled:
+      type: bool
+      default: false
+      required: false
+      hint: "仅 owner 可调用；启用前确认 images/generations 上游可用"
+    model:
+      type: str
+      default: "gemini-3.1-flash-image"
+      required: false
+    daily_limit:
+      type: int
+      default: 0
+      required: false
+      hint: "0 = 不限制每日成功生成张数；仍只允许 owner 调用"
+    max_output_bytes:
+      type: int
+      default: 16777216
+      required: false
+
+  self_code:
+    enabled:
+      type: bool
+      default: false
+      required: false
+      hint: "自我编程总开关；高危能力，默认关闭"
+    claude_executable:
+      type: str
+      default: "claude"
+      required: false
+      hint: "Claude Code CLI 路径或命令"
+    anthropic_api_key:
+      type: str
+      default: ""
+      required: false
+      secret: true
+      hint: "留空时读取环境变量 ANTHROPIC_API_KEY"
+    api_base_url:
+      type: str
+      default: ""
+      required: false
+      hint: "可选自定义 Claude/OpenAI 兼容网关"
+    workspace_dir:
+      type: str
+      default: ""
+      required: false
+      hint: "隔离工作区；空 = data_dir/selfcode_workspace"
+    selfcode_dir:
+      type: str
+      default: ""
+      required: false
+      hint: "安装目录；空 = data_dir/selfcode，不修改源码包"
+    max_turns:
+      type: int
+      default: 12
+      required: false
+    timeout_seconds:
+      type: int
+      default: 180
+      required: false
+    permission_mode:
+      type: str
+      default: "acceptEdits"
+      required: false
+      hint: "default | acceptEdits | plan | dontAsk"
+    auto_install:
+      type: bool
+      default: false
+      required: false
+      hint: "兼容旧配置；运行时始终要求 Owner 审批"
+    daily_quota:
+      type: int
+      default: 0
+      required: false
+      hint: "0 = 不限制候选生成次数；不绕过超时、并发和审批"
+    test_timeout:
+      type: int
+      default: 30
+      required: false
+    model:
+      type: str
+      default: ""
+      required: false
+      hint: "空 = 复用 llm.model"
+    max_review_rounds:
+      type: int
+      default: 2
+      required: false
+    critic_enabled:
+      type: bool
+      default: true
+      required: false
+    coder_backend:
+      type: str
+      default: "auto"
+      required: false
+      hint: "auto | claude | native"
+
+  deploy:
+    mode:
+      type: str
+      default: "systemd"
+      required: false
+      hint: "systemd | bare"
+    napcat_topology:
+      type: str
+      default: "same-host"
+      required: false
+      hint: "same-host | remote"

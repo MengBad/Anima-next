@@ -1,0 +1,52 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+venv/
+.env
+data/
+config.yaml
+*.db
+*.sqlite*
+.pytest_cache/
+/.pytest-tmp*/
+/.pytest-*/
+.codex_browser_server.py
+.coverage
+htmlcov/
+# 杂项 / 测试产物
+None/
+*.bak
+tmp_astrbot_test/
+reports/
+
+# 日志与本地诊断（可能含 QQ 号 / token 等敏感信息，禁止上传）
+*.log
+reports/*.md
+
+# 本地运维探针（一次性诊断 / 拉取脚本，不进主功能提交）
+_pull_*.py
+_diag_*.py
+_run_remote.py
+_verify_gen.py
+_bili_verify.py
+_selfcode_verify.py
+overview_*.md
+
+# WebUI local toolchain outputs
+webui/node_modules/
+webui/*.tsbuildinfo
+webui/vite.config.js
+webui/vite.config.d.ts
+
+# Local browser/preview artifacts
+output/playwright/
+
+# 本地记忆 / 编辑器 / IDE
+.workbuddy/
+.claude/
+.idea/
+.vscode/

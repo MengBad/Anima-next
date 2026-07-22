@@ -1,0 +1,24 @@
+# 由部署脚本在 VPS 从生产 config.yaml 派生；本文件不含任何密钥。
+# staging 不连接 NapCat，因此不会读取或发送任何 QQ 消息。
+qq:
+  enabled: false
+
+persistence:
+  data_dir: "/opt/anima-staging/data"
+
+vector:
+  db_path: "/opt/anima-staging/data/anima.db"
+
+autonomy:
+  enabled: false
+  token_budget_per_day: 0
+
+self_code:
+  enabled: true
+  daily_quota: 0
+  coder_backend: "native"
+
+webui:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8089

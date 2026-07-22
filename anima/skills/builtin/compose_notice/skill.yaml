@@ -1,0 +1,18 @@
+id: compose_notice
+name: 通知润色
+version: "1.0.0"
+description: 将 owner 给出的事实性通知整理为简短、自然、适合 QQ 群发送的中文文本。
+min_level: owner
+parameters:
+  content:
+    type: string
+    description: 需要整理的通知原文或要点
+    required: true
+execution:
+  type: prompt
+  template: |
+    把下面这段事实性通知整理成一条简短、自然的 QQ 群消息。
+    保留日期、链接、数字、行动要求等事实；不补充未知信息，不承诺未发生的事。
+    可以有一点哈基米的亲切语气，但不要撒娇过头，也不要解释你在调用技能。
+
+    通知内容：{content}

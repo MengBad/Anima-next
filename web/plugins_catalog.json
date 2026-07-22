@@ -1,0 +1,150 @@
+{
+  "generated_from": "astrbot_backup_20260625_152147.zip",
+  "generated_at": "2026-07-09",
+  "count": 13,
+  "plugins": [
+    {
+      "id": "astrbot_plugin_anima",
+      "name": "astrbot_plugin_anima",
+      "version": "1.3.0",
+      "author": "MengBad",
+      "description": "让任何 AstrBot 角色拥有自主叙事记忆、立场演化和自我认知能力。灵感来自 Sylanne-Embodiment（Ayleovelle）。",
+      "repo": "https://github.com/MengBad/astrbot_plugin_anima",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Anima"
+    },
+    {
+      "id": "astrbot_plugin_biliVideo",
+      "name": "astrbot_plugin_bilivideo",
+      "version": "2.0.0",
+      "author": "storyAura",
+      "description": "高品质 B 站视频解析与 AI 总结插件 - 支持订阅推送、扫码登录、智能搜索、合并转发、长视频分图、自动识别小程序与短链",
+      "repo": "https://github.com/storyAura/astrbot_plugin_biliVideo",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Bilivideo"
+    },
+    {
+      "id": "astrbot_plugin_bilibili",
+      "name": "astrbot_plugin_bilibili",
+      "version": "1.6.1",
+      "author": "Flartiny & Soulter",
+      "description": "哔哩哔哩动态推送、视频信息、直播间信息查询、自然语言番剧推荐插件",
+      "repo": "https://github.com/Soulter/astrbot_plugin_bilibili",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Bilibili"
+    },
+    {
+      "id": "astrbot_plugin_continuous_message",
+      "name": "astrbot_plugin_continuous_message",
+      "version": "2.4.0",
+      "author": "aliveriver",
+      "description": "消息防抖动插件可以将用户短时间内发送的多条私聊消息合并成一条发送给大语言模型，避免频繁触发AI回复，提升用户体验。",
+      "repo": "https://github.com/aliveriver/astrbot_plugin_continuous_message",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Continuous Message"
+    },
+    {
+      "id": "astrbot_plugin_coyote",
+      "name": "astrbot_plugin_coyote",
+      "version": "1.0.0",
+      "author": "哈基米",
+      "description": "本喵的专属插件。记录吴语萌的罪状，追踪他的黑历史，必要时发动郊狼制裁。",
+      "repo": "",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Coyote"
+    },
+    {
+      "id": "astrbot_plugin_fund_analyzer",
+      "name": "astrbot_plugin_fund_analyzer",
+      "version": "2.0.0",
+      "author": "2529huang",
+      "description": "AI 多智能体博弈 + 量化分析 —— 支持股票多智能体辩论分析、AI 智能量化分析、实时行情、技术分析、量化指标等",
+      "repo": "https://github.com/2529huang/astrbot_plugin_fund_analyzer",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Fund Analyzer"
+    },
+    {
+      "id": "astrbot_plugin_gemini_search",
+      "name": "astrbot_plugin_gemini_search",
+      "version": "1.3.0",
+      "author": "Chris",
+      "description": "Gemini 搜索 + 网页抓取/截图分析/截图直发 的函数工具集",
+      "repo": "https://github.com/Chris95743/astrbot_plugin_gemini_search",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Gemini Search"
+    },
+    {
+      "id": "astrbot_plugin_grok_suite",
+      "name": "astrbot_plugin_grok_suite",
+      "version": "2.3.0",
+      "author": "沐沐沐倾",
+      "description": "Grok 全能插件：文生图、图生图、图生视频、智能对话（自动联网）、LLM Tool 调用，一站式 AI 多媒体体验",
+      "repo": "https://github.com/muqing-kg/astrbot_plugin_grok_suite",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Grok Suite"
+    },
+    {
+      "id": "astrbot_plugin_image_generation",
+      "name": "astrbot_plugin_image_generation",
+      "version": "1.2.8",
+      "author": "Railgun19457",
+      "description": "通用图像生成插件，支持多种图像生成模型和多样化的生成方式",
+      "repo": "https://github.com/Railgun19457/astrbot_plugin_image_generation",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Image Generation"
+    },
+    {
+      "id": "astrbot_plugin_qzone_tools",
+      "name": "astrbot_plugin_qzone_tools",
+      "version": "4.1.0",
+      "author": "Wyccotccy",
+      "description": "支持机器人发送定时消息，发送QQ空间，发送戳一戳等给群聊或者私聊，以及更多LLM工具（仅支持Napcat version ＞ 4.17.55）",
+      "repo": "https://github.com/Wyccotccy/astrbot_plugin_qzone_tools",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Qzone Tools"
+    },
+    {
+      "id": "astrbot_plugin_splitter",
+      "name": "astrbot_plugin_splitter",
+      "version": "1.3.8",
+      "author": "糯米茨",
+      "description": "代替框架分段，方便小白操作，更加智能识别、添加更多人性化配置项，优化体验",
+      "repo": "https://github.com/nuomicici/astrbot_plugin_splitter",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Splitter"
+    },
+    {
+      "id": "astrbot_plugin_stealer",
+      "name": "astrbot_plugin_stealer",
+      "version": "2.6.6",
+      "author": "nagatoquin33",
+      "description": "人机代码，仿maibot的表情包偷取。让bot自动偷走别人的表情包并为己所用。配置好视觉模型就能自动识别分类，对话时根据情绪自动发送。支持LLM主动选表情包、WebUI管理、智能情绪匹配。",
+      "repo": "https://github.com/nagatoquin33/astrbot_plugin_stealer",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Stealer"
+    },
+    {
+      "id": "astrbot_plugin_tradingagents",
+      "name": "astrbot_plugin_tradingagents",
+      "version": "1.2.0",
+      "author": "YYY7C",
+      "description": "基于多智能体辩论架构的 AstrBot 金融分析插件，支持 A 股、港股、美股的智能分析报告生成。",
+      "repo": "https://github.com/YYY7C/TradingAgents-AstrBot",
+      "tags": [],
+      "type": "astrbot",
+      "display_name": "Tradingagents"
+    }
+  ]
+}

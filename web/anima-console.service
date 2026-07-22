@@ -1,0 +1,32 @@
+[Unit]
+Description=Anima Console (Web Management Panel)
+After=network-online.target
+Wants=network-online.target
+After=anima.service
+
+[Service]
+Type=simple
+# 以 root 运行以便读取 journal 与执行 systemctl restart anima
+User=root
+Group=root
+WorkingDirectory=/opt/anima
+Environment=ANIMA_CONFIG=/opt/anima/config.yaml
+Environment=ANIMA_SERVICE=anima
+Environment=ANIMA_CONSOLE_PORT=8080
+Environment=ANIMA_CONSOLE_SSL_CERT=/etc/ssl/certs/anima-console.crt
+Environment=ANIMA_CONSOLE_SSL_KEY=/etc/ssl/private/anima-console.key
+Environment=ANIMA_CONSOLE_HTTPS_PORT=8443
+# 控制台鉴权 token。安全规范：禁止在版本库写入真实值。
+# 推荐：在 /opt/anima/web/.env 写入 ANIMA_CONSOLE_TOKEN=<真实值>（该文件已被 .gitignore 忽略，模板见 web/.env.example）
+# 兜底：如需直接写入，请仅限本机且不提交。
+EnvironmentFile=-/opt/anima/web/.env
+Environment=ANIMA_CONSOLE_TOKEN=__REPLACE_WITH_REAL_TOKEN_AT_DEPLOY__
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/anima/venv/bin/python -m web.server
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

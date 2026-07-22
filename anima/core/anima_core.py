@@ -1,0 +1,405 @@
+"""AnimaCore —— 编排核：持有所有模块，统一生命周期、事件分发。"""
+
+from __future__ import annotations
+import asyncio
+import logging
+import signal
+from typing import Optional
+
+from anima.core.config import AnimaConfig
+from anima.core.event_bus import EventBus
+from anima.core.gateway import Gateway
+from anima.core.persistence import PersistenceProvider
+from anima.core.module import Module
+
+logger = logging.getLogger("anima.core")
+
+STICKER_POLICY_FIELDS = {
+    "enabled", "auto_collect", "collect_mode", "collect_probability",
+    "collect_cooldown_sec", "collect_min_interval", "max_stickers",
+    "require_owner_review", "pending_capacity", "default_scope",
+    "share_across_groups", "classify_at_collect", "llm_select",
+    "send_probability", "send_by_emotion", "send_cooldown_sec",
+    "collect_allowlist", "collect_blocklist", "send_allowlist", "send_blocklist",
+}
+
+
+class AnimaCore:
+    def __init__(self, config: AnimaConfig):
+        self.config = config
+        # 由 cli 注入真实 config.yaml 路径；测试/嵌入式调用可保持 None，
+        # ConfigService 此时只做内存变更，不会误写当前工作目录。
+        self.config_path = None
+        self.bus = EventBus()
+        self.persistence = PersistenceProvider(config.persistence.data_dir)
+        from anima.core.health_history import HealthHistory
+        self.health_history = HealthHistory(self, config.persistence.data_dir)
+        self._restore_sticker_policy()
+        from anima.core.permissions import PermissionStore
+        self.permission_store = PermissionStore(self.persistence, config)
+        from anima.core.tasks import TaskStore
+        self.tasks = TaskStore(self.persistence)
+        from anima.core.tasks import OwnerTaskAgent
+        self.task_agent = OwnerTaskAgent(self)
+        self.modules: list[Module] = []
+        self.gateway = Gateway(self)
+        self.llm = None  # P2: LLM client
+        self.usage_ledger = None
+        self.llm_handler = None  # 入站消息处理器（可选持有状态）
+        self.tools = None  # P4: ToolRegistry
+        self.native_plugins = None
+        self.heartbeat = None  # P5: Heartbeat
+        self.vector_memory = None  # P2/P3: VectorMemory
+        self.sylann = None  # 可选 Sylann 适配器（默认 disabled）
+        self.monitors = None
+        self.webui = None
+        self.skill_drafts = None
+        from anima.cognitive.group_presence import GroupPresenceManager
+        self.group_presence = GroupPresenceManager(config.persistence.data_dir)
+        from anima.cognitive.agenda import AgendaQueue
+        self.agenda = AgendaQueue(self.persistence)
+        from anima.core.intents import IntentLedger, SubjectOrchestrator
+        self.intent_ledger = IntentLedger(self.persistence)
+        self.subject = SubjectOrchestrator(self.intent_ledger)
+        from anima.memory.episodes import EpisodicMemory
+        self.episodes = EpisodicMemory(self.persistence)
+        from anima.core.workflows import WorkflowStore
+        self.workflows = WorkflowStore(self.persistence)
+        # 意图过期时同步关闭等待交付的工作流，避免悬挂通知。
+        self.intent_ledger.on_expired = (
+            lambda intent_id: self.workflows.fail_by_intent(intent_id, "关联意图已过期")
+        )
+        from anima.core.backup import BackupManager
+        self.backups = BackupManager(self)
+        from anima.core.evaluation import RuntimeEvaluator
+        self.evaluator = RuntimeEvaluator(self)
+        from anima.core.replay import BehaviorReplay
+        self.behavior_replay = BehaviorReplay(self)
+        from anima.cognitive.calendar import CalendarStore
+        self.calendar = CalendarStore(self.persistence)
+        from anima.core.audit import AuditLogger
+        self.audit = AuditLogger(config.persistence.data_dir)
+        from anima.cognitive.reply_quality import get_reply_quality
+        self.reply_quality = get_reply_quality(config.persistence.data_dir)
+        from anima.core.approvals import ApprovalStore
+        self.approvals = ApprovalStore(self.persistence)
+        from anima.media_generation import ImageGenerationManager
+        self.image_generation = ImageGenerationManager(self)
+        self._auto_start_heartbeat = False
+        self._running = False
+        self._shutdown_event: Optional[asyncio.Event] = None
+
+    def _restore_sticker_policy(self) -> None:
+        """恢复 WebUI 保存的表情策略，不接触含密钥的主配置文件。"""
+        raw = self.persistence.read_json("sticker_policy.json", {}) or {}
+        if not isinstance(raw, dict):
+            return
+        updates = {key: value for key, value in raw.items() if key in STICKER_POLICY_FIELDS}
+        if not updates:
+            return
+        try:
+            model = type(self.config.sticker)
+            self.config.sticker = model.model_validate({
+                **self.config.sticker.model_dump(), **updates,
+            })
+        except Exception:
+            logger.exception("表情策略恢复失败，继续使用主配置")
+
+    def update_sticker_policy(self, updates: dict) -> dict:
+        """校验并持久化 WebUI 表情策略；返回可安全展示的策略快照。"""
+        filtered = {key: value for key, value in updates.items() if key in STICKER_POLICY_FIELDS}
+        if not filtered:
+            raise ValueError("没有可更新的表情策略")
+        model = type(self.config.sticker)
+        try:
+            configured = model.model_validate({
+                **self.config.sticker.model_dump(), **filtered,
+            })
+        except Exception as exc:
+            raise ValueError(f"表情策略无效：{exc}") from exc
+        self.config.sticker = configured
+        snapshot = {
+            key: getattr(configured, key) for key in sorted(STICKER_POLICY_FIELDS)
+        }
+        self.persistence.write_json("sticker_policy.json", snapshot)
+        try:
+            from anima.cognitive.stickers import configure_sticker_manager
+            configure_sticker_manager(configured)
+        except Exception:
+            logger.exception("表情管理器热更新失败；策略将在下次调用时生效")
+        return snapshot
+
+    @property
+    def event_bus(self) -> EventBus:
+        """别名，兼容 channel adapter 引用。"""
+        return self.bus
+
+    # ---- 注册 -----------------------------------------------------------
+
+    def register(self, module: Module) -> None:
+        self.modules.append(module)
+
+    def propose_agenda(self, group_id: int, text_intent: str, *, priority: float = 0.5,
+                       not_before_at: float = 0.0, expires_at: float = 0.0,
+                       source: str = "system"):
+        """认知层和 owner 命令创建主动表达意图的唯一入口。"""
+        from anima.cognitive.agenda import AgendaItem
+        intent = self.subject.propose_expression(
+            group_id, text_intent, source=source, priority=priority,
+            not_before_at=not_before_at, expires_at=expires_at,
+        )
+        item = self.agenda.push(AgendaItem(
+            group_id, text_intent, priority, not_before_at, expires_at,
+            intent_id=intent.id,
+        ))
+        self.audit.emit("agenda_created", agenda_id=item.id, group_id=item.group_id,
+                        priority=item.priority, intent_id=intent.id, source=source)
+        return item
+
+    # ---- 生命周期 -------------------------------------------------------
+
+    async def start(self) -> None:
+        logger.info("AnimaCore 启动 …")
+        # 初始化认知单例并恢复状态
+        self._init_cognitive_state()
+        from anima.cognitive.sylann_adapter import SylannAdapter, EngineSylannAdapter
+        sylann_cfg = self.config.sylann
+        if sylann_cfg.enabled:
+            try: self.sylann = EngineSylannAdapter(self.persistence, self, sylann_cfg.mode)
+            except Exception: self.sylann = SylannAdapter(self.persistence, "disabled")
+        else: self.sylann = SylannAdapter(self.persistence, "disabled")
+        # 初始化向量记忆
+        await self._init_vector_memory()
+        try:
+            from anima.monitors.scheduler import MonitorScheduler
+            self.monitors = MonitorScheduler(self)
+            await self.monitors.start()
+        except Exception:
+            logger.exception("订阅调度器初始化失败，已隔离")
+        if self.tools is not None:
+            try:
+                from anima.plugins import NativePluginRuntime
+                self.native_plugins = NativePluginRuntime(self)
+                await self.native_plugins.load_all()
+            except Exception:
+                self.native_plugins = None
+                logger.exception("原生插件运行时初始化失败，已隔离")
+
+        for m in self.modules:
+            await m.restore()
+        for m in self.modules:
+            await m.init(self)
+
+        if self.config.webui.enabled:
+            try:
+                from anima.webui import WebUIServer
+                self.webui = WebUIServer(self)
+                await self.webui.start()
+                logger.info("WebUI 已启动: http://%s:%s", self.config.webui.host, self.config.webui.port)
+            except Exception:
+                self.webui = None
+                logger.exception("WebUI 启动失败，已隔离")
+
+        # 自动启动心跳
+        if self._auto_start_heartbeat and self.heartbeat:
+            await self.heartbeat.start()
+
+        # 到这里 WebUI、认知模块和心跳均已完成装配；若本次是配置变更后的
+        # 候选启动，写入健康点。下一次启动若仍看见 attempting，就会恢复备份。
+        try:
+            from anima.core.config_recovery import mark_healthy
+            mark_healthy(self.config.persistence.data_dir)
+        except Exception:
+            logger.exception("配置候选健康标记失败，保留 recovery marker")
+
+        self._running = True
+        self._shutdown_event = asyncio.Event()
+        try:
+            self.health_history.record(force=True)
+        except Exception:
+            logger.exception("运行健康初始采样失败")
+        logger.info("AnimaCore 已启动，注册模块 %d 个", len(self.modules))
+
+    async def stop(self) -> None:
+        if not self._running:
+            return
+        self._running = False
+        if self._shutdown_event:
+            self._shutdown_event.set()
+        if self.heartbeat:
+            await self.heartbeat.stop()
+            try:
+                self.heartbeat.persist()
+            except Exception:
+                logger.exception("心跳持久化失败")
+        for m in reversed(self.modules):
+            try:
+                await m.persist()
+                await m.shutdown()
+            except Exception:
+                logger.exception("模块 shutdown 异常: %s", getattr(m, "name", m))
+        # 保存认知状态
+        self._persist_cognitive_state()
+        # 保存对话记忆
+        try:
+            from anima.memory.chat_memory import get_chat_memory
+            get_chat_memory().save()
+        except Exception:
+            pass
+        # 关闭 AnimaCore 直接持有的资源（未注册为 Module，否则 aiohttp 会话泄漏）。
+        # - self.vector_memory: Embedder / Reranker 的 HTTP 会话
+        # - self.llm: LLMClient 的 aiohttp 会话（cli.py 中赋值）
+        for _res in (self.vector_memory, self.llm):
+            _close = getattr(_res, "close", None)
+            if callable(_close):
+                try:
+                    await _close()
+                except Exception:
+                    logger.exception("资源关闭异常: %s", type(_res).__name__)
+        if self.sylann:
+            try:
+                await self.sylann.close()
+            except Exception:
+                logger.exception("Sylann 适配器关闭异常")
+        handler = getattr(self, "llm_handler", None)
+        if handler:
+            try:
+                await handler.close()
+            except Exception:
+                logger.exception("LLM 处理器关闭异常")
+        if self.monitors:
+            try:
+                await self.monitors.close()
+            except Exception:
+                logger.exception("订阅调度器关闭异常")
+        if self.native_plugins:
+            try:
+                await self.native_plugins.close()
+            except Exception:
+                logger.exception("原生插件运行时关闭异常")
+        if self.webui:
+            try:
+                await self.webui.close()
+            except Exception:
+                logger.exception("WebUI 关闭异常")
+        # G1：跨群记忆/氛围 JSON 已增量落盘，此处幂等 flush 收尾
+        try:
+            from anima.crossgroup import close_crossgroup_manager
+            close_crossgroup_manager()
+        except Exception:
+            logger.exception("跨群管理器 flush 异常")
+        # P0/P1：工具自学习 / 能力系统单例关闭
+        try:
+            from anima.cognitive.tool_learning import close_tool_learning
+            close_tool_learning()
+        except Exception:
+            logger.exception("工具自学习单例关闭异常")
+        try:
+            from anima.cognitive.capabilities import close_capability_manager
+            close_capability_manager()
+        except Exception:
+            logger.exception("能力系统单例关闭异常")
+        # 表情包单例关闭
+        try:
+            from anima.cognitive.stickers import close_sticker_manager
+            close_sticker_manager()
+        except Exception:
+            logger.exception("表情包单例关闭异常")
+        # 视觉理解单例关闭
+        try:
+            from anima.cognitive.vision import close_vision_manager
+            close_vision_manager()
+        except Exception:
+            logger.exception("视觉理解单例关闭异常")
+        try:
+            from anima.cognitive.reply_quality import close_reply_quality
+            close_reply_quality()
+        except Exception:
+            logger.exception("回复质量统计关闭异常")
+        try:
+            from anima.cognitive.selfcode import close_selfcode_manager
+            close_selfcode_manager()
+        except Exception:
+            logger.exception("自我编程管理器关闭异常")
+        logger.info("AnimaCore 已停止")
+
+    # ---- 辅助 -----------------------------------------------------------
+
+    async def _init_vector_memory(self) -> None:
+        """如果启用，初始化向量记忆。"""
+        from anima.memory.vector_memory import create_vector_memory
+        try:
+            self.vector_memory = create_vector_memory(self.config)
+            if self.vector_memory:
+                logger.info("向量记忆已启用: %s", self.config.vector.db_path)
+        except Exception:
+            logger.exception("向量记忆初始化失败，已禁用")
+            self.vector_memory = None
+
+    def _init_cognitive_state(self) -> None:
+        """确保认知单例使用正确的数据目录并恢复。"""
+        data_dir = self.config.persistence.data_dir
+        from anima.cognitive.time_sense import get_time_sense
+        from anima.cognitive.desire import get_desire_system
+        from anima.cognitive.relation import get_relation
+        get_time_sense(data_dir)
+        get_desire_system(data_dir)
+        get_relation(data_dir)
+        from anima.cognitive.stickers import get_sticker_manager
+        get_sticker_manager(data_dir, config=self.config.sticker)
+
+    def _persist_cognitive_state(self) -> None:
+        """保存认知单例状态。"""
+        try:
+            from anima.cognitive.time_sense import get_time_sense
+            get_time_sense().persist()
+        except Exception:
+            logger.exception("时间感知持久化失败")
+        try:
+            from anima.cognitive.desire import get_desire_system
+            get_desire_system().persist()
+        except Exception:
+            logger.exception("欲望系统持久化失败")
+        try:
+            from anima.cognitive.relation import get_relation
+            get_relation().persist()
+        except Exception:
+            logger.exception("关系引擎持久化失败")
+
+    async def emit(self, topic: str, payload=None) -> None:
+        """向 EventBus 发布事件。"""
+        await self.bus.publish(topic, payload)
+
+    def run(self) -> None:
+        """阻塞入口：asyncio.run 启动并保持。"""
+        try:
+            asyncio.run(self._run_loop())
+        except KeyboardInterrupt:
+            logger.info("收到键盘中断")
+
+    async def _run_loop(self) -> None:
+        loop = asyncio.get_running_loop()
+
+        def _on_signal(sig):
+            logger.info("收到信号 %s，开始优雅停止", sig)
+            asyncio.create_task(self.stop())
+
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            try:
+                loop.add_signal_handler(sig, _on_signal, sig.name)
+            except (NotImplementedError, ValueError):
+                pass  # Windows 不支持 SIGTERM
+
+        await self.start()
+        # 启动 systemd 看门狗：事件循环一旦死锁（CPU 自旋或同步阻塞），
+        # 心跳 ping 无法调度，systemd 自动 SIGKILL 重启，无需人工干预。
+        from anima.watchdog import start_watchdog
+        start_watchdog(loop)
+        try:
+            if self._shutdown_event:
+                await self._shutdown_event.wait()
+            else:
+                while self._running:
+                    await asyncio.sleep(1)
+        finally:
+            await self.stop()

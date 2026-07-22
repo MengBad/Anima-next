@@ -1,0 +1,239 @@
+# Anima 默认配置（设计冻结 v3.3）
+# 所有决策默认值已编码；可被环境变量覆盖：ANIMA_LLM_API_KEY / ANIMA_LLM_ENDPOINT
+
+qq:
+  enabled: true                            # staging 设为 false 时不连接 NapCat、不处理 QQ 消息
+  napcat_ws_url: "ws://127.0.0.1:3001"   # NapCat 反向 WS（同机默认）
+  napcat_http_url: "http://127.0.0.1:3001" # NapCat HTTP API（用于发送/上传文件）
+  self_id: null                           # 机器人 QQ 号（启动后可自动获取）
+  access_token: ""                         # NapCat 鉴权 token
+  event_concurrency: 12                    # 同时处理的长业务事件上限
+  max_pending_events: 128                  # 高峰时的等待任务上限
+
+llm:
+  endpoint: "https://api.openai.com/v1"
+  api_key: ""                             # 或 ANIMA_LLM_API_KEY
+  model: "gpt-4o-mini"
+  embedding_endpoint: null                # null 表示同 endpoint
+  embedding_model: "text-embedding-3-small"
+  embedding_dim: 1536
+  timeout: 60.0
+  retries: 2                               # 仅超时、429、5xx 时重试；鉴权错误不重试
+  retry_backoff_sec: 0.6
+  fallback_models:                         # 同网关备用模型（主模型瞬态失败时切换）
+    - "gemini-2.5-flash"
+    - "gemini-3-flash"
+  circuit_failure_threshold: 3             # 连续可恢复失败后短暂熔断
+  circuit_cooldown_sec: 30
+
+vector:
+  enabled: true
+  db_path: "data/anima.db"
+  embedding_backend: "remote"             # 远程 OpenAI 兼容（已定）；local 仅预留
+  cache: true                             # hash→向量缓存
+
+autonomy:
+  enabled: true                           # owner 可一键 false 暂停自主发言
+  heartbeat_tick_sec: 30.0
+  cooldown_sec: 90                        # 每群/私聊冷却
+  daily_max_per_group: 20                 # 每日自主条数/群（含议程）
+  ratio_max: 0.30                         # 占群发言比上限
+  token_budget_per_day: 0   # 0 = 不限额
+  active_reply_prob: 0.08                 # 通过全部门控后实际主动开口的概率
+  active_silence_min_sec: 300             # 人类消息沉默多久后才考虑插话
+  active_global_cooldown_sec: 900         # 两次主动发言的全局最小间隔，防止复读刷屏
+  active_min_group_messages: 6           # 群内积累的人类消息不足时绝不主动插话
+  active_daily_max_per_group: 5          # 每群每天最多几次非议程主动发言
+  active_context_score_threshold: 0.40    # 近期上下文有明确接话点才调用 LLM
+  familiar_reply_min: 0.35                # familiar 群策略下的亲密度门槛
+  active_intent_max_attempts: 5           # 主动意图连续失败后标记 failed
+  active_feedback_window_sec: 900         # 主动消息后 15 分钟内有人继续互动视为获得反馈
+  active_feedback_min_samples: 4          # 至少积累这些样本才自动按接受度降频
+  active_feedback_min_acceptance: 0.20    # 接受度低于该值时暂停该群非议程主动接话
+
+drift:                                    # 人格漂移幅度上限（§15.3）
+  delta_max: 0.10                         # 单次单参数增量
+  daily_budget: 1.5                       # 每日 general 池（≈30×0.05）
+  self_correction_daily_budget: 0.5       # 自我修正独立池（≈10×0.05）
+  window_ceiling: 4.0                     # 7 日滚动累计上限（≈2.7×日 general；两池合计）
+  similarity_floor: 0.75                  # 相对人格锚点的相似度下限（Jaccard 自适应）
+  valence_min: -0.30                      # 笔记情绪价态下限
+  valence_max: 0.70                       # 笔记情绪价态上限
+  checkpoints_keep: 7                     # persona 快照保留份数
+
+permissions:
+  owners: []                              # 主人 QQ 号
+  admins: []
+  readonly: []
+  banned: []
+  readonly_groups: []                      # 只读群号列表
+  banned_groups: []                        # 静默群号列表
+  group_policies: {}                      # 群号 -> {autonomy: bool, tools: [...]}
+
+persistence:
+  data_dir: "data"
+  use_sqlite: true                        # 引入 aiosqlite（向量库需要）
+
+compat:
+  astrbot_enabled: false
+  astrbot_tier: 1                         # 本期 compat 层覆盖到 Tier 1
+
+crossgroup:                               # G1：跨群记忆 + 群氛围差异化
+  enabled: true                           # 总开关
+  observe_all_messages: true              # 对所有入站消息观察氛围/抽事实（前置到回复闸门前）
+  min_fact_text_len: 6                    # 事实抽取最小文本长度（过滤 "666"/emoji）
+  extraction_model: ""                    # 事实抽取模型；空=复用 llm.model
+  max_facts_per_user: 50                  # 单用户事实上限（FIFO 截断防膨胀）
+
+tool_learning:                             # P0：工具调用自学习
+  enabled: true                           # 总开关
+  summarize_interval: 10                  # 同工具成功记录每累计 N 条归纳一次规律
+  records_max: 200                        # records 环形上限
+  inject_top_k: 4                         # 注入 system 的使用心得条数
+
+capabilities:                              # P1：个人能力自生长系统
+  enabled: true                           # 总开关
+  initial_confidence: 0.3                 # 新建能力基线置信度（脱钩 LLM 自评）
+  auto_register_confidence: 0.65          # 参考阈值（实际注册走 value_score 晋升）
+  dynamic_daily_quota: 3                   # 每日新注册能力工具上限
+  max_total: 40                           # 能力库硬上限
+  unused_drop_days: 30                    # 未使用超此天数淘汰
+  unused_decay_days: 14                   # 未使用超此天数降权
+  dedup_text_threshold: 0.6               # 语义去重文本相似度兜底阈值
+  min_create_text_len: 6                  # 能力内容最小长度（防碎碎念）
+
+notes_compact:                             # 自我笔记压缩（止住 self_notes.md 无限膨胀）
+  enabled: true                           # 总开关
+  notes_max_keep: 300                     # 保留最近 N 行，超出部分 LLM 摘要归档
+  compact_every_ruminations: 6            # 每 N 次反刍触发一次（低频，避免频繁 LLM 调用）
+  compact_model: ""                       # 压缩模型；空=复用 llm.model
+
+sticker:                                   # 表情包自收集系统
+  enabled: true                           # 总开关
+  auto_collect: true                      # 从群消息 image 段自动捡图存库（仅群聊，私聊不收集）
+  collect_mode: "cooldown"                # cooldown | probability
+  collect_probability: 0.30                # probability 模式每批图片的收集概率
+  collect_cooldown_sec: 30                 # cooldown 模式同群最小收集间隔
+  collect_min_interval: 3.0               # 同发送者收集最小间隔（秒），防刷屏
+  max_stickers: 500                       # 表情库硬上限（环形淘汰最旧/最少用）
+  label_throttle_per_user: 600            # 每发送者打标最小间隔（秒）
+  label_model: ""                         # 打标模型；空=复用 llm.model
+  require_owner_review: true               # 新图必须经 owner 批准才会被使用
+  pending_capacity: 200                    # 待审核池达到上限即暂停自动收集
+  default_scope: "local"                  # local=来源群可用；public=跨群可用（仍受总开关约束）
+  collect_allowlist: []                    # group:<群号> / user:<QQ号>；空=不限制
+  collect_blocklist: []
+  send_allowlist: []
+  send_blocklist: []
+  share_across_groups: false               # 默认不跨群复用表情素材
+  recent_window: 4                         # 同群近期表情去重窗口
+  gif_min_interval_sec: 1800               # 同群 GIF 最小发送间隔
+  always_atmosphere:                      # 允许带图的群氛围（formal 群不带，避免刷屏）
+    - humorous
+    - casual
+
+vision:                                    # 全量多模态视觉理解（真·看见图片）
+  enabled: true                            # 总开关
+  model: ""                                # 视觉理解模型；空=复用 llm.model
+  max_inline_bytes: 2097152                # 单图转码后的上限（2MB，再压一档）
+  max_source_bytes: 33554432               # 可获取的 QQ 原图上限（32MB）
+  max_request_image_bytes: 3145728         # 一次 LLM 请求全部视觉帧总预算（3MB）
+  max_dimension: 1280                      # 自动缩放后的最长边
+  max_animation_frames: 3                  # GIF/WebP 动图的关键帧数
+  describe_throttle_per_user: 600          # 后台描述任务每发送者最小间隔（秒）
+  comprehend_in_chat: true                 # 用户在聊天发图时，bot 当场看图并接话
+  store_desc_to_memory: true               # 把图片一句描述存进对话记忆，供后续轮次忆起
+
+image_generation:
+  enabled: false                            # 仅 owner 调用；启用前确认网关 images/generations 可用
+  model: "gemini-3.1-flash-image"
+  daily_limit: 0                            # 当日成功生成图片上限；0 = 不限制，仍受权限/审批约束
+  max_output_bytes: 16777216                # 单张图片最大 16MB
+
+audio:
+  transcription_enabled: true                # 收到 QQ 语音时尝试转写；失败会明确降级
+  model: ""                                  # 空=复用 llm.model
+  max_bytes: 10485760                        # 单条语音最大 10MB
+  throttle_per_user: 120                     # 同一用户最小转写间隔（秒）
+
+sylann:
+  enabled: false
+  mode: "disabled"                  # disabled | shadow | active
+  data_dir: "sylann"
+  weight: 0.15
+  engine_mode: "lite"               # Sylanne-Core: lite | pro | max
+  assessor_enabled: true
+  pel_core_enabled: true
+  tick_sessions_limit: 32
+
+skills:
+  enabled: true
+  dir: "skills"
+  allow_prompt: true
+  max_loaded: 32
+
+conversation:
+  # 私聊连续输入收束为一个语义回合；命令在收束前处理，群聊不启用。
+  enabled: true
+  wait_sec: 1.5
+  max_wait_sec: 8.0
+
+context:
+  # 请求前上下文预算：人格、身份护栏和本轮用户输入不可裁，最旧历史/低优先级
+  # 认知片段优先退出。不同模型 tokenizer 不同，数值是保守的防溢出阈值。
+  input_token_budget: 12000
+  system_token_budget: 6000
+  image_token_estimate: 768
+  tool_result_token_budget: 1800
+
+exploration:
+  # 自主读取公开信息并形成带来源的知识笔记。外部内容一律视为不可信资料，
+  # 不登录、不评论、不点赞、不执行网页指令。分享仍走 Agenda 与群级频控。
+  enabled: true
+  interval_sec: 3600
+  daily_limit: 3
+  min_desire_intensity: 0.4
+  sources:
+    - bilibili_popular
+    - bbc_zhongwen
+    - bilibili_search                   # 仅具体好奇问题触发；公开视频元数据
+    - wikipedia_zh                      # 仅具体好奇问题触发；百科只作知识线索
+  novelty_window_sec: 604800
+  max_notes: 200
+  share_enabled: false                  # 先自主学习；Owner 验证后再允许主动分享
+  daily_share_limit: 1
+  share_min_score: 0.75
+  share_groups: []                      # 空=仅沿欲望来源群；非空=额外限制可分享群
+
+self_code:
+  enabled: false                             # 高危能力：仅 owner 显式开启；候选必须进入 WebUI/QQ 审批
+  claude_executable: "claude"                # Claude Code CLI；不可用时可用 native 后端复用 bot LLM
+  anthropic_api_key: ""                      # 留空则读环境变量 ANTHROPIC_API_KEY
+  api_base_url: ""                           # 可选自定义端点
+  workspace_dir: ""                          # 隔离工作区；空 = data_dir/selfcode_workspace
+  selfcode_dir: ""                           # 安装目录；空 = data_dir/selfcode，不修改源码包
+  max_turns: 12
+  timeout_seconds: 180
+  permission_mode: "acceptEdits"             # default | acceptEdits | plan | dontAsk
+  auto_install: false                        # 兼容旧配置；运行时始终要求 Owner 审批
+  daily_quota: 0                             # 0 = 不限制候选生成次数；不绕过超时/并发/审批
+  test_timeout: 30
+  model: ""                                  # 空 = 复用 llm.model
+  max_review_rounds: 2
+  critic_enabled: true
+  coder_backend: "auto"                      # auto | claude | native
+
+webui:
+  # 默认关闭且只监听本机；若改为非回环地址，必须设置 token 并通过反向代理加密。
+  enabled: false
+  host: "127.0.0.1"
+  port: 8088
+  token: ""
+
+security:
+  require_approval_for_danger: true         # danger 工具先生成 owner 审批单，批准前绝不执行
+  approval_ttl_sec: 900                     # 审批单有效期（秒，30-86400）
+
+deploy:
+  mode: "systemd"                         # systemd | bare
+  napcat_topology: "same-host"            # 同机默认；可选 separate-host

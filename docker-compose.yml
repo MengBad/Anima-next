@@ -1,0 +1,44 @@
+# Anima + NapCat 同机部署（Linux only）
+# 用法：
+#   1) cp .env.example .env 并填入 ANIMA_LLM_API_KEY / NAPCAT_TOKEN
+#   2) docker compose up -d
+#   3) 浏览器打开 http://localhost:3001 用 NapCat WebUI 登录机器人 QQ 账号
+#   4) 确认 config.yaml 中 qq.napcat_ws_url = ws://napcat:3001
+
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: anima-napcat
+    restart: unless-stopped
+    environment:
+      NAPCAT_WS_PORT: "3001"
+      NAPCAT_HTTP_PORT: "3001"
+      NAPCAT_TOKEN: "${NAPCAT_TOKEN:-}"
+      # 首次需通过 WebUI 登录 QQ；账号信息不入镜像
+    ports:
+      - "3001:3001"
+    volumes:
+      - napcat_data:/napcat
+
+  anima:
+    build: .
+    container_name: anima
+    restart: unless-stopped
+    depends_on:
+      - napcat
+    environment:
+      ANIMA_LLM_API_KEY: "${ANIMA_LLM_API_KEY:-}"
+      ANIMA_LLM_ENDPOINT: "${ANIMA_LLM_ENDPOINT:-}"
+    ports:
+      - "8080:8080"   # 可选 WebUI / console
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - anima_data:/app/data
+    # 通过服务名解析 NapCat（同网络）
+    command: ["start", "--config", "/app/config.yaml"]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+volumes:
+  napcat_data:
+  anima_data:

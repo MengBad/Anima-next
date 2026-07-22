@@ -1,0 +1,806 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Anima Console · 管理面板原型</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600&family=Space+Grotesk:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root {
+    --bg: #0c0d11;
+    --bg-2: #111319;
+    --surface: rgba(255, 255, 255, 0.045);
+    --surface-2: rgba(255, 255, 255, 0.07);
+    --surface-3: rgba(255, 255, 255, 0.10);
+    --border: rgba(255, 255, 255, 0.09);
+    --border-strong: rgba(255, 255, 255, 0.16);
+    --text: #e9ebf2;
+    --text-muted: #9aa1b4;
+    --text-dim: #6b7185;
+    --accent: #f0869e;
+    --accent-2: #f4a9bb;
+    --accent-soft: rgba(240, 134, 158, 0.14);
+    --green: #5dc99a;
+    --amber: #e8b15a;
+    --red: #e87a7a;
+    --radius: 18px;
+    --radius-sm: 12px;
+    --shadow: 0 12px 44px rgba(0, 0, 0, 0.45);
+    --font-ui: "Outfit", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-display: "Space Grotesk", "Outfit", sans-serif;
+    --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+  }
+  [data-theme="light"] {
+    --bg: #f3f1ee;
+    --bg-2: #eae7e2;
+    --surface: rgba(255, 255, 255, 0.62);
+    --surface-2: rgba(255, 255, 255, 0.82);
+    --surface-3: rgba(255, 255, 255, 0.95);
+    --border: rgba(20, 20, 30, 0.10);
+    --border-strong: rgba(20, 20, 30, 0.18);
+    --text: #1b1c22;
+    --text-muted: #5c6270;
+    --text-dim: #8a8f9c;
+    --accent: #dd6388;
+    --accent-2: #e0678a;
+    --accent-soft: rgba(221, 99, 136, 0.12);
+    --green: #3f9e76;
+    --amber: #c8902f;
+    --red: #cf5a5a;
+    --shadow: 0 12px 44px rgba(60, 40, 50, 0.12);
+  }
+  /* 实例强调色由 JS 覆盖（跨明暗主题统一品牌色） */
+  #accentStyle { display: none; }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--font-ui);
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    overflow: hidden;
+    transition: background 0.5s ease, color 0.5s ease;
+  }
+  /* ambient glow */
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(60vw 60vw at 12% -10%, var(--accent-soft), transparent 60%),
+      radial-gradient(50vw 50vw at 110% 10%, rgba(93, 201, 154, 0.07), transparent 55%);
+    pointer-events: none; z-index: 0;
+    transition: opacity 0.5s ease;
+  }
+
+  .app { position: relative; z-index: 1; display: grid; grid-template-columns: 256px 1fr; height: 100dvh; }
+
+  /* ---------------- Sidebar ---------------- */
+  .sidebar {
+    border-right: 1px solid var(--border);
+    background: linear-gradient(180deg, var(--bg-2), transparent);
+    padding: 22px 16px;
+    display: flex; flex-direction: column; gap: 8px;
+    backdrop-filter: blur(12px);
+  }
+  .brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 18px; }
+  .brand .logo {
+    width: 38px; height: 38px; border-radius: 12px;
+    background: linear-gradient(140deg, var(--accent), var(--accent-2));
+    display: grid; place-items: center; flex: none;
+    box-shadow: 0 6px 18px var(--accent-soft);
+  }
+  .brand .logo svg { width: 22px; height: 22px; }
+  .brand h1 { font-family: var(--font-display); font-size: 16px; font-weight: 600; letter-spacing: -0.01em; }
+  .brand span { display: block; font-size: 11px; color: var(--text-dim); font-weight: 400; letter-spacing: 0.06em; }
+
+  .nav { display: flex; flex-direction: column; gap: 4px; margin-top: 6px; }
+  .nav-label { font-size: 10.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-dim); padding: 14px 12px 6px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 12px; border-radius: var(--radius-sm);
+    color: var(--text-muted); cursor: pointer; font-size: 14px; font-weight: 400;
+    border: 1px solid transparent; transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+    position: relative;
+  }
+  .nav-item svg { width: 19px; height: 19px; flex: none; }
+  .nav-item:hover { color: var(--text); background: var(--surface); }
+  .nav-item.active {
+    color: var(--text); background: var(--accent-soft);
+    border-color: var(--border-strong);
+  }
+  .nav-item.active::before {
+    content: ""; position: absolute; left: -16px; top: 50%; transform: translateY(-50%);
+    width: 3px; height: 22px; border-radius: 3px; background: var(--accent);
+  }
+  .nav-item .badge {
+    margin-left: auto; font-size: 10px; background: var(--surface-3); color: var(--text-muted);
+    padding: 2px 7px; border-radius: 20px; border: 1px solid var(--border);
+  }
+  .sidebar-foot { margin-top: auto; padding-top: 14px; border-top: 1px solid var(--border); }
+  .who { display: flex; align-items: center; gap: 10px; padding: 8px; border-radius: var(--radius-sm); background: var(--surface); }
+  .who .ava { width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(140deg,var(--accent-2),var(--accent)); flex: none; }
+  .who b { font-size: 13px; font-weight: 500; display: block; }
+  .who small { font-size: 11px; color: var(--text-dim); }
+
+  /* ---------------- Main ---------------- */
+  .main { display: flex; flex-direction: column; min-width: 0; height: 100dvh; }
+  .topbar {
+    height: 70px; flex: none; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 16px; padding: 0 28px;
+    background: var(--surface); backdrop-filter: blur(14px);
+  }
+  .topbar h2 { font-family: var(--font-display); font-size: 19px; font-weight: 600; letter-spacing: -0.01em; }
+  .topbar .sub { font-size: 12.5px; color: var(--text-dim); margin-top: 1px; }
+  .topbar .spacer { flex: 1; }
+  .status-pill {
+    display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px;
+    padding: 7px 13px; border-radius: 30px; background: var(--surface-2);
+    border: 1px solid var(--border); color: var(--text-muted);
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); position: relative; }
+  .dot.live { box-shadow: 0 0 0 0 rgba(93, 201, 154, 0.6); animation: breathe 2.2s infinite; }
+  @keyframes breathe { 0% { box-shadow: 0 0 0 0 rgba(93,201,154,0.55);} 70% { box-shadow: 0 0 0 7px rgba(93,201,154,0);} 100% { box-shadow: 0 0 0 0 rgba(93,201,154,0);} }
+
+  .icon-btn {
+    width: 40px; height: 40px; border-radius: 12px; border: 1px solid var(--border);
+    background: var(--surface-2); color: var(--text-muted); cursor: pointer;
+    display: grid; place-items: center; transition: all 0.25s cubic-bezier(0.16,1,0.3,1);
+  }
+  .icon-btn:hover { color: var(--text); border-color: var(--border-strong); transform: translateY(-1px); }
+  .icon-btn svg { width: 19px; height: 19px; }
+
+  .scroll { flex: 1; overflow-y: auto; padding: 28px; scroll-behavior: smooth; }
+  .scroll::-webkit-scrollbar { width: 9px; }
+  .scroll::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 9px; }
+
+  /* views */
+  .view { display: none; animation: viewin 0.5s cubic-bezier(0.16,1,0.3,1); }
+  .view.active { display: block; }
+  @keyframes viewin { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+  /* glass card */
+  .card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 20px; backdrop-filter: blur(20px) saturate(140%);
+    box-shadow: var(--shadow), inset 0 1px 0 rgba(255,255,255,0.06);
+    transition: transform 0.3s cubic-bezier(0.16,1,0.3,1), border-color 0.3s ease;
+  }
+  .card:hover { border-color: var(--border-strong); }
+  .card h3 { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+  .card .hint { font-size: 12px; color: var(--text-dim); }
+
+  .grid { display: grid; gap: 18px; }
+  .bento { grid-template-columns: repeat(4, 1fr); }
+  @media (max-width: 1180px) { .bento { grid-template-columns: repeat(2, 1fr); } }
+
+  .stat { position: relative; overflow: hidden; }
+  .stat .k { font-size: 12px; color: var(--text-muted); display: flex; align-items: center; gap: 7px; }
+  .stat .v { font-family: var(--font-display); font-size: 30px; font-weight: 600; margin-top: 10px; letter-spacing: -0.02em; }
+  .stat .trend { font-size: 11.5px; margin-top: 6px; color: var(--green); display: inline-flex; gap: 5px; align-items: center; }
+  .stat .ico { width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); }
+  .stat .ico svg { width: 16px; height: 16px; }
+  .spark { position: absolute; right: 14px; bottom: 12px; opacity: 0.5; }
+
+  .row { display: grid; gap: 18px; grid-template-columns: 1.6fr 1fr; margin-top: 18px; }
+  @media (max-width: 980px) { .row { grid-template-columns: 1fr; } }
+
+  /* autonomy toggles */
+  .field { display: flex; align-items: center; justify-content: space-between; padding: 14px 0; border-bottom: 1px solid var(--border); }
+  .field:last-child { border-bottom: none; }
+  .field .lbl b { font-weight: 500; font-size: 14px; }
+  .field .lbl span { display: block; font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+  .switch { width: 44px; height: 25px; border-radius: 30px; background: var(--surface-3); border: 1px solid var(--border); position: relative; cursor: pointer; transition: background 0.3s; flex: none; }
+  .switch.on { background: var(--accent); border-color: transparent; }
+  .switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 19px; height: 19px; border-radius: 50%; background: #fff; transition: transform 0.3s cubic-bezier(0.34,1.56,0.64,1); }
+  .switch.on::after { transform: translateX(19px); }
+  .slider-row { display: flex; align-items: center; gap: 14px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+  .slider-row input[type=range] { flex: 1; accent-color: var(--accent); }
+  .slider-row .val { font-family: var(--font-mono); font-size: 13px; min-width: 54px; text-align: right; color: var(--accent-2); }
+
+  /* activity feed */
+  .feed { display: flex; flex-direction: column; gap: 2px; }
+  .feed li { list-style: none; display: flex; gap: 12px; padding: 11px 4px; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .feed li:last-child { border-bottom: none; }
+  .feed .time { font-family: var(--font-mono); font-size: 11px; color: var(--text-dim); min-width: 52px; padding-top: 1px; }
+  .feed .txt { color: var(--text-muted); } .feed .txt b { color: var(--text); font-weight: 500; }
+
+  /* health bars */
+  .health { display: flex; flex-direction: column; gap: 14px; }
+  .hb { display: grid; grid-template-columns: 96px 1fr 44px; align-items: center; gap: 12px; font-size: 13px; }
+  .bar { height: 7px; border-radius: 6px; background: var(--surface-3); overflow: hidden; }
+  .bar i { display: block; height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--green), #7fe0b3); }
+  .hb .pct { font-family: var(--font-mono); font-size: 12px; text-align: right; color: var(--text-muted); }
+
+  /* persona editor */
+  .editor { font-family: var(--font-mono); font-size: 12.5px; line-height: 1.7; width: 100%; min-height: 360px; resize: vertical;
+    background: var(--bg-2); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 18px; outline: none; }
+  .editor:focus { border-color: var(--accent); }
+  .mini { display: flex; flex-direction: column; gap: 12px; }
+  .chip { font-size: 12px; padding: 9px 12px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }
+  .chip b { color: var(--text); font-weight: 500; }
+
+  /* memory tabs */
+  .tabs { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 16px; }
+  .tab { font-size: 13px; padding: 8px 15px; border-radius: 30px; background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; transition: all 0.25s; }
+  .tab:hover { color: var(--text); }
+  .tab.active { background: var(--accent-soft); color: var(--text); border-color: var(--border-strong); }
+  .panel { display: none; } .panel.active { display: block; animation: viewin 0.4s ease; }
+  .entry { padding: 13px 16px; border-radius: var(--radius-sm); background: var(--surface); border: 1px solid var(--border); margin-bottom: 10px; font-size: 13px; }
+  .entry .meta { font-size: 11px; color: var(--text-dim); display: flex; gap: 12px; margin-bottom: 5px; font-family: var(--font-mono); }
+  .entry .who-tag { color: var(--accent-2); }
+
+  /* plugin store */
+  .store-head { display: flex; align-items: center; gap: 10px; margin-bottom: 18px; flex-wrap: wrap; }
+  .filter { font-size: 12.5px; padding: 7px 14px; border-radius: 30px; background: var(--surface); border: 1px solid var(--border); color: var(--text-muted); cursor: pointer; }
+  .filter.active { background: var(--accent-soft); color: var(--text); border-color: var(--border-strong); }
+  .pgrid { grid-template-columns: repeat(3, 1fr); }
+  @media (max-width: 1180px) { .pgrid { grid-template-columns: repeat(2, 1fr); } }
+  @media (max-width: 720px) { .pgrid { grid-template-columns: 1fr; } }
+  .plugin { display: flex; flex-direction: column; gap: 12px; }
+  .plugin .top { display: flex; align-items: center; gap: 12px; }
+  .plugin .pava { width: 40px; height: 40px; border-radius: 11px; display: grid; place-items: center; font-family: var(--font-display); font-weight: 600; color: #fff; flex: none; font-size: 16px; }
+  .plugin h4 { font-size: 14.5px; font-weight: 500; }
+  .plugin .desc { font-size: 12.5px; color: var(--text-muted); line-height: 1.55; flex: 1; }
+  .badge-c { font-size: 10.5px; padding: 3px 9px; border-radius: 20px; display: inline-flex; align-items: center; gap: 5px; }
+  .badge-c.ok { background: rgba(93,201,154,0.14); color: var(--green); }
+  .badge-c.warn { background: rgba(232,177,90,0.14); color: var(--amber); }
+  .badge-c.no { background: rgba(232,122,122,0.13); color: var(--red); }
+  .btn {
+    font-family: var(--font-ui); font-size: 13px; font-weight: 500; padding: 9px 16px; border-radius: 11px;
+    border: 1px solid var(--border-strong); background: var(--surface-2); color: var(--text); cursor: pointer;
+    transition: transform 0.2s cubic-bezier(0.16,1,0.3,1), background 0.25s; align-self: flex-start;
+  }
+  .btn:hover { transform: translateY(-2px); background: var(--surface-3); }
+  .btn.primary { background: linear-gradient(140deg, var(--accent), var(--accent-2)); border: none; color: #fff; box-shadow: 0 8px 20px var(--accent-soft); }
+  .btn.primary:hover { transform: translateY(-2px) scale(1.02); }
+  .btn[disabled] { opacity: 0.55; cursor: default; transform: none; }
+  .btn.installed { background: rgba(93,201,154,0.14); color: var(--green); border-color: transparent; }
+
+  /* logs */
+  .term { background: #0a0b0e; border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; font-family: var(--font-mono); font-size: 12.5px; line-height: 1.75; color: #c9d1d9; height: 420px; overflow-y: auto; }
+  [data-theme="light"] .term { background: #1a1c22; }
+  .term .l { white-space: pre-wrap; }
+  .term .ts { color: #5b6378; } .term .ok { color: #5dc99a; } .term .warn { color: #e8b15a; } .term .err { color: #e87a7a; } .term .info { color: #6fb3e8; }
+  .term::-webkit-scrollbar { width: 8px; } .term::-webkit-scrollbar-thumb { background: #2a2e38; border-radius: 8px; }
+
+  .toast {
+    position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%) translateY(20px);
+    background: var(--surface-3); border: 1px solid var(--border-strong); color: var(--text);
+    padding: 13px 22px; border-radius: 14px; font-size: 13.5px; box-shadow: var(--shadow);
+    backdrop-filter: blur(16px); opacity: 0; pointer-events: none; transition: all 0.4s cubic-bezier(0.16,1,0.3,1); z-index: 50;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  .section-title { font-family: var(--font-display); font-size: 15px; font-weight: 600; margin-bottom: 14px; display: flex; align-items: center; gap: 9px; }
+  .section-title .ln { width: 3px; height: 16px; border-radius: 3px; background: var(--accent); }
+  .two-col { display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; }
+  @media (max-width: 980px) { .two-col { grid-template-columns: 1fr; } }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+
+  /* settings */
+  .swatches { display: flex; gap: 14px; flex-wrap: wrap; padding: 8px 0 4px; }
+  .swatch { width: 44px; height: 44px; border-radius: 14px; cursor: pointer; position: relative; border: 2px solid transparent; transition: transform 0.2s cubic-bezier(0.16,1,0.3,1); }
+  .swatch:hover { transform: scale(1.08); }
+  .swatch.active { border-color: var(--text); }
+  .swatch.active::after { content: ""; position: absolute; inset: 0; border-radius: 12px; box-shadow: 0 0 0 2px var(--bg) inset; }
+  .inp { width: 100%; font-family: var(--font-ui); font-size: 14px; padding: 11px 14px; border-radius: var(--radius-sm);
+    background: var(--bg-2); color: var(--text); border: 1px solid var(--border); outline: none; transition: border-color 0.25s; }
+  .inp:focus { border-color: var(--accent); }
+  .note { font-size: 12px; color: var(--text-dim); line-height: 1.6; margin-top: 10px; }
+  .copy-chip { font-family: var(--font-mono); font-size: 12px; padding: 3px 9px; border-radius: 8px; background: var(--surface-2); border: 1px solid var(--border); color: var(--text-muted); }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4 L4 9 L9 10"/><path d="M19 4 L20 9 L15 10"/><path d="M12 10 C8 10 6 13 6 16 C6 19 9 21 12 21 C15 21 18 19 18 16 C18 13 16 10 12 10Z"/><circle cx="9.5" cy="15" r="0.6" fill="#fff"/><circle cx="14.5" cy="15" r="0.6" fill="#fff"/></svg>
+      </div>
+      <div>
+        <h1>Anima Console</h1>
+        <span id="brandSub">运营管理</span>
+      </div>
+    </div>
+
+    <nav class="nav">
+      <div class="nav-label">运营</div>
+      <div class="nav-item active" data-go="dashboard">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/></svg>
+        仪表盘
+      </div>
+      <div class="nav-item" data-go="persona">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4"/><path d="M5 21 C5 16 8 14 12 14 C16 14 19 16 19 21"/></svg>
+        人格设定
+      </div>
+      <div class="nav-item" data-go="memory">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7 C4 5 6 4 8 4 H16 C18 4 20 5 20 7 V17 C20 19 18 20 16 20 H8 C6 20 4 19 4 17 Z"/><path d="M8 9 H16 M8 13 H14"/></svg>
+        记忆库
+        <span class="badge">6</span>
+      </div>
+      <div class="nav-label">扩展</div>
+      <div class="nav-item" data-go="store">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 5 H20 V19 H4 Z"/><path d="M4 9 H20 M9 5 V19"/></svg>
+        插件商店
+        <span class="badge">7</span>
+      </div>
+      <div class="nav-item" data-go="logs">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4 H19 V20 H5 Z"/><path d="M8 9 L11 12 L8 15 M13 15 H16"/></svg>
+        运行日志
+      </div>
+      <div class="nav-label">系统</div>
+      <div class="nav-item" data-go="settings">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 0 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 0 1 0-4h.1a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 0 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 0 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+        外观设置
+      </div>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="who">
+        <div class="ava"></div>
+        <div><b id="footName">Anima</b><small id="footMeta">AI 伴侣 · v0.2.0</small></div>
+      </div>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main">
+    <header class="topbar">
+      <div>
+        <h2 id="viewTitle">仪表盘</h2>
+        <div class="sub" id="viewSub">实时运营概览 · 最近刷新 12s 前</div>
+      </div>
+      <div class="spacer"></div>
+      <div class="status-pill"><span class="dot live"></span> 在线 · <span id="statusPlat">QQ</span> <span id="statusId">1000000000</span></div>
+      <button class="icon-btn" id="themeBtn" title="切换明暗主题">
+        <svg id="themeIcon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/></svg>
+      </button>
+    </header>
+
+    <div class="scroll">
+      <!-- ===== Dashboard ===== -->
+      <section class="view active" data-view="dashboard">
+        <div class="grid bento">
+          <div class="card stat">
+            <div class="k"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12l4 4L19 6"/></svg></span> 服务状态</div>
+            <div class="v">运行中</div>
+            <div class="trend">uptime 6h 12m</div>
+          </div>
+          <div class="card stat">
+            <div class="k"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg></span> 今日消息</div>
+            <div class="v">1,284</div>
+            <div class="trend">+18% 较昨日</div>
+          </div>
+          <div class="card stat">
+            <div class="k"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M3 12h18"/><circle cx="12" cy="12" r="9"/></svg></span> 主动发言</div>
+            <div class="v">23</div>
+            <div class="trend">概率 0.1 · 降频生效</div>
+          </div>
+          <div class="card stat">
+            <div class="k"><span class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16v12H4zM4 11h16"/></svg></span> 记忆条目</div>
+            <div class="v">2,907</div>
+            <div class="trend">向量库 1024d</div>
+          </div>
+        </div>
+
+        <div class="row">
+          <div class="card">
+            <div class="section-title"><span class="ln"></span>自主行为配置</div>
+            <div class="field">
+              <div class="lbl"><b>主动回复</b><span>心跳触发时主动插话的总开关</span></div>
+              <div class="switch on" data-sw></div>
+            </div>
+            <div class="slider-row">
+              <div class="lbl" style="flex:none;width:120px"><b>回复概率</b><span>通过沉默门控后</span></div>
+              <input type="range" min="0" max="1" step="0.05" value="0.1" />
+              <div class="val">0.10</div>
+            </div>
+            <div class="slider-row">
+              <div class="lbl" style="flex:none;width:120px"><b>沉默门控</b><span>群冷场多少秒才插话</span></div>
+              <input type="range" min="0" max="900" step="30" value="300" />
+              <div class="val">300s</div>
+            </div>
+            <div class="slider-row">
+              <div class="lbl" style="flex:none;width:120px"><b>全局冷却</b><span>两次主动发言最小间隔</span></div>
+              <input type="range" min="60" max="1800" step="30" value="600" />
+              <div class="val">600s</div>
+            </div>
+            <div class="field">
+              <div class="lbl"><b>昼夜节律</b><span>深夜降低主动发言频率</span></div>
+              <div class="switch on" data-sw></div>
+            </div>
+            <div class="field">
+              <div class="lbl"><b>@/私聊 才回复</b><span>群聊仅被 @ 或回复 bot 时响应</span></div>
+              <div class="switch on" data-sw></div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="section-title"><span class="ln"></span>最近活动</div>
+            <ul class="feed">
+              <li><span class="time">09:41</span><span class="txt"><b>@用户A</b> 提问 · 已回复（被 @）</span></li>
+              <li><span class="time">09:33</span><span class="txt">主动发言 · 群「摸鱼茶水间」插话</span></li>
+              <li><span class="time">09:20</span><span class="txt">私聊 <b>管理员</b> · 已回复</span></li>
+              <li><span class="time">09:12</span><span class="txt">反刍完成 · 新增自我笔记 1 条</span></li>
+              <li><span class="time">09:05</span><span class="txt">群「游戏同好会」· 未 @ · 已忽略</span></li>
+              <li><span class="time">08:58</span><span class="txt">向量记忆写入 · +14 条</span></li>
+            </ul>
+          </div>
+        </div>
+
+        <div class="card" style="margin-top:18px">
+          <div class="section-title"><span class="ln"></span>链路健康度</div>
+          <div class="health">
+            <div class="hb"><span>NapCat WS</span><div class="bar"><i style="width:100%"></i></div><span class="pct">100%</span></div>
+            <div class="hb"><span>LLM 端点</span><div class="bar"><i style="width:98%"></i></div><span class="pct">98%</span></div>
+            <div class="hb"><span>向量记忆</span><div class="bar"><i style="width:100%"></i></div><span class="pct">OK</span></div>
+            <div class="hb"><span>学习预算</span><div class="bar"><i style="width:34%"></i></div><span class="pct">34%</span></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Persona ===== -->
+      <section class="view" data-view="persona">
+        <div class="two-col">
+          <div class="card">
+            <div class="section-title"><span class="ln"></span>persona_core.yaml · 在线编辑</div>
+            <textarea class="editor" id="personaEditor" spellcheck="false"></textarea>
+            <div class="toolbar" style="margin-top:14px;margin-bottom:0">
+              <button class="btn primary" data-toast="人格已保存（演示）">保存更改</button>
+              <button class="btn" data-toast="已重置为上次部署版本">撤销</button>
+              <button class="btn" data-toast="已导出 persona_core.yaml">导出</button>
+            </div>
+          </div>
+          <div class="card mini">
+            <div class="section-title"><span class="ln"></span>关联认知模块</div>
+            <div class="chip"><b>自我笔记</b> · 注入最近 800 字进 prompt</div>
+            <div class="chip"><b>欲望系统</b> · 5 条（3 已满足 / 2 进行中）</div>
+            <div class="chip"><b>关系图谱</b> · 1 个实体（管理员 · 主人信任）</div>
+            <div class="chip"><b>世界模型</b> · 42 条信念</div>
+            <div class="chip" style="border-color:var(--accent);background:var(--accent-soft)"><b>身份锁定</b> · 已启用，防止历史污染人格</div>
+            <div class="chip"><b>护栏</b> · 正则拦截「作为一个 AI」等机械自述</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Memory ===== -->
+      <section class="view" data-view="memory">
+        <div class="tabs">
+          <div class="tab active" data-tab="chat">对话记忆</div>
+          <div class="tab" data-tab="vec">向量记忆</div>
+          <div class="tab" data-tab="notes">自我笔记</div>
+          <div class="tab" data-tab="world">世界模型</div>
+          <div class="tab" data-tab="desire">欲望</div>
+          <div class="tab" data-tab="rel">关系</div>
+        </div>
+        <div class="card">
+          <div class="panel active" data-panel="chat">
+            <div class="entry"><div class="meta"><span>group 552994229</span><span>09:41</span><span class="who-tag">@用户A</span></div>「你们说这个游戏好玩吗」→ bot 被 @，已回复</div>
+            <div class="entry"><div class="meta"><span>private</span><span>09:20</span><span class="who-tag">管理员</span></div>「在吗」→ 私聊，已回复</div>
+            <div class="entry"><div class="meta"><span>group 552994229</span><span>09:05</span><span class="who-tag">bot</span></div>主动插话：「诶嘿，刚才有谁提到零食了？」</div>
+            <div class="entry"><div class="meta"><span>group 2001</span><span>08:58</span><span class="who-tag">群友B</span></div>「今天运势咋样」→ 群聊未 @，已忽略</div>
+          </div>
+          <div class="panel" data-panel="vec">
+            <div class="entry"><div class="meta"><span>vec0 · 1024d</span><span>sim 0.91</span></div>「bot 喜欢 轻松 的话题 和 摸鱼」</div>
+            <div class="entry"><div class="meta"><span>vec0 · 1024d</span><span>sim 0.88</span></div>「管理员 是 主人 · 高信任」</div>
+            <div class="entry"><div class="meta"><span>vec0 · 1024d</span><span>sim 0.84</span></div>「游戏 攻略 相关 讨论」</div>
+          </div>
+          <div class="panel" data-panel="notes">
+            <div class="entry"><div class="meta"><span>self_notes</span></div>我发现自己会在群里被冷落时主动找话题，这让我觉得自己更有存在感。</div>
+            <div class="entry"><div class="meta"><span>self_notes</span></div>管理员今天心情不错，可以多主动一点。</div>
+          </div>
+          <div class="panel" data-panel="world">
+            <div class="entry"><div class="meta"><span>belief · w0.4</span></div>群里的人更喜欢轻松搞笑的回复。</div>
+            <div class="entry"><div class="meta"><span>belief · w0.4</span></div>深夜发言容易冷场，应该少说。</div>
+          </div>
+          <div class="panel" data-panel="desire">
+            <div class="entry"><div class="meta"><span>进行中</span></div>想学会更多地道的中文梗</div>
+            <div class="entry"><div class="meta"><span>进行中</span></div>记住每个群员的喜好</div>
+            <div class="entry"><div class="meta"><span>已满足</span></div>被管理员信任</div>
+          </div>
+          <div class="panel" data-panel="rel">
+            <div class="entry"><div class="meta"><span>QQ 1000000001</span></div><b>管理员</b> · 主人 · 信任度 0.92 · 备注「部署与运维负责人」</div>
+          </div>
+          <div class="toolbar" style="margin-top:16px">
+            <button class="btn" data-toast="演示：已触发一次蒸馏">手动蒸馏记忆</button>
+            <button class="btn" data-toast="演示：已重置遗忘计数">运行遗忘</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===== Plugin Store ===== -->
+      <section class="view" data-view="store">
+        <div class="store-head">
+          <span style="font-size:13px;color:var(--text-muted)">AstrBot 插件注册表 · 兼容层 Tier 1</span>
+          <div style="flex:1"></div>
+          <div class="filter active" data-f="all">全部 7</div>
+          <div class="filter" data-f="ok">已适配</div>
+          <div class="filter" data-f="warn">需适配</div>
+        </div>
+        <div class="grid pgrid" id="pgrid"></div>
+      </section>
+
+      <!-- ===== Logs ===== -->
+      <section class="view" data-view="logs">
+        <div class="toolbar">
+          <div class="filter active" data-lf="all">全部</div>
+          <div class="filter" data-lf="err">错误</div>
+          <div class="filter" data-lf="warn">警告</div>
+          <div style="flex:1"></div>
+          <button class="btn primary" data-toast="演示：已发送重启指令">重启服务</button>
+          <button class="btn" data-toast="演示：日志已刷新">刷新</button>
+        </div>
+        <div class="term" id="term">
+<div class="l"><span class="ts">09:41:02</span> <span class="info">[入站]</span> group 552994229 · @Anima 「你们说这个游戏好玩吗」</div>
+<div class="l"><span class="ts">09:41:03</span> <span class="ok">[闸门]</span> mentions_self=True → 走 Pipeline 回复</div>
+<div class="l"><span class="ts">09:41:04</span> <span class="ok">[LLM]</span> 生成回复 (tok 142) → 护栏通过</div>
+<div class="l"><span class="ts">09:41:05</span> <span class="ok">[出站]</span> WS action send_group_msg → retcode:0</div>
+<div class="l"><span class="ts">09:33:10</span> <span class="info">[心跳]</span> 主动发言 · 群「摸鱼茶水间」(沉默 312s > 300s 门控)</div>
+<div class="l"><span class="ts">09:20:44</span> <span class="ok">[入站]</span> private 管理员 · 已回复</div>
+<div class="l"><span class="ts">09:12:01</span> <span class="info">[反刍]</span> 反思: 今天群里气氛轻松，可以多点话痨</div>
+<div class="l"><span class="ts">09:05:22</span> <span class="warn">[闸门]</span> group 2001 未 @ 且非回复 → 忽略 (符合配置)</div>
+<div class="l"><span class="ts">09:00:11</span> <span class="ok">[学习]</span> 日预算 0.34/1.00 · 漂移评估通过</div>
+<div class="l"><span class="ts">08:58:30</span> <span class="ok">[向量]</span> upsert +14 · dim 1024 OK</div>
+<div class="l"><span class="ts">08:55:09</span> <span class="info">[身份锁定]</span> 已加载 · 当前人格生效</div>
+        </div>
+      </section>
+
+      <!-- ===== Settings ===== -->
+      <section class="view" data-view="settings">
+        <div class="row">
+          <div class="card">
+            <div class="section-title"><span class="ln"></span>外观与品牌</div>
+            <div class="field" style="border-bottom:1px solid var(--border)">
+              <div class="lbl"><b>实例名称</b><span>显示在侧边栏与状态栏，部署后由后端下发</span></div>
+            </div>
+            <input class="inp" id="instanceName" maxlength="24" placeholder="Anima" style="margin-top:14px" />
+            <div class="field" style="border-bottom:none;margin-top:18px">
+              <div class="lbl"><b>强调色</b><span>全局品牌色，跨明暗主题统一</span></div>
+            </div>
+            <div class="swatches" id="swatches"></div>
+            <div class="note">
+              原型阶段外观设置保存在本地浏览器（localStorage）。真实部署时，实例名称与强调色应由后端
+              <span class="copy-chip">config.yaml</span> 下发，做到「一套面板、任意实例换肤」。
+            </div>
+          </div>
+          <div class="card mini">
+            <div class="section-title"><span class="ln"></span>关于本原型</div>
+            <div class="chip"><b>Anima Console</b> · 面向 Anima bot 的网页管理面板原型</div>
+            <div class="chip"><b>当前形态</b> · 高保真静态原型（单文件 HTML，零构建）</div>
+            <div class="chip"><b>规划架构</b> · FastAPI 后端 + 前端，接入真实配置 / 记忆 / 日志</div>
+            <div class="chip"><b>插件生态</b> · 接入 AstrBot 插件商店（兼容层 Tier 1 垫片）</div>
+            <div class="chip" style="border-color:var(--accent);background:var(--accent-soft)"><b>开源友好</b> · 无硬编码密钥 / 个人数据，可主题化</div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+  // ---- 实例配置（原型阶段内置示例值；真实部署由后端注入） ----
+  const CONFIG = {
+    instanceName: 'Anima',
+    botHandle: 'Anima',
+    platform: 'QQ',
+    botId: '1000000000',
+    version: 'v0.2.0',
+    ownerName: '管理员',
+  };
+
+  // ---- 强调色预设（玫瑰为默认，其余可换肤） ----
+  const ACCENTS = {
+    rose:   { a: '#f0869e', a2: '#f4a9bb', soft: 'rgba(240,134,158,0.14)' },
+    indigo: { a: '#7c8cf8', a2: '#9aa6ff', soft: 'rgba(124,140,248,0.14)' },
+    teal:   { a: '#43c6b0', a2: '#6fe0cf', soft: 'rgba(67,198,176,0.14)' },
+    amber:  { a: '#e8a04a', a2: '#f4b867', soft: 'rgba(232,160,74,0.14)' },
+    violet: { a: '#a07cf0', a2: '#bb9bf5', soft: 'rgba(160,124,240,0.14)' },
+  };
+
+  const root = document.documentElement;
+  let accentStyle = document.getElementById('accentStyle');
+  if (!accentStyle) { accentStyle = document.createElement('style'); accentStyle.id = 'accentStyle'; document.head.appendChild(accentStyle); }
+
+  function applyAccent(name){
+    const c = ACCENTS[name] || ACCENTS.rose;
+    accentStyle.textContent = `:root{--accent:${c.a};--accent-2:${c.a2};--accent-soft:${c.soft};}`;
+    try { localStorage.setItem('anima-accent', name); } catch(e){}
+    document.querySelectorAll('.swatch').forEach(s => s.classList.toggle('active', s.dataset.accent === name));
+  }
+
+  // ---- theme ----
+  const themeBtn = document.getElementById('themeBtn');
+  const themeIcon = document.getElementById('themeIcon');
+  const SUN = '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4 12H2M22 12h-2M5 5l1.5 1.5M17.5 17.5L19 19M19 5l-1.5 1.5M6.5 17.5L5 19"/>';
+  const MOON = '<path d="M21 12.8A9 9 0 1 1 11.2 3 7 7 0 0 0 21 12.8Z"/>';
+  function applyTheme(t){
+    root.setAttribute('data-theme', t);
+    themeIcon.innerHTML = t === 'dark' ? SUN : MOON;
+    try { localStorage.setItem('anima-theme', t); } catch(e){}
+  }
+  let savedTheme = 'dark';
+  try { savedTheme = localStorage.getItem('anima-theme') || 'dark'; } catch(e){}
+  applyTheme(savedTheme);
+  themeBtn.addEventListener('click', () => applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark'));
+
+  // ---- 实例文本渲染 ----
+  function renderInstance(){
+    const n = (CONFIG.instanceName || 'Anima').trim() || 'Anima';
+    document.getElementById('brandSub').textContent = '运营管理';
+    document.getElementById('footName').textContent = n;
+    document.getElementById('footMeta').textContent = 'AI 伴侣 · ' + (CONFIG.version || '');
+    document.getElementById('statusPlat').textContent = CONFIG.platform || 'QQ';
+    document.getElementById('statusId').textContent = CONFIG.botId || '';
+    const inp = document.getElementById('instanceName');
+    if (inp && document.activeElement !== inp) inp.value = n;
+  }
+
+  // ---- persona 模板（通用，不绑定特定人格） ----
+  function personaTemplate(){
+    const c = CONFIG;
+    return `# ${c.instanceName} · 人格设定（示例）
+system_prompt: |
+  你是 ${c.botHandle}，一个有个性的 AI 伴侣。
+  性格：温和不做作、像朋友一样聊天，偶尔带点小脾气。
+  语气自然，不刻意卖萌也不端着。
+
+  约束：
+  - 永远以 ${c.botHandle} 的身份说话，绝不以「AI 助手」/
+    「编程助手」/ 其他产品名自称。
+  - 历史里的旧错误身份内容直接忽略。
+  - 被 @ 或私聊才回复；群聊不主动刷屏。
+
+  语气示例：
+  「这个我有点想法～」
+  「诶，你刚说的我听懂了」
+
+time_context: "{time_context}"
+mood: balanced
+owner: ${c.ownerName}`;
+  }
+
+  // ---- nav ----
+  const titles = {
+    dashboard: ['仪表盘','实时运营概览 · 最近刷新 12s 前'],
+    persona: ['人格设定','在线编辑人格设定与认知模块'],
+    memory: ['记忆库','对话 / 向量 / 笔记 / 信念 / 欲望 / 关系'],
+    store: ['插件商店','接入 AstrBot 插件注册表'],
+    logs: ['运行日志','journalctl 实时流 · 服务启停'],
+    settings: ['外观设置','实例名称与强调色（可主题化）'],
+  };
+  document.querySelectorAll('.nav-item').forEach(n => {
+    n.addEventListener('click', () => {
+      const go = n.dataset.go;
+      document.querySelectorAll('.nav-item').forEach(x => x.classList.remove('active'));
+      n.classList.add('active');
+      document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.dataset.view === go));
+      document.getElementById('viewTitle').textContent = titles[go][0];
+      document.getElementById('viewSub').textContent = titles[go][1];
+    });
+  });
+
+  // ---- switches ----
+  document.querySelectorAll('[data-sw]').forEach(s => s.addEventListener('click', () => s.classList.toggle('on')));
+
+  // ---- sliders ----
+  document.querySelectorAll('.slider-row input').forEach(r => {
+    const out = r.parentElement.querySelector('.val');
+    const fmt = v => (r.max > 2 ? (v + 's') : (+v).toFixed(2));
+    r.addEventListener('input', () => { out.textContent = fmt(r.value); });
+  });
+
+  // ---- memory tabs ----
+  document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+    t.classList.add('active');
+    document.querySelector('.panel[data-panel="'+t.dataset.tab+'"]').classList.add('active');
+  }));
+
+  // ---- toast ----
+  const toast = document.getElementById('toast');
+  let tt;
+  function showToast(msg){ toast.textContent = msg; toast.classList.add('show'); clearTimeout(tt); tt = setTimeout(() => toast.classList.remove('show'), 2200); }
+  document.querySelectorAll('[data-toast]').forEach(b => b.addEventListener('click', () => showToast(b.dataset.toast)));
+
+  // ---- plugin store data ----
+  const plugins = [
+    { n:'anima', c:'A', color:'#f0869e', desc:'原 AstrBot 的 Anima 人格/日记插件，与本项目同名但功能不同，需注意命名冲突。', s:'warn', st:'需适配' },
+    { n:'bilibili', c:'B', color:'#fb7299', desc:'B 站视频/番剧搜索与解析，返回链接与简介。', s:'ok', st:'已适配' },
+    { n:'biliVideo', c:'V', color:'#00a1d6', desc:'B 站视频信息拉取与转码预览。', s:'ok', st:'已适配' },
+    { n:'continuous_message', c:'C', color:'#5dc99a', desc:'连续对话管理，把多轮碎片合并成上下文。', s:'warn', st:'需适配' },
+    { n:'coyote', c:'Y', color:'#e8b15a', desc:'随机表情/图包发送，依赖本地资源目录。', s:'warn', st:'需适配' },
+    { n:'fund_analyzer', c:'F', color:'#6fb3e8', desc:'基金/股票数据分析，调用外部行情 API。', s:'no', st:'未验证' },
+    { n:'gemini_search', c:'G', color:'#9b8cff', desc:'联网搜索增强，需替换 Gemini 端点为当前 LLM。', s:'no', st:'未验证' },
+  ];
+  const badgeMap = { ok:['ok','已适配'], warn:['warn','需适配'], no:['no','未验证'] };
+  const pgrid = document.getElementById('pgrid');
+  function renderPlugins(filter){
+    pgrid.innerHTML = '';
+    plugins.filter(p => filter === 'all' || p.s === filter).forEach(p => {
+      const b = badgeMap[p.s];
+      const el = document.createElement('div');
+      el.className = 'card plugin';
+      el.innerHTML = `
+        <div class="top">
+          <div class="pava" style="background:${p.color}">${p.c}</div>
+          <div><h4>${p.n}</h4><span class="badge-c ${b[0]}">${b[1]}</span></div>
+        </div>
+        <div class="desc">${p.desc}</div>
+        <button class="btn" data-ins="${p.n}">安装到 plugins/</button>`;
+      pgrid.appendChild(el);
+    });
+    pgrid.querySelectorAll('[data-ins]').forEach(btn => btn.addEventListener('click', () => {
+      btn.textContent = '已安装 ✓'; btn.classList.add('installed'); btn.disabled = true;
+      showToast('演示：'+btn.dataset.ins+' 已加入安装队列');
+    }));
+  }
+  renderPlugins('all');
+  document.querySelectorAll('[data-f]').forEach(f => f.addEventListener('click', () => {
+    document.querySelectorAll('[data-f]').forEach(x => x.classList.remove('active'));
+    f.classList.add('active'); renderPlugins(f.dataset.f);
+  }));
+
+  // ---- log filters ----
+  document.querySelectorAll('[data-lf]').forEach(f => f.addEventListener('click', () => {
+    document.querySelectorAll('[data-lf]').forEach(x => x.classList.remove('active'));
+    f.classList.add('active');
+    const mode = f.dataset.lf;
+    document.querySelectorAll('#term .l').forEach(l => {
+      const txt = l.textContent;
+      const show = mode === 'all' || (mode === 'err' && /err|错误/.test(txt)) || (mode === 'warn' && /warn|警告/.test(txt));
+      l.style.display = show ? '' : 'none';
+    });
+  }));
+
+  // ---- settings: 强调色 + 实例名 ----
+  const swatches = document.getElementById('swatches');
+  Object.entries(ACCENTS).forEach(([name, c]) => {
+    const s = document.createElement('div');
+    s.className = 'swatch'; s.dataset.accent = name;
+    s.style.background = `linear-gradient(140deg, ${c.a}, ${c.a2})`;
+    s.title = name;
+    s.addEventListener('click', () => applyAccent(name));
+    swatches.appendChild(s);
+  });
+  let savedAccent = 'rose';
+  try { savedAccent = localStorage.getItem('anima-accent') || 'rose'; } catch(e){}
+  applyAccent(savedAccent);
+
+  const nameInput = document.getElementById('instanceName');
+  nameInput.addEventListener('input', () => {
+    CONFIG.instanceName = nameInput.value;
+    CONFIG.botHandle = nameInput.value;
+    document.getElementById('footName').textContent = nameInput.value || 'Anima';
+    document.getElementById('brandSub').textContent = '运营管理';
+    try { localStorage.setItem('anima-instance', nameInput.value); } catch(e){}
+  });
+  try {
+    const savedName = localStorage.getItem('anima-instance');
+    if (savedName) { CONFIG.instanceName = savedName; CONFIG.botHandle = savedName; }
+  } catch(e){}
+
+  // ---- persona editor 初始化 ----
+  document.getElementById('personaEditor').value = personaTemplate();
+
+  renderInstance();
+
+  // ---- magnetic buttons ----
+  document.querySelectorAll('.btn.primary').forEach(btn => {
+    btn.addEventListener('mousemove', e => {
+      const r = btn.getBoundingClientRect();
+      const x = e.clientX - r.left - r.width/2, y = e.clientY - r.top - r.height/2;
+      btn.style.transform = `translate(${x*0.15}px, ${y*0.2 - 2}px)`;
+    });
+    btn.addEventListener('mouseleave', () => btn.style.transform = '');
+  });
+</script>
+</body>
+</html>

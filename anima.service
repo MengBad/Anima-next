@@ -1,0 +1,31 @@
+[Unit]
+Description=Anima QQ Bot
+After=network-online.target
+Wants=network-online.target
+After=napcat.service
+StartLimitBurst=10
+StartLimitIntervalSec=60
+
+[Service]
+Type=simple
+User=anima
+Group=anima
+WorkingDirectory=/opt/anima
+ExecStart=/opt/anima/venv/bin/python -m anima start --config /opt/anima/config.yaml
+Restart=on-failure
+RestartSec=10
+# 看门狗：事件循环死锁（CPU 自旋/同步阻塞）时收不到 WATCHDOG=1 心跳，
+# systemd 自动 SIGKILL 重启，无需人工干预。
+WatchdogSec=120
+StandardOutput=journal
+StandardError=journal
+
+# 安全加固
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/opt/anima/data /opt/anima/config.yaml
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=NapCat QQ (OneBot11 WS gateway for Anima)
+After=network-online.target
+Wants=network-online.target
+Before=anima.service
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/opt/QQ/opt/QQ
+# 同机 same-host 拓扑：NapCat 在本机以 WS 服务暴露 3001，bot 连接之。
+# --no-sandbox 因容器/无桌面环境所需；-q 指定登录 QQ 号。
+ExecStart=/usr/bin/xvfb-run -a /opt/QQ/opt/QQ/qq --no-sandbox -q 2752719822
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+# Anima Console 反向代理 (Caddy)
+# ---------------------------------------------------------------------------
+# Caddy 优势：自动申请 + 续期 Let's Encrypt 证书，零手工证书管理。
+#
+# 用法（二选一）：
+#   A. 有域名（推荐）：把 example.com 换成你的域名，DNS A 记录指向本机公网 IP，
+#      开放安全组 80/443，Caddy 自动签发证书。
+#   B. 无域名：启用下方 :443 段（tls internal 自签名），加密但浏览器首次会警告，
+#      手动信任即可。仅需开放安全组 443。
+# ---------------------------------------------------------------------------
+
+# ===== 方案 A：有域名（自动 HTTPS）=====
+example.com {
+    reverse_proxy localhost:8080
+}
+
+# ===== 方案 B：无域名（自签名，加密但浏览器警告）=====
+# :443 {
+#     tls internal
+#     reverse_proxy localhost:8080
+# }
+
+# Console 本身已要求 Bearer Token 鉴权；如需额外限制管理 IP，可加：
+#   example.com {
+#       @admin not remote_ip 1.2.3.4
+#       respond @admin 403
+#       reverse_proxy localhost:8080
+#   }
