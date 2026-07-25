@@ -1,0 +1,1616 @@
+
+======================================================================
+$ journalctl -u anima -n 1000 --no-pager
+======================================================================
+Jul 22 16:36:23 debian-cloud python[1911]: 2026-07-22 16:36:23,693 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=514514011）
+Jul 22 16:36:23 debian-cloud python[1911]: 2026-07-22 16:36:23,693 anima.handler INFO [回复闸门][trace=3a54980e] skip reason=mention_only mode=mention text_len=0
+Jul 22 16:36:23 debian-cloud python[1911]: 2026-07-22 16:36:23,756 anima.gateway INFO [入站] event.message.group | user=514514011 | text_len=0
+Jul 22 16:36:30 debian-cloud python[1911]: 2026-07-22 16:36:30,985 anima.stickers INFO 表情收集 +1（库共 154）
+Jul 22 16:36:53 debian-cloud python[1911]: 2026-07-22 16:36:53,168 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:37:23 debian-cloud python[1911]: 2026-07-22 16:37:23,389 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:37:53 debian-cloud python[1911]: 2026-07-22 16:37:53,464 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:38:23 debian-cloud python[1911]: 2026-07-22 16:38:23,633 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:38:53 debian-cloud python[1911]: 2026-07-22 16:38:53,694 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:39:23 debian-cloud python[1911]: 2026-07-22 16:39:23,874 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:39:53 debian-cloud python[1911]: 2026-07-22 16:39:53,942 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:39:53 debian-cloud python[1911]: 2026-07-22 16:39:53,942 anima.channel.onebot11 INFO [段结构] user=1049365454 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 16:39:53 debian-cloud python[1911]: 2026-07-22 16:39:53,942 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=22E7CCC5345EAE1D6C953F79
+Jul 22 16:39:53 debian-cloud python[1911]: 2026-07-22 16:39:53,991 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=1049365454）
+Jul 22 16:39:53 debian-cloud python[1911]: 2026-07-22 16:39:53,991 anima.handler INFO [回复闸门][trace=9c4b0579] skip reason=mention_only mode=mention text_len=0
+Jul 22 16:39:54 debian-cloud python[1911]: 2026-07-22 16:39:54,043 anima.gateway INFO [入站] event.message.group | user=1049365454 | text_len=0
+Jul 22 16:39:59 debian-cloud python[1911]: 2026-07-22 16:39:59,355 anima.stickers INFO 表情收集 +1（库共 155）
+Jul 22 16:40:24 debian-cloud python[1911]: 2026-07-22 16:40:24,404 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:40:54 debian-cloud python[1911]: 2026-07-22 16:40:54,470 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:41:24 debian-cloud python[1911]: 2026-07-22 16:41:24,633 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:41:54 debian-cloud python[1911]: 2026-07-22 16:41:54,697 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:42:24 debian-cloud python[1911]: 2026-07-22 16:42:24,867 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:42:54 debian-cloud python[1911]: 2026-07-22 16:42:54,933 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:43:25 debian-cloud python[1911]: 2026-07-22 16:43:25,101 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:43:55 debian-cloud python[1911]: 2026-07-22 16:43:55,160 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:44:25 debian-cloud python[1911]: 2026-07-22 16:44:25,340 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:44:55 debian-cloud python[1911]: 2026-07-22 16:44:55,452 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:45:25 debian-cloud python[1911]: 2026-07-22 16:45:25,680 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:45:55 debian-cloud python[1911]: 2026-07-22 16:45:55,857 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:46:26 debian-cloud python[1911]: 2026-07-22 16:46:26,026 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:46:56 debian-cloud python[1911]: 2026-07-22 16:46:56,087 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:47:38 debian-cloud python[1911]: 2026-07-22 16:47:38,358 anima.learning INFO 反思语义去重：跳过重复洞察（text_len=66，不消耗预算）
+Jul 22 16:47:47 debian-cloud python[1911]: 2026-07-22 16:47:47,205 anima.rumination INFO 能力语义去重：发现已有能力（name_len=7）
+Jul 22 16:47:47 debian-cloud python[1911]: 2026-07-22 16:47:47,254 anima.rumination INFO 自生长能力创建（name_len=7）
+Jul 22 16:47:47 debian-cloud python[1911]: 2026-07-22 16:47:47,268 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「帮没联网的本喵去外面打听消息」仅入库不注册
+Jul 22 16:47:47 debian-cloud python[1911]: 2026-07-22 16:47:47,268 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「把跑偏的铲屎官拽回来」仅入库不注册
+Jul 22 16:47:47 debian-cloud python[1911]: 2026-07-22 16:47:47,268 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「拍醒复读机喵」仅入库不注册
+Jul 22 16:47:47 debian-cloud python[1911]: 2026-07-22 16:47:47,326 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:48:17 debian-cloud python[1911]: 2026-07-22 16:48:17,603 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:48:47 debian-cloud python[1911]: 2026-07-22 16:48:47,820 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:49:17 debian-cloud python[1911]: 2026-07-22 16:49:17,881 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:49:48 debian-cloud python[1911]: 2026-07-22 16:49:48,057 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:50:18 debian-cloud python[1911]: 2026-07-22 16:50:18,122 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:50:48 debian-cloud python[1911]: 2026-07-22 16:50:48,285 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:51:18 debian-cloud python[1911]: 2026-07-22 16:51:18,346 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:51:48 debian-cloud python[1911]: 2026-07-22 16:51:48,516 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:52:18 debian-cloud python[1911]: 2026-07-22 16:52:18,616 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:52:48 debian-cloud python[1911]: 2026-07-22 16:52:48,829 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:53:18 debian-cloud python[1911]: 2026-07-22 16:53:18,887 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:53:49 debian-cloud python[1911]: 2026-07-22 16:53:49,047 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:54:19 debian-cloud python[1911]: 2026-07-22 16:54:19,312 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:54:49 debian-cloud python[1911]: 2026-07-22 16:54:49,470 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:55:19 debian-cloud python[1911]: 2026-07-22 16:55:19,516 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:55:49 debian-cloud python[1911]: 2026-07-22 16:55:49,894 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:56:19 debian-cloud python[1911]: 2026-07-22 16:56:19,974 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:56:50 debian-cloud python[1911]: 2026-07-22 16:56:50,151 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:57:20 debian-cloud python[1911]: 2026-07-22 16:57:20,207 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:57:50 debian-cloud python[1911]: 2026-07-22 16:57:50,378 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:58:20 debian-cloud python[1911]: 2026-07-22 16:58:20,529 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:58:50 debian-cloud python[1911]: 2026-07-22 16:58:50,692 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:59:20 debian-cloud python[1911]: 2026-07-22 16:59:20,747 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 16:59:50 debian-cloud python[1911]: 2026-07-22 16:59:50,909 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:00:21 debian-cloud python[1911]: 2026-07-22 17:00:21,017 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:00:51 debian-cloud python[1911]: 2026-07-22 17:00:51,181 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:01:21 debian-cloud python[1911]: 2026-07-22 17:01:21,252 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:01:51 debian-cloud python[1911]: 2026-07-22 17:01:51,425 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:02:21 debian-cloud python[1911]: 2026-07-22 17:02:21,488 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:02:59 debian-cloud python[1911]: 2026-07-22 17:02:59,772 anima.learning INFO 反思语义去重：跳过重复洞察（text_len=91，不消耗预算）
+Jul 22 17:03:10 debian-cloud python[1911]: 2026-07-22 17:03:10,037 anima.rumination INFO 能力语义去重：发现已有能力（name_len=7）
+Jul 22 17:03:10 debian-cloud python[1911]: 2026-07-22 17:03:10,086 anima.rumination INFO 自生长能力创建（name_len=7）
+Jul 22 17:03:10 debian-cloud python[1911]: 2026-07-22 17:03:10,100 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「帮没联网的本喵去外面打听消息」仅入库不注册
+Jul 22 17:03:10 debian-cloud python[1911]: 2026-07-22 17:03:10,100 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「把跑偏的铲屎官拽回来」仅入库不注册
+Jul 22 17:03:10 debian-cloud python[1911]: 2026-07-22 17:03:10,100 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「拍醒复读机喵」仅入库不注册
+Jul 22 17:03:10 debian-cloud python[1911]: 2026-07-22 17:03:10,157 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:03:40 debian-cloud python[1911]: 2026-07-22 17:03:40,209 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:04:10 debian-cloud python[1911]: 2026-07-22 17:04:10,369 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:04:16 debian-cloud python[1911]: 2026-07-22 17:04:16,105 anima.channel.onebot11 INFO [段结构] user=1562290139 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:04:17 debian-cloud python[1911]: 2026-07-22 17:04:17,353 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:04:17 debian-cloud python[1911]: Traceback (most recent call last):
+Jul 22 17:04:17 debian-cloud python[1911]:   File "/opt/anima/anima/pipeline/stages.py", line 226, in memory_stage
+Jul 22 17:04:17 debian-cloud python[1911]:     await core.vector_memory.add(
+Jul 22 17:04:17 debian-cloud python[1911]:     ...<5 lines>...
+Jul 22 17:04:17 debian-cloud python[1911]:     )
+Jul 22 17:04:17 debian-cloud python[1911]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:04:17 debian-cloud python[1911]:     await db.execute(
+Jul 22 17:04:17 debian-cloud python[1911]:     ...<10 lines>...
+Jul 22 17:04:17 debian-cloud python[1911]:     )
+Jul 22 17:04:17 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:04:17 debian-cloud python[1911]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:04:17 debian-cloud python[1911]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:04:17 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:04:17 debian-cloud python[1911]:     return await future
+Jul 22 17:04:17 debian-cloud python[1911]:            ^^^^^^^^^^^^
+Jul 22 17:04:17 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:04:17 debian-cloud python[1911]:     result = function()
+Jul 22 17:04:17 debian-cloud python[1911]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:04:17 debian-cloud python[1911]: 2026-07-22 17:04:17,394 sylanne_core INFO plugin anima-next attached to shared engine on data/sylann/engine
+Jul 22 17:04:23 debian-cloud python[1911]: 2026-07-22 17:04:23,567 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,group_presence,crossgroup tokens=5745/6000
+Jul 22 17:04:23 debian-cloud python[1911]: 2026-07-22 17:04:23,569 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=7 mem=5 desire=0 tools=21
+Jul 22 17:04:25 debian-cloud python[1911]: 2026-07-22 17:04:25,492 anima.agent INFO ReAct 轮次 1: 1 个工具调用
+Jul 22 17:04:32 debian-cloud python[1911]: 2026-07-22 17:04:32,954 anima.agent INFO 工具调用完成 name=pick_sticker ok=True result_len=96
+Jul 22 17:04:35 debian-cloud python[1911]: 2026-07-22 17:04:35,813 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:04:35 debian-cloud python[1911]: Traceback (most recent call last):
+Jul 22 17:04:35 debian-cloud python[1911]:   File "/opt/anima/anima/pipeline/stages.py", line 1354, in _record_reply_memory
+Jul 22 17:04:35 debian-cloud python[1911]:     await core.vector_memory.add(
+Jul 22 17:04:35 debian-cloud python[1911]:     ...<5 lines>...
+Jul 22 17:04:35 debian-cloud python[1911]:     )
+Jul 22 17:04:35 debian-cloud python[1911]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:04:35 debian-cloud python[1911]:     await db.execute(
+Jul 22 17:04:35 debian-cloud python[1911]:     ...<10 lines>...
+Jul 22 17:04:35 debian-cloud python[1911]:     )
+Jul 22 17:04:35 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:04:35 debian-cloud python[1911]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:04:35 debian-cloud python[1911]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:04:35 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:04:35 debian-cloud python[1911]:     return await future
+Jul 22 17:04:35 debian-cloud python[1911]:            ^^^^^^^^^^^^
+Jul 22 17:04:35 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:04:35 debian-cloud python[1911]:     result = function()
+Jul 22 17:04:35 debian-cloud python[1911]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:04:36 debian-cloud python[1911]: 2026-07-22 17:04:36,017 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:04:36 debian-cloud python[1911]: 2026-07-22 17:04:36,235 anima.gateway INFO [入站] event.notice | user=2752719822 | text_len=0
+Jul 22 17:04:36 debian-cloud python[1911]: 2026-07-22 17:04:36,288 anima.handler INFO [出站成功][trace=edf82fce] part=0 msg_id=1157449730 segs=['at', 'text']
+Jul 22 17:04:36 debian-cloud python[1911]: 2026-07-22 17:04:36,590 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:04:37 debian-cloud python[1911]: 2026-07-22 17:04:37,344 anima.handler INFO [出站成功][trace=edf82fce] part=1 msg_id=517522272 segs=['image']
+Jul 22 17:04:37 debian-cloud python[1911]: 2026-07-22 17:04:37,492 anima.gateway INFO [入站] event.message.group | user=1562290139 | text_len=8
+Jul 22 17:04:39 debian-cloud python[1911]: 2026-07-22 17:04:39,086 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:04:39 debian-cloud python[1911]: 2026-07-22 17:04:39,778 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:04:39 debian-cloud python[1911]: Traceback (most recent call last):
+Jul 22 17:04:39 debian-cloud python[1911]:   File "/opt/anima/anima/pipeline/stages.py", line 226, in memory_stage
+Jul 22 17:04:39 debian-cloud python[1911]:     await core.vector_memory.add(
+Jul 22 17:04:39 debian-cloud python[1911]:     ...<5 lines>...
+Jul 22 17:04:39 debian-cloud python[1911]:     )
+Jul 22 17:04:39 debian-cloud python[1911]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:04:39 debian-cloud python[1911]:     await db.execute(
+Jul 22 17:04:39 debian-cloud python[1911]:     ...<10 lines>...
+Jul 22 17:04:39 debian-cloud python[1911]:     )
+Jul 22 17:04:39 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:04:39 debian-cloud python[1911]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:04:39 debian-cloud python[1911]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:04:39 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:04:39 debian-cloud python[1911]:     return await future
+Jul 22 17:04:39 debian-cloud python[1911]:            ^^^^^^^^^^^^
+Jul 22 17:04:39 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:04:39 debian-cloud python[1911]:     result = function()
+Jul 22 17:04:39 debian-cloud python[1911]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:04:40 debian-cloud python[1911]: 2026-07-22 17:04:40,292 anima.cognitive.danger INFO DANGER: 关系推断笔记已写入 user=1562290139
+Jul 22 17:04:40 debian-cloud python[1911]: 2026-07-22 17:04:40,540 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:04:43 debian-cloud python[1911]: 2026-07-22 17:04:43,979 anima.pipeline.stages INFO Context system budget: dropped=capabilities tokens=5889/6000
+Jul 22 17:04:43 debian-cloud python[1911]: 2026-07-22 17:04:43,979 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=4 mem=2 desire=0 tools=21
+Jul 22 17:04:46 debian-cloud python[1911]: 2026-07-22 17:04:46,118 anima.agent INFO ReAct 轮次 1: 1 个工具调用
+Jul 22 17:04:46 debian-cloud python[1911]: 2026-07-22 17:04:46,124 anima.agent INFO 工具调用完成 name=pick_sticker ok=True result_len=54
+Jul 22 17:04:49 debian-cloud python[1911]: 2026-07-22 17:04:49,045 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:04:49 debian-cloud python[1911]: Traceback (most recent call last):
+Jul 22 17:04:49 debian-cloud python[1911]:   File "/opt/anima/anima/pipeline/stages.py", line 1354, in _record_reply_memory
+Jul 22 17:04:49 debian-cloud python[1911]:     await core.vector_memory.add(
+Jul 22 17:04:49 debian-cloud python[1911]:     ...<5 lines>...
+Jul 22 17:04:49 debian-cloud python[1911]:     )
+Jul 22 17:04:49 debian-cloud python[1911]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:04:49 debian-cloud python[1911]:     await db.execute(
+Jul 22 17:04:49 debian-cloud python[1911]:     ...<10 lines>...
+Jul 22 17:04:49 debian-cloud python[1911]:     )
+Jul 22 17:04:49 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:04:49 debian-cloud python[1911]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:04:49 debian-cloud python[1911]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:04:49 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:04:49 debian-cloud python[1911]:     return await future
+Jul 22 17:04:49 debian-cloud python[1911]:            ^^^^^^^^^^^^
+Jul 22 17:04:49 debian-cloud python[1911]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:04:49 debian-cloud python[1911]:     result = function()
+Jul 22 17:04:49 debian-cloud python[1911]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:04:49 debian-cloud python[1911]: 2026-07-22 17:04:49,250 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:04:49 debian-cloud python[1911]: 2026-07-22 17:04:49,682 anima.handler INFO [出站成功][trace=5fd81cff] part=0 msg_id=719685960 segs=['at', 'text']
+Jul 22 17:04:49 debian-cloud python[1911]: 2026-07-22 17:04:49,929 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=5
+Jul 22 17:04:58 debian-cloud systemd[1]: Stopping anima.service - Anima QQ Bot...
+Jul 22 17:04:58 debian-cloud python[1911]: 2026-07-22 17:04:58,410 anima.core INFO 收到信号 SIGTERM，开始优雅停止
+Jul 22 17:04:58 debian-cloud python[1911]: 2026-07-22 17:04:58,498 anima.channel.onebot11 INFO OneBot11 适配器已关闭 (收 23 丢弃 110)
+Jul 22 17:04:58 debian-cloud python[1911]: 2026-07-22 17:04:58,754 anima.core INFO AnimaCore 已停止
+Jul 22 17:04:58 debian-cloud systemd[1]: anima.service: Deactivated successfully.
+Jul 22 17:04:58 debian-cloud systemd[1]: Stopped anima.service - Anima QQ Bot.
+Jul 22 17:04:58 debian-cloud systemd[1]: anima.service: Consumed 14min 4.640s CPU time, 208M memory peak.
+Jul 22 17:04:58 debian-cloud systemd[1]: Started anima.service - Anima QQ Bot.
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,280 anima.gateway INFO Gateway 绑定渠道: onebot11
+Jul 22 17:04:59 debian-cloud python[2886]: LLM 已接入: gemini-3.5-flash-low @ http://54.168.242.65:3000/gemini-antigravity/v1
+Jul 22 17:04:59 debian-cloud python[2886]: Skills: 已加载 3 个
+Jul 22 17:04:59 debian-cloud python[2886]: SelfCode 运行时能力: 已恢复 0 个（均为此前 Owner 已批准项）
+Jul 22 17:04:59 debian-cloud python[2886]: 工具已注册: 18 个
+Jul 22 17:04:59 debian-cloud python[2886]: 对话记忆: 已加载
+Jul 22 17:04:59 debian-cloud python[2886]: 自主心跳: 已配置 (30s tick, per-group cooldown)
+Jul 22 17:04:59 debian-cloud python[2886]: Anima 启动中，WS=ws://127.0.0.1:3001
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,343 anima.core INFO AnimaCore 启动 …
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,588 anima.core INFO 向量记忆已启用: data/anima.db
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,603 anima.channel.onebot11 INFO OneBot11 适配器初始化完成: ws=ws://127.0.0.1:3001 http=http://127.0.0.1:3001
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,719 anima.channel.onebot11 INFO 连接 OneBot11 WS: ws://127.0.0.1:3001
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,720 anima.core INFO WebUI 已启动: http://0.0.0.0:8088
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,832 anima.autonomy INFO 自主心跳已启动: tick=30.0s cooldown=90s daily=20 ratio=30%
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,940 anima.core INFO AnimaCore 已启动，注册模块 1 个
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,940 anima.watchdog INFO systemd 看门狗已启动（间隔 30s，假死栈转储 75s）
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,941 anima.channel.onebot11 INFO OneBot11 WS 已连接
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,942 anima.channel.onebot11 INFO OneBot11 自适应 self_id=2752719822
+Jul 22 17:04:59 debian-cloud python[2886]: 2026-07-22 17:04:59,942 anima.gateway INFO [入站] event.meta | user=? | text_len=0
+Jul 22 17:05:30 debian-cloud python[2886]: 2026-07-22 17:05:30,061 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:05:40 debian-cloud python[2886]: 2026-07-22 17:05:40,646 anima.exploration WARNING 探索来源失败: JSONDecodeError
+Jul 22 17:05:40 debian-cloud python[2886]: 2026-07-22 17:05:40,646 anima.exploration WARNING 探索来源失败: ParseError
+Jul 22 17:05:40 debian-cloud python[2886]: 2026-07-22 17:05:40,646 anima.exploration WARNING 探索来源失败: JSONDecodeError
+Jul 22 17:05:40 debian-cloud python[2886]: 2026-07-22 17:05:40,646 anima.exploration WARNING 探索来源失败: ClientResponseError
+Jul 22 17:05:58 debian-cloud python[2886]: 2026-07-22 17:05:58,323 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:05:58 debian-cloud python[2886]: 2026-07-22 17:05:58,450 anima.crossgroup INFO CrossGroupManager 已初始化: data_dir=data/crossgroup
+Jul 22 17:05:58 debian-cloud python[2886]: 2026-07-22 17:05:58,450 anima.handler INFO [回复闸门][trace=1d28b7a8] skip reason=mention_only mode=mention text_len=31
+Jul 22 17:05:58 debian-cloud python[2886]: 2026-07-22 17:05:58,510 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=31
+Jul 22 17:06:00 debian-cloud python[2886]: 2026-07-22 17:06:00,233 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:06:04 debian-cloud python[2886]: 2026-07-22 17:06:04,420 anima.handler INFO 跨群抽取到 2 条事实 user=3380677262
+Jul 22 17:06:11 debian-cloud python[2886]: 2026-07-22 17:06:11,767 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])", "face(['id', 'raw', 'resultId', 'chainCount'])", "face(['id', 'raw', 'resultId', 'chainCount'])"]
+Jul 22 17:06:11 debian-cloud python[2886]: 2026-07-22 17:06:11,767 anima.channel.onebot11 INFO [图段] type=face keys=['id', 'raw', 'resultId', 'chainCount'] subType= has_url=False file=
+Jul 22 17:06:11 debian-cloud python[2886]: 2026-07-22 17:06:11,767 anima.channel.onebot11 INFO [图段] type=face keys=['id', 'raw', 'resultId', 'chainCount'] subType= has_url=False file=
+Jul 22 17:06:11 debian-cloud python[2886]: 2026-07-22 17:06:11,830 anima.handler INFO [回复闸门][trace=401f5244] skip reason=mention_only mode=mention text_len=14
+Jul 22 17:06:11 debian-cloud python[2886]: 2026-07-22 17:06:11,879 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=14
+Jul 22 17:06:16 debian-cloud python[2886]: 2026-07-22 17:06:16,128 anima.handler INFO 跨群抽取到 1 条事实 user=3380677262
+Jul 22 17:06:23 debian-cloud python[2886]: 2026-07-22 17:06:23,868 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:06:23 debian-cloud python[2886]: 2026-07-22 17:06:23,939 anima.handler INFO [回复闸门][trace=96bf913b] skip reason=mention_only mode=mention text_len=5
+Jul 22 17:06:23 debian-cloud python[2886]: 2026-07-22 17:06:23,988 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=5
+Jul 22 17:06:30 debian-cloud python[2886]: 2026-07-22 17:06:30,290 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:07:00 debian-cloud python[2886]: 2026-07-22 17:07:00,451 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:07:00 debian-cloud python[2886]: 2026-07-22 17:07:00,838 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:07:00 debian-cloud python[2886]: 2026-07-22 17:07:00,889 anima.handler INFO [回复闸门][trace=4f98074d] skip reason=mention_only mode=mention text_len=6
+Jul 22 17:07:00 debian-cloud python[2886]: 2026-07-22 17:07:00,940 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=6
+Jul 22 17:07:05 debian-cloud python[2886]: 2026-07-22 17:07:05,634 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:07:05 debian-cloud python[2886]: 2026-07-22 17:07:05,736 anima.handler INFO [回复闸门][trace=56bc1002] skip reason=mention_only mode=mention text_len=7
+Jul 22 17:07:05 debian-cloud python[2886]: 2026-07-22 17:07:05,785 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=7
+Jul 22 17:07:19 debian-cloud python[2886]: 2026-07-22 17:07:19,561 anima.channel.onebot11 INFO [段结构] user=1562290139 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:07:20 debian-cloud python[2886]: 2026-07-22 17:07:20,963 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:07:20 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:07:20 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:07:20 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:07:20 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:07:20 debian-cloud python[2886]:     )
+Jul 22 17:07:20 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:07:20 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:07:20 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:07:20 debian-cloud python[2886]:     )
+Jul 22 17:07:20 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:07:20 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:07:20 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:07:20 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:07:20 debian-cloud python[2886]:     return await future
+Jul 22 17:07:20 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:07:20 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:07:20 debian-cloud python[2886]:     result = function()
+Jul 22 17:07:20 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:07:21 debian-cloud python[2886]: 2026-07-22 17:07:21,001 sylanne_core INFO plugin anima-next attached to shared engine on data/sylann/engine
+Jul 22 17:07:26 debian-cloud python[2886]: 2026-07-22 17:07:26,652 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,group_presence,crossgroup tokens=5903/6000
+Jul 22 17:07:26 debian-cloud python[2886]: 2026-07-22 17:07:26,654 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=15 mem=7 desire=1 tools=18
+Jul 22 17:07:28 debian-cloud python[2886]: 2026-07-22 17:07:28,901 anima.agent INFO ReAct 轮次 1: 1 个工具调用
+Jul 22 17:07:30 debian-cloud python[2886]: 2026-07-22 17:07:30,566 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:07:30 debian-cloud python[2886]: 2026-07-22 17:07:30,856 anima.agent INFO 工具调用完成 name=web_search ok=True result_len=38
+Jul 22 17:07:32 debian-cloud python[2886]: 2026-07-22 17:07:32,788 anima.agent INFO ReAct 轮次 2: 1 个工具调用
+Jul 22 17:07:34 debian-cloud python[2886]: 2026-07-22 17:07:34,649 anima.agent INFO 工具调用完成 name=web_search ok=True result_len=39
+Jul 22 17:07:38 debian-cloud python[2886]: 2026-07-22 17:07:38,133 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:07:38 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:07:38 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:07:38 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:07:38 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:07:38 debian-cloud python[2886]:     )
+Jul 22 17:07:38 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:07:38 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:07:38 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:07:38 debian-cloud python[2886]:     )
+Jul 22 17:07:38 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:07:38 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:07:38 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:07:38 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:07:38 debian-cloud python[2886]:     return await future
+Jul 22 17:07:38 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:07:38 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:07:38 debian-cloud python[2886]:     result = function()
+Jul 22 17:07:38 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:07:38 debian-cloud python[2886]: 2026-07-22 17:07:38,378 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:07:38 debian-cloud python[2886]: 2026-07-22 17:07:38,683 anima.handler INFO [出站成功][trace=08d8cf6a] part=0 msg_id=1650764250 segs=['at', 'text']
+Jul 22 17:07:38 debian-cloud python[2886]: 2026-07-22 17:07:38,985 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:07:40 debian-cloud python[2886]: 2026-07-22 17:07:40,299 anima.handler INFO [出站成功][trace=08d8cf6a] part=1 msg_id=1850621514 segs=['image']
+Jul 22 17:07:40 debian-cloud python[2886]: 2026-07-22 17:07:40,558 anima.gateway INFO [入站] event.message.group | user=1562290139 | text_len=16
+Jul 22 17:07:43 debian-cloud python[2886]: 2026-07-22 17:07:43,604 anima.cognitive.danger INFO DANGER: 关系推断笔记已写入 user=1562290139
+Jul 22 17:07:47 debian-cloud python[2886]: 2026-07-22 17:07:47,714 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:07:47 debian-cloud python[2886]: 2026-07-22 17:07:47,780 anima.handler INFO [回复闸门][trace=c6754b11] skip reason=mention_only mode=mention text_len=3
+Jul 22 17:07:47 debian-cloud python[2886]: 2026-07-22 17:07:47,829 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=3
+Jul 22 17:08:00 debian-cloud python[2886]: 2026-07-22 17:08:00,790 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:08:21 debian-cloud python[2886]: 2026-07-22 17:08:21,731 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:08:21 debian-cloud python[2886]: 2026-07-22 17:08:21,978 anima.handler INFO [回复闸门][trace=d5815062] skip reason=mention_only mode=mention text_len=8
+Jul 22 17:08:22 debian-cloud python[2886]: 2026-07-22 17:08:22,027 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=8
+Jul 22 17:08:25 debian-cloud python[2886]: 2026-07-22 17:08:25,908 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:08:25 debian-cloud python[2886]: 2026-07-22 17:08:25,964 anima.handler INFO [回复闸门][trace=2f8ee085] skip reason=mention_only mode=mention text_len=3
+Jul 22 17:08:26 debian-cloud python[2886]: 2026-07-22 17:08:26,013 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=3
+Jul 22 17:08:30 debian-cloud python[2886]: 2026-07-22 17:08:30,946 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:08:37 debian-cloud python[2886]: 2026-07-22 17:08:37,032 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:08:37 debian-cloud python[2886]: 2026-07-22 17:08:37,087 anima.handler INFO [回复闸门][trace=147ebee8] skip reason=mention_only mode=mention text_len=10
+Jul 22 17:08:37 debian-cloud python[2886]: 2026-07-22 17:08:37,137 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=10
+Jul 22 17:08:39 debian-cloud python[2886]: 2026-07-22 17:08:39,083 anima.handler INFO 跨群抽取到 1 条事实 user=3380677262
+Jul 22 17:08:51 debian-cloud python[2886]: 2026-07-22 17:08:51,345 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:08:51 debian-cloud python[2886]: 2026-07-22 17:08:51,345 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=80A017B3E7DA15F8A6F8582C
+Jul 22 17:08:51 debian-cloud python[2886]: 2026-07-22 17:08:51,415 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=3380677262）
+Jul 22 17:08:51 debian-cloud python[2886]: 2026-07-22 17:08:51,415 anima.handler INFO [回复闸门][trace=f0791500] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:08:51 debian-cloud python[2886]: 2026-07-22 17:08:51,467 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=0
+Jul 22 17:09:01 debian-cloud python[2886]: 2026-07-22 17:09:01,162 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:09:07 debian-cloud python[2886]: 2026-07-22 17:09:07,096 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:09:07 debian-cloud python[2886]: 2026-07-22 17:09:07,164 anima.handler INFO [回复闸门][trace=1836711a] skip reason=mention_only mode=mention text_len=11
+Jul 22 17:09:07 debian-cloud python[2886]: 2026-07-22 17:09:07,213 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=11
+Jul 22 17:09:11 debian-cloud python[2886]: 2026-07-22 17:09:11,878 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:09:12 debian-cloud python[2886]: 2026-07-22 17:09:12,145 anima.handler INFO [回复闸门][trace=65194314] skip reason=mention_only mode=mention text_len=9
+Jul 22 17:09:12 debian-cloud python[2886]: 2026-07-22 17:09:12,195 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=9
+Jul 22 17:09:22 debian-cloud python[2886]: 2026-07-22 17:09:22,391 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:09:22 debian-cloud python[2886]: 2026-07-22 17:09:22,443 anima.handler INFO [回复闸门][trace=24f526e2] skip reason=mention_only mode=mention text_len=12
+Jul 22 17:09:22 debian-cloud python[2886]: 2026-07-22 17:09:22,493 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=12
+Jul 22 17:09:27 debian-cloud python[2886]: 2026-07-22 17:09:27,221 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:09:27 debian-cloud python[2886]: 2026-07-22 17:09:27,274 anima.handler INFO [回复闸门][trace=e23964f9] skip reason=mention_only mode=mention text_len=1
+Jul 22 17:09:27 debian-cloud python[2886]: 2026-07-22 17:09:27,323 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=1
+Jul 22 17:09:28 debian-cloud python[2886]: 2026-07-22 17:09:28,009 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:09:28 debian-cloud python[2886]: 2026-07-22 17:09:28,067 anima.handler INFO [回复闸门][trace=c989b193] skip reason=mention_only mode=mention text_len=2
+Jul 22 17:09:28 debian-cloud python[2886]: 2026-07-22 17:09:28,116 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=2
+Jul 22 17:09:31 debian-cloud python[2886]: 2026-07-22 17:09:31,532 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:09:35 debian-cloud python[2886]: 2026-07-22 17:09:35,242 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:09:35 debian-cloud python[2886]: 2026-07-22 17:09:35,323 anima.handler INFO [回复闸门][trace=e962f88e] skip reason=mention_only mode=mention text_len=4
+Jul 22 17:09:35 debian-cloud python[2886]: 2026-07-22 17:09:35,458 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=4
+Jul 22 17:09:51 debian-cloud python[2886]: 2026-07-22 17:09:51,609 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:09:51 debian-cloud python[2886]: 2026-07-22 17:09:51,661 anima.handler INFO [回复闸门][trace=2fcc6f38] skip reason=mention_only mode=mention text_len=14
+Jul 22 17:09:51 debian-cloud python[2886]: 2026-07-22 17:09:51,747 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=14
+Jul 22 17:09:53 debian-cloud python[2886]: 2026-07-22 17:09:53,582 anima.channel.onebot11 INFO [段结构] user=1662145340 segs=["text(['text'])"]
+Jul 22 17:09:53 debian-cloud python[2886]: 2026-07-22 17:09:53,635 anima.handler INFO [回复闸门][trace=7efe93c2] skip reason=mention_only mode=mention text_len=3
+Jul 22 17:09:53 debian-cloud python[2886]: 2026-07-22 17:09:53,684 anima.gateway INFO [入站] event.message.group | user=1662145340 | text_len=3
+Jul 22 17:09:57 debian-cloud python[2886]: 2026-07-22 17:09:57,214 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:09:57 debian-cloud python[2886]: 2026-07-22 17:09:57,272 anima.handler INFO [回复闸门][trace=71c1380c] skip reason=mention_only mode=mention text_len=28
+Jul 22 17:09:57 debian-cloud python[2886]: 2026-07-22 17:09:57,322 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=28
+Jul 22 17:10:01 debian-cloud python[2886]: 2026-07-22 17:10:01,758 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:10:08 debian-cloud python[2886]: 2026-07-22 17:10:08,758 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:10:08 debian-cloud python[2886]: 2026-07-22 17:10:08,759 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=80A017B3E7DA15F8A6F8582C
+Jul 22 17:10:08 debian-cloud python[2886]: 2026-07-22 17:10:08,810 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=3380677262）
+Jul 22 17:10:08 debian-cloud python[2886]: 2026-07-22 17:10:08,810 anima.handler INFO [回复闸门][trace=6e5767ff] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:10:08 debian-cloud python[2886]: 2026-07-22 17:10:08,863 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=0
+Jul 22 17:10:31 debian-cloud python[2886]: 2026-07-22 17:10:31,616 anima.gateway INFO [入站] event.notice | user=2772298901 | text_len=0
+Jul 22 17:10:31 debian-cloud python[2886]: 2026-07-22 17:10:31,916 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:10:33 debian-cloud python[2886]: 2026-07-22 17:10:33,299 anima.gateway INFO [入站] event.notice | user=2772298901 | text_len=0
+Jul 22 17:10:36 debian-cloud python[2886]: 2026-07-22 17:10:36,954 anima.channel.onebot11 INFO [段结构] user=2798743491 segs=["text(['text'])"]
+Jul 22 17:10:37 debian-cloud python[2886]: 2026-07-22 17:10:37,064 anima.handler INFO [回复闸门][trace=52c3623e] skip reason=mention_only mode=mention text_len=8
+Jul 22 17:10:37 debian-cloud python[2886]: 2026-07-22 17:10:37,162 anima.gateway INFO [入站] event.message.group | user=2798743491 | text_len=8
+Jul 22 17:10:39 debian-cloud python[2886]: 2026-07-22 17:10:39,604 anima.handler INFO 跨群抽取到 1 条事实 user=2798743491
+Jul 22 17:10:43 debian-cloud python[2886]: 2026-07-22 17:10:43,326 anima.channel.onebot11 INFO [段结构] user=2798743491 segs=["text(['text'])"]
+Jul 22 17:10:43 debian-cloud python[2886]: 2026-07-22 17:10:43,426 anima.handler INFO [回复闸门][trace=98ab47db] skip reason=mention_only mode=mention text_len=5
+Jul 22 17:10:43 debian-cloud python[2886]: 2026-07-22 17:10:43,475 anima.gateway INFO [入站] event.message.group | user=2798743491 | text_len=5
+Jul 22 17:10:49 debian-cloud python[2886]: 2026-07-22 17:10:49,078 anima.channel.onebot11 INFO [段结构] user=2772298901 segs=["reply(['id'])", "at(['qq'])", "text(['text'])"]
+Jul 22 17:10:50 debian-cloud python[2886]: 2026-07-22 17:10:50,094 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:10:50 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:10:50 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:10:50 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:10:50 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:10:50 debian-cloud python[2886]:     )
+Jul 22 17:10:50 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:10:50 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:10:50 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:10:50 debian-cloud python[2886]:     )
+Jul 22 17:10:50 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:10:50 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:10:50 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:10:50 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:10:50 debian-cloud python[2886]:     return await future
+Jul 22 17:10:50 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:10:50 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:10:50 debian-cloud python[2886]:     result = function()
+Jul 22 17:10:50 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:10:53 debian-cloud python[2886]: 2026-07-22 17:10:53,965 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning tokens=5781/6000
+Jul 22 17:10:53 debian-cloud python[2886]: 2026-07-22 17:10:53,965 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=1 mem=2 desire=1 tools=18
+Jul 22 17:10:56 debian-cloud python[2886]: 2026-07-22 17:10:56,116 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:10:56 debian-cloud python[2886]: 2026-07-22 17:10:56,174 anima.handler INFO [回复闸门][trace=73f3fba4] skip reason=mention_only mode=mention text_len=7
+Jul 22 17:10:56 debian-cloud python[2886]: 2026-07-22 17:10:56,224 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=7
+Jul 22 17:10:56 debian-cloud python[2886]: 2026-07-22 17:10:56,665 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:10:56 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:10:56 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:10:56 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:10:56 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:10:56 debian-cloud python[2886]:     )
+Jul 22 17:10:56 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:10:56 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:10:56 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:10:56 debian-cloud python[2886]:     )
+Jul 22 17:10:56 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:10:56 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:10:56 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:10:56 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:10:56 debian-cloud python[2886]:     return await future
+Jul 22 17:10:56 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:10:56 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:10:56 debian-cloud python[2886]:     result = function()
+Jul 22 17:10:56 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:10:56 debian-cloud python[2886]: 2026-07-22 17:10:56,882 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:10:57 debian-cloud python[2886]: 2026-07-22 17:10:57,142 anima.handler INFO [出站成功][trace=454122f3] part=0 msg_id=975285853 segs=['at', 'text']
+Jul 22 17:10:57 debian-cloud python[2886]: 2026-07-22 17:10:57,364 anima.gateway INFO [入站] event.message.group | user=2772298901 | text_len=2
+Jul 22 17:11:02 debian-cloud python[2886]: 2026-07-22 17:11:02,189 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:11:08 debian-cloud python[2886]: 2026-07-22 17:11:08,347 anima.channel.onebot11 INFO [段结构] user=2772298901 segs=["text(['text'])"]
+Jul 22 17:11:08 debian-cloud python[2886]: 2026-07-22 17:11:08,415 anima.handler INFO [回复闸门][trace=6d72d8fd] skip reason=mention_only mode=mention text_len=8
+Jul 22 17:11:08 debian-cloud python[2886]: 2026-07-22 17:11:08,513 anima.gateway INFO [入站] event.message.group | user=2772298901 | text_len=8
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,078 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,078 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=D545566F1E84E0AC7B0F0B0D
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,316 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=3380677262）
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,316 anima.handler INFO [回复闸门][trace=5d82d630] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,369 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=0
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,511 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,511 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=D545566F1E84E0AC7B0F0B0D
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,559 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=3380677262）
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,559 anima.handler INFO [回复闸门][trace=82e172bb] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,611 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=0
+Jul 22 17:11:14 debian-cloud python[2886]: 2026-07-22 17:11:14,926 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:11:15 debian-cloud python[2886]: 2026-07-22 17:11:15,845 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:11:15 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:11:15 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:11:15 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:11:15 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:11:15 debian-cloud python[2886]:     )
+Jul 22 17:11:15 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:11:15 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:11:15 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:11:15 debian-cloud python[2886]:     )
+Jul 22 17:11:15 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:11:15 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:11:15 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:11:15 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:11:15 debian-cloud python[2886]:     return await future
+Jul 22 17:11:15 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:11:15 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:11:15 debian-cloud python[2886]:     result = function()
+Jul 22 17:11:15 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:11:19 debian-cloud python[2886]: 2026-07-22 17:11:19,591 anima.stickers INFO 表情收集 +1（库共 156）
+Jul 22 17:11:20 debian-cloud python[2886]: 2026-07-22 17:11:20,633 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning tokens=5791/6000
+Jul 22 17:11:20 debian-cloud python[2886]: 2026-07-22 17:11:20,633 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=1 mem=7 desire=1 tools=18
+Jul 22 17:11:22 debian-cloud python[2886]: 2026-07-22 17:11:22,930 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:11:22 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:11:22 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:11:22 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:11:22 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:11:22 debian-cloud python[2886]:     )
+Jul 22 17:11:22 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:11:22 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:11:22 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:11:22 debian-cloud python[2886]:     )
+Jul 22 17:11:22 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:11:22 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:11:22 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:11:22 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:11:22 debian-cloud python[2886]:     return await future
+Jul 22 17:11:22 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:11:22 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:11:22 debian-cloud python[2886]:     result = function()
+Jul 22 17:11:22 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:11:23 debian-cloud python[2886]: 2026-07-22 17:11:23,135 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:11:23 debian-cloud python[2886]: 2026-07-22 17:11:23,540 anima.handler INFO [出站成功][trace=25b75de9] part=0 msg_id=1657677338 segs=['at', 'text']
+Jul 22 17:11:23 debian-cloud python[2886]: 2026-07-22 17:11:23,797 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=2
+Jul 22 17:11:32 debian-cloud python[2886]: 2026-07-22 17:11:32,417 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:11:35 debian-cloud python[2886]: 2026-07-22 17:11:35,289 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:11:35 debian-cloud python[2886]: 2026-07-22 17:11:35,355 anima.handler INFO [回复闸门][trace=d6f965ee] skip reason=mention_only mode=mention text_len=15
+Jul 22 17:11:35 debian-cloud python[2886]: 2026-07-22 17:11:35,404 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=15
+Jul 22 17:11:39 debian-cloud python[2886]: 2026-07-22 17:11:39,706 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:11:40 debian-cloud python[2886]: 2026-07-22 17:11:40,917 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:11:40 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:11:40 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:11:40 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:11:40 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:11:40 debian-cloud python[2886]:     )
+Jul 22 17:11:40 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:11:40 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:11:40 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:11:40 debian-cloud python[2886]:     )
+Jul 22 17:11:40 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:11:40 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:11:40 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:11:40 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:11:40 debian-cloud python[2886]:     return await future
+Jul 22 17:11:40 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:11:40 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:11:40 debian-cloud python[2886]:     result = function()
+Jul 22 17:11:40 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:11:44 debian-cloud python[2886]: 2026-07-22 17:11:44,773 anima.channel.onebot11 INFO [段结构] user=3867291961 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:11:44 debian-cloud python[2886]: 2026-07-22 17:11:44,773 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=516523A0A368B448E612B771
+Jul 22 17:11:44 debian-cloud python[2886]: 2026-07-22 17:11:44,876 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=3867291961）
+Jul 22 17:11:44 debian-cloud python[2886]: 2026-07-22 17:11:44,876 anima.handler INFO [回复闸门][trace=75da33ff] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:11:44 debian-cloud python[2886]: 2026-07-22 17:11:44,929 anima.gateway INFO [入站] event.message.group | user=3867291961 | text_len=0
+Jul 22 17:11:46 debian-cloud python[2886]: 2026-07-22 17:11:46,931 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning tokens=5863/6000
+Jul 22 17:11:46 debian-cloud python[2886]: 2026-07-22 17:11:46,931 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=7 mem=11 desire=1 tools=18
+Jul 22 17:11:49 debian-cloud python[2886]: 2026-07-22 17:11:49,871 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:11:49 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:11:49 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:11:49 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:11:49 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:11:49 debian-cloud python[2886]:     )
+Jul 22 17:11:49 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:11:49 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:11:49 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:11:49 debian-cloud python[2886]:     )
+Jul 22 17:11:49 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:11:49 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:11:49 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:11:49 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:11:49 debian-cloud python[2886]:     return await future
+Jul 22 17:11:49 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:11:49 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:11:49 debian-cloud python[2886]:     result = function()
+Jul 22 17:11:49 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:11:50 debian-cloud python[2886]: 2026-07-22 17:11:50,078 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:11:50 debian-cloud python[2886]: 2026-07-22 17:11:50,382 anima.handler INFO [出站成功][trace=65fd2266] part=0 msg_id=847682682 segs=['at', 'text']
+Jul 22 17:11:50 debian-cloud python[2886]: 2026-07-22 17:11:50,530 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=8
+Jul 22 17:11:51 debian-cloud python[2886]: 2026-07-22 17:11:51,151 anima.stickers INFO 表情收集跳过（非表情包，LLM 判定）: file=516523A0A368B448E612B771
+Jul 22 17:11:51 debian-cloud python[2886]: 2026-07-22 17:11:51,161 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:11:51 debian-cloud python[2886]: 2026-07-22 17:11:51,429 anima.handler INFO [回复闸门][trace=85383dd2] skip reason=mention_only mode=mention text_len=7
+Jul 22 17:11:51 debian-cloud python[2886]: 2026-07-22 17:11:51,526 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=7
+Jul 22 17:11:54 debian-cloud python[2886]: 2026-07-22 17:11:54,698 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:11:54 debian-cloud python[2886]: 2026-07-22 17:11:54,768 anima.handler INFO [回复闸门][trace=57860b43] skip reason=mention_only mode=mention text_len=16
+Jul 22 17:11:54 debian-cloud python[2886]: 2026-07-22 17:11:54,817 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=16
+Jul 22 17:11:55 debian-cloud python[2886]: 2026-07-22 17:11:55,209 anima.cognitive.danger INFO DANGER: 关系推断笔记已写入 user=2914700203
+Jul 22 17:11:55 debian-cloud python[2886]: 2026-07-22 17:11:55,461 anima.channel.onebot11 INFO [段结构] user=3867291961 segs=["reply(['id'])", "text(['text'])"]
+Jul 22 17:11:55 debian-cloud python[2886]: 2026-07-22 17:11:55,536 anima.handler INFO [引用回复取图] 拉到 1 张图 (msg_id=1000216608)
+Jul 22 17:11:55 debian-cloud python[2886]: 2026-07-22 17:11:55,537 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=3867291961）
+Jul 22 17:11:55 debian-cloud python[2886]: 2026-07-22 17:11:55,537 anima.handler INFO [回复闸门][trace=0d191935] skip reason=mention_only mode=mention text_len=6
+Jul 22 17:11:55 debian-cloud python[2886]: 2026-07-22 17:11:55,586 anima.gateway INFO [入站] event.message.group | user=3867291961 | text_len=6
+Jul 22 17:11:56 debian-cloud python[2886]: 2026-07-22 17:11:56,169 anima.handler INFO 跨群抽取到 1 条事实 user=3380677262
+Jul 22 17:11:56 debian-cloud python[2886]: 2026-07-22 17:11:56,862 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:11:56 debian-cloud python[2886]: 2026-07-22 17:11:56,927 anima.handler INFO [回复闸门][trace=b6ec62a5] skip reason=mention_only mode=mention text_len=2
+Jul 22 17:11:56 debian-cloud python[2886]: 2026-07-22 17:11:56,976 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=2
+Jul 22 17:12:01 debian-cloud python[2886]: 2026-07-22 17:12:01,642 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["text(['text'])"]
+Jul 22 17:12:01 debian-cloud python[2886]: 2026-07-22 17:12:01,931 anima.handler INFO [回复闸门][trace=59a7f5b2] skip reason=mention_only mode=mention text_len=1
+Jul 22 17:12:01 debian-cloud python[2886]: 2026-07-22 17:12:01,980 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=1
+Jul 22 17:12:02 debian-cloud python[2886]: 2026-07-22 17:12:02,415 anima.channel.onebot11 INFO [段结构] user=1662145340 segs=["reply(['id'])", "at(['qq'])", "text(['text'])"]
+Jul 22 17:12:02 debian-cloud python[2886]: 2026-07-22 17:12:02,629 anima.handler INFO [引用回复取图] 拉到 1 张图 (msg_id=1000216608)
+Jul 22 17:12:02 debian-cloud python[2886]: 2026-07-22 17:12:02,629 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=1662145340）
+Jul 22 17:12:02 debian-cloud python[2886]: 2026-07-22 17:12:02,629 anima.handler INFO [回复闸门][trace=7ae3a425] skip reason=mention_only mode=mention text_len=4
+Jul 22 17:12:02 debian-cloud python[2886]: 2026-07-22 17:12:02,777 anima.gateway INFO [入站] event.message.group | user=1662145340 | text_len=5
+Jul 22 17:12:02 debian-cloud python[2886]: 2026-07-22 17:12:02,777 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:12:07 debian-cloud python[2886]: 2026-07-22 17:12:07,533 anima.channel.onebot11 INFO [段结构] user=1662145340 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:12:07 debian-cloud python[2886]: 2026-07-22 17:12:07,534 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=F2B09EEA7F64490FCC1E7D9B
+Jul 22 17:12:07 debian-cloud python[2886]: 2026-07-22 17:12:07,640 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=1662145340）
+Jul 22 17:12:07 debian-cloud python[2886]: 2026-07-22 17:12:07,640 anima.handler INFO [回复闸门][trace=50330eb2] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:12:07 debian-cloud python[2886]: 2026-07-22 17:12:07,689 anima.gateway INFO [入站] event.message.group | user=1662145340 | text_len=0
+Jul 22 17:12:07 debian-cloud python[2886]: 2026-07-22 17:12:07,752 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:12:08 debian-cloud python[2886]: 2026-07-22 17:12:08,678 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:12:08 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:12:08 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:12:08 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:12:08 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:12:08 debian-cloud python[2886]:     )
+Jul 22 17:12:08 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:12:08 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:12:08 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:12:08 debian-cloud python[2886]:     )
+Jul 22 17:12:08 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:12:08 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:12:08 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:12:08 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:12:08 debian-cloud python[2886]:     return await future
+Jul 22 17:12:08 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:12:08 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:12:08 debian-cloud python[2886]:     result = function()
+Jul 22 17:12:08 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:12:08 debian-cloud python[2886]: 2026-07-22 17:12:08,799 anima.scar INFO 新增伤痕: user=2914700203 event=对方说了伤人的话 severity=0.40
+Jul 22 17:12:12 debian-cloud python[2886]: 2026-07-22 17:12:12,534 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,group_presence,crossgroup tokens=5758/6000
+Jul 22 17:12:12 debian-cloud python[2886]: 2026-07-22 17:12:12,534 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=4 mem=16 desire=1 tools=18
+Jul 22 17:12:17 debian-cloud python[2886]: 2026-07-22 17:12:17,143 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:12:17 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:12:17 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:12:17 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:12:17 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:12:17 debian-cloud python[2886]:     )
+Jul 22 17:12:17 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:12:17 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:12:17 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:12:17 debian-cloud python[2886]:     )
+Jul 22 17:12:17 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:12:17 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:12:17 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:12:17 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:12:17 debian-cloud python[2886]:     return await future
+Jul 22 17:12:17 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:12:17 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:12:17 debian-cloud python[2886]:     result = function()
+Jul 22 17:12:17 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:12:17 debian-cloud python[2886]: 2026-07-22 17:12:17,386 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:12:17 debian-cloud python[2886]: 2026-07-22 17:12:17,962 anima.handler INFO [出站成功][trace=fe770317] part=0 msg_id=741696141 segs=['at', 'text']
+Jul 22 17:12:18 debian-cloud python[2886]: 2026-07-22 17:12:18,011 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=5
+Jul 22 17:12:18 debian-cloud python[2886]: 2026-07-22 17:12:18,108 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["reply(['id'])", "text(['text'])"]
+Jul 22 17:12:18 debian-cloud python[2886]: 2026-07-22 17:12:18,161 anima.handler INFO [回复闸门][trace=eb0debbb] skip reason=mention_only mode=mention text_len=4
+Jul 22 17:12:18 debian-cloud python[2886]: 2026-07-22 17:12:18,210 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=4
+Jul 22 17:12:22 debian-cloud python[2886]: 2026-07-22 17:12:22,681 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:12:22 debian-cloud python[2886]: 2026-07-22 17:12:22,924 anima.handler INFO [回复闸门][trace=454c5beb] skip reason=mention_only mode=mention text_len=5
+Jul 22 17:12:22 debian-cloud python[2886]: 2026-07-22 17:12:22,973 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=5
+Jul 22 17:12:29 debian-cloud python[2886]: 2026-07-22 17:12:29,459 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:12:29 debian-cloud python[2886]: 2026-07-22 17:12:29,547 anima.handler INFO [回复闸门][trace=831fa624] skip reason=mention_only mode=mention text_len=5
+Jul 22 17:12:29 debian-cloud python[2886]: 2026-07-22 17:12:29,595 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=5
+Jul 22 17:12:31 debian-cloud python[2886]: 2026-07-22 17:12:31,340 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:12:31 debian-cloud python[2886]: 2026-07-22 17:12:31,456 anima.handler INFO [回复闸门][trace=bdda0c60] skip reason=mention_only mode=mention text_len=1
+Jul 22 17:12:31 debian-cloud python[2886]: 2026-07-22 17:12:31,505 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=1
+Jul 22 17:12:31 debian-cloud python[2886]: 2026-07-22 17:12:31,505 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:12:31 debian-cloud python[2886]: 2026-07-22 17:12:31,554 anima.handler INFO [回复闸门][trace=0a4306fa] skip reason=mention_only mode=mention text_len=16
+Jul 22 17:12:31 debian-cloud python[2886]: 2026-07-22 17:12:31,604 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=16
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,172 anima.channel.onebot11 INFO [段结构] user=2143148697 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,172 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=B5D7C1FBF81F0B37D6F1DF0D
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,298 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=2143148697）
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,298 anima.handler INFO [回复闸门][trace=2bd32f33] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,350 anima.gateway INFO [入站] event.message.group | user=2143148697 | text_len=0
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,350 anima.channel.onebot11 INFO [段结构] user=3867291961 segs=["reply(['id'])", "at(['qq'])", "text(['text'])"]
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,407 anima.handler INFO [回复闸门][trace=228d0c80] skip reason=mention_only mode=mention text_len=7
+Jul 22 17:12:32 debian-cloud python[2886]: 2026-07-22 17:12:32,457 anima.gateway INFO [入站] event.message.group | user=3867291961 | text_len=8
+Jul 22 17:12:33 debian-cloud python[2886]: 2026-07-22 17:12:33,009 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:12:34 debian-cloud python[2886]: 2026-07-22 17:12:34,461 anima.handler INFO 跨群抽取到 1 条事实 user=3380677262
+Jul 22 17:12:35 debian-cloud python[2886]: 2026-07-22 17:12:35,897 anima.stickers INFO 表情收集 +1（库共 157）
+Jul 22 17:12:41 debian-cloud python[2886]: 2026-07-22 17:12:41,552 anima.channel.onebot11 INFO [段结构] user=3380677262 segs=["text(['text'])"]
+Jul 22 17:12:41 debian-cloud python[2886]: 2026-07-22 17:12:41,608 anima.handler INFO [回复闸门][trace=122fc26c] skip reason=mention_only mode=mention text_len=5
+Jul 22 17:12:41 debian-cloud python[2886]: 2026-07-22 17:12:41,657 anima.gateway INFO [入站] event.message.group | user=3380677262 | text_len=5
+Jul 22 17:12:56 debian-cloud python[2886]: 2026-07-22 17:12:56,322 anima.channel.onebot11 INFO [段结构] user=1662145340 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:12:56 debian-cloud python[2886]: 2026-07-22 17:12:56,322 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=E8AE168D3602B4912B300309
+Jul 22 17:12:56 debian-cloud python[2886]: 2026-07-22 17:12:56,438 anima.handler INFO [表情收集] 收到 1 张图（群=552994229, 用户=1662145340）
+Jul 22 17:12:56 debian-cloud python[2886]: 2026-07-22 17:12:56,438 anima.handler INFO [回复闸门][trace=452f9157] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:12:56 debian-cloud python[2886]: 2026-07-22 17:12:56,522 anima.gateway INFO [入站] event.message.group | user=1662145340 | text_len=0
+Jul 22 17:13:03 debian-cloud python[2886]: 2026-07-22 17:13:03,551 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:13:10 debian-cloud python[2886]: 2026-07-22 17:13:10,152 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:13:10 debian-cloud python[2886]: 2026-07-22 17:13:10,264 anima.handler INFO [回复闸门][trace=a48e2d92] skip reason=mention_only mode=mention text_len=8
+Jul 22 17:13:10 debian-cloud python[2886]: 2026-07-22 17:13:10,314 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=8
+Jul 22 17:13:15 debian-cloud python[2886]: 2026-07-22 17:13:15,917 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:13:15 debian-cloud python[2886]: 2026-07-22 17:13:15,982 anima.handler INFO [回复闸门][trace=5b560bcd] skip reason=mention_only mode=mention text_len=6
+Jul 22 17:13:16 debian-cloud python[2886]: 2026-07-22 17:13:16,031 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=6
+Jul 22 17:13:17 debian-cloud python[2886]: 2026-07-22 17:13:17,703 anima.channel.onebot11 INFO [段结构] user=3867291961 segs=["reply(['id'])", "at(['qq'])", "text(['text'])"]
+Jul 22 17:13:17 debian-cloud python[2886]: 2026-07-22 17:13:17,814 anima.handler INFO [回复闸门][trace=7452f8f6] skip reason=mention_only mode=mention text_len=3
+Jul 22 17:13:17 debian-cloud python[2886]: 2026-07-22 17:13:17,863 anima.gateway INFO [入站] event.message.group | user=3867291961 | text_len=4
+Jul 22 17:13:22 debian-cloud python[2886]: 2026-07-22 17:13:22,393 anima.channel.onebot11 INFO [段结构] user=2956107359 segs=["text(['text'])"]
+Jul 22 17:13:22 debian-cloud python[2886]: 2026-07-22 17:13:22,462 anima.handler INFO [回复闸门][trace=12c71d06] skip reason=mention_only mode=mention text_len=5
+Jul 22 17:13:22 debian-cloud python[2886]: 2026-07-22 17:13:22,512 anima.gateway INFO [入站] event.message.group | user=2956107359 | text_len=5
+Jul 22 17:13:33 debian-cloud python[2886]: 2026-07-22 17:13:33,804 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:14:04 debian-cloud python[2886]: 2026-07-22 17:14:04,094 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:14:04 debian-cloud python[2886]: 2026-07-22 17:14:04,981 anima.channel.onebot11 INFO [私聊段] user=1562290139 types=['text']
+Jul 22 17:14:07 debian-cloud python[2886]: 2026-07-22 17:14:07,635 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:14:07 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:14:07 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:14:07 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:14:07 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:14:07 debian-cloud python[2886]:     )
+Jul 22 17:14:07 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:14:07 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:14:07 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:14:07 debian-cloud python[2886]:     )
+Jul 22 17:14:07 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:14:07 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:14:07 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:14:07 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:14:07 debian-cloud python[2886]:     return await future
+Jul 22 17:14:07 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:14:07 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:14:07 debian-cloud python[2886]:     result = function()
+Jul 22 17:14:07 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:14:14 debian-cloud python[2886]: 2026-07-22 17:14:14,267 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,crossgroup,episodic_context tokens=5504/6000
+Jul 22 17:14:14 debian-cloud python[2886]: 2026-07-22 17:14:14,267 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=16 mem=4 desire=1 tools=18
+Jul 22 17:14:17 debian-cloud python[2886]: 2026-07-22 17:14:17,277 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:14:17 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:14:17 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:14:17 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:14:17 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:14:17 debian-cloud python[2886]:     )
+Jul 22 17:14:17 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:14:17 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:14:17 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:14:17 debian-cloud python[2886]:     )
+Jul 22 17:14:17 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:14:17 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:14:17 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:14:17 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:14:17 debian-cloud python[2886]:     return await future
+Jul 22 17:14:17 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:14:17 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:14:17 debian-cloud python[2886]:     result = function()
+Jul 22 17:14:17 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:14:17 debian-cloud python[2886]: 2026-07-22 17:14:17,474 anima.channel.onebot11 INFO WS action 已发送: send_private_msg -> 1562290139
+Jul 22 17:14:17 debian-cloud python[2886]: 2026-07-22 17:14:17,645 anima.handler INFO [出站成功][trace=7f75c9bc] part=0 msg_id=1171536907 segs=['text']
+Jul 22 17:14:17 debian-cloud python[2886]: 2026-07-22 17:14:17,793 anima.gateway INFO [入站] event.message.private | user=1562290139 | text_len=16
+Jul 22 17:14:22 debian-cloud python[2886]: 2026-07-22 17:14:22,383 anima.cognitive.danger INFO DANGER: 关系推断笔记已写入 user=1562290139
+Jul 22 17:14:34 debian-cloud python[2886]: 2026-07-22 17:14:34,393 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:14:35 debian-cloud python[2886]: 2026-07-22 17:14:35,806 anima.channel.onebot11 INFO [私聊段] user=1562290139 types=['text']
+Jul 22 17:14:38 debian-cloud python[2886]: 2026-07-22 17:14:38,508 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:14:38 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:14:38 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:14:38 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:14:38 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:14:38 debian-cloud python[2886]:     )
+Jul 22 17:14:38 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:14:38 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:14:38 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:14:38 debian-cloud python[2886]:     )
+Jul 22 17:14:38 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:14:38 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:14:38 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:14:38 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:14:38 debian-cloud python[2886]:     return await future
+Jul 22 17:14:38 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:14:38 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:14:38 debian-cloud python[2886]:     result = function()
+Jul 22 17:14:38 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:14:43 debian-cloud python[2886]: 2026-07-22 17:14:43,808 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,crossgroup,episodic_context tokens=5529/6000
+Jul 22 17:14:43 debian-cloud python[2886]: 2026-07-22 17:14:43,808 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=11 mem=6 desire=2 tools=18
+Jul 22 17:14:45 debian-cloud python[2886]: 2026-07-22 17:14:45,636 anima.agent INFO ReAct 轮次 1: 1 个工具调用
+Jul 22 17:14:47 debian-cloud python[2886]: 2026-07-22 17:14:47,548 anima.agent INFO 工具调用完成 name=web_search ok=True result_len=42
+Jul 22 17:14:50 debian-cloud python[2886]: 2026-07-22 17:14:50,885 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:14:50 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:14:50 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:14:50 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:14:50 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:14:50 debian-cloud python[2886]:     )
+Jul 22 17:14:50 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:14:50 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:14:50 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:14:50 debian-cloud python[2886]:     )
+Jul 22 17:14:50 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:14:50 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:14:50 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:14:50 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:14:50 debian-cloud python[2886]:     return await future
+Jul 22 17:14:50 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:14:50 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:14:50 debian-cloud python[2886]:     result = function()
+Jul 22 17:14:50 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:14:51 debian-cloud python[2886]: 2026-07-22 17:14:51,191 anima.channel.onebot11 INFO WS action 已发送: send_private_msg -> 1562290139
+Jul 22 17:14:51 debian-cloud python[2886]: 2026-07-22 17:14:51,362 anima.handler INFO [出站成功][trace=a64b4bb7] part=0 msg_id=1669204903 segs=['text']
+Jul 22 17:14:51 debian-cloud python[2886]: 2026-07-22 17:14:51,510 anima.gateway INFO [入站] event.message.private | user=1562290139 | text_len=11
+Jul 22 17:14:55 debian-cloud python[2886]: 2026-07-22 17:14:55,698 anima.cognitive.danger INFO DANGER: 关系推断笔记已写入 user=1562290139
+Jul 22 17:15:04 debian-cloud python[2886]: 2026-07-22 17:15:04,701 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:15:34 debian-cloud python[2886]: 2026-07-22 17:15:34,967 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:16:05 debian-cloud python[2886]: 2026-07-22 17:16:05,483 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:16:35 debian-cloud python[2886]: 2026-07-22 17:16:35,801 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:17:06 debian-cloud python[2886]: 2026-07-22 17:17:06,312 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:17:21 debian-cloud python[2886]: 2026-07-22 17:17:21,303 anima.channel.onebot11 INFO [段结构] user=2772298901 segs=["text(['text'])"]
+Jul 22 17:17:21 debian-cloud python[2886]: 2026-07-22 17:17:21,359 anima.handler INFO [回复闸门][trace=19bb6a49] skip reason=mention_only mode=mention text_len=20
+Jul 22 17:17:21 debian-cloud python[2886]: 2026-07-22 17:17:21,458 anima.gateway INFO [入站] event.message.group | user=2772298901 | text_len=20
+Jul 22 17:17:33 debian-cloud python[2886]: 2026-07-22 17:17:33,479 anima.channel.onebot11 INFO [段结构] user=2772298901 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:17:33 debian-cloud python[2886]: 2026-07-22 17:17:33,480 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=D8DF7C33F38174BD73288431
+Jul 22 17:17:33 debian-cloud python[2886]: 2026-07-22 17:17:33,557 anima.handler INFO [表情收集] 收到 1 张图（群=727631526, 用户=2772298901）
+Jul 22 17:17:33 debian-cloud python[2886]: 2026-07-22 17:17:33,557 anima.handler INFO [回复闸门][trace=a97a9013] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:17:33 debian-cloud python[2886]: 2026-07-22 17:17:33,610 anima.gateway INFO [入站] event.message.group | user=2772298901 | text_len=0
+Jul 22 17:17:36 debian-cloud python[2886]: 2026-07-22 17:17:36,824 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:17:37 debian-cloud python[2886]: 2026-07-22 17:17:37,723 anima.stickers INFO 表情收集 +1（库共 158）
+Jul 22 17:18:15 debian-cloud python[2886]: 2026-07-22 17:18:15,634 anima.learning INFO 反思已保存（text_len=106）
+Jul 22 17:18:15 debian-cloud python[2886]: 2026-07-22 17:18:15,634 anima.cognitive.world_model INFO WorldModel: 丢弃论文体/分析腔条目（text_len=106）
+Jul 22 17:18:19 debian-cloud python[2886]: 2026-07-22 17:18:19,750 anima.tool_learning INFO 工具规律总结已更新 tool=pick_sticker rule_len=53
+Jul 22 17:18:26 debian-cloud python[2886]: 2026-07-22 17:18:26,222 anima.tool_learning INFO 工具规律总结已更新 tool=web_search rule_len=53
+Jul 22 17:18:36 debian-cloud python[2886]: 2026-07-22 17:18:36,854 anima.rumination INFO 自生长能力创建（name_len=8）
+Jul 22 17:18:36 debian-cloud python[2886]: 2026-07-22 17:18:36,925 anima.capabilities INFO 能力健康维护：16 → 15（丢弃 0 / 超限 0 / 零调用淘汰 1）
+Jul 22 17:18:36 debian-cloud python[2886]: 2026-07-22 17:18:36,925 anima.tools INFO 动态注册能力工具: my_cap_1783820472（今日 1/3）
+Jul 22 17:18:36 debian-cloud python[2886]: 2026-07-22 17:18:36,926 anima.tools INFO 动态注册能力工具: my_cap_1784069691（今日 2/3）
+Jul 22 17:18:36 debian-cloud python[2886]: 2026-07-22 17:18:36,926 anima.tools INFO 动态注册能力工具: my_cap_1783849888（今日 3/3）
+Jul 22 17:18:37 debian-cloud python[2886]: 2026-07-22 17:18:37,232 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:19:07 debian-cloud python[2886]: 2026-07-22 17:19:07,453 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:19:37 debian-cloud python[2886]: 2026-07-22 17:19:37,762 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:20:07 debian-cloud python[2886]: 2026-07-22 17:20:07,992 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:20:38 debian-cloud python[2886]: 2026-07-22 17:20:38,491 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:21:08 debian-cloud python[2886]: 2026-07-22 17:21:08,923 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:21:39 debian-cloud python[2886]: 2026-07-22 17:21:39,248 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:22:00 debian-cloud python[2886]: 2026-07-22 17:22:00,095 anima.channel.onebot11 INFO [段结构] user=1562290139 segs=["text(['text'])"]
+Jul 22 17:22:00 debian-cloud python[2886]: 2026-07-22 17:22:00,183 anima.handler INFO [回复闸门][trace=38717c9c] skip reason=mention_only mode=mention text_len=2
+Jul 22 17:22:00 debian-cloud python[2886]: 2026-07-22 17:22:00,293 anima.gateway INFO [入站] event.message.group | user=1562290139 | text_len=2
+Jul 22 17:22:02 debian-cloud python[2886]: 2026-07-22 17:22:02,584 anima.channel.onebot11 INFO [段结构] user=1562290139 segs=["image(['summary', 'file', 'sub_type', 'url', 'file_size'])"]
+Jul 22 17:22:02 debian-cloud python[2886]: 2026-07-22 17:22:02,584 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'sub_type', 'file_size'] subType= has_url=True file=221869FB8DC16BCB61080B90
+Jul 22 17:22:02 debian-cloud python[2886]: 2026-07-22 17:22:02,634 anima.handler INFO [表情收集] 收到 1 张图（群=727631526, 用户=1562290139）
+Jul 22 17:22:02 debian-cloud python[2886]: 2026-07-22 17:22:02,634 anima.handler INFO [回复闸门][trace=e4c495f9] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:22:02 debian-cloud python[2886]: 2026-07-22 17:22:02,686 anima.gateway INFO [入站] event.message.group | user=1562290139 | text_len=0
+Jul 22 17:22:09 debian-cloud python[2886]: 2026-07-22 17:22:09,535 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:22:09 debian-cloud python[2886]: 2026-07-22 17:22:09,985 anima.channel.onebot11 INFO [段结构] user=1562290139 segs=["text(['text'])"]
+Jul 22 17:22:10 debian-cloud python[2886]: 2026-07-22 17:22:10,062 anima.handler INFO [回复闸门][trace=665e1b09] skip reason=mention_only mode=mention text_len=10
+Jul 22 17:22:10 debian-cloud python[2886]: 2026-07-22 17:22:10,112 anima.gateway INFO [入站] event.message.group | user=1562290139 | text_len=10
+Jul 22 17:22:39 debian-cloud python[2886]: 2026-07-22 17:22:39,849 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:22:55 debian-cloud python[2886]: 2026-07-22 17:22:55,332 anima.channel.onebot11 INFO [段结构] user=2772298901 segs=["face(['id', 'raw', 'resultId', 'chainCount'])"]
+Jul 22 17:22:55 debian-cloud python[2886]: 2026-07-22 17:22:55,332 anima.channel.onebot11 INFO [图段] type=face keys=['id', 'raw', 'resultId', 'chainCount'] subType= has_url=False file=
+Jul 22 17:22:55 debian-cloud python[2886]: 2026-07-22 17:22:55,391 anima.handler INFO [回复闸门][trace=24b298a7] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:22:55 debian-cloud python[2886]: 2026-07-22 17:22:55,440 anima.gateway INFO [入站] event.message.group | user=2772298901 | text_len=0
+Jul 22 17:23:10 debian-cloud python[2886]: 2026-07-22 17:23:10,291 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:23:40 debian-cloud python[2886]: 2026-07-22 17:23:40,657 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:24:10 debian-cloud python[2886]: 2026-07-22 17:24:10,878 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:24:41 debian-cloud python[2886]: 2026-07-22 17:24:41,286 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:24:46 debian-cloud python[2886]: 2026-07-22 17:24:46,646 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["text(['text'])"]
+Jul 22 17:24:46 debian-cloud python[2886]: 2026-07-22 17:24:46,700 anima.handler INFO [回复闸门][trace=37412546] skip reason=mention_only mode=mention text_len=6
+Jul 22 17:24:46 debian-cloud python[2886]: 2026-07-22 17:24:46,749 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=6
+Jul 22 17:25:11 debian-cloud python[2886]: 2026-07-22 17:25:11,565 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:25:42 debian-cloud python[2886]: 2026-07-22 17:25:42,091 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:26:12 debian-cloud python[2886]: 2026-07-22 17:26:12,335 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:26:42 debian-cloud python[2886]: 2026-07-22 17:26:42,777 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:27:13 debian-cloud python[2886]: 2026-07-22 17:27:13,014 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:27:43 debian-cloud python[2886]: 2026-07-22 17:27:43,332 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:28:05 debian-cloud python[2886]: 2026-07-22 17:28:05,641 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:28:06 debian-cloud python[2886]: 2026-07-22 17:28:06,596 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:28:06 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:28:06 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:28:06 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:28:06 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:28:06 debian-cloud python[2886]:     )
+Jul 22 17:28:06 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:28:06 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:28:06 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:28:06 debian-cloud python[2886]:     )
+Jul 22 17:28:06 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:28:06 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:28:06 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:28:06 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:28:06 debian-cloud python[2886]:     return await future
+Jul 22 17:28:06 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:28:06 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:28:06 debian-cloud python[2886]:     result = function()
+Jul 22 17:28:06 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:28:12 debian-cloud python[2886]: 2026-07-22 17:28:12,943 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,group_presence,crossgroup tokens=5763/6000
+Jul 22 17:28:12 debian-cloud python[2886]: 2026-07-22 17:28:12,943 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=7 mem=12 desire=1 tools=21
+Jul 22 17:28:13 debian-cloud python[2886]: 2026-07-22 17:28:13,594 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:28:15 debian-cloud python[2886]: 2026-07-22 17:28:15,924 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:28:15 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:28:15 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:28:15 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:28:15 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:28:15 debian-cloud python[2886]:     )
+Jul 22 17:28:15 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:28:15 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:28:15 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:28:15 debian-cloud python[2886]:     )
+Jul 22 17:28:15 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:28:15 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:28:15 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:28:15 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:28:15 debian-cloud python[2886]:     return await future
+Jul 22 17:28:15 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:28:15 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:28:15 debian-cloud python[2886]:     result = function()
+Jul 22 17:28:15 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:28:16 debian-cloud python[2886]: 2026-07-22 17:28:16,160 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:28:16 debian-cloud python[2886]: 2026-07-22 17:28:16,465 anima.handler INFO [出站成功][trace=006f6418] part=0 msg_id=1571458032 segs=['at', 'text']
+Jul 22 17:28:16 debian-cloud python[2886]: 2026-07-22 17:28:16,746 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=8
+Jul 22 17:28:20 debian-cloud python[2886]: 2026-07-22 17:28:20,312 anima.cognitive.danger INFO DANGER: 关系推断笔记已写入 user=2914700203
+Jul 22 17:28:29 debian-cloud python[2886]: 2026-07-22 17:28:29,556 anima.channel.onebot11 INFO [段结构] user=2914700203 segs=["at(['qq'])", "text(['text'])"]
+Jul 22 17:28:30 debian-cloud python[2886]: 2026-07-22 17:28:30,363 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:28:30 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:28:30 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 229, in memory_stage
+Jul 22 17:28:30 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:28:30 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:28:30 debian-cloud python[2886]:     )
+Jul 22 17:28:30 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:28:30 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:28:30 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:28:30 debian-cloud python[2886]:     )
+Jul 22 17:28:30 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:28:30 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:28:30 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:28:30 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:28:30 debian-cloud python[2886]:     return await future
+Jul 22 17:28:30 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:28:30 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:28:30 debian-cloud python[2886]:     result = function()
+Jul 22 17:28:30 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:28:35 debian-cloud python[2886]: 2026-07-22 17:28:35,140 anima.pipeline.stages INFO Context system budget: dropped=capabilities,tool_learning,sylann_expression,group_presence,crossgroup tokens=5802/6000
+Jul 22 17:28:35 debian-cloud python[2886]: 2026-07-22 17:28:35,140 anima.pipeline.stages INFO ReAct: model=gemini-3.5-flash-low text_len=3 mem=16 desire=1 tools=21
+Jul 22 17:28:39 debian-cloud python[2886]: 2026-07-22 17:28:39,007 anima.pipeline.stages ERROR 向量记忆写入失败
+Jul 22 17:28:39 debian-cloud python[2886]: Traceback (most recent call last):
+Jul 22 17:28:39 debian-cloud python[2886]:   File "/opt/anima/anima/pipeline/stages.py", line 1358, in _record_reply_memory
+Jul 22 17:28:39 debian-cloud python[2886]:     await core.vector_memory.add(
+Jul 22 17:28:39 debian-cloud python[2886]:     ...<5 lines>...
+Jul 22 17:28:39 debian-cloud python[2886]:     )
+Jul 22 17:28:39 debian-cloud python[2886]:   File "/opt/anima/anima/memory/vector_memory.py", line 327, in add
+Jul 22 17:28:39 debian-cloud python[2886]:     await db.execute(
+Jul 22 17:28:39 debian-cloud python[2886]:     ...<10 lines>...
+Jul 22 17:28:39 debian-cloud python[2886]:     )
+Jul 22 17:28:39 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 223, in execute
+Jul 22 17:28:39 debian-cloud python[2886]:     cursor = await self._execute(self._conn.execute, sql, parameters)
+Jul 22 17:28:39 debian-cloud python[2886]:              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+Jul 22 17:28:39 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 160, in _execute
+Jul 22 17:28:39 debian-cloud python[2886]:     return await future
+Jul 22 17:28:39 debian-cloud python[2886]:            ^^^^^^^^^^^^
+Jul 22 17:28:39 debian-cloud python[2886]:   File "/opt/anima/venv/lib/python3.13/site-packages/aiosqlite/core.py", line 63, in _connection_worker_thread
+Jul 22 17:28:39 debian-cloud python[2886]:     result = function()
+Jul 22 17:28:39 debian-cloud python[2886]: sqlite3.IntegrityError: UNIQUE constraint failed: memory_meta.rowid
+Jul 22 17:28:39 debian-cloud python[2886]: 2026-07-22 17:28:39,184 anima.channel.onebot11 INFO WS action 已发送: send_group_msg -> 727631526
+Jul 22 17:28:39 debian-cloud python[2886]: 2026-07-22 17:28:39,575 anima.handler INFO [出站成功][trace=60d478a7] part=0 msg_id=1243055568 segs=['at', 'text']
+Jul 22 17:28:39 debian-cloud python[2886]: 2026-07-22 17:28:39,723 anima.gateway INFO [入站] event.message.group | user=2914700203 | text_len=4
+Jul 22 17:28:43 debian-cloud python[2886]: 2026-07-22 17:28:43,970 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:29:14 debian-cloud python[2886]: 2026-07-22 17:29:14,285 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:29:44 debian-cloud python[2886]: 2026-07-22 17:29:44,615 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:30:14 debian-cloud python[2886]: 2026-07-22 17:30:14,842 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:30:45 debian-cloud python[2886]: 2026-07-22 17:30:45,203 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:31:15 debian-cloud python[2886]: 2026-07-22 17:31:15,488 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:31:45 debian-cloud python[2886]: 2026-07-22 17:31:45,805 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:32:16 debian-cloud python[2886]: 2026-07-22 17:32:16,087 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:32:47 debian-cloud python[2886]: 2026-07-22 17:32:47,540 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:33:29 debian-cloud python[2886]: 2026-07-22 17:33:29,518 anima.learning INFO 反思已保存（text_len=83）
+Jul 22 17:33:35 debian-cloud python[2886]: 2026-07-22 17:33:35,932 anima.rumination INFO 能力语义去重：发现已有能力（name_len=8）
+Jul 22 17:33:35 debian-cloud python[2886]: 2026-07-22 17:33:35,981 anima.rumination INFO 自生长能力创建（name_len=8）
+Jul 22 17:33:35 debian-cloud python[2886]: 2026-07-22 17:33:35,995 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「帮没联网的本喵去外面打听消息」仅入库不注册
+Jul 22 17:33:35 debian-cloud python[2886]: 2026-07-22 17:33:35,996 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「把跑偏的铲屎官拽回来」仅入库不注册
+Jul 22 17:33:35 debian-cloud python[2886]: 2026-07-22 17:33:35,996 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「拍醒复读机喵」仅入库不注册
+Jul 22 17:33:36 debian-cloud python[2886]: 2026-07-22 17:33:36,322 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:34:06 debian-cloud python[2886]: 2026-07-22 17:34:06,436 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:34:37 debian-cloud python[2886]: 2026-07-22 17:34:37,062 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:35:07 debian-cloud python[2886]: 2026-07-22 17:35:07,169 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:35:37 debian-cloud python[2886]: 2026-07-22 17:35:37,591 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:36:07 debian-cloud python[2886]: 2026-07-22 17:36:07,700 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:36:38 debian-cloud python[2886]: 2026-07-22 17:36:38,217 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:37:08 debian-cloud python[2886]: 2026-07-22 17:37:08,353 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:37:39 debian-cloud python[2886]: 2026-07-22 17:37:39,118 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:38:09 debian-cloud python[2886]: 2026-07-22 17:38:09,242 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:38:39 debian-cloud python[2886]: 2026-07-22 17:38:39,689 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:39:09 debian-cloud python[2886]: 2026-07-22 17:39:09,802 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:39:40 debian-cloud python[2886]: 2026-07-22 17:39:40,267 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:40:10 debian-cloud python[2886]: 2026-07-22 17:40:10,669 anima.channel.onebot11 INFO [段结构] user=3148761989 segs=["image(['summary', 'file', 'url', 'key', 'emoji_id', 'emoji_package_id'])"]
+Jul 22 17:40:10 debian-cloud python[2886]: 2026-07-22 17:40:10,669 anima.channel.onebot11 INFO [图段] type=image keys=['summary', 'file', 'key', 'emoji_id', 'emoji_package_id'] subType= has_url=True file=e9-e976b28efc560344b19e2
+Jul 22 17:40:10 debian-cloud python[2886]: 2026-07-22 17:40:10,741 anima.handler INFO [表情收集] 收到 1 张图（群=727631526, 用户=3148761989）
+Jul 22 17:40:10 debian-cloud python[2886]: 2026-07-22 17:40:10,741 anima.handler INFO [回复闸门][trace=2627bb9f] skip reason=mention_only mode=mention text_len=0
+Jul 22 17:40:10 debian-cloud python[2886]: 2026-07-22 17:40:10,794 anima.gateway INFO [入站] event.message.group | user=3148761989 | text_len=0
+Jul 22 17:40:11 debian-cloud python[2886]: 2026-07-22 17:40:11,798 anima.forgetting INFO 遗忘完成: chat=0 vector=11
+Jul 22 17:40:11 debian-cloud python[2886]: 2026-07-22 17:40:11,945 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:40:42 debian-cloud python[2886]: 2026-07-22 17:40:42,448 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:41:12 debian-cloud python[2886]: 2026-07-22 17:41:12,570 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:41:43 debian-cloud python[2886]: 2026-07-22 17:41:43,005 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:42:13 debian-cloud python[2886]: 2026-07-22 17:42:13,122 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:42:43 debian-cloud python[2886]: 2026-07-22 17:42:43,900 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:43:14 debian-cloud python[2886]: 2026-07-22 17:43:14,015 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:43:44 debian-cloud python[2886]: 2026-07-22 17:43:44,476 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:44:14 debian-cloud python[2886]: 2026-07-22 17:44:14,589 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:44:45 debian-cloud python[2886]: 2026-07-22 17:44:45,128 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:45:15 debian-cloud python[2886]: 2026-07-22 17:45:15,243 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:45:45 debian-cloud python[2886]: 2026-07-22 17:45:45,759 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:46:15 debian-cloud python[2886]: 2026-07-22 17:46:15,874 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:46:46 debian-cloud python[2886]: 2026-07-22 17:46:46,328 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:47:16 debian-cloud python[2886]: 2026-07-22 17:47:16,452 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:47:46 debian-cloud python[2886]: 2026-07-22 17:47:46,887 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:48:16 debian-cloud python[2886]: 2026-07-22 17:48:16,997 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:48:56 debian-cloud python[2886]: 2026-07-22 17:48:56,538 anima.learning INFO 反思语义去重：跳过重复洞察（text_len=101，不消耗预算）
+Jul 22 17:49:05 debian-cloud python[2886]: 2026-07-22 17:49:05,450 anima.rumination INFO 能力语义去重：发现已有能力（name_len=9）
+Jul 22 17:49:05 debian-cloud python[2886]: 2026-07-22 17:49:05,565 anima.rumination INFO 自生长能力创建（name_len=8）
+Jul 22 17:49:05 debian-cloud python[2886]: 2026-07-22 17:49:05,579 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「帮没联网的本喵去外面打听消息」仅入库不注册
+Jul 22 17:49:05 debian-cloud python[2886]: 2026-07-22 17:49:05,579 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「把跑偏的铲屎官拽回来」仅入库不注册
+Jul 22 17:49:05 debian-cloud python[2886]: 2026-07-22 17:49:05,579 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「拍醒复读机喵」仅入库不注册
+Jul 22 17:49:05 debian-cloud python[2886]: 2026-07-22 17:49:05,882 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:49:36 debian-cloud python[2886]: 2026-07-22 17:49:36,000 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:50:06 debian-cloud python[2886]: 2026-07-22 17:50:06,469 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:50:36 debian-cloud python[2886]: 2026-07-22 17:50:36,587 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:51:06 debian-cloud python[2886]: 2026-07-22 17:51:06,999 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:51:37 debian-cloud python[2886]: 2026-07-22 17:51:37,294 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:52:07 debian-cloud python[2886]: 2026-07-22 17:52:07,746 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:52:18 debian-cloud python[2886]: 2026-07-22 17:52:18,258 aiohttp.access INFO 192.168.6.100 [22/Jul/2026:17:52:18 +0000] "GET /api/health HTTP/1.1" 401 201 "-" "Python-urllib/3.13"
+Jul 22 17:52:28 debian-cloud python[2886]: 2026-07-22 17:52:28,686 aiohttp.access INFO 192.168.6.100 [22/Jul/2026:17:52:28 +0000] "GET /api/health HTTP/1.1" 401 201 "-" "Python-urllib/3.13"
+Jul 22 17:52:28 debian-cloud python[2886]: 2026-07-22 17:52:28,852 aiohttp.access INFO 192.168.6.100 [22/Jul/2026:17:52:28 +0000] "GET /source HTTP/1.1" 200 4225 "-" "Python-urllib/3.13"
+Jul 22 17:52:37 debian-cloud python[2886]: 2026-07-22 17:52:37,858 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:53:08 debian-cloud python[2886]: 2026-07-22 17:53:08,280 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:53:38 debian-cloud python[2886]: 2026-07-22 17:53:38,387 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:54:08 debian-cloud python[2886]: 2026-07-22 17:54:08,880 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:54:20 debian-cloud python[2886]: 2026-07-22 17:54:20,634 aiohttp.access INFO 192.168.6.100 [22/Jul/2026:17:54:20 +0000] "GET /api/health HTTP/1.1" 401 182 "-" "Go-http-client/1.1"
+Jul 22 17:54:38 debian-cloud python[2886]: 2026-07-22 17:54:38,988 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:55:09 debian-cloud python[2886]: 2026-07-22 17:55:09,475 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:55:39 debian-cloud python[2886]: 2026-07-22 17:55:39,592 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:56:10 debian-cloud python[2886]: 2026-07-22 17:56:10,102 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:56:40 debian-cloud python[2886]: 2026-07-22 17:56:40,213 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:57:10 debian-cloud python[2886]: 2026-07-22 17:57:10,658 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:57:40 debian-cloud python[2886]: 2026-07-22 17:57:40,775 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:58:11 debian-cloud python[2886]: 2026-07-22 17:58:11,454 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:58:41 debian-cloud python[2886]: 2026-07-22 17:58:41,572 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:59:12 debian-cloud python[2886]: 2026-07-22 17:59:12,268 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 17:59:42 debian-cloud python[2886]: 2026-07-22 17:59:42,382 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:00:12 debian-cloud python[2886]: 2026-07-22 18:00:12,860 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:00:42 debian-cloud python[2886]: 2026-07-22 18:00:42,975 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:01:13 debian-cloud python[2886]: 2026-07-22 18:01:13,432 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:01:43 debian-cloud python[2886]: 2026-07-22 18:01:43,551 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:02:13 debian-cloud python[2886]: 2026-07-22 18:02:13,982 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:02:44 debian-cloud python[2886]: 2026-07-22 18:02:44,088 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:03:14 debian-cloud python[2886]: 2026-07-22 18:03:14,555 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:03:44 debian-cloud python[2886]: 2026-07-22 18:03:44,683 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:04:23 debian-cloud python[2886]: 2026-07-22 18:04:23,721 anima.learning INFO 反思已保存（text_len=61）
+Jul 22 18:04:31 debian-cloud python[2886]: 2026-07-22 18:04:31,655 anima.rumination INFO 能力语义去重：发现已有能力（name_len=8）
+Jul 22 18:04:31 debian-cloud python[2886]: 2026-07-22 18:04:31,704 anima.rumination INFO 自生长能力创建（name_len=8）
+Jul 22 18:04:31 debian-cloud python[2886]: 2026-07-22 18:04:31,718 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「帮没联网的本喵去外面打听消息」仅入库不注册
+Jul 22 18:04:31 debian-cloud python[2886]: 2026-07-22 18:04:31,718 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「把跑偏的铲屎官拽回来」仅入库不注册
+Jul 22 18:04:31 debian-cloud python[2886]: 2026-07-22 18:04:31,719 anima.tools INFO 今日能力工具注册配额已满 (3)，能力「拍醒复读机喵」仅入库不注册
+Jul 22 18:04:32 debian-cloud python[2886]: 2026-07-22 18:04:32,022 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:05:02 debian-cloud python[2886]: 2026-07-22 18:05:02,337 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:05:32 debian-cloud python[2886]: 2026-07-22 18:05:32,753 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:05:34 debian-cloud python[2886]: 2026-07-22 18:05:34,211 anima.exploration WARNING 探索来源失败: JSONDecodeError
+Jul 22 18:05:34 debian-cloud python[2886]: 2026-07-22 18:05:34,211 anima.exploration WARNING 探索来源失败: ParseError
+Jul 22 18:05:34 debian-cloud python[2886]: 2026-07-22 18:05:34,211 anima.exploration WARNING 探索来源失败: JSONDecodeError
+Jul 22 18:05:34 debian-cloud python[2886]: 2026-07-22 18:05:34,211 anima.exploration WARNING 探索来源失败: ClientResponseError
+Jul 22 18:06:02 debian-cloud python[2886]: 2026-07-22 18:06:02,865 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:06:33 debian-cloud python[2886]: 2026-07-22 18:06:33,277 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:07:03 debian-cloud python[2886]: 2026-07-22 18:07:03,382 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:07:33 debian-cloud python[2886]: 2026-07-22 18:07:33,849 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:08:03 debian-cloud python[2886]: 2026-07-22 18:08:03,957 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:08:34 debian-cloud python[2886]: 2026-07-22 18:08:34,370 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:09:04 debian-cloud python[2886]: 2026-07-22 18:09:04,555 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:09:34 debian-cloud python[2886]: 2026-07-22 18:09:34,996 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:10:05 debian-cloud python[2886]: 2026-07-22 18:10:05,150 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:10:35 debian-cloud python[2886]: 2026-07-22 18:10:35,561 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:11:05 debian-cloud python[2886]: 2026-07-22 18:11:05,676 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:11:36 debian-cloud python[2886]: 2026-07-22 18:11:36,086 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:12:06 debian-cloud python[2886]: 2026-07-22 18:12:06,190 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:12:36 debian-cloud python[2886]: 2026-07-22 18:12:36,637 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:13:06 debian-cloud python[2886]: 2026-07-22 18:13:06,747 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:13:37 debian-cloud python[2886]: 2026-07-22 18:13:37,149 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:14:07 debian-cloud python[2886]: 2026-07-22 18:14:07,256 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:14:37 debian-cloud python[2886]: 2026-07-22 18:14:37,942 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:15:08 debian-cloud python[2886]: 2026-07-22 18:15:08,055 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:15:38 debian-cloud python[2886]: 2026-07-22 18:15:38,831 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:16:09 debian-cloud python[2886]: 2026-07-22 18:16:09,033 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+
+======================================================================
+$ systemctl status anima
+======================================================================
+● anima.service - Anima QQ Bot
+     Loaded: loaded (/etc/systemd/system/anima.service; enabled; preset: enabled)
+     Active: active (running) since Wed 2026-07-22 17:04:58 UTC; 1h 11min ago
+ Invocation: 4de019cc370e463eb9cc26d65bbdae32
+   Main PID: 2886 (python)
+      Tasks: 6 (limit: 4655)
+     Memory: 156.8M (peak: 171.1M)
+        CPU: 11.586s
+     CGroup: /system.slice/anima.service
+             └─2886 /opt/anima/venv/bin/python -m anima start --config /opt/anima/config.yaml
+
+Jul 22 18:11:36 debian-cloud python[2886]: 2026-07-22 18:11:36,086 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:12:06 debian-cloud python[2886]: 2026-07-22 18:12:06,190 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:12:36 debian-cloud python[2886]: 2026-07-22 18:12:36,637 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:13:06 debian-cloud python[2886]: 2026-07-22 18:13:06,747 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:13:37 debian-cloud python[2886]: 2026-07-22 18:13:37,149 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=4
+Jul 22 18:14:07 debian-cloud python[2886]: 2026-07-22 18:14:07,256 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:14:37 debian-cloud python[2886]: 2026-07-22 18:14:37,942 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:15:08 debian-cloud python[2886]: 2026-07-22 18:15:08,055 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:15:38 debian-cloud python[2886]: 2026-07-22 18:15:38,831 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+Jul 22 18:16:09 debian-cloud python[2886]: 2026-07-22 18:16:09,033 anima.cognitive.danger INFO DANGER: 自升级熔断 skip reason=failure_circuit running=0 recent_failed=3
+
+======================================================================
+$ free -m
+======================================================================
+               total        used        free      shared  buff/cache   available
+Mem:            3921         759        2580           1         799        3162
+Swap:              0           0           0
+
+======================================================================
+$ df -h /opt/anima
+======================================================================
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/sdb         30G  1.6G   27G   6% /opt
+
+======================================================================
+$ cat /opt/anima/config.yaml
+======================================================================
+qq:
+  enabled: true
+  napcat_ws_url: ws://127.0.0.1:3001
+  napcat_http_url: http://127.0.0.1:3001
+  self_id: null
+  access_token: null
+  event_concurrency: 12
+  max_pending_events: 128
+llm:
+  endpoint: http://54.168.242.65:3000/gemini-antigravity/v1
+  api_key: 8xAXWc0fLKi76GThxVVUWJzOFk6EAx2L
+  model: gemini-3.5-flash-low
+  embedding_endpoint: null
+  embedding_model: text-embedding-3-small
+  embedding_dim: 1536
+  timeout: 60.0
+  retries: 2
+  retry_backoff_sec: 0.6
+  fallback_models:
+  - gemini-2.5-flash
+  - gemini-3-flash
+  circuit_failure_threshold: 3
+  circuit_cooldown_sec: 30.0
+  providers: {}
+  active_provider: default
+  module_models: {}
+  model_prices: {}
+vector:
+  enabled: true
+  db_path: data/anima.db
+  embedding_backend: remote
+  cache: true
+  embedding_endpoint: https://api.siliconflow.cn/v1
+  embedding_model: BAAI/bge-m3
+  embedding_dim: 1024
+  embedding_api_key: sk-phhgqttnvptpqjahisdpwgwdgrvtpzzcrkjafdsaweikdonx
+  rerank_enabled: true
+  rerank_endpoint: https://api.siliconflow.cn/v1/rerank
+  rerank_model: BAAI/bge-reranker-v2-m3
+  rerank_api_key: sk-phhgqttnvptpqjahisdpwgwdgrvtpzzcrkjafdsaweikdonx
+  rerank_top_n: 5
+autonomy:
+  enabled: true
+  heartbeat_tick_sec: 30.0
+  cooldown_sec: 90
+  daily_max_per_group: 20
+  ratio_max: 0.3
+  token_budget_per_day: 0
+  reply_only_when_mentioned: true
+  familiar_reply_min: 0.55
+  other_bot_names:
+  - 沙琪玛
+  - 沙其玛
+  - 莎琪玛
+  - aki
+  - 阿基
+  active_reply_prob: 0.02
+  active_silence_min_sec: 300
+  active_global_cooldown_sec: 1800
+  active_min_group_messages: 6
+  active_daily_max_per_group: 2
+  active_context_score_threshold: 0.4
+  active_intent_max_attempts: 5
+drift:
+  delta_max: 0.1
+  daily_budget: 1.5
+  self_correction_daily_budget: 0.5
+  window_ceiling: 0.8
+  similarity_floor: 0.75
+  valence_min: -0.3
+  valence_max: 0.7
+  checkpoints_keep: 7
+permissions:
+  owners:
+  - 1562290139
+  admins:
+  - 1562290139
+  readonly: []
+  banned: []
+  readonly_groups: []
+  banned_groups: []
+  group_policies:
+    '727631526':
+      reply_mode: mention
+      familiar_min: 0.55
+      autonomy: true
+    '552994229':
+      reply_mode: mention
+      familiar_min: 0.55
+      autonomy: true
+persistence:
+  data_dir: data
+  use_sqlite: true
+compat:
+  astrbot_enabled: false
+  astrbot_tier: 1
+crossgroup:
+  enabled: true
+  observe_all_messages: true
+  min_fact_text_len: 6
+  extraction_model: ''
+  max_facts_per_user: 50
+tool_learning:
+  enabled: true
+  summarize_interval: 10
+  records_max: 200
+  inject_top_k: 4
+capabilities:
+  enabled: true
+  initial_confidence: 0.3
+  auto_register_confidence: 0.65
+  dynamic_daily_quota: 3
+  max_total: 40
+  unused_drop_days: 30
+  unused_decay_days: 14
+  dedup_text_threshold: 0.5
+  max_zero_usage: 12
+  min_create_text_len: 6
+notes_compact:
+  enabled: true
+  notes_max_keep: 300
+  compact_every_ruminations: 6
+  compact_model: ''
+sticker:
+  enabled: true
+  auto_collect: true
+  collect_mode: cooldown
+  collect_probability: 0.3
+  collect_cooldown_sec: 30.0
+  collect_min_interval: 3.0
+  max_stickers: 500
+  label_throttle_per_user: 600
+  label_model: gemini-3.1-flash
+  label_by_vision: true
+  require_owner_review: true
+  pending_capacity: 200
+  default_scope: local
+  collect_allowlist: []
+  collect_blocklist: []
+  send_allowlist: []
+  send_blocklist: []
+  share_across_groups: false
+  always_atmosphere:
+  - humorous
+  - casual
+  recent_window: 4
+  gif_min_interval_sec: 1800
+  classify_at_collect: true
+  llm_select: true
+  select_model: gemini-3.1-flash
+  send_probability: 0.35
+  send_by_emotion: true
+  send_cooldown_sec: 20.0
+bilibili_read:
+  enabled: true
+  sessdata: ''
+  bili_jct: ''
+  summary_model: ''
+  max_subtitle_length: 4000
+self_code:
+  enabled: true
+  claude_executable: claude
+  anthropic_api_key: ''
+  api_base_url: ''
+  workspace_dir: ''
+  selfcode_dir: ''
+  max_turns: 12
+  timeout_seconds: 180
+  permission_mode: acceptEdits
+  auto_install: false
+  daily_quota: 0
+  test_timeout: 30
+  model: ''
+  max_review_rounds: 2
+  critic_enabled: true
+  coder_backend: auto
+vision:
+  enabled: true
+  model: gemini-3.1-flash
+  max_inline_bytes: 2097152
+  max_source_bytes: 33554432
+  max_request_image_bytes: 3145728
+  max_dimension: 1280
+  max_animation_frames: 3
+  describe_throttle_per_user: 600
+  comprehend_in_chat: true
+  store_desc_to_memory: true
+image_generation:
+  enabled: true
+  model: gemini-3.1-flash-image
+  daily_limit: 0
+  max_output_bytes: 16777216
+audio:
+  transcription_enabled: true
+  model: ''
+  max_bytes: 10485760
+  throttle_per_user: 120
+sylann:
+  enabled: true
+  mode: active
+  data_dir: sylann
+  weight: 0.15
+  engine_mode: lite
+  assessor_enabled: true
+  pel_core_enabled: true
+  tick_sessions_limit: 32
+skills:
+  enabled: true
+  dir: skills
+  allow_prompt: true
+  max_loaded: 32
+conversation:
+  enabled: true
+  wait_sec: 1.5
+  max_wait_sec: 8.0
+context:
+  input_token_budget: 12000
+  system_token_budget: 6000
+  image_token_estimate: 768
+  tool_result_token_budget: 1800
+webui:
+  enabled: true
+  host: 0.0.0.0
+  port: 8088
+  token: iJb1UEc3IOFjGa73xCsVWWEeenkiHV_7
+security:
+  require_approval_for_danger: true
+  approval_ttl_sec: 900.0
+contradiction:
+  enabled: true
+  max: 50
+  dedup_recent: 10
+  recall_threshold: 0.8
+  model: ''
+danger:
+  enabled: true
+  active_info_collection: false
+  relationship_inference: true
+  stance_propagation: false
+  stance_propagation_confirm: false
+  identity_crisis: true
+  autonomous_web: false
+  memory_infection: false
+  memory_infection_confirm: false
+  core_mutation: false
+  core_mutation_confirm: false
+  autonomous_web_extract_chars: 1500
+  memory_infection_max_repeats: 2
+  info_collection_can_speak: false
+  stance_max_age_seconds: 300
+  self_improvement: true
+  self_improvement_confirm: true
+  self_improvement_min_intensity: 0.7
+  self_improvement_cooldown_sec: 7200
+  self_improvement_synth_prob: 0.05
+  self_improvement_skip_when_faults: true
+  self_improvement_max_running: 2
+  self_improvement_max_recent_failed: 3
+  self_improvement_failure_window_sec: 7200
+deploy:
+  mode: systemd
+  napcat_topology: same-host
+iteration:
+  enabled: true
+  auto_repair: false
+  auto_restart: true
+  daily_quota: 1
+  ticket_cooldown_sec: 21600
+  auto_repair_cooldown_sec: 3600
+  max_files_per_patch: 2
+  max_file_chars: 120000
+  pytest_timeout_sec: 120
+tools:
+  web_search:
+    engines:
+    - duckduckgo_html
+    - bing_international
+    - cn.bing.com
+    - sogou.com
+    - so.com
+    fetcher_mode: http
+    num_results: 5
+    fetch_content: true
+    foreign_proxy: auto
+
+======================================================================
+$ ls -la /opt/anima/data/
+======================================================================
+total 23820
+drwxr-xr-x 19 anima anima     4096 Jul 22 18:16 .
+drwxr-xr-x 19 anima anima     4096 Jul 22 17:04 ..
+-rw-------  1 anima anima      358 Jul 22 11:56 .tmp_v0_d17e1.json
+-rw-------  1 anima anima     4602 Jul 22 15:59 agenda.json
+-rw-r--r--  1 anima anima  4403200 Jul 22 17:40 anima.db
+drwxr-xr-x  2 anima anima     4096 Jul 22 00:00 audit
+drwxr-xr-x  2 anima anima     4096 Jul 22 01:17 backups
+-rw-------  1 anima anima     2027 Jul 18 08:59 behavior_replays.json
+-rw-------  1 anima anima      492 Jul 22 15:59 calendar_daily.json
+-rw-------  1 anima anima        2 Jul 22 15:59 calendar_weekly.json
+-rw-r--r--  1 anima anima    13369 Jul 22 17:40 chat_memory.json
+-rw-r--r--  1 anima anima     9664 Jul 11 06:27 chat_memory.json.bak-purge-20260711064653
+-rw-r--r--  1 anima anima     4059 Jul 22 17:04 chat_memory.json.pre-isolation
+-rw-------  1 anima anima     4102 Jul 22 17:28 commitments.json
+drwxr-xr-x  2 anima anima     4096 Jul 19 15:59 config_backups
+-rw-------  1 anima anima    96906 Jul 22 17:04 config_changes.json
+-rw-------  1 anima anima      289 Jul 18 15:16 contradictions.json
+-rw-------  1 anima anima      219 Jul 22 18:10 controlled_iteration.json
+-rw-r--r--  1 anima anima      978 Jul 22 16:09 controlled_iteration.json.bak-closed-20260723_000922
+drwxr-xr-x  3 anima anima     4096 Jul 18 04:55 core_patch_backups
+drwxr-xr-x  2 anima anima     4096 Jul 11 06:46 crossgroup
+-rw-------  1 anima anima     3739 Jul 22 17:05 desires.json
+-rw-------  1 anima anima     5805 Jul 19 13:00 diary.md
+drwxr-xr-x  2 anima anima     4096 Jul 18 03:39 digests
+-rw-r--r--  1 anima anima 14535618 Jul 22 17:28 embedding_cache.json
+-rw-------  1 anima anima    14214 Jul 22 17:28 episodes.json
+-rw-------  1 anima anima    61848 Jul 22 18:04 evolution_log.jsonl
+-rw-------  1 anima anima      915 Jul 22 18:05 exploration_state.json
+-rw-------  1 anima anima       76 Jul 22 17:40 forgetting_state.json
+drwxr-xr-x  4 anima anima     4096 Jul 14 10:48 generated
+-rw-------  1 anima anima      346 Jul 22 17:40 group_presence.json
+-rw-------  1 anima anima  3034459 Jul 22 18:15 health_history.json
+-rw-------  1 anima anima      617 Jul 22 18:16 heartbeat.json
+-rw-------  1 anima anima       31 Jul 22 17:28 identity_crisis.json
+-rw-------  1 anima anima       39 Jul 14 10:52 image_generation_usage.json
+-rw-------  1 anima anima    23266 Jul 22 15:59 intent_ledger.json
+-rw-------  1 anima anima     1881 Jul 22 18:04 learning_state.json
+-rw-------  1 anima anima      132 Jul 22 15:15 life_state.json
+-rw-r--r--  1 anima anima  1277952 Jul 22 18:04 llm_usage.sqlite3
+drwxr-xr-x  2 anima anima     4096 Jul 22 18:15 monitors
+drwxr-xr-x  2 anima anima     4096 Jul 12 06:13 output
+-rw-------  1 anima anima    76558 Jul 22 16:24 owner_tasks.json
+-rw-r--r--  1 anima anima    73484 Jul 22 16:09 owner_tasks.json.bak-closed-20260723_000922
+-rw-------  1 anima anima       36 Jul 13 23:18 permissions_override.json
+-rw-------  1 anima anima    18922 Jul 22 18:04 personal_capabilities.json
+-rw-------  1 anima anima    18859 Jul 22 16:47 personal_capabilities.json.bak-academic-cleanup-20260722_170150
+-rw-------  1 anima anima    16099 Jul 11 05:57 personal_capabilities.json.bak-cleanup-1783749460
+-rw-------  1 anima anima    16181 Jul 11 06:16 personal_capabilities.json.bak-merge-1783750599
+-rw-------  1 anima anima    15760 Jul 11 23:52 personal_capabilities.json.bak-purge-20260712075215
+drwxr-xr-x  2 anima anima     4096 Jul 17 01:09 plugins
+-rw-------  1 anima anima    23218 Jul 22 17:28 relation.json
+-rw-------  1 anima anima     8263 Jul 22 17:40 reply_quality.json
+-rw-------  1 anima anima       36 Jul 22 18:04 rumination_state.json
+-rw-------  1 anima anima      487 Jul 22 17:12 scars.json
+-rw-------  1 anima anima    39221 Jul 22 18:04 self_notes.md
+drwxr-xr-x  3 anima anima     4096 Jul 18 11:29 selfcode
+-rw-r-----  1 anima anima     3949 Jul 22 16:24 selfcode_audit.json
+drwxr-xr-x  2 anima anima     4096 Jul 18 02:12 selfcode_backup_20260718_021248
+drwxr-xr-x  3 anima anima     4096 Jul 18 02:12 selfcode_backup_20260718_112955
+-rw-r--r--  1 anima anima        2 Jul 18 11:29 selfcode_disabled.json
+-rw-r--r--  1 anima anima       24 Jul 18 02:12 selfcode_quota.json
+-rw-r--r--  1 anima anima       16 Jul 22 17:05 selfcode_stats.json
+drwxr-xr-x 30 anima anima     4096 Jul 22 16:21 selfcode_workspace
+-rw-------  1 anima anima     1952 Jul 19 15:57 skill_drafts.json
+drwxr-xr-x  4 anima anima     4096 Jul 19 15:57 skills
+-rw-------  1 anima anima      549 Jul 15 21:16 sticker_policy.json
+drwxrwxr-x  2 anima anima    49152 Jul 22 17:17 stickers
+-rw-------  1 anima anima   100576 Jul 22 17:17 stickers.json
+-rw-------  1 anima anima    98522 Jul 22 17:04 stickers.json.pre-reconcile
+drwxr-xr-x  3 anima anima     4096 Jul 22 18:16 sylann
+-rw-------  1 anima anima      179 Jul 22 17:04 time_sense.json
+-rw-------  1 anima anima    54090 Jul 22 17:18 tool_learning.json
+-rw-------  1 anima anima     4532 Jul 18 03:39 weekly_digest_latest.json
+-rw-------  1 anima anima     1928 Jul 22 15:59 workflows.json
+-rw-------  1 anima anima    15332 Jul 22 18:04 world_model.json
+-rw-------  1 anima anima    14518 Jul 11 06:03 world_model.json.bak-purge-20260711064653
+-rw-------  1 anima anima     7995 Jul 11 23:52 world_model.json.bak-purge-20260712075215
+
+======================================================================
+$ cat /opt/anima/data/owner_tasks.json 2>/dev/null | head -200
+======================================================================
+[
+  {
+    "request": "做一个极简温度换算工具：输入参数 celsius（数字），返回华氏度结果字符串，例如 '25°C = 77.0°F'。TOOL_META 必须包含 name/description/parameters/required/min_level，其中 required=['celsius']，min_level='user'。不要访问网络，不要读写文件，不要用 subprocess。",
+    "creator": 1562290139,
+    "id": "b4aa180b76",
+    "status": "completed",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "✓ gen_1784340464.py 自测通过，等待 Owner 审批安装",
+      "Owner 已批准：已安装并热注册：已热注册：convert_celsius_to_fahrenheit（备份=data/selfcode_backup_20260718_021248）"
+    ],
+    "proposal": {
+      "kind": "selfcode",
+      "goal": "做一个极简温度换算工具：输入参数 celsius（数字），返回华氏度结果字符串，例如 '25°C = 77.0°F'。TOOL_META 必须包含 name/description/parameters/required/min_level，其中 required=['celsius']，min_level='user'。不要访问网络，不要读写文件，不要用 subprocess。",
+      "effect": "新增受限运行时工具；不修改 Anima 核心源码、配置或部署单元。",
+      "impact": "候选作为受限运行时工具热注册到工具表，仅当 LLM 主动调用时才执行；不改动核心回复链路、定时任务或部署单元，对现有群聊行为无副作用。",
+      "risk": "候选代码会在 Owner 审批后安装为运行时工具；安装前会再次静态校验和沙箱自测。",
+      "rollback": "安装前自动对运行时工具目录做时间戳备份（data/selfcode_backup_<ts>）；回滚只需删除 data/selfcode/<file> 并重启进程，或直接恢复该备份目录恢复全部工具。",
+      "candidates": [
+        {
+          "path": "/opt/anima/data/selfcode_workspace/b4aa180b76/gen_1784340464.py",
+          "file": "gen_1784340464.py",
+          "sha256": "0193300ff2a4f6666044a24d5b208b5b42a831c33a74c91cdf92b4401e13cf12",
+          "tool": {
+            "name": "convert_celsius_to_fahrenheit",
+            "description": "温度换算工具：输入摄氏度（Celsius），将其转换为华氏度（Fahrenheit）。",
+            "min_level": "user",
+            "parameters": {
+              "type": "object",
+              "properties": {
+                "celsius": {
+                  "type": "number",
+                  "description": "需要转换的摄氏温度值"
+                }
+              },
+              "required": [
+                "celsius"
+              ]
+            }
+          },
+          "test_result": "TEST_OK convert_celsius_to_fahrenheit",
+          "preview": "TOOL_META = {\n    \"name\": \"convert_celsius_to_fahrenheit\",\n    \"description\": \"温度换算工具：输入摄氏度（Celsius），将其转换为华氏度（Fahrenheit）。\",\n    \"parameters\": {\n        \"type\": \"object\",\n        \"properties\": {\n            \"celsius\": {\n                \"type\": \"number\",\n                \"description\": \"需要转换的摄氏温度值\"\n            }\n        },\n        \"required\": [\"celsius\"]\n    },\n    \"required\": [\"celsius\"],\n    \"min_level\": \"user\"\n}\n\nasync def run(core, celsius: float) -> str:\n    \"\"\"\n    将摄氏度转换为华氏度。\n    转换公式: F = C * 9/5 + 32\n    \"\"\"\n    try:\n        celsius_val = float(celsius)\n        fahrenheit_val = celsius_val * 9.0 / 5.0 + 32.0\n        return f\"{celsius_val}°C = {fahrenheit_val:.1f}°F\"\n    except (ValueError, TypeError) as e:\n        return f\"错误：无法将输入参数 '{celsius}' 转换为数字。原因：{str(e)}\""
+        }
+      ],
+      "summary": "✓ gen_1784340464.py 自测通过，等待 Owner 审批安装",
+      "rollback_backup": "data/selfcode_backup_20260718_021248"
+    },
+    "reviewed_at": 1784340768.3762627,
+    "reviewer": 1562290139,
+    "created_at": 1784340463.284705,
+    "updated_at": 1784340768.521053
+  },
+  {
+    "request": "做一个将普通文本转换成带有喵娘语气助词和萌系颜文字的喵语转换工具。",
+    "creator": 1562290139,
+    "id": "7c627a9939",
+    "status": "failed",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "工作区未产出 .py 模块。Claude 输出片段：[selfcode] Claude 调用超时"
+    ],
+    "proposal": {},
+    "reviewed_at": null,
+    "reviewer": null,
+    "created_at": 1784344809.8028896,
+    "updated_at": 1784345019.9054816
+  },
+  {
+    "request": "做一个将普通文本转换成带有喵娘语气助词和萌系颜文字的喵语转换工具。",
+    "creator": 1562290139,
+    "id": "ba62ef9878",
+    "status": "cancelled",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "ops_cleanup: 取消僵尸 selfcode running（超时/堆积）"
+    ],
+    "proposal": {},
+    "reviewed_at": null,
+    "reviewer": null,
+    "created_at": 1784344839.8592546,
+    "updated_at": 1784353715.450913
+  },
+  {
+    "request": "做一个能将普通文本转换成带有“喵”字尾音和猫娘颜文字的喵语翻译工具",
+    "creator": 1562290139,
+    "id": "2beadc7b27",
+    "status": "cancelled",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "ops_cleanup: 取消僵尸 selfcode running（超时/堆积）"
+    ],
+    "proposal": {},
+    "reviewed_at": null,
+    "reviewer": null,
+    "created_at": 1784344930.1821241,
+    "updated_at": 1784353715.450913
+  },
+  {
+    "request": "做一个能将普通文本转换成带有“喵”字尾音和猫娘颜文字的喵语翻译工具",
+    "creator": 1562290139,
+    "id": "4cf0eb9a05",
+    "status": "cancelled",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "ops_cleanup: 取消僵尸 selfcode running（超时/堆积）"
+    ],
+    "proposal": {},
+    "reviewed_at": null,
+    "reviewer": null,
+    "created_at": 1784344960.2344246,
+    "updated_at": 1784353715.450913
+  },
+  {
+    "request": "做一个能将普通文本转换成带有“喵”字尾音和猫娘颜文字的喵语翻译工具",
+    "creator": 1562290139,
+    "id": "2f96b82711",
+    "status": "cancelled",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "ops_cleanup: 取消僵尸 selfcode running（超时/堆积）"
+    ],
+    "proposal": {},
+    "reviewed_at": null,
+    "reviewer": null,
+    "created_at": 1784344990.3746257,
+    "updated_at": 1784353715.450913
+  },
+  {
+    "request": "做一个根据用户情绪状态，生成专属猫娘安慰、鼓励或撒娇回复的工具。",
+    "creator": 1562290139,
+    "id": "7addaa8ffa",
+    "status": "cancelled",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",
+      "静态校验和沙箱自测",
+      "等待 Owner 审批安装"
+    ],
+    "evidence": [
+      "开始生成受限运行时工具候选",
+      "ops_cleanup: 取消僵尸 selfcode running（超时/堆积）"
+    ],
+    "proposal": {},
+    "reviewed_at": null,
+    "reviewer": null,
+    "created_at": 1784345050.571241,
+    "updated_at": 1784353715.450913
+  },
+  {
+    "request": "做一个根据用户情绪状态，生成专属猫娘安慰、鼓励或撒娇回复的工具。",
+    "creator": 1562290139,
+    "id": "235bd312d0",
+    "status": "cancelled",
+    "kind": "selfcode",
+    "plan": [
+      "在隔离工作区生成候选",
+      "双 Agent 审查",

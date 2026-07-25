@@ -19,9 +19,16 @@ ATMOSPHERE_GUIDANCE = {
 
 
 def _memory_block(user_memory) -> str:
+    parts = []
+    # P4: 跨群身份统一——不同群的不同名字
+    aliases = getattr(user_memory, "aliases", None)
+    if aliases:
+        parts.append(f"这个人在不同群可能叫不同名字: {'、'.join(aliases[:5])}")
     if getattr(user_memory, "facts", None):
-        return f"【用户跨群记忆（仅作背景底稿，绝不可主动复述）】\n{user_memory.summary()}"
-    return "【用户跨群记忆】暂无"
+        parts.append(f"【用户跨群记忆（仅作背景底稿，绝不可主动复述）】\n{user_memory.summary()}")
+    else:
+        parts.append("【用户跨群记忆】暂无")
+    return "\n".join(parts)
 
 
 def build_system_prompt(persona: str, atmosphere, user_memory) -> str:

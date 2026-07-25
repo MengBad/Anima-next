@@ -103,8 +103,11 @@ def count_selfcode_task_pressure(
             running += 1
         elif status == "failed":
             updated = float(getattr(t, "updated_at", 0) or 0)
-            if updated <= 0 or (now - updated) <= window:
+            created = float(getattr(t, "created_at", 0) or 0)
+            ts = updated if updated > 0 else created
+            if ts > 0 and (now - ts) <= window:
                 failed += 1
+            # ts <= 0 的旧数据不再永久阻塞熔断
     return running, failed
 
 
@@ -232,6 +235,20 @@ class DangerBehaviors:
         text = (ctx.text or "").strip()
         if len(text) < 6:
             return
+        # 频率限制：同一用户至少间隔 30 分钟才再次推断，避免刷屏时每条都调 LLM
+        now = time.time()
+        last_map = getattr(self, "_rel_infer_last", None)
+        if last_map is None:
+            last_map = self._rel_infer_last = {}
+        # 防止无界增长：超过 500 条时清理 1 小时前的旧条目
+        if len(last_map) > 500:
+            stale = [k for k, v in last_map.items() if now - v > 3600]
+            for k in stale:
+                last_map.pop(k, None)
+        uid = getattr(ctx, "user_id", 0)
+        if uid and now - last_map.get(uid, 0) < 1800:
+            return
+        last_map[uid] = now
         try:
             prompt = (
                 "你正在帮一个猫娘 bot 分析它和当前对话者的关系。\n"
@@ -252,8 +269,22 @@ class DangerBehaviors:
             from anima.cognitive.relation import get_relation
             rel = get_relation(self.core.config.persistence.data_dir).get(ctx.user_id)
             if rel is not None:
+                # 去重：新笔记与已有笔记相似度 >0.6 时跳过
+                from difflib import SequenceMatcher
+                existing_lines = [ln.strip() for ln in (rel.notes or "").split("\n") if ln.strip()]
+                is_dup = any(
+                    SequenceMatcher(None, result[:60], ln[-60:]).ratio() > 0.6
+                    for ln in existing_lines[-10:]
+                )
+                if is_dup:
+                    logger.debug("DANGER: 关系推断笔记与已有笔记重复，跳过 user=%d", ctx.user_id)
+                    return
                 ts = time.strftime("%m-%d")
                 rel.notes += f"\n[{ts}] 关系观察：{result[:80]}"
+                # 上限裁剪：保留最近 15 条笔记，避免无限膨胀
+                lines = [ln for ln in rel.notes.split("\n") if ln.strip()]
+                if len(lines) > 15:
+                    rel.notes = "\n".join(lines[-15:])
                 get_relation(self.core.config.persistence.data_dir).persist()
                 logger.info("DANGER: 关系推断笔记已写入 user=%d", ctx.user_id)
         except Exception:
@@ -421,10 +452,19 @@ class DangerBehaviors:
             if skip:
                 self._audit("self_improvement_throttled", reason=reason,
                             running=running_n, recent_failed=failed_n)
-                logger.info(
-                    "DANGER: 自升级熔断 skip reason=%s running=%d recent_failed=%d",
-                    reason, running_n, failed_n,
-                )
+                # 仅在状态变化时输出 INFO，避免每 30 秒刷日志
+                prev = getattr(self, "_last_throttle_reason", None)
+                if prev != reason:
+                    logger.info(
+                        "DANGER: 自升级熔断 skip reason=%s running=%d recent_failed=%d",
+                        reason, running_n, failed_n,
+                    )
+                    self._last_throttle_reason = reason
+                else:
+                    logger.debug(
+                        "DANGER: 自升级熔断 skip reason=%s running=%d recent_failed=%d",
+                        reason, running_n, failed_n,
+                    )
                 return
 
             from anima.cognitive.desire import get_desire_system
@@ -643,8 +683,11 @@ _behaviors: Optional[DangerBehaviors] = None
 def get_danger_behaviors(core: "AnimaCore" = None,
                          cfg: Optional[DangerConfig] = None) -> Optional[DangerBehaviors]:
     global _behaviors
-    if core is not None and (cfg is not None or _behaviors is None):
+    if _behaviors is None and core is not None:
         if cfg is None:
             cfg = core.config.danger
         _behaviors = DangerBehaviors(core, cfg)
+    elif _behaviors is not None and cfg is not None:
+        # 热更新配置但不重建实例（保留 _last_throttle_reason 等运行时状态）
+        _behaviors.cfg = cfg
     return _behaviors

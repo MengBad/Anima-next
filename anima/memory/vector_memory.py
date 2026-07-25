@@ -316,18 +316,10 @@ class VectorMemory:
             return True
 
         async with aiosqlite.connect(self.db_path) as db:
-            if _SQLITE_VEC_AVAILABLE:
-                await db.enable_load_extension(True)
-                await db.load_extension(sqlite_vec.loadable_path())
+            # 先写 memory_meta，让 SQLite 自动分配 rowid（避免并发时 vec0 rowid 冲突）
             cur = await db.execute(
-                "INSERT INTO memories(embedding) VALUES (?)",
-                (json.dumps(vec),),
-            )
-            rowid = cur.lastrowid
-            await db.execute(
-                "INSERT INTO memory_meta(rowid, text, meta, ts, salience, source_uin, source_gid) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO memory_meta(text, meta, ts, salience, source_uin, source_gid) VALUES (?, ?, ?, ?, ?, ?)",
                 (
-                    rowid,
                     text,
                     json.dumps(meta or {}, ensure_ascii=False),
                     time.time(),
@@ -335,6 +327,15 @@ class VectorMemory:
                     source_uin,
                     source_gid,
                 ),
+            )
+            meta_rowid = cur.lastrowid
+            # 再用该 rowid 写入 vec0 虚表
+            if _SQLITE_VEC_AVAILABLE:
+                await db.enable_load_extension(True)
+                await db.load_extension(sqlite_vec.loadable_path())
+            await db.execute(
+                "INSERT INTO memories(rowid, embedding) VALUES (?, ?)",
+                (meta_rowid, json.dumps(vec)),
             )
             await db.commit()
         return True

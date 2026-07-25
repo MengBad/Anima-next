@@ -22,7 +22,7 @@ logger = logging.getLogger("anima.memory.chat_memory")
 
 # 身份混淆标记：历史污染数据中 bot 条目若包含这些 token，视为污染并清洗掉。
 _POLLUTION_TOKENS = ("antigravity", "我是 antigravity", "antigravity ai")
-_CQ_TRANSPORT_RE = re.compile(r"\[CQ:(?:image|face|bface|sface|record|video)[^\]]*\]", re.I)
+from anima.constants import CQ_TRANSPORT_RE as _CQ_TRANSPORT_RE
 
 
 def _is_polluted(entry: dict) -> bool:

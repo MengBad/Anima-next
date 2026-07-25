@@ -29,7 +29,7 @@ def test_group_commitment_can_schedule_followup_agenda(tmp_path):
         agenda_factory=agenda_factory,
     )
     assert created and created[0][0] == 42
-    assert "跟进约定" in created[0][1]
+    assert "提醒我今晚检查部署日志" in created[0][1]
     open_items = memory.open_commitments()
     assert open_items and open_items[0].agenda_id == "ag_1"
 
@@ -46,5 +46,5 @@ def test_bot_promise_creates_commitment_and_agenda(tmp_path):
         "group", 42, 7, "assistant", "行，本喵会帮你盯着部署结果，到时候告诉你",
         agenda_factory=agenda_factory,
     )
-    assert created and "跟进本喵承诺" in created[0][1]
+    assert created and "本喵会帮你盯着部署结果" in created[0][1]
     assert memory.summary()["commitments_open"] == 1

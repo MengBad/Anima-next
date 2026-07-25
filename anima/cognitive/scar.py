@@ -17,12 +17,26 @@ from anima.core.persistence import PersistenceProvider
 
 logger = logging.getLogger("anima.scar")
 
+# R1: 伤痕触发关键词提取（简单分词）
+_HURT_KEYWORDS = [
+    "骂", "无视", "骗", "讨厌", "滚", "死", "傻", "丑", "肥",
+    "恶心", "垃圾", "废物", "闭嘴", "消失", "不要脸", "恶心",
+    "拉黑", "踢", "禁言", "举报", "威胁", "吓", "打", "欺负",
+]
+
+
+def _extract_keywords(event: str) -> list[str]:
+    """从事件文本中提取触发关键词（最多 5 个）。"""
+    found = [kw for kw in _HURT_KEYWORDS if kw in event]
+    return found[:5]
+
 
 class Scar:
     """单条伤痕记录。"""
 
     __slots__ = ("user_id", "event", "severity", "created_at",
-                 "last_triggered", "faded", "context")
+                 "last_triggered", "faded", "context",
+                 "trigger_keywords")  # R1
 
     def __init__(self, user_id: int, event: str, severity: float = 0.5,
                  context: str = ""):
@@ -33,6 +47,8 @@ class Scar:
         self.last_triggered = self.created_at
         self.faded = False
         self.context = context
+        # R1: 从 event 中提取触发关键词（最多 5 个）
+        self.trigger_keywords: list[str] = _extract_keywords(event)
 
 
 class ScarSystem:
@@ -68,6 +84,8 @@ class ScarSystem:
             s.created_at = item.get("created_at", time.time())
             s.last_triggered = item.get("last_triggered", s.created_at)
             s.faded = item.get("faded", False)
+            # R1: 恢复 trigger_keywords
+            s.trigger_keywords = item.get("trigger_keywords", _extract_keywords(s.event))
             self._scars.append(s)
 
     def persist(self) -> None:
@@ -81,6 +99,7 @@ class ScarSystem:
                     "last_triggered": s.last_triggered,
                     "faded": s.faded,
                     "context": s.context,
+                    "trigger_keywords": s.trigger_keywords,  # R1
                 }
                 for s in self._scars
             ]
@@ -163,7 +182,30 @@ class ScarSystem:
         for s in scars[:3]:
             label = self._severity_label(s.severity)
             lines.append(f"- {label}：{s.event}")
+        # R1: 若 scar 最近 24h 内被触发过，追加提示
+        now = time.time()
+        recent_triggered = any(
+            (now - s.last_triggered) < 86400 for s in scars[:3]
+        )
+        if recent_triggered:
+            lines.append("- 你现在对这个人还有点在意那件事")
         return "\n".join(lines)
+
+    def check_trigger(self, user_id: int, text: str) -> bool:
+        """R1: 检查用户消息是否命中伤痕触发关键词。
+
+        命中时刷新 last_triggered，返回 True。
+        """
+        triggered = False
+        for s in self._scars:
+            if s.user_id != user_id or s.faded:
+                continue
+            if any(kw in text for kw in s.trigger_keywords):
+                s.last_triggered = time.time()
+                triggered = True
+        if triggered:
+            self.persist()
+        return triggered
 
     def trust_penalty(self, user_id: int) -> float:
         """返回对该用户的信任惩罚值 (0-1)。"""
@@ -186,12 +228,15 @@ class ScarSystem:
         """保留最严重的 scars，移除已淡化的旧伤痕。"""
         # 先按严重度和时间排序
         self._scars.sort(key=lambda s: (-s.severity, -s.last_triggered))
-        survivors = [s for s in self._scars[:self.max_scars] if not s.faded]
-        # 已淡化超过 30 天的彻底删除
         now = time.time()
-        faded_survivors = [s for s in self._scars[self.max_scars:]
-                           if s.faded and (now - s.last_triggered) < 86400 * 30]
-        self._scars = survivors + faded_survivors
+        keep: list[Scar] = []
+        for s in self._scars:
+            # 淡化超 30 天的彻底删除
+            if s.faded and (now - s.last_triggered) >= 86400 * 30:
+                continue
+            keep.append(s)
+        # 保留最严重的 max_scars 条
+        self._scars = keep[:self.max_scars]
 
 
 # 全局单例（按 data_dir 隔离）

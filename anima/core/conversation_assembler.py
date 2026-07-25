@@ -1,4 +1,9 @@
-"""将连续私聊输入合并为一个可理解的语义回合。"""
+"""将连续输入合并为一个可理解的语义回合。
+
+支持私聊和群聊两种模式：
+- 私聊：按用户聚合，1.5s 窗口，8s 上限
+- 群聊：按 (群, 用户) 聚合，2s 窗口，6s 上限，自适应防抖
+"""
 
 from __future__ import annotations
 
@@ -105,6 +110,157 @@ class ConversationAssembler:
         if records:
             merged["records"] = records[:4]
 
+        reply_ids = [item.get("reply_message_id") for item in events if item.get("reply_message_id")]
+        if reply_ids:
+            merged["reply_message_id"] = reply_ids[-1]
+        merged["assembled_count"] = len(events)
+        return merged
+
+    async def close(self) -> None:
+        async with self._lock:
+            pending = list(self._pending.values())
+            self._pending.clear()
+        for item in pending:
+            if item.timer and not item.timer.done():
+                item.timer.cancel()
+            item.ready.set()
+
+
+# ---------------------------------------------------------------------------
+# B1: 群聊防抖（参考 astrbot_plugin_continuous_message）
+# ---------------------------------------------------------------------------
+
+class GroupDebouncer:
+    """群聊消息防抖：同一用户 2s 内连续消息合并为一个语义回合。
+
+    与私聊 ConversationAssembler 类似，但：
+    - key 为 (group_id, user_id)
+    - 支持自适应防抖（短句延长等待，长句缩短）
+    - 支持撤回消息过滤
+    - 指令消息（!anima）立即处理不进入合并
+    """
+
+    def __init__(
+        self,
+        wait_sec: float = 2.0,
+        max_wait_sec: float = 6.0,
+        adaptive: bool = True,
+        short_msg_threshold: int = 10,
+    ):
+        self.wait_sec = max(0.0, wait_sec)
+        self.max_wait_sec = max(self.wait_sec, max_wait_sec)
+        self.adaptive = adaptive
+        self.short_msg_threshold = short_msg_threshold
+        self._pending: dict[tuple[int, int], _PendingConversation] = {}
+        self._lock = asyncio.Lock()
+
+    def _is_command(self, event: dict[str, Any]) -> bool:
+        """判断是否为指令消息（不进入防抖）。"""
+        text = str(event.get("raw_message") or event.get("message") or "")
+        return text.strip().startswith("!anima")
+
+    def _compute_delay(self, pending: _PendingConversation) -> float:
+        """计算自适应延迟。"""
+        elapsed = time.monotonic() - pending.first_at
+        base_delay = self.wait_sec
+
+        if self.adaptive and pending.events:
+            # 获取最后一条消息的文本长度
+            last_event = pending.events[-1]
+            text = str(last_event.get("raw_message") or last_event.get("message") or "")
+            text_len = len(text.strip())
+
+            if text_len <= self.short_msg_threshold:
+                # 短句：用户可能还在打字，延长等待
+                base_delay = min(self.wait_sec * 1.5, 3.0)
+            elif text_len > 50:
+                # 长句：已表达完整，缩短等待
+                base_delay = max(self.wait_sec * 0.5, 1.0)
+
+        # 不超过总上限
+        return min(base_delay, max(0.0, self.max_wait_sec - elapsed))
+
+    async def ingest(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        """摄入群消息。返回合并结果或 None（表示已被合并）。"""
+        # 指令消息立即处理
+        if self._is_command(event):
+            return event
+
+        group_id = int(event.get("group_id", 0))
+        user_id = int(event.get("user_id", 0))
+        key = (group_id, user_id)
+
+        async with self._lock:
+            pending = self._pending.get(key)
+            is_first = pending is None
+            if pending is None:
+                pending = _PendingConversation(events=[copy.deepcopy(event)])
+                self._pending[key] = pending
+            else:
+                pending.events.append(copy.deepcopy(event))
+            self._schedule(pending, key)
+
+        if not is_first:
+            return None
+        await pending.ready.wait()
+        async with self._lock:
+            current = self._pending.pop(key, pending)
+        return self._merge(current.events)
+
+    def remove_recalled(self, group_id: int, user_id: int, message_id: Any) -> None:
+        """撤回消息过滤：从防抖队列中移除已撤回的消息。"""
+        key = (group_id, user_id)
+        pending = self._pending.get(key)
+        if pending is None:
+            return
+        pending.events = [
+            e for e in pending.events
+            if e.get("message_id") != message_id
+        ]
+
+    def _schedule(self, pending: _PendingConversation, key: tuple[int, int]) -> None:
+        if pending.timer and not pending.timer.done():
+            pending.timer.cancel()
+        delay = self._compute_delay(pending)
+        pending.timer = asyncio.create_task(self._release_after(pending, delay))
+
+    @staticmethod
+    async def _release_after(pending: _PendingConversation, delay: float) -> None:
+        try:
+            await asyncio.sleep(delay)
+            pending.ready.set()
+        except asyncio.CancelledError:
+            return
+
+    @staticmethod
+    def _merge(events: list[dict[str, Any]]) -> dict[str, Any]:
+        """合并多条群消息。"""
+        if not events:
+            return {}
+        merged = copy.deepcopy(events[-1])
+        texts = [str(item.get("raw_message") or item.get("message") or "").strip()
+                 for item in events]
+        text = "\n".join(item for item in texts if item)[:6000]
+        merged["raw_message"] = text
+        merged["message"] = text
+        merged["assembled_message_ids"] = [
+            item.get("message_id") for item in events if item.get("message_id") is not None
+        ]
+        # 合并图片
+        images: list[dict[str, Any]] = []
+        seen_images: set[str] = set()
+        for item in events:
+            for image in item.get("images") or []:
+                if not isinstance(image, dict):
+                    continue
+                identity = str(image.get("file") or image.get("url") or image.get("id") or image)
+                if identity in seen_images:
+                    continue
+                seen_images.add(identity)
+                images.append(copy.deepcopy(image))
+        if images:
+            merged["images"] = images[:8]
+        # 保留最后一个引用 ID
         reply_ids = [item.get("reply_message_id") for item in events if item.get("reply_message_id")]
         if reply_ids:
             merged["reply_message_id"] = reply_ids[-1]

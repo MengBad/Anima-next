@@ -52,24 +52,44 @@ class ForgettingEngine:
     # 核心算法
     # ------------------------------------------------------------------
 
-    def retention_score(self, item: dict[str, Any]) -> float:
-        """计算单条记忆的保留分 (0-1)。"""
+    def retention_score(self, item: dict[str, Any], relation_stage: str = "") -> float:
+        """计算单条记忆的保留分 (0-1)。
+
+        Q1: 与 relation 阶段联动——
+        - CLOSE/FRIEND 用户的记忆 salience +0.15
+        - STRANGER 的记忆衰减速度 *1.5
+        - 强情绪事件 emotion_boost 额外 *1.3
+        """
         now = time.time()
         ts = item.get("ts") or item.get("created_at") or now
         salience = float(item.get("salience", 0.5))
         access_count = int(item.get("access_count", 0))
         emotion = abs(float(item.get("emotion", 0.0)))  # 情绪强度绝对值
 
+        # Q1: 关系阶段加权
+        if relation_stage in ("CLOSE", "FRIEND"):
+            salience = min(1.0, salience + 0.15)
+
         age_days = max(0, (now - ts) / 86400)
 
         # 时间衰减：指数衰减，半衰期 7 天
-        recency = math.exp(-age_days / 7.0)
+        decay_rate = 7.0
+        # Q1: 陌生人忘得快
+        if relation_stage == "STRANGER":
+            decay_rate = 7.0 / 1.5  # 衰减加速 *1.5
+        recency = math.exp(-age_days / decay_rate)
 
         # 访问频率：被召回过的记忆更难忘
         access_boost = 1.0 + math.log1p(access_count) * 0.15
 
         # 情绪强化：高情绪事件更难忘
         emotion_boost = 1.0 + emotion * 0.5
+        # Q1: 强情绪事件额外 *1.3
+        if emotion > 0.6:
+            emotion_boost *= 1.3
+        # B2: 闪光灯记忆——高 salience + 高情绪 = 2x 保留
+        if salience >= 0.7 and emotion > 0.4:
+            emotion_boost *= 2.0
 
         score = salience * recency * access_boost * emotion_boost
         return min(1.0, max(0.0, score))
@@ -82,20 +102,33 @@ class ForgettingEngine:
     # 遗忘动作
     # ------------------------------------------------------------------
 
-    def forget_chat_memory(self, chat_memory) -> int:
-        """对聊天记忆进行遗忘，返回遗忘条数。"""
+    def forget_chat_memory(self, chat_memory, relation_engine=None) -> int:
+        """对聊天记忆进行遗忘，返回遗忘条数。
+
+        Q1: relation_engine 可选，用于按 user_id 查关系阶段加权。
+        """
         removed = 0
         for key, rounds in list(chat_memory._store.items()):
             survivors_rounds = {}
             for round_key, entries in list(rounds.items()):
                 survivors = []
                 for e in entries:
+                    # Q1: 查询关系阶段
+                    rel_stage = ""
+                    if relation_engine is not None:
+                        uid = e.get("user_id") or e.get("uin")
+                        if uid:
+                            try:
+                                rel = relation_engine.get(int(uid))
+                                rel_stage = rel.stage.name
+                            except Exception:
+                                pass
                     score = self.retention_score({
                         "ts": e.get("ts", e.get("time", 0)),
                         "salience": e.get("salience", 0.5),
                         "access_count": e.get("access_count", 0),
                         "emotion": e.get("emotion", 0.0),
-                    })
+                    }, relation_stage=rel_stage)
                     e["retention_score"] = score  # 方便调试
                     if score >= self._threshold:
                         survivors.append(e)
@@ -130,8 +163,11 @@ class ForgettingEngine:
     # 调度
     # ------------------------------------------------------------------
 
-    async def run(self, chat_memory=None, vector_memory=None) -> dict[str, int]:
-        """执行一轮遗忘。默认每 6 小时跑一次。"""
+    async def run(self, chat_memory=None, vector_memory=None, relation_engine=None) -> dict[str, int]:
+        """执行一轮遗忘。默认每 6 小时跑一次。
+
+        Q1: relation_engine 可选参数，用于按 user_id 查关系阶段加权。
+        """
         now = time.time()
         if now - self._last_run < 21600:  # 6h
             return {"chat": 0, "vector": 0}
@@ -142,14 +178,9 @@ class ForgettingEngine:
         chat_removed = 0
         if chat_memory is not None:
             try:
-                # 注意：传入 ChatMemory 对象本身（forget_chat_memory 内部
-                # 访问 chat_memory._store）。此前误传 chat_memory._store
-                # （一个 defaultdict），导致内部再取 ._store 抛 AttributeError，
-                # 遗忘每 6h 静默失败。
-                chat_removed = self.forget_chat_memory(chat_memory)
+                chat_removed = self.forget_chat_memory(chat_memory, relation_engine)
             except Exception:
                 logger.exception("聊天记忆遗忘失败")
-            # P0-5：遗忘改动 store 后必须落盘，否则遗忘结果重启即丢。
             try:
                 chat_memory.save()
             except Exception:

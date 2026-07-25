@@ -44,3 +44,23 @@ def test_count_selfcode_task_pressure_window():
     )
     assert running == 2
     assert failed == 1
+
+
+def test_count_selfcode_task_pressure_updated_at_zero():
+    """updated_at=0 的 failed 任务应使用 created_at 兜底，不再无条件计入。"""
+    now = 1_000_000.0
+    tasks = [
+        # updated_at=0, created_at 在窗口内 → 应计入
+        SimpleNamespace(kind="selfcode", status="failed", updated_at=0, created_at=now - 100),
+        # updated_at=0, created_at 也在窗口外 → 不应计入
+        SimpleNamespace(kind="selfcode", status="failed", updated_at=0, created_at=now - 10_000),
+        # updated_at=0, created_at=0 → 不应计入（旧数据不再永久阻塞）
+        SimpleNamespace(kind="selfcode", status="failed", updated_at=0, created_at=0),
+        # updated_at=0, created_at 缺失 → 不应计入
+        SimpleNamespace(kind="selfcode", status="failed", updated_at=0),
+    ]
+    running, failed = count_selfcode_task_pressure(
+        tasks, now=now, failure_window_sec=7200,
+    )
+    assert running == 0
+    assert failed == 1  # 只有 created_at 在窗口内的那条

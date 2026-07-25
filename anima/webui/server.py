@@ -167,6 +167,12 @@ class WebUIServer:
              web.post("/api/cognitive/drift", self.cognitive_drift_action),
              web.get("/api/cognitive/config", self.cognitive_config),
              web.post("/api/cognitive/config", self.cognitive_config),
+            # —— 第四轮迭代：灵魂能量槽 + 社交表达 ——
+            web.get("/api/soul/state", self.soul_state),
+            web.get("/api/soul/history", self.soul_history),
+            web.get("/api/qzone/history", self.qzone_history),
+            web.post("/api/qzone/post", self.qzone_post),
+            web.get("/api/social/status", self.social_status),
         ])
         self._runner = web.AppRunner(app)
         await self._runner.setup()
@@ -3095,3 +3101,89 @@ class WebUIServer:
         if not owners:
             raise web.HTTPServiceUnavailable(text="owner 配置不可用")
         return int(owners[0])
+
+    # ------------------------------------------------------------------
+    # 第四轮迭代：灵魂能量槽 + 社交表达 API
+    # ------------------------------------------------------------------
+
+    async def soul_state(self, request: web.Request) -> web.Response:
+        """D1: 灵魂能量槽当前状态。"""
+        try:
+            from anima.cognitive.soul import get_soul_system
+            soul = get_soul_system(self.core.config.persistence.data_dir)
+            return self._json(soul.get_status())
+        except Exception as e:
+            return self._json({"error": str(e)}, status=500)
+
+    async def soul_history(self, request: web.Request) -> web.Response:
+        """D1: 灵魂能量槽历史曲线。"""
+        try:
+            from anima.cognitive.soul import get_soul_system
+            hours = float(request.query.get("hours", "24"))
+            soul = get_soul_system(self.core.config.persistence.data_dir)
+            return self._json({"history": soul.get_history(hours)})
+        except Exception as e:
+            return self._json({"error": str(e)}, status=500)
+
+    async def qzone_history(self, request: web.Request) -> web.Response:
+        """C1: QQ 空间说说历史。"""
+        try:
+            from anima.tools.qzone import get_qzone_manager
+            qzone_cfg = getattr(self.core.config, "qzone", None)
+            manager = get_qzone_manager(
+                data_dir=self.core.config.persistence.data_dir,
+                daily_max=getattr(qzone_cfg, "daily_max", 2) if qzone_cfg else 2,
+                cooldown_sec=getattr(qzone_cfg, "cooldown_sec", 14400) if qzone_cfg else 14400,
+            )
+            limit = int(request.query.get("limit", "20"))
+            return self._json({
+                "history": manager.get_history(limit),
+                "stats": manager.get_stats(),
+            })
+        except Exception as e:
+            return self._json({"error": str(e)}, status=500)
+
+    async def qzone_post(self, request: web.Request) -> web.Response:
+        """C1: 手动触发一条说说（owner 操作）。"""
+        try:
+            body = await request.json()
+            content = body.get("content", "").strip()
+            if not content:
+                return self._json({"error": "内容不能为空"}, status=400)
+
+            from anima.tools.qzone import get_qzone_manager
+            qzone_cfg = getattr(self.core.config, "qzone", None)
+            manager = get_qzone_manager(
+                data_dir=self.core.config.persistence.data_dir,
+                daily_max=getattr(qzone_cfg, "daily_max", 2) if qzone_cfg else 2,
+                cooldown_sec=getattr(qzone_cfg, "cooldown_sec", 14400) if qzone_cfg else 14400,
+            )
+
+            can_post, reason = manager.can_post()
+            if not can_post:
+                return self._json({"error": reason}, status=429)
+
+            # 调用 NapCat API
+            gateway = self.core.gateway
+            await gateway._call_action("publish_qzone", {"content": content})
+            manager.record_post(content, "manual", True)
+            return self._json({"success": True, "content": content})
+        except Exception as e:
+            return self._json({"error": str(e)}, status=500)
+
+    async def social_status(self, request: web.Request) -> web.Response:
+        """C2: 当前 QQ 在线状态。"""
+        try:
+            # 从 simulated_life 获取当前状态
+            status_info = {
+                "enabled": getattr(getattr(self.core.config, "qq_status", None), "enabled", False),
+                "current_status": "unknown",
+                "last_change": None,
+            }
+            # 尝试从 autonomy 获取状态
+            autonomy = getattr(self.core, "autonomy", None)
+            if autonomy and hasattr(autonomy, "get_qq_status"):
+                status_info.update(autonomy.get_qq_status())
+            return self._json(status_info)
+        except Exception as e:
+            return self._json({"error": str(e)}, status=500)

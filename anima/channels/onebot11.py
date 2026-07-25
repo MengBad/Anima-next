@@ -587,13 +587,19 @@ class OneBot11Adapter(Module):
     # ------------------------------------------------------------------
 
     async def _recv_loop(self) -> None:
+        connect_attempts = 0
         while self._running:
             try:
                 await self._connect_and_listen()
+                connect_attempts = 0  # 成功连接后重置
             except asyncio.CancelledError:
                 break
             except Exception:
-                logger.exception("WS 连接异常，%.1fs 后重连", self._reconnect_delay)
+                connect_attempts += 1
+                if connect_attempts <= 2:
+                    logger.info("WS 连接等待中 (%d/3): %s", connect_attempts, self.ws_url)
+                else:
+                    logger.exception("WS 连接异常，%.1fs 后重连", self._reconnect_delay)
                 await asyncio.sleep(self._reconnect_delay)
                 self._reconnect_delay = min(
                     self._reconnect_delay * 1.5, self._reconnect_max_delay
@@ -913,6 +919,16 @@ class OneBot11Adapter(Module):
         msg_id = await self.send_message(detail_type, target_id, caption)
         return msg_id, upload_result
 
+    async def set_typing_status(self, enabled: bool = True) -> None:
+        """NapCat 扩展 API：设置输入状态（对方看到“正在输入...”）。
+
+        fire-and-forget：失败不影响主流程。
+        """
+        try:
+            await self._http_post("set_input_status", {"status": 1 if enabled else 0})
+        except Exception:
+            pass  # 输入状态是体验增强，失败不阻塞回复
+
     async def _http_post(self, action: str, params: dict) -> Optional[dict]:
         """通过 HTTP 调用 OneBot11 action。"""
         if self._http_session is None or self._http_available is False:
@@ -1089,6 +1105,74 @@ class OneBot11Adapter(Module):
         if last_err:
             logger.warning("get_msg 全部重试后仍失败: %s", message_id)
         return None
+
+    # ------------------------------------------------------------------
+    # 社交 / 群管理 API（基于 OneBot11 标准 action）
+    # ------------------------------------------------------------------
+
+    async def send_group_poke(self, group_id: int, user_id: int) -> bool:
+        """戳一戳群里某人。"""
+        resp = await self._call_action(
+            "send_group_poke", {"group_id": group_id, "user_id": user_id}, timeout=8.0
+        )
+        return resp is not None
+
+    async def get_group_member_list(self, group_id: int) -> Optional[list[dict]]:
+        """获取群成员列表。"""
+        resp = await self._call_action(
+            "get_group_member_list", {"group_id": group_id}, timeout=15.0
+        )
+        if isinstance(resp, list):
+            return resp
+        # 部分实现把列表包在 data 里
+        if isinstance(resp, dict) and isinstance(resp.get("data"), list):
+            return resp["data"]
+        return None
+
+    async def get_group_member_info(self, group_id: int, user_id: int) -> Optional[dict]:
+        """获取某个群成员的信息。"""
+        resp = await self._call_action(
+            "get_group_member_info",
+            {"group_id": group_id, "user_id": user_id},
+            timeout=10.0,
+        )
+        return resp if isinstance(resp, dict) else None
+
+    async def get_group_info(self, group_id: int) -> Optional[dict]:
+        """获取群基本信息（群名/人数/公告等）。"""
+        resp = await self._call_action(
+            "get_group_info", {"group_id": group_id}, timeout=10.0
+        )
+        return resp if isinstance(resp, dict) else None
+
+    async def set_group_card(self, group_id: int, user_id: int, card: str) -> bool:
+        """修改群名片。"""
+        resp = await self._call_action(
+            "set_group_card",
+            {"group_id": group_id, "user_id": user_id, "card": card},
+            timeout=10.0,
+        )
+        return resp is not None
+
+    async def set_group_ban(self, group_id: int, user_id: int, duration: int) -> bool:
+        """禁言某人。duration 单位秒，0 表示解除禁言。"""
+        resp = await self._call_action(
+            "set_group_ban",
+            {"group_id": group_id, "user_id": user_id, "duration": duration},
+            timeout=10.0,
+        )
+        return resp is not None
+
+    async def set_group_kick(self, group_id: int, user_id: int,
+                              reject_add_request: bool = False) -> bool:
+        """踢出某人。"""
+        resp = await self._call_action(
+            "set_group_kick",
+            {"group_id": group_id, "user_id": user_id,
+             "reject_add_request": reject_add_request},
+            timeout=10.0,
+        )
+        return resp is not None
 
     async def _download(self, url: str, max_bytes: int = 0) -> Optional[bytes]:
         """下载一个 URL 的字节（可选大小上限）。失败返回 None。"""

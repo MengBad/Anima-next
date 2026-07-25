@@ -94,7 +94,7 @@ def test_cognition_stage_appends_role_guard(monkeypatch):
         stages, "load_persona_template",
         lambda: "{time_context}{desire_context}{self_notes}{world_context}{scar_context}",
     )
-    monkeypatch.setattr("anima.cognitive.time_sense.get_time_context", lambda: "")
+    monkeypatch.setattr("anima.cognitive.time_sense.get_time_context", lambda user_id=None: "")
     monkeypatch.setattr("anima.cognitive.desire.get_desire_system", lambda: _StubFrag())
     monkeypatch.setattr("anima.cognitive.relation.get_relation", lambda: _StubFrag())
     monkeypatch.setattr("anima.cognitive.learning.get_learning", lambda *a, **k: _StubFrag())

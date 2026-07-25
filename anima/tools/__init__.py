@@ -200,10 +200,30 @@ class ToolRegistry:
                     args_digest=item.args_digest, reviewer=int(owner_id))
 
     async def _invoke(self, tool: Tool, args: dict[str, Any]) -> str:
+        # run_python 特殊处理：从 call context 提取入站图片注入沙箱
+        if tool.name == "run_python":
+            ctx = get_call_context()
+            images_b64 = ctx.get("input_images_b64")
+            if images_b64 and "input_images_b64" not in args:
+                args = {**args, "input_images_b64": images_b64}
+            logger.info("run_python 调用: code_len=%d has_images=%s code_preview=%.200s",
+                        len(args.get("code", "")), bool(images_b64), args.get("code", ""))
         result = tool.handler(**args)
         if asyncio.iscoroutine(result):
             result = await result
+        # run_python 原始输出日志（在 normalize 之前，方便排查沙箱问题）
+        if tool.name == "run_python":
+            logger.info("run_python raw_result (len=%d): %.500s", len(str(result)), str(result))
         text, ok = normalize_tool_result(result)
+        # 检测沙箱图片输出，加入 call context 供出站使用
+        if tool.name == "run_python" and "[output_image]" in text:
+            import re as _re
+            _img_paths = _re.findall(r"\[output_image\]\s*(\S+)", text)
+            if _img_paths:
+                ctx = get_call_context()
+                existing = ctx.get("generated_image_paths", [])
+                if isinstance(existing, list):
+                    existing.extend(_img_paths[:2])
         self._audit("tool_executed", tool=tool.name, ok=ok, result_len=len(text))
         return text
 
@@ -261,13 +281,21 @@ def _tool_time() -> str:
 
 
 def _tool_calc(expression: str) -> str:
-    """安全计算数学表达式。"""
+    """安全计算数学表达式（含 DoS 防护）。"""
     allowed = set("0123456789+-*/().%^ ")
+    if not expression or len(expression) > 120:
+        return "表达式为空或过长（上限 120 字符）"
     if not all(c in allowed for c in expression):
         return "表达式包含不允许的字符"
+    # DoS 防护：限制连续幂运算（9**9**9**9 级联会耗尽 CPU/内存）
+    if expression.count("^") > 3 or "**" in expression.replace("^", "").replace(" ", ""):
+        return "幂运算次数过多（最多 3 次）"
     try:
         expr = expression.replace("^", "**")
         result = eval(expr, {"__builtins__": {}}, {"sqrt": math.sqrt, "abs": abs, "round": round})
+        # 结果幅度限制，避免天文数字撑爆消息
+        if isinstance(result, (int, float)) and abs(result) > 1e18:
+            return f"结果过大（{result:.6e}），超出显示范围"
         return str(result)
     except Exception as e:
         return f"计算出错: {e}"
@@ -384,7 +412,7 @@ async def _tool_web_search(query: str, num_results: int = 5,
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
-    def _search() -> list[dict]:
+    def _search_bing() -> list[dict]:
         url = ("https://www.bing.com/search?q="
                + urllib.parse.quote(query) + "&setlang=zh-CN")
         req = urllib.request.Request(
@@ -394,9 +422,6 @@ async def _tool_web_search(query: str, num_results: int = 5,
         with urllib.request.urlopen(req, timeout=12) as resp:
             page = resp.read().decode("utf-8", errors="replace")
 
-        # 每条结果块：<li class="b_algo"> 内含
-        #   <h2 ...><a href="直链">标题</a></h2>
-        #   <p ...>摘要</p>
         results = []
         blocks = re.split(r'<li class="b_algo"', page)[1:]
         for blk in blocks:
@@ -412,6 +437,73 @@ async def _tool_web_search(query: str, num_results: int = 5,
                 continue
             results.append({"title": title, "url": href, "snippet": snippet})
         return results
+
+    def _search_ddg() -> list[dict]:
+        """DuckDuckGo HTML 版兜底——纯服务端渲染，不依赖 JS。"""
+        url = "https://html.duckduckgo.com/html/"
+        data = urllib.parse.urlencode({"q": query}).encode()
+        req = urllib.request.Request(
+            url, data=data,
+            headers={"User-Agent": UA},
+        )
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            page = resp.read().decode("utf-8", errors="replace")
+
+        results = []
+        # DDG HTML: <a class="result__url" href="...">title</a>
+        # 和 <a class="result__snippet" href="...">snippet</a>
+        for m in re.finditer(
+            r'<a[^>]*class="result__a"[^>]*href="([^"]+)"[^>]*>(.*?)</a>',
+            page, re.S,
+        ):
+            href, title = m.group(1), _strip_tags(m.group(2))
+            if not title or not href:
+                continue
+            # DDG 的 href 可能是重定向 URL，提取真实链接
+            if "uddg=" in href:
+                ddg_m = re.search(r'uddg=([^&]+)', href)
+                if ddg_m:
+                    href = urllib.parse.unquote(ddg_m.group(1))
+            # 找对应 snippet
+            snippet = ""
+            sm = re.search(
+                r'<a[^>]*class="result__snippet"[^>]*>(.*?)</a>',
+                page[m.end():m.end()+1000], re.S,
+            )
+            if sm:
+                snippet = _strip_tags(sm.group(1))
+            results.append({"title": title, "url": href, "snippet": snippet})
+            if len(results) >= 8:
+                break
+        return results
+
+    def _search_searxng() -> list[dict]:
+        """本地 SearXNG 聚合搜索（多引擎，无需 API key）。"""
+        import json as _json
+        url = ("http://127.0.0.1:8888/search?q="
+               + urllib.parse.quote(query) + "&format=json")
+        req = urllib.request.Request(url, headers={"User-Agent": UA})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        results = []
+        for r in data.get("results", []):
+            title = r.get("title", "").strip()
+            href = r.get("url", "").strip()
+            snippet = r.get("content", "").strip()
+            if title and href:
+                results.append({"title": title, "url": href, "snippet": snippet})
+        return results
+
+    def _search() -> list[dict]:
+        """优先本地 SearXNG，失败时降级直接 Bing。"""
+        try:
+            results = _search_searxng()
+            if results:
+                return results
+        except Exception as e:
+            logger.info("SearXNG 搜索失败(%s)，降级到直接 Bing", e)
+        # 降级：直接抓 Bing HTML
+        return _search_bing()
 
     def _fetch_page(u: str) -> tuple[str, str]:
         now = time.monotonic()
@@ -506,7 +598,7 @@ def create_default_registry(core=None) -> ToolRegistry:
         min_level=LEVEL_USER,
     ))
     registry.register(Tool(
-        "run_python", "在安全沙箱中执行 Python 代码，可用于计算、数据处理等。禁止访问网络和文件系统。",
+        "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片操作（旋转/翻转/缩放/滤镜，PIL 可用）等。禁止访问网络和文件系统。",
         {"code": {"type": "string", "description": "要执行的 Python 代码"}},
         run_python,
         min_level=LEVEL_ADMIN,
@@ -1095,6 +1187,177 @@ def create_default_registry(core=None) -> ToolRegistry:
             _generate_image, min_level=LEVEL_USER, required=["prompt"],
         ))
 
+        # ------------------------------------------------------------------
+        # 社交 / 群管理工具（需要 OneBot11 通道）
+        # ------------------------------------------------------------------
+
+        def _get_channel():
+            """helper: 拿到 OneBot11 通道。"""
+            gw = getattr(core, "gateway", None)
+            return getattr(gw, "channel", None) if gw else None
+
+        async def _tool_group_poke(user_id: int, group_id: int | None = None) -> str:
+            """戳一戳群里某人。"""
+            ch = _get_channel()
+            if ch is None or not hasattr(ch, "send_group_poke"):
+                return "戳一戳功能不可用（OneBot 通道未连接）"
+            # 如果没指定群，用当前上下文的群
+            ctx = get_call_context()
+            gid = group_id or ctx.get("group_id")
+            if not gid:
+                return "需要指定群号才能在群里戳人"
+            ok = await ch.send_group_poke(int(gid), int(user_id))
+            return f"已戳了 {user_id} 一下" if ok else "戳一戳失败，可能对方不在群里"
+
+        registry.register(Tool(
+            "group_poke",
+            "戳一戳群里某人。当群友让你戳某人、或你想跟某人打招呼/表示关注时调用。",
+            {
+                "user_id": {"type": "integer", "description": "要戳的人的 QQ 号"},
+                "group_id": {"type": "integer", "description": "群号（可选，默认用当前群）"},
+            },
+            _tool_group_poke, required=["user_id"], min_level=LEVEL_USER,
+        ))
+
+        async def _tool_get_group_members(group_id: int | None = None,
+                                           user_id: int | None = None) -> str:
+            """查看群成员列表或某人信息。"""
+            ch = _get_channel()
+            if ch is None:
+                return "群成员查询不可用（OneBot 通道未连接）"
+            ctx = get_call_context()
+            gid = group_id or ctx.get("group_id")
+            if not gid:
+                return "需要指定群号才能查询群成员"
+            gid = int(gid)
+            if user_id:
+                info = await ch.get_group_member_info(gid, int(user_id))
+                if not info:
+                    return f"没找到 {user_id} 在群 {gid} 里的信息"
+                name = info.get("card") or info.get("nickname") or str(user_id)
+                role = info.get("role", "member")
+                return f"群成员：{name}（QQ {user_id}，角色 {role}）"
+            members = await ch.get_group_member_list(gid)
+            if not members:
+                return f"获取群 {gid} 成员列表失败"
+            # 只返回摘要，避免太长
+            total = len(members)
+            sample = members[:15]
+            lines = [f"群 {gid} 共 {total} 人："]
+            for m in sample:
+                name = m.get("card") or m.get("nickname") or str(m.get("user_id", "?"))
+                lines.append(f"- {name} ({m.get('user_id', '?')})")
+            if total > 15:
+                lines.append(f"…等共 {total} 人")
+            return "\n".join(lines)
+
+        registry.register(Tool(
+            "get_group_members",
+            "查看群成员列表或某个人的信息。当有人问群里有谁、某人是否在群里、群多少人时调用。",
+            {
+                "group_id": {"type": "integer", "description": "群号（可选，默认用当前群）"},
+                "user_id": {"type": "integer", "description": "要查某个人的 QQ 号（可选）"},
+            },
+            _tool_get_group_members, required=[], min_level=LEVEL_USER,
+        ))
+
+        async def _tool_get_group_info(group_id: int | None = None) -> str:
+            """查看群基本信息。"""
+            ch = _get_channel()
+            if ch is None or not hasattr(ch, "get_group_info"):
+                return "群信息查询不可用"
+            ctx = get_call_context()
+            gid = group_id or ctx.get("group_id")
+            if not gid:
+                return "需要指定群号"
+            info = await ch.get_group_info(int(gid))
+            if not info:
+                return f"获取群 {gid} 信息失败"
+            name = info.get("group_name", "未知")
+            count = info.get("member_count", "?")
+            max_count = info.get("max_member_count", "?")
+            return f"群名：{name}，成员 {count}/{max_count}"
+
+        registry.register(Tool(
+            "get_group_info",
+            "查看群基本信息（群名/人数等）。当有人问这个群叫什么、有多少人时调用。",
+            {"group_id": {"type": "integer", "description": "群号（可选，默认用当前群）"}},
+            _tool_get_group_info, required=[], min_level=LEVEL_USER,
+        ))
+
+        async def _tool_set_group_card(user_id: int, card: str,
+                                        group_id: int | None = None) -> str:
+            """修改群名片。"""
+            ch = _get_channel()
+            if ch is None or not hasattr(ch, "set_group_card"):
+                return "修改名片功能不可用"
+            ctx = get_call_context()
+            gid = group_id or ctx.get("group_id")
+            if not gid:
+                return "需要指定群号"
+            ok = await ch.set_group_card(int(gid), int(user_id), card)
+            return f"已将 {user_id} 的群名片改为「{card}」" if ok else "修改失败，可能权限不足"
+
+        registry.register(Tool(
+            "set_group_card",
+            "修改某人的群名片。需要管理员权限。",
+            {
+                "user_id": {"type": "integer", "description": "要改名片的人的 QQ 号"},
+                "card": {"type": "string", "description": "新名片内容"},
+                "group_id": {"type": "integer", "description": "群号（可选）"},
+            },
+            _tool_set_group_card, required=["user_id", "card"], min_level=LEVEL_ADMIN,
+        ))
+
+        async def _tool_group_ban(user_id: int, minutes: int = 10,
+                                   group_id: int | None = None) -> str:
+            """禁言某人。"""
+            ch = _get_channel()
+            if ch is None or not hasattr(ch, "set_group_ban"):
+                return "禁言功能不可用"
+            ctx = get_call_context()
+            gid = group_id or ctx.get("group_id")
+            if not gid:
+                return "需要指定群号"
+            duration = max(0, int(minutes)) * 60  # 分钟转秒
+            ok = await ch.set_group_ban(int(gid), int(user_id), duration)
+            if minutes == 0:
+                return f"已解除 {user_id} 的禁言" if ok else "解禁失败"
+            return f"已禁言 {user_id} {minutes} 分钟" if ok else "禁言失败，可能权限不足或对方是管理员"
+
+        registry.register(Tool(
+            "group_ban",
+            "禁言某人（分钟）。需要管理员权限。普通群友请求时说明需要管理员权限。minutes=0 表示解禁。",
+            {
+                "user_id": {"type": "integer", "description": "要禁言的人的 QQ 号"},
+                "minutes": {"type": "integer", "description": "禁言时长（分钟），0=解禁，默认 10"},
+                "group_id": {"type": "integer", "description": "群号（可选）"},
+            },
+            _tool_group_ban, required=["user_id"], min_level=LEVEL_ADMIN,
+        ))
+
+        async def _tool_group_kick(user_id: int, group_id: int | None = None) -> str:
+            """踢出某人。"""
+            ch = _get_channel()
+            if ch is None or not hasattr(ch, "set_group_kick"):
+                return "踢人功能不可用"
+            ctx = get_call_context()
+            gid = group_id or ctx.get("group_id")
+            if not gid:
+                return "需要指定群号"
+            ok = await ch.set_group_kick(int(gid), int(user_id))
+            return f"已将 {user_id} 移出群聊" if ok else "踢人失败，可能权限不足或对方是管理员"
+
+        registry.register(Tool(
+            "group_kick",
+            "将某人踢出群。需要管理员权限。普通群友请求时说明需要管理员权限。",
+            {
+                "user_id": {"type": "integer", "description": "要踢的人的 QQ 号"},
+                "group_id": {"type": "integer", "description": "群号（可选）"},
+            },
+            _tool_group_kick, required=["user_id"], min_level=LEVEL_ADMIN,
+        ))
+
     # 表情包自收集系统的选图工具（仅在 sticker 启用时注册）
     for t in make_sticker_tools(core):
         registry.register(t)
@@ -1218,8 +1481,17 @@ def make_capability_tool(cap: dict, core) -> "Tool":
         params = default_params
         required = None
     min_level = cap.get("min_level", LEVEL_USER)
+    # 调用冷却：同一能力 5 分钟内不重复调用，避免 LLM 每条消息都调同一个 cap
+    _cap_last_call: dict[str, float] = {}
 
     async def _handler(query_or_args: str = "") -> str:
+        import time as _time
+        cap_id = str(cap.get("id") or safe_name)
+        now = _time.time()
+        last = _cap_last_call.get(cap_id, 0)
+        if now - last < 300:
+            return "（这个能力刚刚用过了，先歇歇）"
+        _cap_last_call[cap_id] = now
         llm = getattr(core, "llm", None)
         if llm is None:
             return "内部错误：LLM 未就绪"

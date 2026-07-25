@@ -156,6 +156,59 @@ audio:
   max_bytes: 10485760                        # 单条语音最大 10MB
   throttle_per_user: 120                     # 同一用户最小转写间隔（秒）
 
+reply_split:                                 # 拟人分段发送 + 拟真打字延迟
+  enabled: true
+  max_segments: 4                            # 单条回复最多拆成几段
+  min_segment_len: 40                        # 单段最小字数
+  max_segment_len: 120                       # 单段最大字数
+  trigger_threshold: 150                     # 低于此字数不分段
+  tail_merge_threshold: 15                   # 尾段低于此字数合并到前段
+  delay_enabled: true                        # 段间拟真延迟
+  delay_base: 0.4                            # 基础延迟（秒）
+  delay_factor: 0.02                         # 每字延迟（秒/字）
+  delay_jitter: 0.3                          # 随机抖动上限（秒）
+
+debounce:                                    # 群聊消息防抖（合并连续输入）
+  group_enabled: true
+  group_wait_sec: 2.0                        # 等待后续消息的窗口
+  group_max_wait_sec: 6.0                    # 最大等待时间
+  adaptive: true                             # 按消息长度自适应等待
+  short_msg_threshold: 10                    # 短句阈值（字）
+
+soul:                                        # 灵魂能量槽（4 维情绪状态 EMA 平滑）
+  enabled: true
+  ema_alpha: 0.3                             # EMA 平滑系数
+  persist_interval_sec: 60.0                 # 持久化间隔
+
+gate:                                        # 轻重双模型前置判断
+  enabled: false                             # 默认关闭
+  model: ""                                  # 轻量判断模型；空=继承 llm.model
+  timeout_ms: 500                            # 超时回退完整流程
+  fallback_to_full: true                     # 超时/失败时走完整流程
+
+qzone:                                       # QQ 空间说说
+  enabled: false                             # 默认关闭
+  daily_max: 2                               # 每天最多发几条
+  cooldown_sec: 14400                        # 冷却 4 小时
+
+qq_status:                                   # QQ 在线状态同步
+  enabled: false                             # 默认关闭
+
+voice:                                       # AI 语音消息 TTS
+  enabled: false
+  auto_probability: 0.1                      # 特殊场景自动触发概率
+
+meme:                                        # 趣味图片互动
+  enabled: false
+  petpet_on_poke: 0.3                        # 被戳时摸头回去概率
+
+bilibili_read:                               # B 站视频理解（字幕抓取 + 总结）
+  enabled: true
+  sessdata: ""                               # B 站 Cookie SESSDATA（字幕接口需登录态）
+  bili_jct: ""                               # B 站 Cookie bili_jct
+  summary_model: ""                          # 字幕总结模型；空=复用 llm.model
+  max_subtitle_length: 4000                  # 字幕截断上限，防上下文溢出
+
 sylann:
   enabled: false
   mode: "disabled"                  # disabled | shadow | active
@@ -182,7 +235,7 @@ context:
   # 请求前上下文预算：人格、身份护栏和本轮用户输入不可裁，最旧历史/低优先级
   # 认知片段优先退出。不同模型 tokenizer 不同，数值是保守的防溢出阈值。
   input_token_budget: 12000
-  system_token_budget: 6000
+  system_token_budget: 8000
   image_token_estimate: 768
   tool_result_token_budget: 1800
 

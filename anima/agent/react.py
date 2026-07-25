@@ -110,15 +110,19 @@ class ReActLoop:
                     )
                 return content or "（思考中...）"
 
-            # 反工具死循环：单工具调用且签名与上一轮完全相同（同一查询重复搜）
+            # 反工具死循环：工具调用签名与上一轮完全相同（同一查询重复搜）
             # → 立即转出最终回复，避免 5 轮空转把延迟拖到 15s 且最终仍可能 content 空。
-            if len(tool_calls) == 1:
-                func = tool_calls[0].get("function", {})
-                sig = (func.get("name", ""), func.get("arguments", "{}"))
-                if sig == prev_sig:
+            # 覆盖单工具和多工具场景：把本轮所有工具调用签名排序后做指纹比对。
+            if len(tool_calls) >= 1:
+                sigs = tuple(sorted(
+                    (tc.get("function", {}).get("name", ""),
+                     tc.get("function", {}).get("arguments", "{}"))
+                    for tc in tool_calls
+                ))
+                if sigs == prev_sig:
                     logger.info(
                         "ReAct 轮次 %d: 检测到重复工具调用 %s，提前结束转最终回复",
-                        round_idx + 1, sig[0],
+                        round_idx + 1, [s[0] for s in sigs],
                     )
                     self._hit_tool_spin = True
                     try:
@@ -127,7 +131,7 @@ class ReActLoop:
                     except Exception:
                         logger.exception("工具空转遥测记录失败")
                     break
-                prev_sig = sig
+                prev_sig = sigs
 
             # 有工具调用 → 执行
             logger.info("ReAct 轮次 %d: %d 个工具调用", round_idx + 1, len(tool_calls))

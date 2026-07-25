@@ -72,7 +72,15 @@ class Gateway:
         )
         audit = getattr(self.core, "audit", None)
         if audit:
-            text_length = len(msg.message) if isinstance(msg.message, str) else len(msg.message)
+            if isinstance(msg.message, str):
+                text_length = len(msg.message)
+            elif isinstance(msg.message, list):
+                text_length = sum(
+                    len(seg.get("text", "")) for seg in msg.message
+                    if isinstance(seg, dict)
+                )
+            else:
+                text_length = 0
             audit.emit(
                 "message_sent",
                 detail_type=msg.detail_type,

@@ -79,8 +79,14 @@ MANIFEST: list[dict[str, Any]] = [
     {"path": "llm.circuit_failure_threshold", "label": "熔断失败阈值", "type": "number", "min": 1, "max": 20, "risk": "yellow", "restart": True, "impact": ["LLM 容灾", "QQ 回复"]},
     {"path": "llm.circuit_cooldown_sec", "label": "熔断冷却（秒）", "type": "number", "min": 1, "max": 600, "risk": "yellow", "restart": True, "impact": ["LLM 容灾", "QQ 回复"]},
     {"path": "autonomy.active_reply_prob", "label": "主动发言概率", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["主动行为"]},
-    {"path": "autonomy.active_global_cooldown_sec", "label": "主动发言全局冷却", "type": "number", "min": 0, "max": 86400, "risk": "green", "restart": False, "impact": ["主动行为"]},
-    {"path": "autonomy.daily_max_per_group", "label": "单群每日上限", "type": "number", "min": 0, "max": 1000, "risk": "green", "restart": False, "impact": ["群策略"]},
+    {"path": "autonomy.active_global_cooldown_sec", "label": "主动发言全局冷却（秒）", "type": "number", "min": 60, "max": 86400, "risk": "green", "restart": False, "impact": ["主动行为"]},
+    {"path": "autonomy.active_silence_min_sec", "label": "沉默多久后考虑插话（秒）", "type": "number", "min": 30, "max": 3600, "risk": "green", "restart": False, "impact": ["主动行为"]},
+    {"path": "autonomy.active_min_group_messages", "label": "群内最少人类消息数", "type": "number", "min": 1, "max": 50, "risk": "green", "restart": False, "impact": ["主动行为"]},
+    {"path": "autonomy.active_daily_max_per_group", "label": "每群每日主动发言上限", "type": "number", "min": 0, "max": 50, "risk": "green", "restart": False, "impact": ["主动行为", "群策略"]},
+    {"path": "autonomy.active_context_score_threshold", "label": "语境评分阈值", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["主动行为"]},
+    {"path": "autonomy.daily_max_per_group", "label": "单群每日总上限（含议程）", "type": "number", "min": 0, "max": 1000, "risk": "green", "restart": False, "impact": ["群策略"]},
+    {"path": "autonomy.reply_only_when_mentioned", "label": "仅被呼叫时回复", "type": "boolean", "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "autonomy.familiar_reply_min", "label": "熟人模式亲密度门槛", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["回复门控"]},
     {"path": "permissions.group_policies", "label": "逐群策略", "type": "group_policies", "risk": "green", "restart": False, "impact": ["群策略", "回复门控", "工具与表情"]},
     # 心跳对象是在启动阶段按该开关装配的；切换开关必须受控重启，
     # 否则仅替换 Pydantic 配置并不会创建/销毁运行中的任务。
@@ -286,7 +292,10 @@ class ConfigService:
         updates = {
             "active_reply_prob": autonomy.active_reply_prob,
             "active_global_cooldown_sec": autonomy.active_global_cooldown_sec,
+            "active_silence_min_sec": autonomy.active_silence_min_sec,
+            "active_min_group_messages": autonomy.active_min_group_messages,
             "active_daily_max_per_group": autonomy.active_daily_max_per_group,
+            "active_context_score_threshold": autonomy.active_context_score_threshold,
             "daily_max": autonomy.daily_max_per_group,
         }
         for attr, value in updates.items():

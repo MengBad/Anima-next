@@ -22,6 +22,14 @@ _COMMITMENT_HINT = re.compile(
 _BOT_PROMISE_HINT = re.compile(
     r"(?:本喵会|本喵帮|本喵来|本喵记得|我会帮|我会记|帮你查|帮你看|帮你盯|记下了|到时候告诉)"
 )
+# 威胁 / 角色扮演攻击语境——即使含时间词也不算承诺
+_THREAT_ROLEPLAY_RE = re.compile(
+    r"(?:死定了|气死|弄死|打死|踩死|掐死|咬死|"
+    r"把你.*踩|把你.*抠|把你.*拆|把你.*砸|"
+    r"今晚死|明天死|等着瞧|你完了|你死定|"
+    r"炸毛|尾巴竖|龇牙|嘶吼|狂踩|踩奶|"
+    r"踩成筛子|扣下来当|抠下来当)"
+)
 
 
 @dataclass
@@ -96,6 +104,9 @@ class EpisodicMemory:
         if not text:
             return None
         has_commit = bool(_COMMITMENT_HINT.search(text) or (role == "bot" and _BOT_PROMISE_HINT.search(text)))
+        # 威胁 / 角色扮演攻击语境不算承诺（“你今晚死定了”≠ 承诺）
+        if has_commit and _THREAT_ROLEPLAY_RE.search(text):
+            has_commit = False
         # 约定类降低长度门槛；一般闲聊仍要求更明显的情节信号。
         salient = (
             has_image
@@ -140,10 +151,16 @@ class EpisodicMemory:
         # 仅群聊可自动生成跟进议程；私聊只保留约定，避免误发到群。
         if agenda_factory is not None and group_id:
             try:
-                prefix = "跟进本喵承诺" if role == "bot" else "跟进约定"
+                # 议程文本须剥离 CQ 码与角色扮演动作，避免污染 LLM 意图
+                clean_text = re.sub(r"\[CQ:[^\]]*\]?", "", item.text).strip()
+                clean_text = re.sub(r"（[^）]*）", "", clean_text).strip()
+                if not clean_text:
+                    clean_text = item.text[:80]
+                # 不带系统前缀，直接用自然描述作为议程意图
+                agenda_text = clean_text[:120]
                 agenda = agenda_factory(
                     int(group_id),
-                    f"{prefix}：{item.text[:120]}",
+                    agenda_text,
                     priority=0.62 if role == "bot" else 0.55,
                     not_before_at=due_at,
                     expires_at=due_at + 12 * 3600,

@@ -39,9 +39,16 @@ class CrossGroupManager:
     def get_user(self, user_id: str, name: str = "") -> UserMemory:
         if user_id not in self._users:
             self._users[user_id] = UserMemory(user_id=user_id, name=name)
-        if name and not self._users[user_id].name:
-            self._users[user_id].name = name
-        return self._users[user_id]
+        user = self._users[user_id]
+        if name:
+            if not user.name:
+                user.name = name
+            elif name != user.name:
+                # P4: 跨群身份统一——不同群不同名字记入 aliases
+                if name not in user.aliases and name != user.name:
+                    user.aliases.append(name)
+                    user.aliases = user.aliases[-5:]  # 最多 5 个别名
+        return user
 
     def add_user_fact(self, user_id: str, content: str, source_group: str,
                       tags: list[str] | None = None, name: str = "") -> UserFact | None:
@@ -146,20 +153,27 @@ class CrossGroupManager:
     def _load(self) -> None:
         try:
             if os.path.exists(self._users_path()):
-                raw = json.load(open(self._users_path(), encoding="utf-8"))
+                with open(self._users_path(), encoding="utf-8") as _fh:
+                    raw = json.load(_fh)
                 for uid, d in raw.items():
                     u = UserMemory(
                         user_id=uid, name=d.get("name", ""),
                         preferences=d.get("preferences", {}),
                         groups=d.get("groups", {}),
+                        aliases=d.get("aliases", []),  # P4: 跨群别名
+                        topic_preferences=d.get("topic_preferences", {}),  # E2
+                        style_hint=d.get("style_hint", ""),               # E2
+                        avg_msg_length=float(d.get("avg_msg_length", 0)), # E2
                     )
+                    u._msg_count = int(d.get("_msg_count", 0))            # E2
                     u.facts = [UserFact(**f) for f in d.get("facts", [])]
                     self._users[uid] = u
         except Exception:
             logger.exception("加载 crossgroup users.json 失败")
         try:
             if os.path.exists(self._atm_path()):
-                raw = json.load(open(self._atm_path(), encoding="utf-8"))
+                with open(self._atm_path(), encoding="utf-8") as _fh:
+                    raw = json.load(_fh)
                 for gid, d in raw.items():
                     fields = AtmosphereProfile.__dataclass_fields__
                     d2 = {k: v for k, v in d.items() if k in fields}
@@ -176,14 +190,18 @@ class CrossGroupManager:
                 "name": u.name,
                 "preferences": u.preferences,
                 "groups": u.groups,
+                "aliases": u.aliases,  # P4: 跨群别名持久化
+                "topic_preferences": u.topic_preferences,  # E2
+                "style_hint": u.style_hint,                # E2
+                "avg_msg_length": u.avg_msg_length,        # E2
+                "_msg_count": u._msg_count,                # E2
                 "facts": [
                     {"content": f.content, "source_group": f.source_group,
                      "timestamp": f.timestamp, "tags": f.tags}
                     for f in u.facts
                 ],
             }
-        with open(self._users_path(), "w", encoding="utf-8") as fh:
-            json.dump(raw, fh, ensure_ascii=False, indent=2)
+        self._atomic_write_json(self._users_path(), raw)
 
     def _save_atmospheres(self) -> None:
         raw = {}
@@ -196,8 +214,25 @@ class CrossGroupManager:
                 "sample_phrases": a.sample_phrases,
                 "last_updated": a.last_updated,
             }
-        with open(self._atm_path(), "w", encoding="utf-8") as fh:
-            json.dump(raw, fh, ensure_ascii=False, indent=2)
+        self._atomic_write_json(self._atm_path(), raw)
+
+    @staticmethod
+    def _atomic_write_json(path: str, obj: Any) -> None:
+        """原子写 JSON：先写临时文件再 os.replace，防止进程崩溃时文件损坏。"""
+        import tempfile as _tf
+        target = path
+        parent = os.path.dirname(target) or "."
+        fd, tmp = _tf.mkstemp(dir=parent, prefix=".tmp_", suffix=".json")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(obj, fh, ensure_ascii=False, indent=2)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, target)
+        except Exception:
+            if os.path.exists(tmp):
+                os.unlink(tmp)
+            raise
 
     def _users_path(self) -> str:
         return os.path.join(self.data_dir, "users.json")

@@ -25,7 +25,7 @@ def test_all_defaults_match_design() -> None:
 
     # 上下文：人格/本轮输入保护，低优先级片段与旧历史按预算退出。
     assert c.context.input_token_budget == 12000
-    assert c.context.system_token_budget == 6000
+    assert c.context.system_token_budget == 8000
     assert c.context.tool_result_token_budget == 1800
 
     # 漂移（§15.3）

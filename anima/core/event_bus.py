@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 import asyncio
+import logging
 from collections import defaultdict
 from typing import Awaitable, Callable, Any
 
+logger = logging.getLogger("anima.eventbus")
 Handler = Callable[[Any], Awaitable[None]]
 
 
@@ -22,6 +24,9 @@ class EventBus:
         handlers = list(self._subs.get(topic, ()))
         if not handlers:
             return
-        await asyncio.gather(
+        results = await asyncio.gather(
             *(h(payload) for h in handlers), return_exceptions=True
         )
+        for r in results:
+            if isinstance(r, Exception):
+                logger.exception("EventBus handler 异常 (topic=%s)", topic, exc_info=r)

@@ -15,6 +15,7 @@ import logging
 import os
 import shlex
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Optional
@@ -67,7 +68,14 @@ def _find_tool(name: str) -> Optional[str]:
 
 
 def _available_isolator() -> tuple[str, str]:
-    """返回 (tool_name, tool_path) 或 ('', '')。"""
+    """返回 (tool_name, tool_path) 或 ('', '')。
+
+    非 root 用户无法使用 unshare/bwrap 命名空间隔离，强制降级为普通子进程。
+    Windows 上没有 getuid，直接跳过命名空间隔离。
+    """
+    getuid = getattr(os, "getuid", None)
+    if getuid is None or getuid() != 0:
+        return "", ""
     for tool in ISOLATION_TOOLS:
         path = _find_tool(tool)
         if path:
@@ -197,7 +205,8 @@ def _preexec(config: SandboxConfig) -> Optional[callable]:
     return fn
 
 
-async def _run_subprocess(cmd: list[str], config: SandboxConfig) -> str:
+async def _run_subprocess(cmd: list[str], config: SandboxConfig,
+                          env: dict | None = None) -> str:
     """运行子进程并返回输出。"""
     logger.debug("沙箱执行: %s", cmd)
     proc = await asyncio.create_subprocess_exec(
@@ -205,6 +214,7 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig) -> str:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         preexec_fn=_preexec(config) if os.name != "nt" else None,
+        env=env,
     )
 
     try:
@@ -233,46 +243,100 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig) -> str:
 # 公开 API
 # ---------------------------------------------------------------------------
 
-async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT) -> str:
+async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
+                      input_images_b64: list[str] | None = None) -> str:
     """在沙箱中执行一段 Python 代码。
 
     Args:
         code: Python 代码字符串
         timeout: 超时秒数（最大 30）
+        input_images_b64: 可选，入站图片的 base64 列表，注入为 _input_image_b64 / _input_image
     """
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix="anima_sandbox_"
     ) as f:
-        f.write("""# Sandbox safety preamble
-import builtins
-_orig_import = builtins.__import__
+        f.write(f"""# Sandbox safety preamble
+import builtins as _builtins
+import os as _os
+import sys as _sys
+_orig_import = _builtins.__import__
 
-_blocked = {"os", "subprocess", "shutil", "socket", "requests", "ctypes",
-            "sys", "importlib", "compile", "eval", "exec"}
+# 用户代码文件路径（临时 .py）
+_USER_FILE = __file__
+_output_dir = _os.environ.get('SANDBOX_OUTPUT_DIR', '/tmp')
+_blocked = {{"subprocess", "shutil", "socket", "requests", "ctypes",
+            "importlib", "multiprocessing"}}
 
 def _safe_import(name, *args, **kwargs):
     root = name.split(".")[0]
     if root in _blocked:
-        raise ImportError(f"Module '{name}' is blocked in sandbox")
+        # 遍历整个调用栈：只要有任何一帧来自用户代码文件就拦截。
+        # 这防止 exec("import subprocess") 绕过——exec 创建的代码对象
+        # co_filename='<string>'，但其调用者仍在 _USER_FILE 中。
+        _frame = _sys._getframe(1)
+        while _frame is not None:
+            _caller = _os.path.normpath(_frame.f_code.co_filename)
+            if _caller == _os.path.normpath(_USER_FILE):
+                raise ImportError(f"Module '{{name}}' is blocked in sandbox")
+            _frame = _frame.f_back
     return _orig_import(name, *args, **kwargs)
 
-builtins.__import__ = _safe_import
+_builtins.__import__ = _safe_import
+
+# 禁用 exec/compile/eval 防止通过动态代码执行绕过 import 守卫
+_builtins.exec = lambda *a, **kw: (_ for _ in ()).throw(
+    RuntimeError("exec() is blocked in sandbox"))
+_builtins.compile = lambda *a, **kw: (_ for _ in ()).throw(
+    RuntimeError("compile() is blocked in sandbox"))
+_builtins.eval = lambda *a, **kw: (_ for _ in ()).throw(
+    RuntimeError("eval() is blocked in sandbox"))
 
 # User code below
 """)
+        # 始终注入图片变量（即使无入站图，也定义为 None/空串，避免 LLM 代码引用 NameError）
+        import json as _json
+        _imgs = input_images_b64 or []
+        f.write(f"\n# 入站图片（base64）\n")
+        f.write(f"_input_images_b64 = {_json.dumps(_imgs)}\n")
+        f.write(f"_input_image_b64 = _input_images_b64[0] if _input_images_b64 else ''\n")
+        f.write("""# 快捷：第一张图的 PIL Image 对象（无图时为 None）
+import io as _io, base64 as _b64
+try:
+    from PIL import Image as _Image
+    from PIL import Image  # LLM 代码可以直接用 Image
+    _input_image = _Image.open(_io.BytesIO(_b64.b64decode(_input_image_b64))) if _input_image_b64 else None
+except Exception:
+    _input_image = None
+    try:
+        from PIL import Image
+    except Exception:
+        Image = None
+
+# 输出图片辅助：调用 _save_output(pil_image, filename='output.png') 保存到共享目录并打印路径
+def _save_output(img, filename='output.png'):
+    out_path = _os.path.join(_output_dir, filename)
+    img.save(out_path)
+    print(f'[output_image] {out_path}')
+    return out_path
+
+""")
         f.write(code)
         tmp_path = f.name
+
+    # 创建共享输出目录（bwrap 隔离沙箱的 /tmp 对宿主机不可见，必须用可写绑定挂载）
+    _output_dir = tempfile.mkdtemp(prefix="anima_sandbox_out_")
 
     try:
         config = SandboxConfig(
             memory_mb=MAX_MEMORY_MB,
             timeout=timeout,
             network=False,
-            writable_dirs=[str(Path(tmp_path).parent)],
+            writable_dirs=[str(Path(tmp_path).parent), _output_dir],
         )
         inner_cmd = [sys.executable, "-u", tmp_path]
         cmd = _build_command(config, inner_cmd)
-        return await _run_subprocess(cmd, config)
+        _sandbox_env = {**os.environ, "SANDBOX_OUTPUT_DIR": _output_dir}
+        return await _run_subprocess(cmd, config, env=_sandbox_env)
     except Exception:
         logger.exception("沙箱 Python 执行异常")
         return "[沙箱] 执行异常（详见日志）"

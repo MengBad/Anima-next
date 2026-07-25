@@ -21,7 +21,8 @@ class WorldModelEntry:
     """单条世界观条目。"""
 
     __slots__ = ("text", "category", "weight", "created_at", "last_confirmed",
-                 "source", "evidence_count")
+                 "source", "evidence_count", "contested", "contested_with",
+                 "last_contested_at")
 
     def __init__(self, text: str, category: str = "belief", weight: float = 0.5,
                  source: str = "rumination"):
@@ -32,6 +33,9 @@ class WorldModelEntry:
         self.last_confirmed = self.created_at
         self.source = source
         self.evidence_count = 1
+        self.contested = False       # B3: 是否被新信念挑战
+        self.contested_with: str = ""  # B3: 挑战它的信念文本
+        self.last_contested_at: float = 0.0  # B3: 上次被标记 contested 的时间
 
 
 class WorldModel:
@@ -87,6 +91,9 @@ class WorldModel:
             e.created_at = item.get("created_at", time.time())
             e.last_confirmed = item.get("last_confirmed", e.created_at)
             e.evidence_count = item.get("evidence_count", 1)
+            # B3: 恢复 contested 状态
+            e.contested = item.get("contested", False)
+            e.contested_with = item.get("contested_with", "")
             self._entries.append(e)
 
     def persist(self) -> None:
@@ -100,6 +107,8 @@ class WorldModel:
                     "last_confirmed": e.last_confirmed,
                     "source": e.source,
                     "evidence_count": e.evidence_count,
+                    "contested": e.contested,          # B3
+                    "contested_with": e.contested_with, # B3
                 }
                 for e in self._entries
             ]
@@ -119,8 +128,24 @@ class WorldModel:
             logger.info("WorldModel: 丢弃论文体/分析腔条目（text_len=%d）",
                         len(text or ""))
             return None
-        # 去重：文本相似则强化权重
+        # B3: 先做冲突检测（在去重之前，避免否定句被判为相似）
+        # 冷却：同一条目 1 小时内不被重复标记为 contested，避免频繁误触发
+        conflict_entry = self.detect_conflict(text)
+        if conflict_entry:
+            _now = time.time()
+            _last_contest = getattr(conflict_entry, "last_contested_at", 0) or 0
+            if _now - _last_contest >= 3600:
+                conflict_entry.contested = True
+                conflict_entry.contested_with = text
+                conflict_entry.weight = max(0.1, conflict_entry.weight * 0.7)
+                conflict_entry.last_contested_at = _now
+                logger.info("WorldModel: 信念冲突，标记旧条目为 contested: '%s' vs '%s'",
+                            conflict_entry.text[:30], text[:30])
+
+        # 去重：文本相似则强化权重（已 contested 的条目不参与去重）
         for e in self._entries:
+            if e.contested:
+                continue
             if self._similar(e.text, text):
                 e.weight = min(1.0, e.weight + 0.08)
                 e.last_confirmed = time.time()
@@ -165,20 +190,56 @@ class WorldModel:
         return entries
 
     def prompt_fragment(self, max_chars: int = 800) -> str:
-        """注入 system prompt 的世界观片段。"""
-        entries = self.get_entries(min_weight=0.4)[:8]
+        """注入 system prompt 的世界观片段。
+
+        B3: 按 category 分组注入（fact > rule > belief > preference），
+        contested 条目以“曾经觉得X，现在觉得Y”形式注入。
+        """
+        self.decay()
+        entries = [e for e in self._entries if e.weight >= 0.4]
         if not entries:
             return ""
 
         lines = ["## 你对世界的看法"]
-        for e in entries:
+
+        # 按 category 优先级排序
+        category_order = {"fact": 0, "rule": 1, "belief": 2, "preference": 3}
+        entries.sort(key=lambda e: (category_order.get(e.category, 9), -e.weight))
+
+        for e in entries[:8]:
             cat_label = self.CATEGORIES.get(e.category, e.category)
-            lines.append(f"- [{cat_label}] {e.text}")
+            if e.contested and e.contested_with:
+                lines.append(f"- [{cat_label}] 你曾经觉得{e.text}，但现在又觉得{e.contested_with}")
+            else:
+                lines.append(f"- [{cat_label}] {e.text}")
 
         text = "\n".join(lines)
         if len(text) > max_chars:
             text = text[:max_chars].rsplit("\n", 1)[0] + "\n…"
         return text
+
+    def detect_conflict(self, new_text: str) -> Optional[WorldModelEntry]:
+        """B3: 检测新条目是否与已有信念矛盾。
+
+        简单规则：检测反义词/否定词对，如“喜欢”vs“不喜欢”、“应该”vs“不应该”。
+        不依赖 LLM，纯文本匹配。
+        """
+        _CONFLICT_PAIRS = [
+            ("喜欢", "不喜欢"), ("不喜欢", "喜欢"),
+            ("应该", "不应该"), ("不应该", "应该"),
+            ("讨厌", "不讨厌"), ("不讨厌", "讨厌"),
+            ("信任", "不信任"), ("不信任", "信任"),
+            ("害怕", "不怕"), ("不怕", "害怕"),
+        ]
+        for e in self._entries:
+            if e.contested or e.weight < 0.3:
+                continue
+            for a, b in _CONFLICT_PAIRS:
+                if a in new_text and b in e.text:
+                    return e
+                if b in new_text and a in e.text:
+                    return e
+        return None
 
     # ------------------------------------------------------------------
     # 内部

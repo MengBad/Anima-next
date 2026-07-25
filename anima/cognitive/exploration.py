@@ -283,24 +283,38 @@ class ExplorationManager:
     async def _collect(self, topic: str) -> list[ExplorationSourceItem]:
         enabled = set(getattr(self.config, "sources", ["bilibili_popular", "bbc_zhongwen"]) or [])
         jobs = []
-        if "bilibili_popular" in enabled:
+        health = self.state.get("source_health", {})
+        now = time.time()
+        # 来源容错：连续失败 ≥3 次且最近 30 分钟内失败过的来源临时跳过，避免重复报错
+        _SKIP_THRESHOLD = 3
+        _SKIP_WINDOW = 1800  # 30 分钟
+
+        def _should_skip(source_key: str) -> bool:
+            h = health.get(source_key, {})
+            if h.get("ok", True) is not False:
+                return False
+            failures = int(h.get("consecutive_failures", 0) or 0)
+            checked_at = float(h.get("checked_at", 0) or 0)
+            return failures >= _SKIP_THRESHOLD and (now - checked_at) < _SKIP_WINDOW
+
+        if "bilibili_popular" in enabled and not _should_skip("bilibili_popular"):
             jobs.append(self._fetch_bilibili_popular())
-        if "bbc_zhongwen" in enabled:
+        if "bbc_zhongwen" in enabled and not _should_skip("bbc_zhongwen"):
             jobs.append(self._fetch_rss(
                 "BBC 中文", "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml"
             ))
         # 热点观察看榜单；具体好奇问题再做受限检索。两类来源相互独立，任何
         # 一个失败都不会阻断其他来源，也不会改为任意网页抓取。
         if not self._is_generic_topic(topic):
-            if "bilibili_search" in enabled:
+            if "bilibili_search" in enabled and not _should_skip("bilibili_search"):
                 jobs.append(self._fetch_bilibili_search(topic))
-            if "wikipedia_zh" in enabled:
+            if "wikipedia_zh" in enabled and not _should_skip("wikipedia_zh"):
                 jobs.append(self._fetch_wikipedia_search(topic))
         results = await asyncio.gather(*jobs, return_exceptions=True)
         items: list[ExplorationSourceItem] = []
         for result in results:
             if isinstance(result, Exception):
-                logger.warning("探索来源失败: %s", type(result).__name__)
+                logger.debug("探索来源失败: %s", type(result).__name__)
             else:
                 items.extend(result)
         return items
@@ -467,16 +481,20 @@ class ExplorationManager:
 
     def _source_ok(self, source: str, started: float, items: int) -> None:
         health = self.state.setdefault("source_health", {})
+        prev = health.get(source, {})
         health[source] = {
             "ok": True, "items": int(items), "latency_ms": int((time.time() - started) * 1000),
             "checked_at": time.time(), "error": "",
+            "consecutive_failures": 0,
         }
 
     def _source_failed(self, source: str, exc: Exception) -> None:
         health = self.state.setdefault("source_health", {})
+        prev = health.get(source, {})
         health[source] = {
             "ok": False, "items": 0, "latency_ms": 0,
             "checked_at": time.time(), "error": type(exc).__name__,
+            "consecutive_failures": int(prev.get("consecutive_failures", 0) or 0) + 1,
         }
 
     def _pick_item(self, topic: str, items: list[ExplorationSourceItem]) -> ExplorationSourceItem | None:
@@ -563,9 +581,9 @@ class ExplorationManager:
         if allowlist and int(group_id) not in allowlist:
             return
         intent = (
-            f"分享刚刚自主探索到的一条公开资料：{note.title}。"
-            f"核心笔记：{note.summary}。来源：{note.source} {note.url}。"
-            "用自然、简短的哈基米口吻说明这是刚看到的资料，不要夸大确定性。"
+            f"你刚刷到一条有意思的事：{note.title}——{note.summary[:60]}。"
+            "顺嘴跟群里提一嘴就行，别搞得像新闻播报，"
+            "就像'诶本喵刚看到个好玩的'那种感觉。"
         )
         self.core.propose_agenda(
             int(group_id), intent, priority=0.62,

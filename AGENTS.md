@@ -1,4 +1,8 @@
-# AGENTS.md — Anima-next（生产路径）
+# AGENTS.md
+
+This file provides guidance to Lingma (lingma.aliyun.com) when working with code in this repository.
+
+---
 
 > 本仓库是 **Anima 的生产源码**：OpenClaw 风格独立进程，部署于 VPS `/opt/anima`，经 `_deploy.py` 发布。用户每天在 QQ 中交互的 bot 即此。
 > 实验分支 `G:/Anima`（AstrBot 插件形态）已于 2026-07-12 冻结，请勿在本仓库之外开发新功能。
@@ -28,11 +32,27 @@ Anima-next 是一个脱离 AstrBot 的**独立全智能 QQ 机器人**：自有�
 
 ```bash
 pip install -e ".[qq,vector,dev]"          # 推荐项目 .venv
+make install                                # 等价命令
+make test                                   # pytest tests/ -q
+make test-verbose                           # pytest tests/ -v
+make run                                    # python -m anima.cli start
+make doctor                                 # 环境自检（QQ/LLM/向量库）
 pytest tests/ -q                            # 以全量绿为准（2026-07-18 基线约 460+）
+pytest tests/test_xxx.py::test_func_name    # 运行单个测试
 cd webui && npm run build                   # 产出 anima/webui/static
 python -m anima init --agent --spec spec.json
 python -m anima doctor
 ```
+
+## 环境与配置
+
+- Python `3.12+`；关键环境变量：`ANIMA_LLM_API_KEY`、`ANIMA_LLM_ENDPOINT`、`NAPCAT_TOKEN`
+- 配置文件：`/opt/anima/config.yaml`（生产）或 `./config.yaml`（本地）；模板在 `config/default.yaml`
+- WebUI 默认 `0.0.0.0:8088`，需配 `webui.token`（≥32 位随机字符串）
+- QQ 接入：`napcat_ws_url: ws://127.0.0.1:3001`
+- systemd 服务名 `anima`，部署目录 `/opt/anima`
+- 依赖：`pyproject.toml` 声明 + `requirements.txt` 精确锁定（生产用）；可选分组 qq/vector/dev/sylann/docs
+- 许可证：AGPL-3.0-only；RC 发布需干净工作树；部署生成源码归档，WebUI `/source` 公开可查
 
 ## 关键注意事项
 

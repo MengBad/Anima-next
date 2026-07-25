@@ -179,10 +179,29 @@ class CapabilityManager:
 
         命中返回已有能力名（调用方据此把新能力 merge 进它，而非新建）；
         不重复返回 None。LLM 失败安全退化为 None（不阻断创建）。
+
+        优化：先做文本快速预检，名称完全相同或文本相似度 ≥0.8 时直接返回，
+        节省一次 LLM 调用（VPS 日志显示每次反刍都生成相同能力，预检可拦截）。
         """
         caps = self._data.get("capabilities", [])
         if not caps:
             return None
+
+        # 快速预检：名称完全匹配 或 高文本相似度 → 直接返回，省 LLM 调用
+        from anima.cognitive.capability_dedup import text_similarity
+        for c in caps:
+            existing_name = c.get("name", "")
+            if existing_name == name:
+                return existing_name
+            sim = text_similarity(
+                name + " " + (description or ""),
+                existing_name + " " + (c.get("description", "") or "")
+            )
+            if sim >= 0.8:
+                logger.info("能力快速文本去重：sim=%.2f，命中「%s」，跳过 LLM 判定",
+                            sim, existing_name)
+                return existing_name
+
         existing = "\n".join(
             f"- {c.get('name', '')}：{(c.get('description', '') or '')[:80]}"
             for c in caps

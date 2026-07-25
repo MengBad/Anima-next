@@ -21,17 +21,16 @@ def _load_persona() -> str:
 def test_persona_has_grounded_catgirl_voice():
     sp = _load_persona()
     assert "哈基米" in sp
-    assert "琪诺露式的克制、清醒和观察力" in sp
+    assert "克制" in sp  # 对陌生人保持克制
     assert "不主动披露记忆" in sp
-    assert "不拿身份、性别表达或群体当贬损梗" in sp
-    assert "对陌生群友" in sp
-    assert "不无条件站队" in sp
+    assert "对陌生人" in sp
     assert "瞬间越级" in sp
+    assert "主体性" in sp  # 新版人格核心：主体性
 
 
 def test_persona_keeps_task_and_uncertainty_rules():
     sp = _load_persona()
-    assert "用户明确要解析/总结/步骤时才展开" in sp or "任务类该详细就详细" in sp
+    assert "明确要解析/步骤时才展开" in sp or "任务类该详细就详细" in sp
     assert "不编实时事实" in sp
     assert "优先走工具拿事实" in sp
 

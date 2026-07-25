@@ -293,6 +293,18 @@ class LLMHandler:
                 max_wait_sec=conversation.max_wait_sec,
             )
 
+        # B1: 群聊防抖
+        self._group_debouncer = None
+        debounce_cfg = getattr(core.config, "debounce", None)
+        if debounce_cfg and getattr(debounce_cfg, "group_enabled", True):
+            from anima.core.conversation_assembler import GroupDebouncer
+            self._group_debouncer = GroupDebouncer(
+                wait_sec=getattr(debounce_cfg, "group_wait_sec", 2.0),
+                max_wait_sec=getattr(debounce_cfg, "group_max_wait_sec", 6.0),
+                adaptive=getattr(debounce_cfg, "adaptive", True),
+                short_msg_threshold=getattr(debounce_cfg, "short_msg_threshold", 10),
+            )
+
     def _record_audio_metric(self, name: str) -> None:
         metrics = getattr(self, "_audio_metrics", None)
         if not isinstance(metrics, dict):
@@ -1076,6 +1088,27 @@ class LLMHandler:
         except Exception:
             logger.exception("跨群事实抽取后台任务异常")
 
+    def _periodic_dict_cleanup(self) -> None:
+        """每 10 分钟清理一次无界字典，防止长期运行 OOM。"""
+        now = time.time()
+        last = getattr(self, "_last_dict_cleanup", 0)
+        if now - last < 600:
+            return
+        self._last_dict_cleanup = now
+        # 清理 30 分钟前的节流记录（getattr 兜底：测试可能跳过 __init__）
+        for attr in ("_sticker_last", "_sticker_auto_last", "_audio_last"):
+            d = getattr(self, attr, None)
+            if d:
+                stale_keys = [k for k, v in d.items() if now - v > 1800]
+                for k in stale_keys:
+                    d.pop(k, None)
+        # 清理未锁住的旧 turn_locks（超过 2000 个时裁剪）
+        locks = getattr(self, "_turn_locks", None)
+        if locks and len(locks) > 2000:
+            unlocked = [k for k, lock in locks.items() if not lock.locked()]
+            for k in unlocked[:len(unlocked) // 2]:
+                locks.pop(k, None)
+
     async def handle(self, event: dict) -> None:
         # 提取事件信息
         text = event.get("text", "").strip()
@@ -1087,6 +1120,9 @@ class LLMHandler:
 
         if not user_id:
             return
+
+        # 周期性清理无界字典，防止长期运行内存泄漏
+        self._periodic_dict_cleanup()
 
         # NapCat 的 reply 段常常只有消息 id，没有被回复者 QQ。群聊闸门在这种
         # 情况下不能仅靠 reply 段判断；提前 get_msg 一次并复用其图片内容，既补全
@@ -1115,6 +1151,38 @@ class LLMHandler:
                 event["group_presence"] = presence.state
             except Exception:
                 logger.exception("群在场状态更新失败")
+            # I2: 社交疲劳检测（5 分钟内被 @ 超过 6 次触发 overwhelmed）
+            if event.get("mentions_self") or event.get("reply_to_self"):
+                try:
+                    from anima.cognitive.mood import get_mood_system
+                    now = time.time()
+                    if not hasattr(self, "_mention_times"):
+                        self._mention_times: list[float] = []
+                    self._mention_times.append(now)
+                    # 清理 5 分钟前的记录
+                    self._mention_times = [t for t in self._mention_times if now - t < 300]
+                    if len(self._mention_times) > 6:
+                        data_dir = str(self.core.config.persistence.data_dir)
+                        get_mood_system(data_dir).trigger("overwhelmed", 0.5)
+                        logger.info("社交疲劳触发：5分钟内被@%d次", len(self._mention_times))
+                        # 疲劳 gate：发简短回复并跳过完整 pipeline，避免被刷屏时每条都走 LLM
+                        if len(self._mention_times) > 8:
+                            import random as _rnd
+                            _tired_replies = [
+                                "本喵累了喵…先歇会儿…",
+                                "呜…本喵的脑袋转不过来了喵…",
+                                "你们能不能让本喵喘口气喵…",
+                                "本喵要午睡一会儿…别戳了喵…",
+                            ]
+                            _tired = _rnd.choice(_tired_replies)
+                            try:
+                                await self.core.gateway.send(
+                                    OutboundMsg("group", int(group_id), _tired))
+                            except Exception:
+                                pass
+                            return
+                except Exception:
+                    pass
 
         audit = getattr(self.core, "audit", None)
         if audit:
@@ -1144,6 +1212,15 @@ class LLMHandler:
             assembled = await self._assembler.ingest(event)
             if assembled is None:
                 return
+            event = assembled
+            text = str(event.get("raw_message") or event.get("message") or "")
+
+        # B1: 群聊防抖——同一用户 2s 内连续消息合并为一个语义回合
+        _group_debouncer = getattr(self, "_group_debouncer", None)
+        if detail_type == "group" and _group_debouncer is not None:
+            assembled = await _group_debouncer.ingest(event)
+            if assembled is None:
+                return  # 已被合并，不单独处理
             event = assembled
             text = str(event.get("raw_message") or event.get("message") or "")
 
@@ -1254,6 +1331,17 @@ class LLMHandler:
             except Exception:
                 logger.exception("语音转写异常（已隔离，不阻塞回复）")
 
+        # 拟真输入状态：私聊时发送“正在输入...”让对方看到 bot 在打字
+        try:
+            _channel = getattr(getattr(self.core, "gateway", None), "channel", None)
+            if _channel and hasattr(_channel, "set_typing_status"):
+                qq_cfg = getattr(getattr(self.core, "config", None), "qq", None)
+                _typing_enabled = getattr(qq_cfg, "typing_indicator", True) if qq_cfg else True
+                if _typing_enabled and detail_type == "private":
+                    await _channel.set_typing_status(True)
+        except Exception:
+            pass
+
         # 构建 pipeline 上下文
         ctx = PipelineContext(
             event=event,
@@ -1309,14 +1397,17 @@ class LLMHandler:
             except Exception:
                 logger.exception("回复质量统计失败")
 
-        # 拆成多条独立消息：正文（含 @）一条，每个 image 单独一条，
-        # 实现「消息是消息、表情是表情」，避免文字与表情挤在同一条里。
-        messages = _split_reply_messages(segments)
+        # 拟人分段发送（A1/A2）：文本按标点智能分段 + 情绪/关系调制延迟
+        messages = _split_reply_messages_with_split(
+            segments, self.core, user_id, detail_type,
+        )
         if not messages:
             return
 
         sent_ids = []
-        for idx, msg_segs in enumerate(messages):
+        for idx, (msg_segs, delay) in enumerate(messages):
+            if delay > 0:
+                await asyncio.sleep(delay)
             mid = await self.core.gateway.send(
                 OutboundMsg(detail_type, target_id, msg_segs)
             )
@@ -1327,9 +1418,6 @@ class LLMHandler:
             else:
                 logger.info("[出站成功][trace=%s] part=%d msg_id=%s segs=%s",
                             trace, idx, mid, [s.get("type") for s in msg_segs])
-            # 多段消息之间留小间隙，规避 QQ 频繁发送限流
-            if idx < len(messages) - 1:
-                await asyncio.sleep(0.3)
         if all(m is None for m in sent_ids):
             logger.warning("[出站全失败][trace=%s]", trace)
         else:
@@ -1746,19 +1834,15 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
         # LLM 主动选了表情 -> 群聊/私聊都发，尊重意图（不受氛围/概率门控）。
         segments.append({"type": "image", "data": {"file": str(Path(sticker_path).resolve())}})
     elif detail_type == "group" and send_allowed:
-        # 被动自动附带：照 astrbot_plugin_stealer 概率/冷却模式精神。
-        # 全局概率触发（不再受 always_atmosphere 氛围门控），scope 受 share_across_groups 控制。
-        # 优先按回复文本情绪匹配；无匹配/检不出情绪则降级随机一张。
+        # 被动自动附带：概率/冷却模式 + 情绪联动（E1/E2）。
+        # mood 非中性时优先用 mood label 选图（70%），文本推断作 fallback。
         try:
             from anima.cognitive.stickers import get_sticker_manager
+            from anima.cognitive.mood import get_mood_system
             scfg = core.config.sticker
-            # 该函数也被离线测试与兼容调用使用；没有运行时 Handler 状态时，
-            # 使用本次调用独立的空字典，避免把冷却状态泄漏到不相关会话。
             sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
             now = time.time()
             last = sticker_auto_last.get(str(group_id), 0.0)
-            # 老配置没有被动附带字段时，保留原来的氛围白名单语义；新配置则
-            # 使用概率/冷却控制。这样升级不需要同时重写已有 config.yaml。
             if hasattr(scfg, "send_probability"):
                 probability = float(scfg.send_probability)
                 cooldown = float(getattr(scfg, "send_cooldown_sec", 0.0))
@@ -1767,12 +1851,47 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                 probability = 1.0 if getattr(ctx, "atmosphere_style", "") in getattr(scfg, "always_atmosphere", []) else 0.0
                 cooldown = 0.0
                 by_emotion = False
+
+            # E2: 情绪影响发图概率
+            _mood_label = "neutral"
+            try:
+                _mood_sys = get_mood_system(core.config.persistence.data_dir)
+                _mood_label = _mood_sys.get_state().label
+            except Exception:
+                pass
+            if _mood_label in ("happy", "excited"):
+                probability = min(1.0, probability * 1.4)
+            elif _mood_label in ("tired", "annoyed", "bored"):
+                probability = max(0.0, probability * 0.5)
+
+            # R3: 伤痕影响表情包选择——对有活跃伤痕的用户降低发图概率
+            try:
+                from anima.cognitive.scar import get_scar_system
+                _scar_sys = get_scar_system(core.config.persistence.data_dir)
+                _user_scars = _scar_sys.get_for_user(int(ctx.user_id))
+                if any(s.severity > 0.5 for s in _user_scars):
+                    probability = max(0.0, probability * 0.6)
+            except Exception:
+                pass
+
             if (probability > 0
                     and now - last >= cooldown
                     and random.random() < probability):
                 _mgr = get_sticker_manager(core.config.persistence.data_dir)
                 _auto = None
-                if by_emotion:
+                # E1: mood 非中性时优先按 mood label 选图（70%权重）
+                _MOOD_TO_STICKER_EMOTION = {
+                    "happy": "happy", "excited": "excited",
+                    "annoyed": "angry", "tired": "tired", "bored": "speechless",
+                    "curious": "curious",
+                }
+                _mood_emotion = _MOOD_TO_STICKER_EMOTION.get(_mood_label, "")
+                if _mood_emotion and random.random() < 0.7:
+                    _auto = _mgr.pick_by_emotion(
+                        _mood_emotion, group_id=group_id,
+                        allow_cross_group=bool(getattr(scfg, "share_across_groups", False)))
+                # fallback: 文本情绪推断
+                if _auto is None and by_emotion:
                     _em = _mgr.detect_reply_emotion(ctx.reply)
                     if _em:
                         _auto = _mgr.pick_by_emotion(
@@ -1818,4 +1937,95 @@ def _split_reply_messages(segments: "list[dict]") -> "list[list[dict]]":
         if len(m) == 1 and m[0].get("type") == "text" and not (m[0].get("data") or {}).get("text"):
             continue
         cleaned.append(m)
+    return cleaned
+
+
+def _split_reply_messages_with_split(
+    segments: "list[dict]",
+    core: Any,
+    user_id: Any,
+    detail_type: str,
+) -> "list[tuple[list[dict], float]]":
+    """拟人分段发送：文本智能分段 + 情绪/关系调制延迟。
+
+    返回 [(segments_list, delay_before_send), ...] 列表。
+    图片段单独成条，文本段按 reply_splitter 拆分。
+    """
+    from anima.core.reply_splitter import SplitConfig, split_reply
+
+    # 读取配置
+    rs_cfg = getattr(core.config, "reply_split", None)
+    if rs_cfg is None or not rs_cfg.enabled:
+        # 回退到旧逻辑（无分段，固定 0.3s 间隔）
+        msgs = _split_reply_messages(segments)
+        return [(m, 0.3 if i > 0 else 0.0) for i, m in enumerate(msgs)]
+
+    split_cfg = SplitConfig(
+        enabled=rs_cfg.enabled,
+        max_segments=rs_cfg.max_segments,
+        min_segment_len=rs_cfg.min_segment_len,
+        max_segment_len=rs_cfg.max_segment_len,
+        trigger_threshold=rs_cfg.trigger_threshold,
+        tail_merge_threshold=rs_cfg.tail_merge_threshold,
+        delay_enabled=rs_cfg.delay_enabled,
+        delay_base=rs_cfg.delay_base,
+        delay_factor=rs_cfg.delay_factor,
+        delay_jitter=rs_cfg.delay_jitter,
+    )
+
+    # 获取情绪和关系状态
+    mood_label = "neutral"
+    relation_stage = "ACQUAINTANCE"
+    try:
+        from anima.cognitive.mood import get_mood_system
+        mood_label = get_mood_system(core.config.persistence.data_dir).get_state().label
+    except Exception:
+        pass
+    try:
+        from anima.cognitive.relation import get_relation
+        manager = get_relation(core.config.persistence.data_dir)
+        store = getattr(manager, "_relations", {}) or {}
+        rel = store.get(str(int(user_id))) or store.get(int(user_id))
+        if rel is not None:
+            relation_stage = getattr(rel, "stage", "ACQUAINTANCE")
+    except Exception:
+        pass
+
+    # 分离文本段和图片段
+    at_seg: dict | None = None
+    text_content = ""
+    image_segs: list[dict] = []
+    for seg in segments:
+        if seg.get("type") == "at":
+            at_seg = seg
+        elif seg.get("type") == "text":
+            text_content += (seg.get("data") or {}).get("text", "")
+        elif seg.get("type") == "image":
+            image_segs.append(seg)
+
+    # 对文本进行拟人分段
+    result = split_reply(text_content, split_cfg, mood_label, relation_stage)
+
+    messages: list[tuple[list[dict], float]] = []
+    for i, (seg_text, delay) in enumerate(zip(result.segments, result.delays)):
+        msg_segs: list[dict] = []
+        # @ 只加在第一段
+        if i == 0 and at_seg is not None:
+            msg_segs.append(at_seg)
+        msg_segs.append({"type": "text", "data": {"text": seg_text}})
+        # 第一段延迟为 0（已经等过了），后续段用计算延迟
+        actual_delay = 0.0 if i == 0 else delay
+        messages.append((msg_segs, actual_delay))
+
+    # 图片段单独成条，固定 0.5s 延迟（模拟“发图”动作）
+    for img_seg in image_segs:
+        messages.append(([img_seg], 0.5))
+
+    # 清理空消息
+    cleaned: list[tuple[list[dict], float]] = []
+    for msg_segs, delay in messages:
+        if (len(msg_segs) == 1 and msg_segs[0].get("type") == "text"
+                and not (msg_segs[0].get("data") or {}).get("text")):
+            continue
+        cleaned.append((msg_segs, delay))
     return cleaned

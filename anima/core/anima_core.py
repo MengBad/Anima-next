@@ -190,6 +190,13 @@ class AnimaCore:
         for m in self.modules:
             await m.init(self)
 
+        # 注册社交行为监听（notice 事件：入群/退群/戳一戳）
+        try:
+            from anima.cognitive.social_reactions import setup_social_listeners
+            setup_social_listeners(self)
+        except Exception:
+            logger.exception("社交行为监听注册失败，已隔离")
+
         if self.config.webui.enabled:
             try:
                 from anima.webui import WebUIServer

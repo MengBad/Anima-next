@@ -19,6 +19,7 @@ class QQConfig(BaseModel):
     access_token: Optional[SecretStr] = None
     event_concurrency: int = 12       # 同时执行业务事件上限，WS 回执仍独立即时处理
     max_pending_events: int = 128     # 高峰保护；超过后只丢新事件并计入健康指标
+    typing_indicator: bool = True     # 私聊回复前发送“正在输入...”状态（NapCat 扩展）
 
 
 class LLMConfig(BaseModel):
@@ -354,6 +355,73 @@ class ConversationConfig(BaseModel):
     max_wait_sec: float = 8.0
 
 
+class ReplySplitConfig(BaseModel):
+    """拟人分段发送 + 拟真延迟（参考 astrbot_plugin_splitter）。"""
+    enabled: bool = True
+    max_segments: int = 4
+    min_segment_len: int = 40
+    max_segment_len: int = 120
+    trigger_threshold: int = 150      # 低于此字数不分段（避免短回复被切成多条）
+    tail_merge_threshold: int = 15    # 尾段低于此字数合并到前段
+    delay_enabled: bool = True
+    delay_base: float = 0.4           # 基础延迟（秒）
+    delay_factor: float = 0.02        # 每字延迟（秒/字）
+    delay_jitter: float = 0.3         # 随机抖动上限（秒）
+
+
+class DebounceConfig(BaseModel):
+    """群聊消息防抖（参考 astrbot_plugin_continuous_message）。"""
+    group_enabled: bool = True
+    group_wait_sec: float = 2.0
+    group_max_wait_sec: float = 6.0
+    adaptive: bool = True
+    short_msg_threshold: int = 10     # 短句阈值（字）
+
+
+class SoulConfig(BaseModel):
+    """灵魂能量槽系统（参考 astrbot_plugin_angel_memory）。"""
+    enabled: bool = True
+    ema_alpha: float = 0.3            # EMA 平滑系数
+    persist_interval_sec: float = 60.0
+
+
+class GateConfig(BaseModel):
+    """轻重双模型前置判断（参考 astrbot_plugin_angel_heart）。"""
+    enabled: bool = False             # 默认关闭，需手动启用
+    model: str = ""                   # 空则继承 llm.model
+    timeout_ms: int = 500
+    fallback_to_full: bool = True     # 超时/失败时走完整流程
+
+
+class QZoneConfig(BaseModel):
+    """QQ 空间说说（参考 astrbot_plugin_qzone_tools）。"""
+    enabled: bool = False             # 默认关闭
+    daily_max: int = 2                # 每天最多发几条
+    cooldown_sec: int = 14400         # 冷却 4 小时
+
+
+class QQStatusConfig(BaseModel):
+    """QQ 在线状态同步（参考 astrbot_plugin_qzone_tools）。"""
+    enabled: bool = False             # 默认关闭
+
+
+class VoiceConfig(BaseModel):
+    """AI 语音消息 TTS（参考 astrbot_plugin_qzone_tools）。"""
+    enabled: bool = False
+    auto_probability: float = 0.1     # 特殊场景自动触发概率
+
+
+class MemeConfig(BaseModel):
+    """趣味图片互动（参考 astrbot_plugin_pic_toolbox）。"""
+    enabled: bool = False
+    petpet_on_poke: float = 0.3       # 被戳时摸头回去概率
+
+
+class ScraplingConfig(BaseModel):
+    """Scrapling 反反爬网页抓取。"""
+    enabled: bool = False             # 默认关闭，需手动启用
+
+
 class ContextConfig(BaseModel):
     """聊天上下文预算。
 
@@ -362,7 +430,7 @@ class ContextConfig(BaseModel):
     这里是保守的防溢出阈值，而不是计费用量。
     """
     input_token_budget: int = Field(default=12000, ge=1024)
-    system_token_budget: int = Field(default=6000, ge=1024)
+    system_token_budget: int = Field(default=8000, ge=1024)
     image_token_estimate: int = Field(default=768, ge=64)
     tool_result_token_budget: int = Field(default=1800, ge=128)
 
@@ -475,6 +543,39 @@ class IterationConfig(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# 社交行为
+# ---------------------------------------------------------------------------
+
+class SocialConfig(BaseModel):
+    """自主社交行为配置。"""
+    welcome_new_member: bool = True       # 新人入群欢迎
+    farewell_member: bool = True          # 退群/被踢感叹
+    poke_back: bool = True                # 被戳时回应
+    poke_back_probability: float = 0.6    # 戳回去的概率
+    welcome_cooldown_sec: int = 300       # 欢迎冷却（防批量入群刷屏）
+    farewell_cooldown_sec: int = 60       # 告别冷却
+
+
+# ---------------------------------------------------------------------------
+# 人格纹理（F3: 错别字 + 发癫配置）
+# ---------------------------------------------------------------------------
+
+class PersonaConfig(BaseModel):
+    """人格纹理配置：错别字注入、发癫模式等。"""
+    typo_probability: float = 0.03       # 错别字触发概率
+    quirk_probability: float = 0.04      # 发癫基础概率
+    quirk_daily_max: int = 3             # 每日发癫上限
+    seed_relations: list[dict] = Field(default_factory=lambda: [
+        {"qq": 1562290139, "name": "吴雨萌", "stage": "CLOSE",
+         "familiarity": 0.9, "trust": 0.95, "valence": 0.7,
+         "tags": ["开发者", "主人", "MTF", "HRT"]},
+        {"qq": 1371704917, "name": "华初", "stage": "FRIEND",
+         "familiarity": 0.6, "trust": 0.7, "valence": 0.4,
+         "tags": ["雨萌的对象", "MTF"]},
+    ])  # 种子关系（首次初始化写入）
+
+
+# ---------------------------------------------------------------------------
 # 顶层
 # ---------------------------------------------------------------------------
 
@@ -500,6 +601,15 @@ class AnimaConfig(BaseModel):
     sylann: SylannConfig = Field(default_factory=SylannConfig)
     skills: SkillsConfig = Field(default_factory=SkillsConfig)
     conversation: ConversationConfig = Field(default_factory=ConversationConfig)
+    reply_split: ReplySplitConfig = Field(default_factory=ReplySplitConfig)
+    debounce: DebounceConfig = Field(default_factory=DebounceConfig)
+    soul: SoulConfig = Field(default_factory=SoulConfig)
+    gate: GateConfig = Field(default_factory=GateConfig)
+    qzone: QZoneConfig = Field(default_factory=QZoneConfig)
+    qq_status: QQStatusConfig = Field(default_factory=QQStatusConfig)
+    voice: VoiceConfig = Field(default_factory=VoiceConfig)
+    meme: MemeConfig = Field(default_factory=MemeConfig)
+    scrapling: ScraplingConfig = Field(default_factory=ScraplingConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
     webui: WebUIConfig = Field(default_factory=WebUIConfig)
@@ -508,6 +618,8 @@ class AnimaConfig(BaseModel):
     danger: DangerConfig = Field(default_factory=DangerConfig)
     deploy: DeployConfig = Field(default_factory=DeployConfig)
     iteration: IterationConfig = Field(default_factory=IterationConfig)
+    social: SocialConfig = Field(default_factory=SocialConfig)
+    persona: PersonaConfig = Field(default_factory=PersonaConfig)
 
 
 # ---------------------------------------------------------------------------

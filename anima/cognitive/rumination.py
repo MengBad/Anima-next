@@ -63,6 +63,10 @@ class RuminationEngine:
         self._last_run = 0.0
         self._cap_research_last = 0.0
         self._compact_count = 0
+        # 各子任务独立频率控制（避免每 900s 全量执行）
+        self._tool_summary_last = 0.0
+        self._maintain_health_last = 0.0
+        self._sticker_label_last = 0.0
         self._persist = PersistenceProvider(data_dir)
         self._state_path = "rumination_state.json"
         self._restore_state()
@@ -136,15 +140,30 @@ class RuminationEngine:
     # ------------------------------------------------------------------
 
     async def _self_growth_dispatch(self, recent_text: str) -> None:
-        """P0 工具规律总结 + P1 能力研究/健康维护/晋升注册。"""
-        # P0：工具使用规律归纳
-        try:
-            from anima.cognitive.tool_learning import get_tool_learning
-            tl = get_tool_learning(self.core.config.persistence.data_dir)
-            for tool in tl.summarize_due_tools():
-                await tl.summarize_rules(self.core.llm, tool)
-        except Exception:
-            logger.exception("工具规律总结调度失败")
+        """P0 工具规律总结 + P1 能力研究/健康维护/晋升注册。
+
+        各子任务独立频率控制，避免每 900s 都全量执行：
+        - 工具规律总结：每 1800s
+        - 能力研究：每 900s（已有独立门控）
+        - 能力健康维护 + 晋升：每 1800s
+        - 笔记压缩：每 N 次反刍（已有 compact_every_ruminations）
+        - 表情包打标：每 1800s
+        """
+        now = time.time()
+        _SUBTASK_INTERVAL = 1800  # 低频子任务的默认冷却秒数
+
+        # P0：工具使用规律归纳（节流至每 1800s）
+        if now - self._tool_summary_last >= _SUBTASK_INTERVAL:
+            try:
+                from anima.cognitive.tool_learning import get_tool_learning
+                tl = get_tool_learning(self.core.config.persistence.data_dir)
+                due = tl.summarize_due_tools()
+                if due:
+                    for tool in due:
+                        await tl.summarize_rules(self.core.llm, tool)
+                    self._tool_summary_last = now
+            except Exception:
+                logger.exception("工具规律总结调度失败")
 
         # P1：能力系统
         try:
@@ -158,7 +177,10 @@ class RuminationEngine:
                     **capability_cfg_dict(self.core.config),
                 )
                 await self._research_capability(mgr, recent_text)
-                mgr.maintain_health()
+                # 健康维护 + 晋升：节流至每 1800s（非 LLM 操作，但有计算开销）
+                if now - self._maintain_health_last >= _SUBTASK_INTERVAL:
+                    mgr.maintain_health()
+                    self._maintain_health_last = now
                 mgr.promote_top_k(self.core, k=3)
         except Exception:
             logger.exception("能力系统调度失败")
@@ -176,34 +198,45 @@ class RuminationEngine:
         except Exception:
             logger.exception("笔记压缩调度失败")
 
-        # 表情包打标：对未打标新图用发图上下文文本生成中文标签（节流，零多模态依赖）
-        try:
-            st_cfg = getattr(self.core.config, "sticker", None)
-            if st_cfg and getattr(st_cfg, "enabled", True) and getattr(st_cfg, "auto_collect", True):
-                from anima.cognitive.stickers import get_sticker_manager
-                mgr = get_sticker_manager(
-                    self.core.config.persistence.data_dir,
-                    label_by_vision=getattr(st_cfg, "label_by_vision", True),
-                    label_model=getattr(st_cfg, "label_model", "") or "",
-                )
-                if mgr.count() > 0:
-                    await mgr.label_pending(
-                        self.core.llm,
-                        getattr(st_cfg, "label_model", "") or "",
+        # 表情包打标：节流至每 1800s
+        if now - self._sticker_label_last >= _SUBTASK_INTERVAL:
+            try:
+                st_cfg = getattr(self.core.config, "sticker", None)
+                if st_cfg and getattr(st_cfg, "enabled", True) and getattr(st_cfg, "auto_collect", True):
+                    from anima.cognitive.stickers import get_sticker_manager
+                    mgr = get_sticker_manager(
+                        self.core.config.persistence.data_dir,
+                        label_by_vision=getattr(st_cfg, "label_by_vision", True),
+                        label_model=getattr(st_cfg, "label_model", "") or "",
                     )
-        except Exception:
-            logger.exception("表情打标调度失败")
+                    if mgr.count() > 0:
+                        await mgr.label_pending(
+                            self.core.llm,
+                            getattr(st_cfg, "label_model", "") or "",
+                        )
+                        self._sticker_label_last = now
+            except Exception:
+                logger.exception("表情打标调度失败")
 
     @scoped_llm("capabilities", "research")
     async def _research_capability(self, mgr, recent_text: str) -> None:
-        """从近期对话里找反复出现、可用方法论解决的需求，生成长为能力。
-
+        """从近期对话里找反复出现、可用方法论解决的需求，生成为能力。
+    
         低频门控（每 900s 至多研究一次），避免反刍风暴灌满能力库。
         """
         now = time.time()
         if now - self._cap_research_last < 900:
             return
         self._cap_research_last = now
+    
+        # 配额预检：今日注册配额已满时跳过整个 LLM 生成，避免浪费 token
+        # （生成后仍因配额满仅入库不注册，下次反刍又重复生成——死循环）
+        import time as _time
+        today = _time.strftime("%Y-%m-%d")
+        if mgr._daily_register.get("date") == today and mgr._daily_register["count"] >= mgr.dynamic_daily_quota:
+            logger.debug("能力研究：今日注册配额已满 (%d/%d)，跳过本轮研究",
+                         mgr._daily_register["count"], mgr.dynamic_daily_quota)
+            return
 
         prompt = (
             "回顾下面这段最近的对话，判断是否存在「反复出现、可以用一个固定方法或流程解决、"

@@ -38,13 +38,19 @@ _ACTIVE_LOW_VALUE_RE = re.compile(
 )
 
 
+# CQ 码清理（统一引用 anima.constants，含未闭合兜底）
+from anima.constants import CQ_TRANSPORT_RE as _CQ_TRANSPORT_RE
+
+
 def _clean_active_reply(reply: str) -> str:
-    """移除主动发言中被模型照抄的上下文说话人标签。"""
+    """移除主动发言中被模型照抄的上下文说话人标签及 CQ 码。"""
     text = _ACTIVE_REPLY_LABEL_RE.sub("", (reply or "").strip(), count=1).strip()
     text = re.sub(
         r"(?:^|\n)\s*\[(?:你|哈基米|anima|Anima)\]\s*[:：]\s*",
         "\n", text, flags=re.IGNORECASE,
     ).strip()
+    # 剥离残留 CQ 码（LLM 可能照抄议程中的 CQ 片段）
+    text = _CQ_TRANSPORT_RE.sub("", text).strip()
     return text
 
 
@@ -230,6 +236,14 @@ class Heartbeat:
         }
         self._day_reset = data.get("day_reset", time.time())
         self._tokens_today = data.get("tokens_today", 0)
+        # 恢复近期自主发言记录（跨重启去重）
+        raw_replies = data.get("recent_active_replies", {})
+        now = time.time()
+        self._recent_active_replies = {
+            int(k): [tuple(item) for item in v if now - item[0] < 14400]
+            for k, v in raw_replies.items()
+            if isinstance(v, list)
+        }
 
     def persist(self) -> None:
         """保存每日计数与冷却状态。"""
@@ -243,6 +257,9 @@ class Heartbeat:
             "active_feedback_stats": {str(k): v for k, v in self._active_feedback_stats.items()},
             "day_reset": self._day_reset,
             "tokens_today": self._tokens_today,
+            "recent_active_replies": {
+                str(k): v[-8:] for k, v in getattr(self, "_recent_active_replies", {}).items()
+            },
         }
         self._persist.write_json(self._path, data)
 
@@ -528,6 +545,17 @@ class Heartbeat:
         base = HOURLY_ACTIVITY.get(hour, 0.5)
         jitter = random.uniform(0.5, 1.5)
         prob = base * jitter
+        # H3: 情绪驱动主动社交权重
+        try:
+            from anima.cognitive.mood import get_mood_system
+            data_dir = str(self.core.config.persistence.data_dir)
+            mood_label = get_mood_system(data_dir).get_state().label
+            if mood_label in ("excited", "happy"):
+                prob *= 1.3
+            elif mood_label in ("tired", "bored"):
+                prob *= 0.5
+        except Exception:
+            pass
         return random.random() < prob
 
     def _pick_group(self, now: float) -> Optional[int]:
@@ -628,6 +656,25 @@ class Heartbeat:
         if not intent:
             threshold = float(getattr(self, "active_context_score_threshold", 0.0) or 0.0)
             context_score = score_active_context(history)
+            # N2: 话题兴趣匹配（群聊话题命中活跃欲望时 +0.15）
+            try:
+                from anima.cognitive.desire import get_desire_system
+                desire_sys = get_desire_system()
+                active_desires = desire_sys.get_active(0.3)
+                if active_desires and history:
+                    # 检查最近消息是否命中欲望关键词
+                    recent_text = " ".join(
+                        str(m.get("content", "")) for m in history[-5:]
+                    ).lower()
+                    for d in active_desires[:3]:
+                        # 简单关键词匹配
+                        keywords = ["吃", "美食", "饭", "游戏", "动漫", "旅行", "玩"]
+                        if any(kw in recent_text and kw in d.content for kw in keywords):
+                            context_score += 0.15
+                            logger.debug("话题兴趣匹配：欲望'%s'命中，+0.15", d.content[:20])
+                            break
+            except Exception:
+                pass
             # 沉默已过门控但缓冲偏空时略降阈值，避免「想说却永远出站失败」卡死意图。
             if not history:
                 logger.debug("主动发言跳过：群 %d 无短时群上下文", group_id)
@@ -650,12 +697,14 @@ class Heartbeat:
 
         if intent:
             speaking_rules = """你现在正在执行一项已经通过系统门控的明确表达议程，不是在随机找话题。
-- 按议程意图说 1-2 句话；即使群里暂时安静，也要完成这次表达
-- 近期群聊只能帮助你调整语气，不能覆盖、取消或歪曲议程意图
-- 不要输出「[skip]」，不要解释内部流程，也不要复述指令本身
+- 用自然、日常的语气说 1-2 句话，就像平时聊天一样
+- 不要复读议程原文，不要复述指令，不要照抄之前的回复
+- 如果议程内容是之前说过的话，用平和、随意的语气自然带过，不要重复激烈情绪或威胁性内容
+- 即使群里暂时安静，也要完成这次表达
+- 不要输出「[skip]」，不要解释内部流程
 - 不要用「作为 AI」开头，也别自称 Anima / Antigravity
 - 只输出要发到群里的正文；绝不输出说话人标签或引用标记"""
-            user_request = f"（明确议程）请现在自然地完成这项表达：\n{intent[:500]}"
+            user_request = f"（明确议程）请用自然、日常的语气完成这项表达：\n{intent[:500]}"
         else:
             speaking_rules = """你现在可以考虑在群里说一句话，但「不打扰」优先于开口。
 只有最近对话有明确、还没接住的梗、问题、情绪或自然收尾时才说。
@@ -730,17 +779,33 @@ class Heartbeat:
         if len(reply) > 120:
             reply = reply[:120].rstrip("，,。；;、 ") + "…"
 
-        # 相似度去重只看近一小时内本进程已真正发出的主动消息。0.76 能挡住
-        # 同主题的换词复读，又不会干扰普通短句或正常的后续对话。
-        recent_by_group = getattr(self, "_recent_active_replies", {})
-        recent = [item for item in recent_by_group.get(group_id, []) if now - item[0] < 3600]
-        recent_by_group[group_id] = recent
+        # ── 去重 Layer 1：与群内近期所有 bot 消息比对（含被动回复）──
+        # 防止自主发言照搬刚刚被动回复说过的话（12:05 事件的根因）。
+        _BOT_LABEL_RE = re.compile(r"^\[哈基米\]\s*[:：]?\s*")
+        bot_msgs_recent = [
+            _BOT_LABEL_RE.sub("", str(m.get("content", ""))).strip()
+            for m in (history or [])
+            if m.get("role") == "assistant"
+        ]
         current = _normalized_active_reply(reply)
+        if len(current) >= 10 and any(
+            SequenceMatcher(None, current, _normalized_active_reply(bm)).ratio() >= 0.70
+            for bm in bot_msgs_recent
+            if len(_normalized_active_reply(bm)) >= 10
+        ):
+            logger.info("自主发言丢弃：与群内近期 bot 回复过于相似 group=%d", group_id)
+            return False
+
+        # ── 去重 Layer 2：与本群近期自主发言比对（4h 窗口，跨重启持久化）──
+        # 0.76 能挡住同主题的换词复读，又不会干扰普通短句或正常的后续对话。
+        recent_by_group = getattr(self, "_recent_active_replies", {})
+        recent = [item for item in recent_by_group.get(group_id, []) if now - item[0] < 14400]
+        recent_by_group[group_id] = recent
         if len(current) >= 12 and any(
             SequenceMatcher(None, current, _normalized_active_reply(previous)).ratio() >= 0.76
             for _, previous in recent
         ):
-            logger.info("自主发言去重：群 %d 的候选回复与近期内容过于相似", group_id)
+            logger.info("自主发言去重：群 %d 的候选回复与近期自主内容过于相似", group_id)
             return False
 
         try:
@@ -839,7 +904,7 @@ class Heartbeat:
     # ------------------------------------------------------------------
 
     async def _life_checkpoints(self) -> None:
-        """在每次心跳 tick 中检查模拟生活 + 反刍 + 遗忘。"""
+        """在每次心跳 tick 中检查模拟生活 + 反刍 + 遗忘 + 情绪。"""
         try:
             from anima.cognitive.simulated_life import get_life
             from anima.cognitive.forgetting import get_forgetting
@@ -849,6 +914,15 @@ class Heartbeat:
             forgetting = get_forgetting(self.core.config.persistence.data_dir)
             memory = get_chat_memory()
 
+            # 情绪系统更新（时间段影响 + 衰减）
+            try:
+                from anima.cognitive.mood import get_mood_system
+                mood = get_mood_system(self.core.config.persistence.data_dir)
+                # 每次心跳触发一次时间影响（内部有衰减逻辑）
+                mood.trigger("mentioned", 0.05)  # 轻微的时间影响
+            except Exception:
+                logger.debug("情绪系统更新失败，已隔离")
+
             # 晨间觉醒
             await life.morning_routine()
 
@@ -857,6 +931,48 @@ class Heartbeat:
 
             # 晚间反思
             await life.evening_reflection()
+
+            # M2: 晚安行为
+            await life.goodnight_behavior()
+
+            # N1: 旁观者内心独白（群很热闹但 bot 没被 @ 时，10% 概率写内心笔记）
+            try:
+                from anima.cognitive.group_presence import get_group_presence
+                from anima.cognitive.learning import get_learning
+                gp = get_group_presence(self.core.config.persistence.data_dir)
+                learning = get_learning(self.core.config.persistence.data_dir)
+                # 找最近活跃但 bot 没被 summon 的群
+                for gid, presence in gp.items.items():
+                    if presence.state == "GETTING_FAMILIAR" and presence.message_count >= 5:
+                        # 群很热闹但 bot 没被 @
+                        if random.random() < 0.1:
+                            learning.add_note(
+                                f"[旁观] 群 {gid} 在聊什么，本喵在旁边看着挺有意思的"
+                            )
+                            logger.debug("旁观内心独白已写入 group=%s", gid)
+                        break  # 每次心跳只处理一个群
+            except Exception:
+                logger.debug("旁观内心独白失败")
+
+            # S3: 群活跃度影响欲望生成
+            try:
+                from anima.cognitive.group_presence import get_group_presence
+                from anima.cognitive.desire import get_desire_system
+                gp = get_group_presence(self.core.config.persistence.data_dir)
+                desire_sys = get_desire_system(self.core.config.persistence.data_dir)
+                # 统计总群活跃度
+                total_msgs = sum(
+                    p.message_count for p in gp.items.values()
+                    if hasattr(p, "message_count")
+                )
+                if total_msgs >= 15:
+                    # 群很活跃 → 社交欲上升
+                    desire_sys.add("想跟大家聊天", intensity=0.35, kind="chat")
+                elif total_msgs <= 2:
+                    # 群冷清 → 独处欲/好奇心上升
+                    desire_sys.add("想自己探索点新东西", intensity=0.3, kind="chat")
+            except Exception:
+                logger.debug("S3 群活跃度欲望生成失败")
 
             # 反刍（将近期经历沉淀为自我笔记）
             if self._rumination:

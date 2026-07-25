@@ -24,6 +24,13 @@ class UserMemory:
     facts: list[UserFact] = field(default_factory=list)
     preferences: dict = field(default_factory=dict)
     groups: dict[str, str] = field(default_factory=dict)  # group_id -> 备注/角色
+    # P4: 跨群身份统一——不同群的不同名字
+    aliases: list[str] = field(default_factory=list)  # 最多保留 5 个别名
+    # E2: 用户偏好学习
+    topic_preferences: dict[str, int] = field(default_factory=dict)  # 话题 -> 出现次数
+    style_hint: str = ""  # 回复风格提示（如“偏简短”“爱发表情”）
+    avg_msg_length: float = 0.0  # 平均消息长度
+    _msg_count: int = 0  # 统计用
 
     def add_fact(self, content: str, source_group: str,
                  tags: list[str] | None = None) -> UserFact:
@@ -50,3 +57,46 @@ class UserMemory:
             for f in facts
         ]
         return "\n".join(lines)
+
+    def update_topic(self, topic: str) -> None:
+        """E2: 记录用户话题偏好。"""
+        if not topic or len(topic) < 2:
+            return
+        self.topic_preferences[topic] = self.topic_preferences.get(topic, 0) + 1
+        # 保留 top 10
+        if len(self.topic_preferences) > 20:
+            sorted_topics = sorted(
+                self.topic_preferences.items(), key=lambda x: -x[1])
+            self.topic_preferences = dict(sorted_topics[:10])
+
+    def update_style(self, msg_length: int) -> None:
+        """E2: 根据消息长度更新风格提示。"""
+        self._msg_count += 1
+        # 指数移动平均
+        alpha = 0.1
+        self.avg_msg_length = (
+            self.avg_msg_length * (1 - alpha) + msg_length * alpha
+        ) if self._msg_count > 1 else float(msg_length)
+        # 每 10 条消息更新一次 style_hint
+        if self._msg_count % 10 == 0 and self._msg_count >= 10:
+            if self.avg_msg_length < 15:
+                self.style_hint = "偏简短"
+            elif self.avg_msg_length < 40:
+                self.style_hint = "适中"
+            else:
+                self.style_hint = "偏详细"
+
+    def preference_fragment(self) -> str:
+        """E2: 生成用户偏好提示片段。"""
+        parts = []
+        if self.style_hint:
+            parts.append(f"回复风格{self.style_hint}")
+        if self.topic_preferences:
+            top_topics = sorted(
+                self.topic_preferences.items(), key=lambda x: -x[1])[:3]
+            if top_topics:
+                topics_text = "、".join(t for t, _ in top_topics)
+                parts.append(f"喜欢聊{topics_text}")
+        if not parts:
+            return ""
+        return "这个人" + "，".join(parts)

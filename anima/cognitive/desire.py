@@ -19,6 +19,47 @@ from anima.core.persistence import PersistenceProvider
 EXPRESSION_SCOPES = frozenset({"internal", "group", "global"})
 
 
+class Aspiration:
+    """D1: 长期目标/志向——跨天/跨周持续的内在追求。"""
+
+    __slots__ = ("content", "kind", "milestones", "progress", "created_at",
+                 "last_reflected", "resolved")
+
+    def __init__(self, content: str, kind: str = "learn",
+                 milestones: list[str] | None = None):
+        self.content = content
+        self.kind = kind  # learn / social / creative
+        self.milestones = milestones or []
+        self.progress = 0.0  # 0-1
+        self.created_at = time.time()
+        self.last_reflected = self.created_at
+        self.resolved = False
+
+    def to_dict(self) -> dict:
+        return {
+            "content": self.content,
+            "kind": self.kind,
+            "milestones": self.milestones,
+            "progress": self.progress,
+            "created_at": self.created_at,
+            "last_reflected": self.last_reflected,
+            "resolved": self.resolved,
+        }
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "Aspiration":
+        a = cls(
+            content=d.get("content", ""),
+            kind=d.get("kind", "learn"),
+            milestones=d.get("milestones", []),
+        )
+        a.progress = float(d.get("progress", 0.0))
+        a.created_at = float(d.get("created_at", time.time()))
+        a.last_reflected = float(d.get("last_reflected", a.created_at))
+        a.resolved = bool(d.get("resolved", False))
+        return a
+
+
 def _normalise_group_id(value: object) -> Optional[int]:
     """将来源群号规范为正整数；私聊、缺失和非法值统一为 None。"""
     try:
@@ -60,6 +101,9 @@ class DesireSystem:
         self._last_decay = time.time()
         self._persist = PersistenceProvider(data_dir)
         self._path = "desires.json"
+        # D1: 长期目标
+        self.aspirations: list[Aspiration] = []
+        self._aspirations_path = "aspirations.json"
 
     # ------------------------------------------------------------------
     # 持久化
@@ -77,6 +121,10 @@ class DesireSystem:
             d.created_at = item.get("created_at", time.time())
             d.resolved = item.get("resolved", False)
             self.desires.append(d)
+        # D1: 恢复 aspirations
+        asp_data = self._persist.read_json(self._aspirations_path, [])
+        for item in asp_data:
+            self.aspirations.append(Aspiration.from_dict(item))
 
     def persist(self) -> None:
         data = [
@@ -94,6 +142,62 @@ class DesireSystem:
             for d in self.desires
         ]
         self._persist.write_json(self._path, data)
+
+    # D1: Aspirations 持久化
+    def persist_aspirations(self) -> None:
+        data = [a.to_dict() for a in self.aspirations]
+        self._persist.write_json(self._aspirations_path, data)
+
+    # ------------------------------------------------------------------
+    # D1: Aspirations API
+    # ------------------------------------------------------------------
+
+    def add_aspiration(self, content: str, kind: str = "learn",
+                       milestones: list[str] | None = None) -> Aspiration:
+        """添加一个长期目标。"""
+        # 去重
+        for a in self.aspirations:
+            if not a.resolved and a.content == content:
+                return a
+        asp = Aspiration(content, kind, milestones)
+        self.aspirations.append(asp)
+        # 最多 10 个
+        active = [a for a in self.aspirations if not a.resolved]
+        if len(active) > 10:
+            # 移除最旧的
+            active.sort(key=lambda a: a.created_at)
+            active[0].resolved = True
+        self.persist_aspirations()
+        return asp
+
+    def update_aspiration_progress(self, content_keyword: str, delta: float = 0.1) -> bool:
+        """更新匹配目标的进度。"""
+        updated = False
+        for a in self.aspirations:
+            if not a.resolved and content_keyword in a.content:
+                a.progress = min(1.0, a.progress + delta)
+                a.last_reflected = time.time()
+                if a.progress >= 1.0:
+                    a.resolved = True
+                updated = True
+        if updated:
+            self.persist_aspirations()
+        return updated
+
+    def get_active_aspirations(self) -> list[Aspiration]:
+        """获取未完成的长期目标。"""
+        return [a for a in self.aspirations if not a.resolved]
+
+    def aspiration_fragment(self) -> str:
+        """D1: 生成注入晨间/主动发言 prompt 的长期目标片段。"""
+        active = self.get_active_aspirations()
+        if not active:
+            return ""
+        lines = ["## 你最近的长期目标"]
+        for a in active[:3]:
+            pct = int(a.progress * 100)
+            lines.append(f"- {a.content}（进度 {pct}%）")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -193,6 +297,39 @@ class DesireSystem:
             if not d.resolved and d.intensity > 0.05:
                 d.intensity *= self.decay_rate
 
+    def expire_unfulfilled(self) -> list[str]:
+        """S2: 检查超过 24h 未满足的欲望，返回“遗憾笔记”列表。
+
+        超期欲望自然衰减并标记 resolved，同时生成一条遗憾笔记。
+        """
+        now = time.time()
+        regrets: list[str] = []
+        for d in self.desires:
+            if d.resolved:
+                continue
+            age_hours = (now - d.created_at) / 3600
+            if age_hours > 24 and d.intensity > 0.1:
+                regrets.append(f"本喵一直想{d.content}但没机会…算了喵")
+                d.resolved = True
+                d.intensity = 0.0
+        if regrets:
+            self.persist()
+        return regrets
+
+    def satisfy_by_keyword(self, keyword: str) -> bool:
+        """S2: 通过关键词快速衰减匹配欲望（表示欲望被满足）。"""
+        satisfied = False
+        for d in self.desires:
+            if not d.resolved and keyword in d.content:
+                d.intensity = max(0.0, d.intensity * 0.3)  # 快速衰减
+                if d.intensity < 0.1:
+                    d.resolved = True
+                    d.intensity = 0.0
+                satisfied = True
+        if satisfied:
+            self.persist()
+        return satisfied
+
     def get_active(self, min_intensity: float = 0.3) -> list[Desire]:
         """获取活跃的欲望列表（intensity >= min_intensity）。"""
         self.decay()
@@ -232,11 +369,16 @@ class DesireSystem:
         """生成注入 prompt 的欲望文本片段。"""
         active = self.get_active_for_context(group_id, 0.3)
         if not active:
-            return ""
+            # D1: 没有短期欲望时，尝试显示长期目标
+            return self.aspiration_fragment() or ""
 
         lines = ["## 你最近想聊的话题"]
         for i, d in enumerate(active[:3]):
             lines.append(f"{i+1}. {d.content} (兴趣程度: {d.intensity:.2f})")
+        # D1: 追加长期目标（如果有）
+        asp_frag = self.aspiration_fragment()
+        if asp_frag:
+            lines.append(asp_frag)
         return "\n".join(lines)
 
     def _similar(self, a: str, b: str) -> bool:

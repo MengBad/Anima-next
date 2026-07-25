@@ -92,10 +92,12 @@ class LLMClient:
 
     async def start(self) -> None:
         if self._session is None:
-            # enable_cleanup_closed 让 aiohttp 主动回收对端已关闭的连接，
-            # 避免 CLOSE-WAIT 套接字在事件循环中持续累积。
+            # force_close=True：每次请求后关闭 TCP 连接，避免反代/网关静默回收
+            # 空闲 keep-alive 连接后 aiohttp 复用时触发 ServerDisconnectedError。
+            # LLM 单次调用 1~3s，连接复用省下的 ~50ms 完全不值一次失败重试。
             connector = aiohttp.TCPConnector(
-                limit=64,
+                limit=16,
+                force_close=True,
                 enable_cleanup_closed=True,
                 ttl_dns_cache=300,
             )
@@ -545,6 +547,9 @@ class LLMClient:
         return None
 
     def _set_error(self, detail: str) -> None:
+        # 脱敏：移除可能泄漏到日志/WebUI 的 API key 片段
+        import re as _re
+        detail = _re.sub(r'(Bearer\s+|sk-|key[=:]\s*)[A-Za-z0-9_\-]{8,}', '[REDACTED]', detail, flags=_re.I)
         self.last_error = detail[:240]
         self.last_error_at = time.time()
 

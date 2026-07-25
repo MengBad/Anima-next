@@ -139,13 +139,13 @@ def test_dedup_core_slots_merge():
 
 def test_dedup_text_fallback_merge():
     # 高相似中文长名 → 文本 2-gram Jaccard ≥ 0.6 兜底合并
-    caps = [{"name": "每日情绪复盘术", "description": "x"}]
-    idx = find_similar_capability("每日情绪复盘", "x", caps, 0.6)
+    caps = [{"name": "每日情绪回顾术", "description": "x"}]
+    idx = find_similar_capability("每日情绪回顾", "x", caps, 0.6)
     assert idx == 0
 
 
 def test_dedup_no_false_merge():
-    caps = [{"name": "情绪复盘", "description": "梳理每日心情"}]
+    caps = [{"name": "情绪回顾", "description": "梳理每日心情"}]
     idx = find_similar_capability("计算质数", "用筛法求素数", caps, 0.6)
     assert idx == -1
 
@@ -157,10 +157,10 @@ def test_dedup_no_false_merge():
 def test_capability_create_baseline_confidence(tmp_path):
     mgr = CapabilityManager(str(tmp_path))
     name = mgr.create_or_update({
-        "name": "情绪复盘", "description": "梳理每日情绪",
+        "name": "情绪回顾", "description": "梳理每日情绪",
         "how_to_use": "每晚回顾今天的心情", "register_as_independent_tool": True,
     })
-    assert name == "情绪复盘"
+    assert name == "情绪回顾"
     caps = mgr._data["capabilities"]
     assert len(caps) == 1
     assert caps[0]["confidence"] == 0.3  # 脱钩 LLM 自评
@@ -169,22 +169,22 @@ def test_capability_create_baseline_confidence(tmp_path):
 def test_capability_exact_name_dedup(tmp_path):
     # 第一道去重：同名精确匹配 → 合并为 1 条
     mgr = CapabilityManager(str(tmp_path))
-    mgr.create_or_update({"name": "情绪复盘", "description": "梳理每日情绪",
+    mgr.create_or_update({"name": "情绪回顾", "description": "梳理每日情绪",
                           "how_to_use": "x", "register_as_independent_tool": True})
-    mgr.create_or_update({"name": "情绪复盘", "description": "更新版",
+    mgr.create_or_update({"name": "情绪回顾", "description": "更新版",
                           "how_to_use": "x", "register_as_independent_tool": True})
     assert len(mgr._data["capabilities"]) == 1
 
 
 def test_capability_feedback(tmp_path):
     mgr = CapabilityManager(str(tmp_path))
-    mgr.create_or_update({"name": "情绪复盘", "description": "梳理每日情绪",
+    mgr.create_or_update({"name": "情绪回顾", "description": "梳理每日情绪",
                           "how_to_use": "x", "register_as_independent_tool": True})
-    assert mgr.apply_feedback("情绪复盘", True) is True
+    assert mgr.apply_feedback("情绪回顾", True) is True
     cap = mgr._data["capabilities"][0]
     assert cap["confidence"] == pytest.approx(0.38)
     assert cap["usage_count"] == 1
-    mgr.apply_feedback("情绪复盘", False, "效果一般")
+    mgr.apply_feedback("情绪回顾", False, "效果一般")
     cap = mgr._data["capabilities"][0]
     assert cap["confidence"] == pytest.approx(0.23)
     assert len(cap["corrections"]) == 1
@@ -202,10 +202,10 @@ def test_capability_maintain_health_drops_unused_old(tmp_path):
 
 def test_capability_build_fragment(tmp_path):
     mgr = CapabilityManager(str(tmp_path))
-    mgr.create_or_update({"name": "情绪复盘", "description": "梳理每日情绪",
+    mgr.create_or_update({"name": "情绪回顾", "description": "梳理每日情绪",
                           "how_to_use": "每晚回顾", "register_as_independent_tool": True})
     frag = mgr.build_fragment()
-    assert "情绪复盘" in frag
+    assert "情绪回顾" in frag
     assert "我的个人技能与方法论" in frag
 
 
@@ -219,7 +219,7 @@ def test_make_capability_tool_registered_visible_and_callable(tmp_path):
     core = _fake_core(registry, llm)
     mgr = CapabilityManager(str(tmp_path), dynamic_daily_quota=5)
     cap = {
-        "id": "cap_test123", "name": "情绪复盘", "description": "梳理情绪",
+        "id": "cap_test123", "name": "情绪回顾", "description": "梳理情绪",
         "how_to_use": "回顾今日心情", "register_as_independent_tool": True,
     }
     ok = register_capability_as_tool(core, cap, mgr)

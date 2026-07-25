@@ -57,6 +57,8 @@ class TimeSense:
     def __init__(self, data_dir: str = "data"):
         self.last_interaction: dict[int, float] = {}  # user_id → timestamp
         self.interaction_count: dict[int, int] = {}    # user_id → 24h 内次数
+        # P3: 用户活跃节律画像（user_id → 24 小时活跃分布，7 天滚动窗口）
+        self.hourly_distribution: dict[int, list[int]] = {}  # user_id → [24 counts]
         self._last_cleanup = time.time()
         self._persist = PersistenceProvider(data_dir)
         self._path = "time_sense.json"
@@ -74,11 +76,18 @@ class TimeSense:
             int(k): v for k, v in data.get("interaction_count", {}).items()
             if int(k) in self.last_interaction
         }
+        # P3: 恢复活跃节律
+        for k, v in data.get("hourly_distribution", {}).items():
+            uid = int(k)
+            if uid in self.last_interaction and isinstance(v, list) and len(v) == 24:
+                self.hourly_distribution[uid] = v
 
     def persist(self) -> None:
         data = {
             "last_interaction": {str(k): v for k, v in self.last_interaction.items()},
             "interaction_count": {str(k): v for k, v in self.interaction_count.items()},
+            # P3: 活跃节律持久化
+            "hourly_distribution": {str(k): v for k, v in self.hourly_distribution.items()},
         }
         self._persist.write_json(self._path, data)
 
@@ -91,6 +100,11 @@ class TimeSense:
         now = time.time()
         self.last_interaction[user_id] = now
         self.interaction_count[user_id] = self.interaction_count.get(user_id, 0) + 1
+        # P3: 记录当前小时到活跃分布
+        hour = beijing_now().hour
+        if user_id not in self.hourly_distribution:
+            self.hourly_distribution[user_id] = [0] * 24
+        self.hourly_distribution[user_id][hour] += 1
         self._prune()
 
     def time_since(self, user_id: int) -> tuple[float, str]:
@@ -124,6 +138,45 @@ class TimeSense:
         result.sort(key=lambda x: -x[1])
         return result[:3]  # 最多 3 个
 
+    def activity_pattern(self, user_id: int) -> str:
+        """P3: 返回用户活跃节律的自然语言描述。"""
+        dist = self.hourly_distribution.get(user_id)
+        if not dist or sum(dist) < 3:
+            return ""  # 数据不足，不描述
+        total = sum(dist)
+        # 按时段统计
+        night_owl = sum(dist[22:24]) + sum(dist[0:6])   # 22-6 点
+        morning = sum(dist[6:12])                         # 6-12 点
+        afternoon = sum(dist[12:18])                      # 12-18 点
+        evening = sum(dist[18:22])                        # 18-22 点
+        # 找最活跃时段
+        max_period = max(
+            [("深夜", night_owl), ("上午", morning),
+             ("下午", afternoon), ("晚上", evening)],
+            key=lambda x: x[1],
+        )
+        ratio = max_period[1] / total if total > 0 else 0
+        if ratio < 0.4:
+            return ""  # 分布太均匀，不描述
+        if max_period[0] == "深夜":
+            return "这个人通常是夜猫子（深夜活跃）"
+        elif max_period[0] == "上午":
+            return "这个人通常白天上午在线"
+        elif max_period[0] == "下午":
+            return "这个人通常下午在线"
+        else:
+            return "这个人通常晚上活跃"
+
+    def is_unusual_hour(self, user_id: int) -> bool:
+        """P3: 判断用户当前是否在不常出现的时段出现。"""
+        dist = self.hourly_distribution.get(user_id)
+        if not dist or sum(dist) < 5:
+            return False  # 数据不足
+        hour = beijing_now().hour
+        total = sum(dist)
+        # 当前小时占比 < 5% 且总样本 >= 5 视为反常
+        return dist[hour] / total < 0.05
+
     def _prune(self) -> None:
         """清理 48h 无活动的记录。"""
         now = time.time()
@@ -132,6 +185,7 @@ class TimeSense:
         for uid in stale:
             del self.last_interaction[uid]
             self.interaction_count.pop(uid, None)
+            self.hourly_distribution.pop(uid, None)  # P3: 同步清理
 
 
 # 全局单例
@@ -146,12 +200,26 @@ def get_time_sense(data_dir: str = "data") -> TimeSense:
     return _time_sense
 
 
-def get_time_context() -> str:
-    """获取当前时间 + 久违用户提示，注入 system prompt。"""
+def get_time_context(user_id: int | None = None) -> str:
+    """获取时间上下文（精简版，1-2 句），嵌入 persona 模板。"""
     ts = get_time_sense()
-    parts = [f"当前时间：{time_description()}"]
-    long_lost = ts.get_long_lost()
-    if long_lost:
-        names = ", ".join(f"QQ{uid}" for uid, _, _ in long_lost)
-        parts.append(f"有一阵子没说话的人：{names}")
-    return "\n".join(parts)
+    # 基础时间
+    base = f"当前时间：{time_description()}"
+    # 用户间隔（合并为一句）
+    if user_id is not None:
+        gap, label = ts.time_since(int(user_id))
+        if 900 <= gap < 86400 * 7:
+            if gap < 7200:
+                hint = f"，这人{int(gap/60)}分钟前刚聊过"
+            elif gap < 86400:
+                hint = f"，这人已经{int(gap/3600)}小时没来了"
+            else:
+                hint = f"，这人已经{int(gap/86400)}天没来了"
+            # 节律 + 反常合并
+            pattern = ts.activity_pattern(int(user_id))
+            if pattern and ts.is_unusual_hour(int(user_id)):
+                hint += f"（{pattern}，但现在反常在线）"
+            elif pattern:
+                hint += f"（{pattern}）"
+            return base + hint
+    return base
