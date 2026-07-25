@@ -157,11 +157,7 @@ async def run(target_qq: str = "", context: dict[str, Any] = None) -> str:
     try:
         # 获取用户头像
         gateway = core.gateway
-        avatar_resp = await gateway._call_action("get_stranger_info", {
-            "user_id": int(user_id),
-        })
-        avatar_url = avatar_resp.get("data", {}).get("qlevel", "")
-        # NapCat 头像 URL 格式
+        # NapCat 头像 URL 格式（直接用 QQ 号拼头像 CDN，跳过 get_stranger_info 节省一次 API 调用）
         avatar_url = f"https://q1.qlogo.cn/g?b=qq&nk={user_id}&s=100"
 
         # 下载头像

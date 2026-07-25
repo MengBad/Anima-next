@@ -212,7 +212,7 @@ class SoulSystem:
             cues.append("记性不太好，想不太起来之前的事")
         if not cues:
             return ""
-        return "\n## 当前内心状态\n" + "，".join(cues[:3]) + "。自然地体现这一点，不用宜布。"
+        return "\n## 当前内心状态\n" + "，".join(cues[:3]) + "。自然地体现这一点，不用宣告。"
 
     def get_status(self) -> dict[str, Any]:
         """WebUI 状态接口。"""

@@ -193,33 +193,27 @@ def _merge_to_segments(parts: list[str], cfg: SplitConfig) -> list[str]:
 
     segments: list[str] = []
     current = ""
-    for part in parts:
+    consumed_idx = 0
+    for i, part in enumerate(parts):
         if not current:
             current = part
+            consumed_idx = i + 1
         elif len(current) + len(part) + 1 <= ideal_len * 1.3:
             current = current + part
+            consumed_idx = i + 1
         else:
             segments.append(current)
             current = part
+            consumed_idx = i + 1
             if len(segments) >= cfg.max_segments - 1:
                 # 剩余全部合并为最后一段
                 break
     # 把剩余 parts 合并到最后
-    idx = len(segments) + (1 if current else 0)
-    remaining_start = 0
-    consumed = 0
-    for seg in segments:
-        for p in parts[consumed:]:
-            consumed += 1
-            if p in seg:
-                break
-    # 简化：直接把未消费的 parts 追加到 current
     if current:
         segments.append(current)
-    # 如果还有剩余 parts
-    if len(segments) < len(parts):
-        # 重新用贪心法
-        return _greedy_merge(parts, cfg.max_segments, ideal_len)
+    # 合并未消费的 parts
+    for j in range(consumed_idx, len(parts)):
+        segments[-1] = segments[-1] + parts[j]
 
     return _merge_short_parts(segments, cfg)
 

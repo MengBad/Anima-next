@@ -97,6 +97,41 @@ MANIFEST: list[dict[str, Any]] = [
     {"path": "image_generation.model", "label": "生图模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["图片生成"]},
     {"path": "sylann.mode", "label": "Sylann 模式", "type": "select", "options": ["disabled", "shadow", "active"], "risk": "red", "restart": True, "impact": ["Sylann 认知"]},
     {"path": "crossgroup.enabled", "label": "跨群记忆共享", "type": "boolean", "risk": "red", "restart": True, "impact": ["跨群记忆"]},
+    # —— 表达与节奏 ——
+    {"path": "reply_split.enabled", "label": "拟人分段发送", "type": "boolean", "risk": "green", "restart": False, "impact": ["回复分段"]},
+    {"path": "reply_split.max_segments", "label": "最大分段数", "type": "number", "min": 1, "max": 10, "risk": "green", "restart": False, "impact": ["回复分段"]},
+    {"path": "reply_split.trigger_threshold", "label": "分段触发字数", "type": "number", "min": 20, "max": 500, "risk": "green", "restart": False, "impact": ["回复分段"]},
+    {"path": "reply_split.min_segment_len", "label": "单段最小字数", "type": "number", "min": 10, "max": 200, "risk": "green", "restart": False, "impact": ["回复分段"]},
+    {"path": "reply_split.max_segment_len", "label": "单段最大字数", "type": "number", "min": 30, "max": 500, "risk": "green", "restart": False, "impact": ["回复分段"]},
+    {"path": "reply_split.delay_enabled", "label": "段间拟真延迟", "type": "boolean", "risk": "green", "restart": False, "impact": ["回复延迟"]},
+    {"path": "reply_split.delay_base", "label": "基础延迟（秒）", "type": "number", "min": 0, "max": 5, "risk": "green", "restart": False, "impact": ["回复延迟"]},
+    {"path": "reply_split.delay_factor", "label": "每字延迟（秒/字）", "type": "number", "min": 0, "max": 0.5, "risk": "green", "restart": False, "impact": ["回复延迟"]},
+    {"path": "reply_split.delay_jitter", "label": "延迟抖动上限（秒）", "type": "number", "min": 0, "max": 3, "risk": "green", "restart": False, "impact": ["回复延迟"]},
+    {"path": "debounce.group_enabled", "label": "群聊消息防抖", "type": "boolean", "risk": "green", "restart": False, "impact": ["群聊合并"]},
+    {"path": "debounce.group_wait_sec", "label": "防抖等待窗口（秒）", "type": "number", "min": 0.5, "max": 10, "risk": "green", "restart": False, "impact": ["群聊合并"]},
+    {"path": "debounce.group_max_wait_sec", "label": "最大等待时间（秒）", "type": "number", "min": 1, "max": 30, "risk": "green", "restart": False, "impact": ["群聊合并"]},
+    {"path": "debounce.adaptive", "label": "自适应等待", "type": "boolean", "risk": "green", "restart": False, "impact": ["群聊合并"]},
+    {"path": "debounce.short_msg_threshold", "label": "短句阈值（字）", "type": "number", "min": 3, "max": 50, "risk": "green", "restart": False, "impact": ["群聊合并"]},
+    {"path": "voice.enabled", "label": "AI 语音消息", "type": "boolean", "risk": "green", "restart": False, "impact": ["语音 TTS"]},
+    {"path": "voice.auto_probability", "label": "自动语音触发概率", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["语音 TTS"]},
+    {"path": "meme.enabled", "label": "趣味图片互动", "type": "boolean", "risk": "green", "restart": False, "impact": ["摸头杀"]},
+    {"path": "meme.petpet_on_poke", "label": "被戳摸头回击概率", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["摸头杀"]},
+    # —— 认知系统 ——
+    {"path": "soul.enabled", "label": "灵魂能量槽", "type": "boolean", "risk": "yellow", "restart": True, "impact": ["LLM 参数", "语气调节"]},
+    {"path": "soul.ema_alpha", "label": "EMA 平滑系数", "type": "number", "min": 0.05, "max": 1, "risk": "green", "restart": False, "impact": ["能量平滑"]},
+    {"path": "gate.enabled", "label": "轻重双模型前置判断", "type": "boolean", "risk": "yellow", "restart": True, "impact": ["群消息过滤"]},
+    {"path": "gate.model", "label": "Gate 轻量模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["Gate 判断"]},
+    {"path": "gate.timeout_ms", "label": "Gate 超时（毫秒）", "type": "number", "min": 100, "max": 3000, "risk": "green", "restart": False, "impact": ["Gate 延迟"]},
+    # —— 行为 / 社交 ——
+    {"path": "qzone.enabled", "label": "QQ 空间说说", "type": "boolean", "risk": "yellow", "restart": True, "impact": ["空间说说"]},
+    {"path": "qzone.daily_max", "label": "每日说说上限", "type": "number", "min": 0, "max": 10, "risk": "green", "restart": False, "impact": ["空间说说"]},
+    {"path": "qzone.cooldown_sec", "label": "说说冷却（秒）", "type": "number", "min": 60, "max": 86400, "risk": "green", "restart": False, "impact": ["空间说说"]},
+    {"path": "qq_status.enabled", "label": "QQ 在线状态同步", "type": "boolean", "risk": "green", "restart": True, "impact": ["在线状态"]},
+    # —— 感知 / 媒体 ——
+    {"path": "bilibili_read.enabled", "label": "B 站视频理解", "type": "boolean", "risk": "green", "restart": False, "impact": ["视频字幕"]},
+    {"path": "bilibili_read.sessdata", "label": "B 站 SESSDATA", "type": "secret", "risk": "yellow", "restart": False, "impact": ["视频字幕"]},
+    {"path": "bilibili_read.bili_jct", "label": "B 站 bili_jct", "type": "secret", "risk": "yellow", "restart": False, "impact": ["视频字幕"]},
+    {"path": "bilibili_read.max_subtitle_length", "label": "字幕截断上限", "type": "number", "min": 500, "max": 20000, "risk": "green", "restart": False, "impact": ["视频字幕"]},
 ]
 
 

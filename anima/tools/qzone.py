@@ -94,8 +94,9 @@ class QZoneManager:
                 remaining = int(self._cooldown_sec - elapsed)
                 return False, f"冷却中，还需等待 {remaining // 60} 分钟"
 
-        # 每日上限
-        today_start = now - (now % 86400)  # UTC 0点
+        # 每日上限（北京时间 UTC+8）
+        cst_offset = 8 * 3600
+        today_start = now - ((now + cst_offset) % 86400)
         today_count = sum(
             1 for p in self._history
             if p.timestamp >= today_start and p.success
@@ -124,7 +125,8 @@ class QZoneManager:
     def get_stats(self) -> dict[str, Any]:
         """获取统计信息。"""
         now = time.time()
-        today_start = now - (now % 86400)
+        cst_offset = 8 * 3600
+        today_start = now - ((now + cst_offset) % 86400)
         return {
             "total_posts": len(self._history),
             "today_posts": sum(1 for p in self._history if p.timestamp >= today_start),
