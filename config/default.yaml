@@ -290,3 +290,18 @@ security:
 deploy:
   mode: "systemd"                         # systemd | bare
   napcat_topology: "same-host"            # 同机默认；可选 separate-host
+
+persona:
+  typo_probability: 0.03                   # 错别字触发概率
+  quirk_probability: 0.04                  # 发癲基础概率
+  quirk_daily_max: 3                       # 每日发癲上限
+  seed_relations: []                       # 种子关系（生产环境配置真实数据，源码不内嵌）
+  # 示例：
+  # seed_relations:
+  #   - qq: 123456789
+  #     name: "昵称"
+  #     stage: "CLOSE"          # STRANGER | FRIEND | CLOSE
+  #     familiarity: 0.9
+  #     trust: 0.95
+  #     valence: 0.7
+  #     tags: ["开发者", "主人"]
