@@ -427,6 +427,11 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     from anima.cognitive.world_model import get_world_model
     from anima.cognitive.scar import get_scar_system
 
+    # 提前提取 core 和 data_dir，供里程碑/伤痕/重逢/情绪等认知子系统使用
+    core = ctx.meta.get("core")
+    _persist_cfg = getattr(getattr(core, "config", None), "persistence", None)
+    data_dir = getattr(_persist_cfg, "data_dir", "data") if _persist_cfg else "data"
+
     time_ctx = get_time_context(user_id=ctx.user_id)
     desire = get_desire_system()
     relation = get_relation()
@@ -452,7 +457,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         elif rel.stage == _StageMS.CLOSE and rel.familiarity < 0.85:
             _mt.record(f"和 QQ{ctx.user_id} 变得很亲近", "stage_change")
     except Exception:
-        pass
+        logger.debug("里程碑记录失败", exc_info=True)
 
     # 伤痕影响：如果该用户有未淡化的伤痕，下调信任
     penalty = scar.trust_penalty(ctx.user_id)
@@ -468,14 +473,14 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             get_milestone_tracker(data_dir).record(
                 f"被 QQ{ctx.user_id} 伤害了", "scar")
         except Exception:
-            pass
+            logger.debug("伤痕里程碑记录失败", exc_info=True)
 
     # A1: 伤痕触发检测——命中关键词时刷新 last_triggered
     _scar_was_triggered = False
     try:
         _scar_was_triggered = scar.check_trigger(ctx.user_id, ctx.text)
     except Exception:
-        pass
+        logger.debug("伤痕触发检测失败", exc_info=True)
 
     # 尝试从消息中提取话题兴趣
     if len(ctx.text) > 10:
@@ -501,7 +506,6 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     )
 
     # 人格模板与末尾身份/角色护栏不可裁；可选认知片段由统一预算器挑选。
-    core = ctx.meta.get("core")
     context_cfg = getattr(getattr(core, "config", None), "context", None)
     composer = ContextComposer.from_config(context_cfg)
     system_fragments: list[PromptFragment] = []
@@ -588,9 +592,9 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 65,
             )
     except Exception:
-        pass
-
-    # G3: 主人发癫识别（owner 发无意义消息时，不触发追问，改为轻松接话）
+        logger.debug("里程碑注入失败", exc_info=True)
+    
+    # G3: 主人发癲识别（owner 发无意义消息时，不触发追问，改为轻松接话）
     try:
         _is_owner = False
         _perm_cfg = getattr(getattr(core, "config", None), "permissions", None)
@@ -604,7 +608,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 95,
             )
     except Exception:
-        pass
+        logger.debug("主人发癲识别失败", exc_info=True)
 
     # J2: 久违重逢感知（gap > 3天 且 relation >= FRIEND 时注入）
     try:
@@ -619,7 +623,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 _reunion_frag += "。你有点想念这个人"
             add_system_fragment("long_lost_reunion", _reunion_frag, 88)
     except Exception:
-        pass
+        logger.debug("久违重逢感知失败", exc_info=True)
 
     # A3: 用户活跃节律完整注入——除了反常时段，也注入常规活跃模式描述
     try:
@@ -635,13 +639,11 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         if _pattern:
             add_system_fragment("activity_pattern", _pattern, 55)
     except Exception:
-        pass
+        logger.debug("用户活跃节律注入失败", exc_info=True)
 
     # 情绪状态注入（非中性时才有内容）
     try:
         from anima.cognitive.mood import get_mood_system
-        data_dir = getattr(getattr(core, "config", None), "persistence", None)
-        data_dir = getattr(data_dir, "data_dir", "data") if data_dir else "data"
         mood_frag = get_mood_system(data_dir).prompt_fragment()
         if mood_frag:
             add_system_fragment("mood", mood_frag, 90)

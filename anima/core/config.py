@@ -565,14 +565,8 @@ class PersonaConfig(BaseModel):
     typo_probability: float = 0.03       # 错别字触发概率
     quirk_probability: float = 0.04      # 发癫基础概率
     quirk_daily_max: int = 3             # 每日发癫上限
-    seed_relations: list[dict] = Field(default_factory=lambda: [
-        {"qq": 1562290139, "name": "吴雨萌", "stage": "CLOSE",
-         "familiarity": 0.9, "trust": 0.95, "valence": 0.7,
-         "tags": ["开发者", "主人", "MTF", "HRT"]},
-        {"qq": 1371704917, "name": "华初", "stage": "FRIEND",
-         "familiarity": 0.6, "trust": 0.7, "valence": 0.4,
-         "tags": ["雨萌的对象", "MTF"]},
-    ])  # 种子关系（首次初始化写入）
+    seed_relations: list[dict] = Field(default_factory=list)
+    # 种子关系（首次初始化写入）——生产环境在 config.yaml 中配置，源码不内嵌真实个人信息
 
 
 # ---------------------------------------------------------------------------

@@ -248,7 +248,9 @@ class SoulSystem:
                 logger.exception("加载 soul.json 失败，使用默认值")
 
     def save(self) -> None:
-        """持久化到磁盘。"""
+        """原子持久化到磁盘（tmp + fsync + replace，防止崩溃时文件损坏）。"""
+        import os
+        import tempfile
         path = self._persist_path()
         path.parent.mkdir(parents=True, exist_ok=True)
         data = {
@@ -257,7 +259,17 @@ class SoulSystem:
             "history": self._history[-1440:],
         }
         try:
-            path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".soul_", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(data, fh, ensure_ascii=False, indent=2)
+                    fh.flush()
+                    os.fsync(fh.fileno())
+                os.replace(tmp, str(path))
+            except Exception:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+                raise
         except Exception:
             logger.exception("保存 soul.json 失败")
 

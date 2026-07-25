@@ -70,16 +70,26 @@ def _find_tool(name: str) -> Optional[str]:
 def _available_isolator() -> tuple[str, str]:
     """返回 (tool_name, tool_path) 或 ('', '')。
 
-    非 root 用户无法使用 unshare/bwrap 命名空间隔离，强制降级为普通子进程。
+    优先级：bwrap(root) > unshare(root) > unshare --user(非 root)。
     Windows 上没有 getuid，直接跳过命名空间隔离。
     """
     getuid = getattr(os, "getuid", None)
-    if getuid is None or getuid() != 0:
+    is_root = getuid is not None and getuid() == 0
+
+    if is_root:
+        for tool in ISOLATION_TOOLS:
+            path = _find_tool(tool)
+            if path:
+                return tool, path
         return "", ""
-    for tool in ISOLATION_TOOLS:
-        path = _find_tool(tool)
-        if path:
-            return tool, path
+
+    # 非 root：尝试 user namespace（内核 >= 3.8 且未禁用 unprivileged userns）
+    unshare_path = _find_tool("unshare")
+    if unshare_path:
+        return "unshare_user", unshare_path
+
+    # 无任何隔离工具——记录警告，仍依赖 import 守卫 + rlimit 降级保护
+    logger.warning("沙箱无可用隔离工具（非 root 且无 unshare），将以普通子进程执行")
     return "", ""
 
 
@@ -179,6 +189,20 @@ def _build_unshare_command(config: SandboxConfig, inner_cmd: list[str]) -> list[
     return [unshare] + flags + ["--"] + inner_cmd
 
 
+def _build_unshare_user_command(config: SandboxConfig, inner_cmd: list[str]) -> list[str]:
+    """构建非 root user namespace 隔离命令（降级方案）。"""
+    unshare = _find_tool("unshare")
+    if not unshare:
+        raise SandboxError("unshare not available")
+
+    # --user --map-root-user 允许非 root 创建命名空间
+    flags = ["--user", "--map-root-user", "--mount", "--pid", "--fork", "--ipc"]
+    if not config.network:
+        flags.append("--net")
+
+    return [unshare] + flags + ["--"] + inner_cmd
+
+
 def _build_command(config: SandboxConfig, inner_cmd: list[str]) -> list[str]:
     """根据可用工具构建隔离命令。"""
     tool, _ = _available_isolator()
@@ -186,6 +210,8 @@ def _build_command(config: SandboxConfig, inner_cmd: list[str]) -> list[str]:
         return _build_bwrap_command(config, inner_cmd)
     if tool == "unshare":
         return _build_unshare_command(config, inner_cmd)
+    if tool == "unshare_user":
+        return _build_unshare_user_command(config, inner_cmd)
     return inner_cmd
 
 

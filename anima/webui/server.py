@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import html
 import json
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from dataclasses import asdict, is_dataclass
@@ -35,6 +36,7 @@ class WebUIServer:
         self._runner: web.AppRunner | None = None
         self._site: web.TCPSite | None = None
         self.config_service = ConfigService(core)
+        self._csrf_tokens: set[str] = set()  # 服务端存储的合法 CSRF token
 
     async def start(self) -> None:
         if not self.config.enabled:
@@ -267,7 +269,14 @@ class WebUIServer:
             raise web.HTTPUnauthorized(text="Token 不正确")
         response = web.json_response({"ok": True})
         response.set_cookie("anima_webui_token", configured, httponly=True, samesite="Strict")
-        response.set_cookie("anima_webui_csrf", configured, httponly=False, samesite="Strict")
+        # CSRF token 与 auth token 分离，即使 XSS 读取 CSRF cookie 也无法获得认证 token
+        csrf_token = secrets.token_urlsafe(32)
+        self._csrf_tokens.add(csrf_token)
+        # 限制内存中 token 数量（单用户场景下极少）
+        if len(self._csrf_tokens) > 64:
+            self._csrf_tokens.clear()
+            self._csrf_tokens.add(csrf_token)
+        response.set_cookie("anima_webui_csrf", csrf_token, httponly=False, samesite="Strict")
         return response
 
     @web.middleware
@@ -288,7 +297,10 @@ class WebUIServer:
             if supplied != token:
                 raise web.HTTPUnauthorized(text="需要 Bearer Token")
             if request.method not in {"GET", "HEAD", "OPTIONS"} and not request.headers.get("Authorization"):
-                if request.headers.get("X-Anima-CSRF") != request.cookies.get("anima_webui_csrf"):
+                csrf_header = request.headers.get("X-Anima-CSRF", "")
+                csrf_cookie = request.cookies.get("anima_webui_csrf", "")
+                # 验证：header 与 cookie 一致（double-submit）且服务端已知该 token
+                if not csrf_header or csrf_header != csrf_cookie or csrf_header not in self._csrf_tokens:
                     raise web.HTTPForbidden(text="需要 CSRF 校验")
         return await handler(request)
 
@@ -2118,7 +2130,12 @@ class WebUIServer:
         token = self.config.token.get_secret_value() if self.config.token else ""
         if token and request.query.get("token") == token:
             response.set_cookie("anima_webui_token", token, httponly=True, samesite="Strict")
-            response.set_cookie("anima_webui_csrf", token, httponly=False, samesite="Strict")
+            csrf_token = secrets.token_urlsafe(32)
+            self._csrf_tokens.add(csrf_token)
+            if len(self._csrf_tokens) > 64:
+                self._csrf_tokens.clear()
+                self._csrf_tokens.add(csrf_token)
+            response.set_cookie("anima_webui_csrf", csrf_token, httponly=False, samesite="Strict")
         return response
 
     async def subject(self, request: web.Request) -> web.Response:

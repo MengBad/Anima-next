@@ -1102,11 +1102,12 @@ class LLMHandler:
                 stale_keys = [k for k, v in d.items() if now - v > 1800]
                 for k in stale_keys:
                     d.pop(k, None)
-        # 清理未锁住的旧 turn_locks（超过 2000 个时裁剪）
+        # 清理未锁住的旧 turn_locks（超过 5000 个时裁剪，避免并发窗口内删除正在使用的锁）
         locks = getattr(self, "_turn_locks", None)
-        if locks and len(locks) > 2000:
+        if locks and len(locks) > 5000:
             unlocked = [k for k, lock in locks.items() if not lock.locked()]
-            for k in unlocked[:len(unlocked) // 2]:
+            # 只删除 1/4，降低竞态窗口内删除活跃锁的概率
+            for k in unlocked[:len(unlocked) // 4]:
                 locks.pop(k, None)
 
     async def handle(self, event: dict) -> None:

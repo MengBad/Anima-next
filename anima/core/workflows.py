@@ -35,6 +35,9 @@ class WorkflowRun:
 
 
 class WorkflowStore:
+    # 已结束的工作流最多保留数量，防止长期运行内存/磁盘无限增长
+    _MAX_FINISHED = 500
+
     def __init__(self, persistence: PersistenceProvider):
         self.persistence = persistence
         self.items: dict[str, WorkflowRun] = {}
@@ -50,7 +53,21 @@ class WorkflowStore:
             self.items[item.id] = item
 
     def save(self) -> None:
+        self._prune_finished()
         self.persistence.write_json("workflows.json", [asdict(item) for item in self.items.values()])
+
+    def _prune_finished(self) -> None:
+        """裁剪已结束的工作流，保留最近 _MAX_FINISHED 条。"""
+        finished = [
+            (wid, item) for wid, item in self.items.items()
+            if item.status in {"completed", "cancelled", "failed"}
+        ]
+        if len(finished) <= self._MAX_FINISHED:
+            return
+        # 按完成时间排序，删除最旧的
+        finished.sort(key=lambda pair: pair[1].completed_at or pair[1].created_at)
+        for wid, _ in finished[:len(finished) - self._MAX_FINISHED]:
+            del self.items[wid]
 
     def trigger(self, kind: str, source_id: str, target_group: int, content: str, *, event_key: str = "") -> WorkflowRun:
         if int(target_group) <= 0 or not str(content).strip():

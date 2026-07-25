@@ -48,6 +48,21 @@ _EXT_BY_MAGIC = [
     (b"GIF87a", ".gif"),
 ]
 
+# 模块级共享 ClientSession，避免每次下载图片都新建连接（高频图片场景连接风暴）
+_shared_session: Optional["aiohttp.ClientSession"] = None
+
+
+async def _get_session():
+    """获取或创建模块级共享 aiohttp ClientSession。"""
+    global _shared_session
+    import aiohttp
+    if _shared_session is None or _shared_session.closed:
+        _shared_session = aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=20, sock_connect=8),
+            connector=aiohttp.TCPConnector(limit=8, force_close=True, enable_cleanup_closed=True),
+        )
+    return _shared_session
+
 
 @dataclass(frozen=True)
 class PreparedImage:
@@ -87,14 +102,12 @@ async def fetch_image_bytes(img: dict, max_bytes: int = DEFAULT_MAX_INLINE_BYTES
     # 优先 url 下载（NapCat 可能给 QQ CDN 或本机 url）
     if url:
         try:
-            import aiohttp
-
-            async with aiohttp.ClientSession() as s:
-                async with s.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
-                    if r.status == 200:
-                        data = await _read_limited(r, max_bytes)
-                        if data:
-                            return data
+            session = await _get_session()
+            async with session.get(url) as r:
+                if r.status == 200:
+                    data = await _read_limited(r, max_bytes)
+                    if data:
+                        return data
         except Exception:
             logger.debug("视觉图片 url 下载失败: %s", url[:60])
     # fallback：本地 file 路径复制（同机 NapCat 缓存）

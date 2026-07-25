@@ -14,11 +14,14 @@ import logging
 import random
 import re
 import time
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import TYPE_CHECKING, Optional
 
 from anima.core.gateway import OutboundMsg
 from anima.core.persistence import PersistenceProvider
+
+_BJ = timezone(timedelta(hours=8))  # 北京时间
 
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
@@ -347,7 +350,7 @@ class Heartbeat:
                 if audit:
                     audit.emit("calendar_event_enqueued", calendar_id=event.id,
                                group_id=event.group_id)
-        if now - self._day_reset > 86400:
+        if datetime.fromtimestamp(now, _BJ).date() != datetime.fromtimestamp(self._day_reset, _BJ).date():
             self._group_speak_count.clear()
             self._group_total_msgs.clear()
             self._group_last_speak.clear()
