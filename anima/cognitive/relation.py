@@ -161,7 +161,24 @@ class RelationEngine:
         for seed in _DEFAULT_SEEDS:
             qq = seed["qq"]
             if qq in self._relations:
-                continue  # 已存在，不覆盖
+                # 已存在：仅补全缺失字段，不覆盖自然演化结果
+                rel = self._relations[qq]
+                seed_trust = seed.get("trust", 0.5)
+                if rel.trust < seed_trust and "[种子关系]" not in (rel.notes or ""):
+                    rel.trust = seed_trust
+                    changed = True
+                # 补全 tags（合并去重）
+                seed_tags = seed.get("tags", [])
+                if seed_tags:
+                    merged = list(dict.fromkeys(rel.tags + seed_tags))
+                    if merged != rel.tags:
+                        rel.tags = merged
+                        changed = True
+                # 补全 display_name（仅当为空）
+                if not getattr(rel, "display_name", None) and seed.get("name"):
+                    rel.display_name = seed["name"]
+                    changed = True
+                continue
             rel = Relation(qq)
             rel.familiarity = seed.get("familiarity", 0.5)
             rel.trust = seed.get("trust", 0.5)

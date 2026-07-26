@@ -42,6 +42,8 @@ class Embedder:
     bge-m3 原生输出 1024 维，调用时不传 dimensions 参数。
     """
 
+    _MAX_CACHE_ENTRIES = 8000  # LRU 上限，超限淘汰最旧 20%
+
     def __init__(
         self,
         endpoint: str,
@@ -68,9 +70,23 @@ class Embedder:
                 self._cache = json.loads(self._cache_path.read_text("utf-8"))
             except Exception:
                 self._cache = {}
+        # 启动时截断到上限（淘汰最旧 20%）
+        self._evict_if_over_limit()
+
+    def _evict_if_over_limit(self) -> None:
+        """超限时按插入顺序淘汰最旧 20%（dict 保序）。"""
+        limit = self._MAX_CACHE_ENTRIES
+        if len(self._cache) <= limit:
+            return
+        evict_count = max(1, len(self._cache) - limit + limit // 5)  # 淘汰到 80% 水位
+        keys = list(self._cache.keys())[:evict_count]
+        for k in keys:
+            del self._cache[k]
+        logger.info("embedding 缓存淘汰 %d 条（上限 %d）", evict_count, limit)
 
     def _save_cache(self) -> None:
         try:
+            self._evict_if_over_limit()
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
             self._cache_path.write_text(json.dumps(self._cache, ensure_ascii=False), "utf-8")
         except Exception:

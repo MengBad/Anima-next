@@ -2684,6 +2684,9 @@ class WebUIServer:
                         continue
                     seen.add(key)
                     await response.write(f"data: {json.dumps(item, ensure_ascii=False)}\n\n".encode())
+                # 防止 seen 无界增长：超限清空（SSE 重连会重新推 recent(100)）
+                if len(seen) > 5000:
+                    seen.clear()
                 await asyncio.sleep(1)
         except (asyncio.CancelledError, ConnectionResetError):
             pass

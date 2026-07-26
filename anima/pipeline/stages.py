@@ -183,7 +183,7 @@ async def permission_stage(ctx: PipelineContext) -> StageResult:
                 _sg.observe_interaction(
                     str(ctx.group_id), str(ctx.user_id), str(reply_uid), weight=1.5)
         except Exception:
-            pass
+            logger.debug("社交图观测失败", exc_info=True)
 
     return StageResult.CONTINUE
 
@@ -269,7 +269,7 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
         if _mood_state.arousal > 0.6:
             _flashbulb = True
     except Exception:
-        pass
+        logger.debug("闪光灯情绪检测失败", exc_info=True)
 
     memory.add(
         ctx.detail_type, chat_id, "user", ctx.sender_name,
@@ -304,7 +304,7 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
                 if _mood_lbl in ("excited", "annoyed"):
                     _base_salience += 0.15
             except Exception:
-                pass
+                logger.debug("情绪显著度加权失败", exc_info=True)
             # 关系重要人加权
             try:
                 from anima.cognitive.relation import get_relation, Stage as _Stage
@@ -312,7 +312,7 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
                 if _rel.stage in (_Stage.CLOSE, _Stage.FRIEND):
                     _base_salience += 0.1
             except Exception:
-                pass
+                logger.debug("关系显著度加权失败", exc_info=True)
             # 含承诺/约定加权
             if _PROMISE_RE.search(ctx.text):
                 _base_salience += 0.2
@@ -460,13 +460,21 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         logger.debug("里程碑记录失败", exc_info=True)
 
     # 伤痕影响：如果该用户有未淡化的伤痕，下调信任
+    # 系数 0.05（原 0.2 过激，每次交互都扣导致 trust 被磨到 0）；下限 0.1 与 _update_trust 一致
     penalty = scar.trust_penalty(ctx.user_id)
     if penalty > 0:
-        rel.trust = max(0.0, rel.trust - penalty * 0.2)
+        rel.trust = max(0.1, rel.trust - penalty * 0.05)
 
-    # 检测明显负面事件，记录伤痕
+    # 检测明显负面事件，记录伤痕（亲密关系降级 severity）
     if _detect_hurtful(ctx.text):
-        scar.add(ctx.user_id, "对方说了伤人的话", severity=0.4)
+        from anima.cognitive.relation import Stage as _StageHurt
+        if rel.stage == _StageHurt.CLOSE:
+            _sev = 0.15  # 亲密关系：轻微痕迹，快速淡化
+        elif rel.stage == _StageHurt.FRIEND:
+            _sev = 0.25
+        else:
+            _sev = 0.4   # 陌生人/熟人：保持原样
+        scar.add(ctx.user_id, "对方说了伤人的话", severity=_sev)
         # D2: 伤痕里程碑
         try:
             from anima.cognitive.simulated_life import get_milestone_tracker
@@ -536,7 +544,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 75,
             )
     except Exception:
-        pass
+        logger.debug("闪光灯记忆注入失败", exc_info=True)
 
     # 向量记忆合并进同一 system（之前暂存在 meta，避免成为第二个 system 消息）
     vr = ctx.meta.get("vector_recall")
@@ -557,7 +565,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         if _tone_hint:
             add_system_fragment("conversation_tone", f"## 对方现在的语气\n{_tone_hint}", 70)
     except Exception:
-        pass
+        logger.debug("语气检测失败", exc_info=True)
 
     # 复读/戏弄检测：用户在复制 bot 的话或反复戏弄，提示 bot 降温
     try:
@@ -565,7 +573,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         if _copycat_hint:
             add_system_fragment("conversation_tone", f"## 对方现在的语气\n{_copycat_hint}", 70)
     except Exception:
-        pass
+        logger.debug("复读检测失败", exc_info=True)
 
     # 对话深度提示：根据对话轮数调整对话风格
     try:
@@ -1052,6 +1060,8 @@ def _detect_hurtful(text: str) -> bool:
         "喵", "略略略", "哼", "呸呸", "嘻嘻", "哈哈", "嘿嘿",
         "😂", "🤣", "😹", "🐱", "🐾", "～", "~",
         "本喵", "猫娘", "小鱼干", "鱼板", "猫窝", "踩奶",
+        "笨蛋", "傻瓜", "呆子", "哼唧", "呜", "呐",
+        "打你", "揍你", "弹你", "挠你", "咬你",
     )
     playful_count = sum(1 for m in playful_markers if m in text)
     hurtful = {
@@ -1251,6 +1261,13 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             detail_type=ctx.detail_type,
             input_images_b64=_input_images_b64 or None,
         )
+    # 熔断器已打开（所有模型均不可用）→ 直接返回安全话术，不走 LLM 生成，
+    # 避免 LLM 在“描述自己的错误”时泄漏实现细节。
+    if getattr(core.llm, "circuit_open_until", 0) > time.time():
+        logger.warning("LLM 熔断器已打开，跳过生成，返回安全话术")
+        ctx.reply = "本喵刚刚脑子卡了一下，等会儿再跟你说嘛…"
+        return StageResult.CONTINUE
+
     try:
         # D1: 灵魂能量槽驱动 temperature / max_tokens
         _soul_params = ctx.meta.get("soul_params") or {}

@@ -22,6 +22,8 @@ logger = logging.getLogger("anima.crossgroup")
 
 
 class CrossGroupManager:
+    _MAX_USERS = 500  # 总用户上限，超限淘汰最久未交互的
+
     def __init__(self, data_dir: str = "data/crossgroup"):
         self.data_dir = data_dir
         os.makedirs(data_dir, exist_ok=True)
@@ -184,6 +186,15 @@ class CrossGroupManager:
             logger.exception("加载 crossgroup atmospheres.json 失败")
 
     def _save_users(self) -> None:
+        # 总用户上限裁剪：淘汰最久未交互的（以最新 fact 时间戳为准）
+        if len(self._users) > self._MAX_USERS:
+            def _last_ts(u: UserMemory) -> float:
+                return max((f.timestamp for f in u.facts), default=0.0)
+            sorted_uids = sorted(self._users, key=lambda uid: _last_ts(self._users[uid]))
+            evict = len(self._users) - self._MAX_USERS
+            for uid in sorted_uids[:evict]:
+                del self._users[uid]
+            logger.info("crossgroup 用户裁剪：淘汰 %d 个最久未交互用户", evict)
         raw = {}
         for uid, u in self._users.items():
             raw[uid] = {

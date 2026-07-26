@@ -20,7 +20,7 @@ from anima.llm.usage import llm_scope
 
 logger = logging.getLogger("anima.cognitive.sylann")
 
-_OBSERVE_TIMEOUT_SEC = 25.0
+_OBSERVE_TIMEOUT_SEC = 15.0  # 原 25s，缩短以减少 pipeline 阻塞（超时后有 60s 熔断降级）
 _TICK_TIMEOUT_SEC = 8.0
 _START_TIMEOUT_SEC = 12.0
 _TIMEOUT_COOLDOWN_SEC = 60.0

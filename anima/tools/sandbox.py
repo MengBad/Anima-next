@@ -60,37 +60,75 @@ class SandboxConfig:
 
 
 # ---------------------------------------------------------------------------
-# 隔离能力探测
+# 隔离能力探测（含运行时验证）
 # ---------------------------------------------------------------------------
 
 def _find_tool(name: str) -> Optional[str]:
     return shutil.which(name)
 
 
+# 模块级缓存：避免每次调用都探测
+_isolator_cache: Optional[tuple[str, str]] = None
+
+
+def _probe_isolator(tool: str, path: str) -> bool:
+    """运行时轻量探测：实际执行一次确认隔离工具可用。
+
+    bwrap: bwrap --version（无需权限）
+    unshare: unshare --mount true（需要 namespace 权限）
+    """
+    import subprocess
+    try:
+        if tool == "bwrap":
+            r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
+            return r.returncode == 0
+        if tool in ("unshare", "unshare_user"):
+            # 用最小命令探测 namespace 是否真正可用
+            flags = ["--mount", "true"] if tool == "unshare" else ["--user", "--map-root-user", "--mount", "true"]
+            r = subprocess.run([path] + flags, capture_output=True, timeout=5)
+            return r.returncode == 0
+    except Exception:
+        pass
+    return False
+
+
 def _available_isolator() -> tuple[str, str]:
     """返回 (tool_name, tool_path) 或 ('', '')。
 
-    优先级：bwrap(root) > unshare(root) > unshare --user(非 root)。
+    优先级：bwrap(root) > unshare(root) > unshare --user(非 root) > 普通子进程。
+    每个候选工具需通过运行时探测，失败则降级到下一个。
     Windows 上没有 getuid，直接跳过命名空间隔离。
     """
+    global _isolator_cache
+    if _isolator_cache is not None:
+        return _isolator_cache
+
     getuid = getattr(os, "getuid", None)
     is_root = getuid is not None and getuid() == 0
+
+    result = ("", "")
 
     if is_root:
         for tool in ISOLATION_TOOLS:
             path = _find_tool(tool)
-            if path:
-                return tool, path
-        return "", ""
+            if path and _probe_isolator(tool, path):
+                result = (tool, path)
+                break
+            elif path:
+                logger.warning("沙箱隔离工具 %s 存在但运行时探测失败，降级", tool)
+    else:
+        # 非 root：尝试 user namespace（内核 >= 3.8 且未禁用 unprivileged userns）
+        unshare_path = _find_tool("unshare")
+        if unshare_path and _probe_isolator("unshare_user", unshare_path):
+            result = ("unshare_user", unshare_path)
+        elif unshare_path:
+            logger.warning("沙箱 unshare --user 探测失败，降级到普通子进程")
 
-    # 非 root：尝试 user namespace（内核 >= 3.8 且未禁用 unprivileged userns）
-    unshare_path = _find_tool("unshare")
-    if unshare_path:
-        return "unshare_user", unshare_path
+    if result == ("", ""):
+        logger.warning("沙箱无可用隔离工具，将以普通子进程执行（仍有 import 守卫 + rlimit 保护）")
 
-    # 无任何隔离工具——记录警告，仍依赖 import 守卫 + rlimit 降级保护
-    logger.warning("沙箱无可用隔离工具（非 root 且无 unshare），将以普通子进程执行")
-    return "", ""
+    _isolator_cache = result
+    return result
 
 
 # ---------------------------------------------------------------------------

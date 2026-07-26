@@ -187,6 +187,14 @@ class MoodSystem:
         # 更新状态
         self._state.valence = max(-1.0, min(1.0, self._state.valence + valence_delta))
         self._state.arousal = max(0.0, min(1.0, self._state.arousal + arousal_delta))
+
+        # 饱和衰减：极端值（|valence|>0.8 或 arousal>0.8）即使活跃期也缓慢回归，
+        # 防止高频触发把情绪钉死在极值
+        if abs(self._state.valence) > 0.8:
+            self._state.valence *= 0.97
+        if self._state.arousal > 0.8:
+            self._state.arousal = 0.8 + (self._state.arousal - 0.8) * 0.95
+
         self._state.last_updated = time.time()
         self._state.label = _compute_label(self._state.valence, self._state.arousal)
         self._save()
