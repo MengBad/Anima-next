@@ -446,11 +446,20 @@ def _save_output(img, filename='output.png'):
         # 先尝试隔离执行
         cmd = _build_command(config, inner_cmd)
         try:
-            return await _run_subprocess(cmd, config, env=_sandbox_env)
+            result = await _run_subprocess(cmd, config, env=_sandbox_env)
         except _SandboxIsolationError:
             # 隔离工具失败，降级为无隔离普通子进程重试（仍有 rlimit + import 守卫）
             logger.info("沙箱隔离失败，降级为无隔离子进程重试")
-            return await _run_subprocess(inner_cmd, config, env=_sandbox_env)
+            result = await _run_subprocess(inner_cmd, config, env=_sandbox_env)
+        # mkdtemp 默认 0o700，NapCat 可能以不同用户运行而无法读取输出图片。
+        # 将输出目录及文件设为 world-readable，确保 OneBot 图片上传可读。
+        try:
+            os.chmod(_output_dir, 0o755)
+            for _f in os.listdir(_output_dir):
+                os.chmod(os.path.join(_output_dir, _f), 0o644)
+        except OSError:
+            pass
+        return result
     except Exception:
         logger.exception("沙箱 Python 执行异常")
         return "[沙箱] 执行异常（详见日志）"
