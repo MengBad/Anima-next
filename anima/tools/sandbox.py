@@ -164,11 +164,11 @@ def _set_resource_limits(memory_mb: int, max_cpu: int = MAX_TIMEOUT) -> None:
     except Exception:
         pass
     try:
-        resource.setrlimit(resource.RLIMIT_NPROC, (0, 0))
+        resource.setrlimit(resource.RLIMIT_NPROC, (8, 8))
     except Exception:
         pass
     try:
-        resource.setrlimit(resource.RLIMIT_NOFILE, (32, 32))
+        resource.setrlimit(resource.RLIMIT_NOFILE, (128, 128))
     except Exception:
         pass
 
