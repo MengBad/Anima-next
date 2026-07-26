@@ -74,13 +74,18 @@ _isolator_cache: Optional[tuple[str, str]] = None
 def _probe_isolator(tool: str, path: str) -> bool:
     """运行时轻量探测：实际执行一次确认隔离工具可用。
 
-    bwrap: bwrap --version（无需权限）
-    unshare: unshare --mount true（需要 namespace 权限）
+    bwrap: 用最小 namespace 创建测试（--ro-bind + true），不只是 --version。
+    unshare: unshare --mount true（需要 namespace 权限）。
     """
     import subprocess
     try:
         if tool == "bwrap":
-            r = subprocess.run([path, "--version"], capture_output=True, timeout=5)
+            # 必须测试实际 namespace 创建，--version 不需要权限会误报
+            r = subprocess.run(
+                [path, "--ro-bind", "/", "/", "--dev", "/dev",
+                 "--proc", "/proc", "--unshare-pid", "--", "true"],
+                capture_output=True, timeout=5,
+            )
             return r.returncode == 0
         if tool in ("unshare", "unshare_user"):
             # 用最小命令探测 namespace 是否真正可用
@@ -108,21 +113,27 @@ def _available_isolator() -> tuple[str, str]:
 
     result = ("", "")
 
-    if is_root:
-        for tool in ISOLATION_TOOLS:
-            path = _find_tool(tool)
-            if path and _probe_isolator(tool, path):
-                result = (tool, path)
-                break
-            elif path:
-                logger.warning("沙箱隔离工具 %s 存在但运行时探测失败，降级", tool)
-    else:
-        # 非 root：尝试 user namespace（内核 >= 3.8 且未禁用 unprivileged userns）
-        unshare_path = _find_tool("unshare")
-        if unshare_path and _probe_isolator("unshare_user", unshare_path):
-            result = ("unshare_user", unshare_path)
-        elif unshare_path:
-            logger.warning("沙箱 unshare --user 探测失败，降级到普通子进程")
+    # 优先尝试 bwrap（root 和非 root 都试，bwrap 不依赖 setuid）
+    bwrap_path = _find_tool("bwrap")
+    if bwrap_path and _probe_isolator("bwrap", bwrap_path):
+        result = ("bwrap", bwrap_path)
+    elif bwrap_path:
+        logger.warning("沙箱隔离工具 bwrap 存在但 namespace 探测失败，降级")
+
+    if result == ("", ""):
+        if is_root:
+            unshare_path = _find_tool("unshare")
+            if unshare_path and _probe_isolator("unshare", unshare_path):
+                result = ("unshare", unshare_path)
+            elif unshare_path:
+                logger.warning("沙箱隔离工具 unshare 存在但运行时探测失败，降级")
+        else:
+            # 非 root：尝试 user namespace（内核 >= 3.8 且未禁用 unprivileged userns）
+            unshare_path = _find_tool("unshare")
+            if unshare_path and _probe_isolator("unshare_user", unshare_path):
+                result = ("unshare_user", unshare_path)
+            elif unshare_path:
+                logger.warning("沙箱 unshare --user 探测失败，降级到普通子进程")
 
     if result == ("", ""):
         logger.warning("沙箱无可用隔离工具，将以普通子进程执行（仍有 import 守卫 + rlimit 保护）")
@@ -295,7 +306,16 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig,
         output += stdout.decode("utf-8", errors="replace")[:MAX_OUTPUT]
     if stderr and proc.returncode != 0:
         err = stderr.decode("utf-8", errors="replace")[:500]
-        output += f"\n[stderr] {err}"
+        # 系统级错误（fork/unshare/permission）不暴露给 LLM，防止泄漏内部实现
+        if any(kw in err for kw in ("unshare", "fork failed", "Operation not permitted",
+                                     "Resource temporarily unavailable", "bwrap", "namespace")):
+            logger.warning("沙箱系统级错误（已隐藏）: %.200s", err)
+            output += "\n[stderr] 沙箱执行环境不可用，已降级为无隔离模式"
+            # 清除缓存，下次调用重新探测
+            global _isolator_cache
+            _isolator_cache = None
+        else:
+            output += f"\n[stderr] {err}"
 
     if not output.strip():
         output = f"[沙箱] 执行完成（返回码 {proc.returncode}）"

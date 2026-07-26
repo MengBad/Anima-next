@@ -1522,8 +1522,10 @@ def _has_provider_identity_leak(reply: str) -> bool:
 _BANNED_RE = re.compile(r"作为.{0,10}?ai\b|作为.{0,10}?人工智能", re.IGNORECASE)
 _INTERNAL_TOOL_LEAK_RE = re.compile(
     r"(?:系统提示|操作不允许|权限(?:被)?锁|权限不足|root\s*目录|\bsudo\b|"
-    r"(?:沙箱|shell|终端).{0,18}(?:命令|free|df)|"
-    r"工具.{0,24}(?:不让|拒绝|权限|root|目录))",
+    r"(?:沙箱|shell|终端).{0,18}(?:命令|free|df|卡壳|跑不动|没法帮|执行环境)|"
+    r"工具.{0,24}(?:不让|拒绝|权限|root|目录|卡壳)|"
+    r"(?:跑不动代码|执行环境不可用|降级为无隔离)|"
+    r"(?:破沙箱|破工具).{0,12}(?:卡壳|跑不动|坏了))",
     re.IGNORECASE,
 )
 

@@ -37,7 +37,9 @@ _ACTIVE_REPLY_LABEL_RE = re.compile(
 )
 _ACTIVE_LOW_VALUE_RE = re.compile(
     r"(群里怎么突然这么安静|是不是都在偷偷|键盘被|梦游敲键盘|大半夜的怎么突然发|"
-    r"别老是喊个名字就没下文|本喵的猫罐头还没着落|发乱码|被别的猫踩了)"
+    r"别老是喊个名字就没下文|本喵的猫罐头还没着落|发乱码|被别的猫踩了|"
+    r"什么鬼|水贴|刷屏|刷坏|拍飞|把你.*拍|一爪子|吵死|脑壳疼|发什么疯|"
+    r"破沙箱|跑不动|卡壳了|骂.*问号|什么破|困得要死)"
 )
 
 
@@ -706,7 +708,9 @@ class Heartbeat:
 - 即使群里暂时安静，也要完成这次表达
 - 不要输出「[skip]」，不要解释内部流程
 - 不要用「作为 AI」开头，也别自称 Anima / Antigravity
-- 只输出要发到群里的正文；绝不输出说话人标签或引用标记"""
+- 只输出要发到群里的正文；绝不输出说话人标签或引用标记
+- 语气必须平和友好，禁止带攻击性、嫌弃、威胁（如拍飞/打你/发疯/吵死等），即使是玩笑也不行
+- 如果议程内容本身含乱码或无法理解的内容，直接输出 [skip]，不要编造解释"""
             user_request = f"（明确议程）请用自然、日常的语气完成这项表达：\n{intent[:500]}"
         else:
             speaking_rules = """你现在可以考虑在群里说一句话，但「不打扰」优先于开口。
@@ -776,7 +780,7 @@ class Heartbeat:
         reply = _clean_active_reply(reply)
         if not reply or "[skip]" in reply.lower() or len(reply.strip()) < 4:
             return False
-        if not intent and _is_low_value_active_reply(reply):
+        if _is_low_value_active_reply(reply):
             logger.info("自主发言丢弃低质水话 group=%d text_len=%d", group_id, len(reply))
             return False
         if len(reply) > 120:
