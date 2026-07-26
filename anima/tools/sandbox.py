@@ -371,15 +371,14 @@ _blocked = {{"subprocess", "socket", "requests", "ctypes",
 def _safe_import(name, *args, **kwargs):
     root = name.split(".")[0]
     if root in _blocked:
-        # 遍历整个调用栈：只要有任何一帧来自用户代码文件就拦截。
-        # 这防止 exec("import subprocess") 绕过——exec 创建的代码对象
-        # co_filename='<string>'，但其调用者仍在 _USER_FILE 中。
-        _frame = _sys._getframe(1)
-        while _frame is not None:
-            _caller = _os.path.normpath(_frame.f_code.co_filename)
-            if _caller == _os.path.normpath(_USER_FILE):
-                raise ImportError(f"Module '{{name}}' is blocked in sandbox")
-            _frame = _frame.f_back
+        # 只检查直接调用者是否为用户代码。
+        # 不遍历整个栈——否则库内部导入（如 PIL GifImagePlugin 内部
+        # import subprocess）会因用户代码触发了 from PIL import Image
+        # 而被误杀，导致 GIF 等格式插件加载失败。
+        # exec("import subprocess") 绕过仍能拦截：exec 帧的调用者即用户文件。
+        _caller = _os.path.normpath(_sys._getframe(1).f_code.co_filename)
+        if _caller == _os.path.normpath(_USER_FILE):
+            raise ImportError(f"Module '{{name}}' is blocked in sandbox")
     return _orig_import(name, *args, **kwargs)
 
 _builtins.__import__ = _safe_import
