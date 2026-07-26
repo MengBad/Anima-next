@@ -213,6 +213,13 @@ def _build_bwrap_command(config: SandboxConfig, inner_cmd: list[str]) -> list[st
                 "--dev", "/dev",
                 "--tmpfs", "/tmp"])
 
+    # 挂载 Python venv（venv 可能不在 /usr 下，bwrap 默认只挂载系统目录）
+    # 不 resolve() —— venv/bin/python 是指向系统 Python 的符号链接，
+    # 但 bwrap 执行时用的是原始路径，且 venv 的 site-packages 在同级 lib/ 下。
+    _venv_dir = str(Path(sys.executable).parent.parent)
+    if not _venv_dir.startswith(("/usr", "/bin")):
+        cmd.extend(["--ro-bind", _venv_dir, _venv_dir])
+
     # 可写目录
     for d in config.writable_dirs:
         cmd.extend(["--bind", d, d])
@@ -372,13 +379,11 @@ def _safe_import(name, *args, **kwargs):
 
 _builtins.__import__ = _safe_import
 
-# 禁用 exec/compile/eval 防止通过动态代码执行绕过 import 守卫
-_builtins.exec = lambda *a, **kw: (_ for _ in ()).throw(
-    RuntimeError("exec() is blocked in sandbox"))
-_builtins.compile = lambda *a, **kw: (_ for _ in ()).throw(
-    RuntimeError("compile() is blocked in sandbox"))
-_builtins.eval = lambda *a, **kw: (_ for _ in ()).throw(
-    RuntimeError("eval() is blocked in sandbox"))
+# 注意：不覆盖 exec/compile/eval —— Python stdlib import 内部依赖
+# builtins.exec（如 importlib._bootstrap_external 在加载模块时调用 exec），
+# 覆盖会导致 import io / import PIL 等直接崩溃。
+# 安全性由 import 守卫的栈帧检查保证：即使用户代码 exec("import subprocess")，
+# 栈帧检查仍能发现调用者来自 _USER_FILE 并拦截。
 
 # User code below
 """)
