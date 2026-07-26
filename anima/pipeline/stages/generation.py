@@ -24,11 +24,13 @@ _REALTIME_TOOL_RE = re.compile(
     r"官网|官方|资料|维基|百科|知乎|小红书|微博|推特|x\.com|youtube|youtu\.be)",
     re.I,
 )
-# 图片操作关键词
+# 图片操作关键词（宽松匹配：只要涉及图片操作/编辑/处理即触发引导）
 _IMAGE_MANIP_RE = re.compile(
     r"(反转|翻转|镜像|旋转|转动|缩放|放大|缩小|滤镜|裁剪|截取|模糊|锐化|"
     r"调亮|调暗|对比度|饱\s*和|灰度|黑白|反色|负片|像素化|马赛克|"
-    r"flip|mirror|rotate|resize|crop|filter|blur|sharpen)",
+    r"修[一下图]|P[一下图]|p[一下图]|编辑|处理|美化|加[个上]字|涂鸦|"
+    r"抠图|去[掉背]|换[背个]|合成|拼接|压缩|转[格换]|"
+    r"flip|mirror|rotate|resize|crop|filter|blur|sharpen|edit|photoshop)",
     re.I,
 )
 _IMAGE_MANIP_GUIDANCE = (
@@ -36,6 +38,12 @@ _IMAGE_MANIP_GUIDANCE = (
     "沙箱内已注入 _input_image（PIL Image 对象，无图时为 None）和 _input_image_b64（原始 base64）。"
     "用 _input_image 做操作后调用 _save_output(result_image) 保存并返回路径。"
     "必须先检查 _input_image is not None。不要拒绝，直接调用工具处理。"
+)
+_IMAGE_PRESENT_GUIDANCE = (
+    "用户消息附带了图片。若需对图片做任何操作，调用 run_python 工具——"
+    "沙箱内已注入 _input_image（PIL Image 对象）和 _input_image_b64（原始 base64），"
+    "操作后调用 _save_output(result_image) 保存并返回路径。"
+    "沙箱无网络，禁止用 urllib/requests 下载任何 URL；图片数据已在 _input_image 中，直接用。"
 )
 _REALTIME_TOOL_GUIDANCE = (
     "若当前问题涉及实时状态、天气、搜索、链接、单位换算、最新新闻、具体事实或"
@@ -314,6 +322,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         user_line = f"[私聊消息] {ctx.sender_name}({ctx.user_id}): {quoted_hint}{ctx.text}".rstrip()
 
     user_content = user_line
+    uris: list[str] = []  # 视觉 data URI（可能为空）
     vcfg = getattr(core, "config", None)
     vcfg = getattr(vcfg, "vision", None) if vcfg else None
     if (vcfg and getattr(vcfg, "enabled", True)
@@ -337,6 +346,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                 user_content = build_multimodal_user_content(user_line, uris)
         except Exception:
             logger.exception("视觉多模态注入失败，退化为纯文本")
+            uris = []
 
     ctx.messages.append({"role": "user", "content": user_content})
 
@@ -367,7 +377,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     if available_tools and _REALTIME_TOOL_RE.search(ctx.text or ""):
         _inject_runtime_tool_guidance(ctx, _REALTIME_TOOL_GUIDANCE)
 
-    # 图片操作引导
+    # 图片操作引导（宽松：有图 + 有工具即注入引导，确保 LLM 知道沙箱有图可用）
     _has_image_manip_request = (
         available_tools
         and ctx.inbound_images
@@ -375,6 +385,9 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     )
     if _has_image_manip_request:
         _inject_runtime_tool_guidance(ctx, _IMAGE_MANIP_GUIDANCE)
+    elif available_tools and ctx.inbound_images:
+        # 有图但未匹配操作关键词 → 仍告知 LLM 沙箱有图可用，禁止网络下载
+        _inject_runtime_tool_guidance(ctx, _IMAGE_PRESENT_GUIDANCE)
 
     # 上下文预算
     ctx.messages, message_stats = context_composer.compose_messages(ctx.messages)
@@ -402,7 +415,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     context_token = None
     if available_tools:
         _input_images_b64: list[str] = []
-        if ctx.inbound_images and _has_image_manip_request:
+        # 始终注入图片 base64（不依赖关键词匹配），确保沙箱能操作入站图
+        if ctx.inbound_images:
             try:
                 for uri in (uris if uris else []):
                     if isinstance(uri, str) and ";base64," in uri:
@@ -410,7 +424,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                     if len(_input_images_b64) >= 2:
                         break
             except Exception:
-                pass
+                logger.debug("提取入站图片 base64 失败", exc_info=True)
         context_token = available_tools.set_call_context(
             group_id=ctx.group_id if ctx.detail_type == "group" else None,
             share_stickers=bool(core.config.sticker.share_across_groups),
