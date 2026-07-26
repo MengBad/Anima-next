@@ -188,7 +188,7 @@ async def test_generation_injects_multimodal(monkeypatch):
     async def fake_fetch(img, **kwargs):
         return [PreparedImage(PNG, ".png", len(PNG))]
 
-    monkeypatch.setattr("anima.pipeline.stages.fetch_prepared_images", fake_fetch)
+    monkeypatch.setattr("anima.pipeline.stages.generation.fetch_prepared_images", fake_fetch)
 
     class FakeCore:
         llm = FakeLLM(reply="好看!")

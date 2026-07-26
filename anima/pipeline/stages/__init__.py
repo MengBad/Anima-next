@@ -59,6 +59,9 @@ from .generation import (  # noqa: F401
     generation_stage,
 )
 
+# 媒体工具重导出（测试 monkeypatch 需要）
+from anima.media import fetch_prepared_images, to_data_uri, build_multimodal_user_content  # noqa: F401
+
 # 阶段 5: 护栏
 from .guardrail import (  # noqa: F401
     DANGEROUS_PATTERNS,
