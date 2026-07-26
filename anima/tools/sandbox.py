@@ -360,7 +360,10 @@ _orig_import = _builtins.__import__
 # 用户代码文件路径（临时 .py）
 _USER_FILE = __file__
 _output_dir = _os.environ.get('SANDBOX_OUTPUT_DIR', '/tmp')
-_blocked = {{"subprocess", "shutil", "socket", "requests", "ctypes",
+# 注意：shutil 不在阻止列表——tempfile 内部依赖 shutil，而 PIL 等标准库
+# 在 import 链中会触发 tempfile。沙箱内 shutil 操作（copy/move/rmtree）
+# 受限于临时目录 + rlimit，实际无害。
+_blocked = {{"subprocess", "socket", "requests", "ctypes",
             "importlib", "multiprocessing"}}
 
 def _safe_import(name, *args, **kwargs):
