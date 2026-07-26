@@ -43,6 +43,10 @@ class SandboxError(Exception):
     pass
 
 
+class _SandboxIsolationError(RuntimeError):
+    """隔离工具执行失败（namespace 创建失败等），应降级重试。"""
+
+
 class SandboxConfig:
     """沙箱运行配置。"""
 
@@ -310,10 +314,11 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig,
         if any(kw in err for kw in ("unshare", "fork failed", "Operation not permitted",
                                      "Resource temporarily unavailable", "bwrap", "namespace")):
             logger.warning("沙箱系统级错误（已隐藏）: %.200s", err)
-            output += "\n[stderr] 沙箱执行环境不可用，已降级为无隔离模式"
             # 清除缓存，下次调用重新探测
             global _isolator_cache
             _isolator_cache = None
+            # 抛出异常让调用方降级重试
+            raise _SandboxIsolationError(err)
         else:
             output += f"\n[stderr] {err}"
 
@@ -418,9 +423,15 @@ def _save_output(img, filename='output.png'):
             writable_dirs=[str(Path(tmp_path).parent), _output_dir],
         )
         inner_cmd = [sys.executable, "-u", tmp_path]
-        cmd = _build_command(config, inner_cmd)
         _sandbox_env = {**os.environ, "SANDBOX_OUTPUT_DIR": _output_dir}
-        return await _run_subprocess(cmd, config, env=_sandbox_env)
+        # 先尝试隔离执行
+        cmd = _build_command(config, inner_cmd)
+        try:
+            return await _run_subprocess(cmd, config, env=_sandbox_env)
+        except _SandboxIsolationError:
+            # 隔离工具失败，降级为无隔离普通子进程重试（仍有 rlimit + import 守卫）
+            logger.info("沙箱隔离失败，降级为无隔离子进程重试")
+            return await _run_subprocess(inner_cmd, config, env=_sandbox_env)
     except Exception:
         logger.exception("沙箱 Python 执行异常")
         return "[沙箱] 执行异常（详见日志）"
