@@ -435,10 +435,13 @@ class Heartbeat:
         except Exception:
             logger.exception("自主外部探索调度失败（已隔离）")
 
-        # 昼夜节律
+        # 议程消费（约定跟进 / calendar 等）
+        # 注意：议程消费在 _circadian_gate 之前，必须单独做夜间静默检查，
+        # 否则凌晨仍会主动发言（如“秽土转生”事件）。
+        _quiet_hour = datetime.now(_BJ).hour in (0, 1, 2, 3, 4, 5)
         agenda = getattr(self.core, "agenda", None)
         agenda_item = agenda.peek_ready(now=now) if agenda else None
-        if agenda_item is not None:
+        if agenda_item is not None and not _quiet_hour:
             if now - self._last_active_speak >= self.active_global_cooldown_sec:
                 subject = getattr(self.core, "subject", None)
                 intent = subject.claim_agenda(agenda_item, now) if subject else None
@@ -545,6 +548,9 @@ class Heartbeat:
         from datetime import datetime, timezone, timedelta
         tz = timezone(timedelta(hours=8))
         hour = datetime.now(tz).hour
+        # 硬静默：凌晨 1-5 点绝不主动发言（避免深夜骚扰）
+        if hour in (1, 2, 3, 4, 5):
+            return False
         base = HOURLY_ACTIVITY.get(hour, 0.5)
         jitter = random.uniform(0.5, 1.5)
         prob = base * jitter

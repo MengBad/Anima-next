@@ -37,6 +37,15 @@ def test_agenda_waits_until_scheduled_time_and_persists(tmp_path):
 
 @pytest.mark.asyncio
 async def test_heartbeat_consumes_agenda_only_after_success(tmp_path, monkeypatch):
+    # mock 时间为白天，避免凌晨静默门控拦截议程消费
+    from datetime import datetime as _real_dt
+    class _DayDT(_real_dt):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 7, 27, 12, 0, 0, tzinfo=tz)
+    import anima.core.autonomy as _auto_mod
+    monkeypatch.setattr(_auto_mod, "datetime", _DayDT)
+
     cfg = AnimaConfig.model_validate({"persistence": {"data_dir": str(tmp_path)}})
     core = AnimaCore(cfg)
     heartbeat = Heartbeat(core, data_dir=str(tmp_path), active_global_cooldown_sec=0)
