@@ -541,6 +541,8 @@ class LLMHandler:
             try:
                 _, _, group_text, intent = raw_cmd.split(" ", 3)
                 item = self.core.propose_agenda(int(group_text), intent)
+                if item is None:
+                    raise ValueError("内容无效")
                 reply = f"{at_prefix}已加入议程 {item.id}，会受主动发言频率与预算限制"
             except (TypeError, ValueError):
                 reply = f"{at_prefix}用法：!anima agenda add <群号> <表达意图>"
@@ -559,6 +561,8 @@ class LLMHandler:
                     target_group, reminder.strip(), priority=0.9,
                     not_before_at=not_before, expires_at=not_before + 6 * 3600,
                 )
+                if item is None:
+                    raise ValueError("内容无效")
                 reply = (f"{at_prefix}已设定北京时间 {at_text} 的群提醒，议程 {item.id}；"
                          "到点后仍会遵守全局发言冷却与日预算。")
             except (TypeError, ValueError):
@@ -576,6 +580,8 @@ class LLMHandler:
                     target_group, reminder.strip(), priority=0.9,
                     not_before_at=not_before, expires_at=not_before + 6 * 3600,
                 )
+                if item is None:
+                    raise ValueError("内容无效")
                 reply = (f"{at_prefix}已设定 {minutes} 分钟后的群提醒，议程 {item.id}；"
                          "到点后仍会遵守全局发言冷却与日预算。")
             except (TypeError, ValueError):

@@ -2386,6 +2386,8 @@ class WebUIServer:
             item = self.core.propose_agenda(group_id, intent, priority=priority,
                                             not_before_at=not_before_at, expires_at=expires_at,
                                             source="owner")
+            if item is None:
+                raise web.HTTPBadRequest(text="议程内容为乱码或无意义内容")
         except (ValueError, TypeError, json.JSONDecodeError) as exc:
             raise web.HTTPBadRequest(text=f"议程参数无效：{exc}") from exc
         return web.json_response(self._plain(item), status=201)

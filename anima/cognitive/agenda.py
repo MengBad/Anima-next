@@ -1,11 +1,40 @@
 """可持久化的主动表达议程。"""
 from __future__ import annotations
 
+import logging
+import re
 import time
 import uuid
 from dataclasses import asdict, dataclass
 
 from anima.core.persistence import PersistenceProvider
+
+logger = logging.getLogger("anima.cognitive.agenda")
+
+
+def is_garbled_text(text: str) -> bool:
+    """检测文本是否包含编码损坏/乱码。
+
+    典型场景：JSON 文件编码损坏后 content 变成 "??????,????" 或 "ï¿½ï¿½ï¿½"。
+    """
+    if not text or not text.strip():
+        return True
+    s = text.strip()
+    # 1. Unicode 替换字符 U+FFFD
+    if '\ufffd' in s:
+        return True
+    # 2. 几乎全是问号/标点（编码损坏的典型特征）
+    stripped = re.sub(r'[\s\u3000]', '', s)  # 去空白
+    if len(stripped) >= 3:
+        qmarks = sum(1 for c in stripped if c in '?\uff1f')  # 半角+全角问号
+        if qmarks / len(stripped) > 0.5:
+            return True
+    # 3. 可读字符（CJK + 字母 + 数字）占比过低
+    if len(s) >= 5:
+        readable = sum(1 for c in s if '\u4e00' <= c <= '\u9fff' or c.isalnum())
+        if readable / len(s) < 0.2:
+            return True
+    return False
 
 
 @dataclass
@@ -27,6 +56,9 @@ class AgendaItem:
         self.not_before_at = max(0.0, float(self.not_before_at or 0.0))
         self.expires_at = max(0.0, float(self.expires_at or 0.0))
         self.text_intent = self.text_intent.strip()[:500]
+        # P1: 乱码/无意义内容不允许进入议程队列
+        if is_garbled_text(self.text_intent):
+            raise ValueError(f"议程文本为乱码或无意义内容: {self.text_intent[:60]!r}")
 
 
 class AgendaQueue:

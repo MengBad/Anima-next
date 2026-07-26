@@ -143,7 +143,11 @@ class AnimaCore:
                        not_before_at: float = 0.0, expires_at: float = 0.0,
                        source: str = "system"):
         """认知层和 owner 命令创建主动表达意图的唯一入口。"""
-        from anima.cognitive.agenda import AgendaItem
+        from anima.cognitive.agenda import AgendaItem, is_garbled_text
+        # P0/P1: 乱码/无意义内容不创建议程，避免 LLM 编造回复
+        if is_garbled_text(text_intent):
+            logger.warning("议程拒绝乱码内容 source=%s text=%r", source, text_intent[:80])
+            return None
         intent = self.subject.propose_expression(
             group_id, text_intent, source=source, priority=priority,
             not_before_at=not_before_at, expires_at=expires_at,

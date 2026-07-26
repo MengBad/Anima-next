@@ -9,12 +9,32 @@
 
 from __future__ import annotations
 import logging
+import re
 import time
 from typing import Optional
 
 from anima.core.persistence import PersistenceProvider
 
 logger = logging.getLogger("anima.cognitive.world_model")
+
+
+def _is_world_garbled(text: str) -> bool:
+    """检测世界观条目是否为乱码。"""
+    if not text or not text.strip():
+        return True
+    s = text.strip()
+    if '\ufffd' in s:
+        return True
+    stripped = re.sub(r'[\s\u3000]', '', s)
+    if len(stripped) >= 3:
+        qmarks = sum(1 for c in stripped if c in '?\uff1f')
+        if qmarks / len(stripped) > 0.5:
+            return True
+    if len(s) >= 5:
+        readable = sum(1 for c in s if '\u4e00' <= c <= '\u9fff' or c.isalnum())
+        if readable / len(s) < 0.2:
+            return True
+    return False
 
 
 class WorldModelEntry:
@@ -196,7 +216,8 @@ class WorldModel:
         contested 条目以“曾经觉得X，现在觉得Y”形式注入。
         """
         self.decay()
-        entries = [e for e in self._entries if e.weight >= 0.4]
+        entries = [e for e in self._entries
+                   if e.weight >= 0.4 and not _is_world_garbled(e.text)]
         if not entries:
             return ""
 

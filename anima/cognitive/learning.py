@@ -58,6 +58,28 @@ _VALENCE_NEG = (
 )
 
 
+def _is_note_garbled(text: str) -> bool:
+    """检测笔记内容是否为乱码（编码损坏/无意义字符堆砌）。"""
+    if not text or not text.strip():
+        return True
+    s = text.strip()
+    # Unicode 替换字符
+    if '\ufffd' in s:
+        return True
+    # 几乎全是问号/标点
+    stripped = re.sub(r'[\s\u3000]', '', s)
+    if len(stripped) >= 3:
+        qmarks = sum(1 for c in stripped if c in '?\uff1f')
+        if qmarks / len(stripped) > 0.5:
+            return True
+    # 可读字符（CJK + 字母 + 数字）占比过低
+    if len(s) >= 5:
+        readable = sum(1 for c in s if '\u4e00' <= c <= '\u9fff' or c.isalnum())
+        if readable / len(s) < 0.2:
+            return True
+    return False
+
+
 class SelfLearning:
     """自学习管理器。"""
 
@@ -293,6 +315,19 @@ class SelfLearning:
     def get_notes(self, max_chars: int = 2000) -> str:
         """获取自我笔记（截取最近）。"""
         text = self._persist.read_text(self._notes_path, "")
+        # P2: 过滤乱码行，防止编码损坏的笔记被注入 LLM 上下文
+        lines = text.split("\n")
+        clean_lines = []
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            # 去掉时间戳前缀后检查内容是否乱码
+            content = re.sub(r"^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}\s*", "", stripped).strip()
+            if content and _is_note_garbled(content):
+                continue
+            clean_lines.append(line)
+        text = "\n".join(clean_lines)
         if len(text) > max_chars:
             text = "…(更早的笔记已归档)…\n" + text[-max_chars:]
         return text
@@ -307,6 +342,10 @@ class SelfLearning:
         text = (content or "").strip()
         if not text:
             self._record_reject("empty")
+            return False
+        # P2: 乱码内容不写入笔记
+        if _is_note_garbled(text):
+            self._record_reject("garbled")
             return False
 
         if category is None:
