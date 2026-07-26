@@ -18,7 +18,7 @@ from typing import Optional
 
 from anima.core.persistence import PersistenceProvider
 
-logger = logging.getLogger("anima.relation")
+logger = logging.getLogger("anima.cognitive.relation")
 
 
 class Stage(Enum):

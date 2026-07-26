@@ -17,7 +17,7 @@ from typing import Optional
 
 from anima.core.persistence import PersistenceProvider
 
-logger = logging.getLogger("anima.mood")
+logger = logging.getLogger("anima.cognitive.mood")
 
 TZ = timezone(timedelta(hours=8))
 

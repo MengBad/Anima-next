@@ -64,7 +64,7 @@ async def test_observe_stickers_uses_singleton_content(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_handle_outbound_log_has_trace(caplog, monkeypatch):
-    caplog.set_level(logging.INFO, logger="anima.handler")
+    caplog.set_level(logging.INFO, logger="anima.llm.handler")
 
     class _Gateway:
         async def send(self, msg):

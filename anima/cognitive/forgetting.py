@@ -17,7 +17,7 @@ from typing import Any, Optional
 
 from anima.core.persistence import PersistenceProvider
 
-logger = logging.getLogger("anima.forgetting")
+logger = logging.getLogger("anima.cognitive.forgetting")
 
 
 class ForgettingEngine:

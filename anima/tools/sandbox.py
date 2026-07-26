@@ -28,7 +28,7 @@ except ImportError:
     resource = None
     _HAS_RESOURCE = False
 
-logger = logging.getLogger("anima.sandbox")
+logger = logging.getLogger("anima.tools.sandbox")
 
 # 安全限制
 MAX_OUTPUT = 8192        # 最大输出字节

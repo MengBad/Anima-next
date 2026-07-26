@@ -15,7 +15,7 @@ from typing import Optional
 
 from anima.core.persistence import PersistenceProvider
 
-logger = logging.getLogger("anima.social_graph")
+logger = logging.getLogger("anima.cognitive.social_graph")
 
 
 class SocialGraph:

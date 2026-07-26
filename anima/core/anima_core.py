@@ -1,16 +1,23 @@
-"""AnimaCore —— 编排核：持有所有模块，统一生命周期、事件分发。"""
+"""AnimaCore —— 编排核：持有所有模块，统一生命周期、事件分发。
+
+服务注册表：
+- ``register(module)``: 注册 Module 生命周期（init/restore/persist/shutdown）
+- ``register_service(name, obj)``: 注册命名服务（认知模块、工具注册表等）
+- ``service(name)``: 按名查找服务
+- ``cognitive_modules``: 所有已注册的 CognitiveModule 实例
+"""
 
 from __future__ import annotations
 import asyncio
 import logging
 import signal
-from typing import Optional
+from typing import Any, Optional
 
 from anima.core.config import AnimaConfig
 from anima.core.event_bus import EventBus
 from anima.core.gateway import Gateway
 from anima.core.persistence import PersistenceProvider
-from anima.core.module import Module
+from anima.core.module import Module, CognitiveModule
 
 logger = logging.getLogger("anima.core")
 
@@ -32,6 +39,8 @@ class AnimaCore:
         self.config_path = None
         self.bus = EventBus()
         self.persistence = PersistenceProvider(config.persistence.data_dir)
+        # 服务注册表：统一管理认知模块、工具注册表等命名服务
+        self._services: dict[str, Any] = {}
         from anima.core.health_history import HealthHistory
         self.health_history = HealthHistory(self, config.persistence.data_dir)
         self._restore_sticker_policy()
@@ -138,6 +147,30 @@ class AnimaCore:
 
     def register(self, module: Module) -> None:
         self.modules.append(module)
+
+    def register_service(self, name: str, service: Any) -> None:
+        """注册命名服务到注册表。认知模块、工具注册表等均可通过此统一管理。"""
+        self._services[name] = service
+
+    def service(self, name: str, default: Any = None) -> Any:
+        """按名查找已注册服务。"""
+        return self._services.get(name, default)
+
+    @property
+    def cognitive_modules(self) -> list[CognitiveModule]:
+        """所有已注册的 CognitiveModule 实例。"""
+        return [s for s in self._services.values() if isinstance(s, CognitiveModule)]
+
+    def cognitive_status(self) -> dict[str, Any]:
+        """所有认知模块的状态快照（WebUI /api/modules/status 使用）。"""
+        result = {}
+        for name, svc in self._services.items():
+            if isinstance(svc, CognitiveModule):
+                try:
+                    result[name] = svc.get_status()
+                except Exception:
+                    result[name] = {"name": name, "ok": False, "error": "get_status 异常"}
+        return result
 
     def propose_agenda(self, group_id: int, text_intent: str, *, priority: float = 0.5,
                        not_before_at: float = 0.0, expires_at: float = 0.0,

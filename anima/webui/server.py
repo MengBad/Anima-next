@@ -307,24 +307,56 @@ class WebUIServer:
     async def health(self, request: web.Request) -> web.Response:
         from anima.watchdog import watchdog_health
         from anima.core.config_recovery import health as config_recovery_health
+        from anima.core.metrics import get_metrics
 
         channel = self.core.gateway.channel
         try:
             channel_health = channel.health() if channel and hasattr(channel, "health") else {}
         except Exception:
             channel_health = {}
+
+        # 认知模块状态矩阵
+        cognitive_status = {}
+        try:
+            cognitive_status = self.core.cognitive_status()
+        except Exception:
+            pass
+
+        # 资源概览
+        resources: dict = {}
+        try:
+            import os
+            import shutil
+            disk = shutil.disk_usage(self.core.config.persistence.data_dir)
+            resources["disk_used_pct"] = round(disk.used / disk.total * 100, 1)
+            resources["disk_free_mb"] = round(disk.free / 1024 / 1024)
+        except Exception:
+            pass
+
+        # 综合状态判定
+        llm_health = self.core.llm.health() if self.core.llm and hasattr(self.core.llm, "health") else None
+        llm_degraded = bool(llm_health and llm_health.get("circuit_open"))
+        channel_ok = bool(channel_health.get("connected"))
+        overall = "healthy" if (channel_ok and not llm_degraded) else (
+            "degraded" if (channel_ok or not llm_degraded) else "unhealthy"
+        )
+
         return web.json_response({
+            "status": overall,
             "running": self.core._running,
             "channel_bound": channel is not None,
-            "channel_connected": bool(channel_health.get("connected")),
+            "channel_connected": channel_ok,
             "channel": channel_health,
             "heartbeat_running": bool(self.core.heartbeat and self.core.heartbeat._running),
             "watchdog": watchdog_health(),
             "config_recovery": config_recovery_health(self.core.config.persistence.data_dir),
-            "llm": self.core.llm.health() if self.core.llm and hasattr(self.core.llm, "health") else None,
+            "llm": llm_health,
             "audio": self.core.llm_handler.audio_health() if self.core.llm_handler and hasattr(self.core.llm_handler, "audio_health") else None,
             "sylann": self.core.sylann.health() if self.core.sylann else {"enabled": False},
             "history": self.core.health_history.health(),
+            "cognitive_modules": cognitive_status,
+            "metrics": get_metrics().snapshot(),
+            "resources": resources,
             "timestamp": time.time(),
         })
 

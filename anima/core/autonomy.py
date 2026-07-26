@@ -26,7 +26,7 @@ _BJ = timezone(timedelta(hours=8))  # 北京时间
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
 
-logger = logging.getLogger("anima.autonomy")
+logger = logging.getLogger("anima.core.autonomy")
 
 
 # 群上下文为方便模型分辨说话人会使用「[名字]: 内容」格式。主动发言的

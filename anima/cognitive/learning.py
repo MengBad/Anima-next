@@ -29,7 +29,7 @@ from anima.cognitive.capability_dedup import text_similarity
 from anima.core.persistence import PersistenceProvider
 from anima.llm.usage import scoped_llm
 
-logger = logging.getLogger("anima.learning")
+logger = logging.getLogger("anima.cognitive.learning")
 
 # 7 日滚动窗（秒）
 _WINDOW_SEC = 7 * 86400

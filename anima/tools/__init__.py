@@ -14,11 +14,12 @@ import time
 import math
 import logging
 import threading
+from collections import OrderedDict
 from typing import Any, Callable, Optional
 
 logger = logging.getLogger("anima.tools")
 _CALL_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("anima_tool_context", default={})
-_WEB_PAGE_CACHE: dict[str, tuple[float, str, str]] = {}
+_WEB_PAGE_CACHE: "OrderedDict[str, tuple[float, str, str]]" = OrderedDict()
 _WEB_PAGE_CACHE_LOCK = threading.Lock()
 _WEB_PAGE_CACHE_TTL_SEC = 600.0
 _WEB_PAGE_CACHE_MAX = 64
@@ -512,7 +513,10 @@ async def _tool_web_search(query: str, num_results: int = 5,
         with _WEB_PAGE_CACHE_LOCK:
             cached = _WEB_PAGE_CACHE.get(u)
             if cached and now - cached[0] < _WEB_PAGE_CACHE_TTL_SEC:
+                _WEB_PAGE_CACHE.move_to_end(u)  # LRU: 命中时移到末尾
                 return cached[1], cached[2]
+            elif cached:
+                del _WEB_PAGE_CACHE[u]  # TTL 过期，删除
         req = urllib.request.Request(u, headers={"User-Agent": UA})
         try:
             with urllib.request.urlopen(req, timeout=12) as resp:
@@ -523,9 +527,9 @@ async def _tool_web_search(query: str, num_results: int = 5,
             text, error = "", f"{type(exc).__name__}: {str(exc)[:120]}"
         with _WEB_PAGE_CACHE_LOCK:
             _WEB_PAGE_CACHE[u] = (now, text, error)
-            if len(_WEB_PAGE_CACHE) > _WEB_PAGE_CACHE_MAX:
-                oldest = min(_WEB_PAGE_CACHE, key=lambda key: _WEB_PAGE_CACHE[key][0])
-                _WEB_PAGE_CACHE.pop(oldest, None)
+            # LRU 淮汰：超过上限时删除最久未访问的条目（O(1)）
+            while len(_WEB_PAGE_CACHE) > _WEB_PAGE_CACHE_MAX:
+                _WEB_PAGE_CACHE.popitem(last=False)
         return text, error
 
     try:

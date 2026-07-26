@@ -23,7 +23,7 @@ from anima.llm.usage import scoped_llm
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
 
-logger = logging.getLogger("anima.life")
+logger = logging.getLogger("anima.cognitive.life")
 
 TZ = timezone(timedelta(hours=8))
 

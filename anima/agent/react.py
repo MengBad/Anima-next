@@ -15,7 +15,7 @@ from anima.llm.usage import llm_scope
 from anima.pipeline.context import ContextComposer
 from anima.tools import tool_result_ok
 
-logger = logging.getLogger("anima.agent")
+logger = logging.getLogger("anima.agent.react")
 
 # 工具处理器通常不会抛异常，而是返回可读错误文本。若把这类文本也记成成功，
 # 会污染工具自学习，并诱导模型围绕无效结果继续编造。

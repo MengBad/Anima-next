@@ -19,7 +19,7 @@ from anima.pipeline import Pipeline, PipelineContext
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
 
-logger = logging.getLogger("anima.handler")
+logger = logging.getLogger("anima.llm.handler")
 
 BOT_DISPLAY_NAME = "哈基米"
 
