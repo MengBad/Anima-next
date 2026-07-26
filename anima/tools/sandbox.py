@@ -412,7 +412,11 @@ if _input_image_b64 and _Image is not None:
         _input_image = _Image.open(_io.BytesIO(_raw))
         _input_image.load()  # 强制解码像素数据，避免懒加载在后续操作中失败
     except Exception as _e:
-        import sys as _s2; print(f'[sandbox] image decode failed ({type(_e).__name__}): {_e}', file=_s2.stderr)
+        import sys as _s2
+        _diag = f'b64_len={len(_input_image_b64)} raw_len={len(_raw) if "_raw" in dir() else -1}'
+        if '_raw' in dir() and _raw:
+            _diag += f' head={_raw[:16].hex()} tail={_raw[-8:].hex()}'
+        print(f'[sandbox] image decode failed ({type(_e).__name__}): {_e} | {_diag}', file=_s2.stderr)
         _input_image = None
 
 # 输出图片辅助：调用 _save_output(pil_image, filename='output.png') 保存到共享目录并打印路径
