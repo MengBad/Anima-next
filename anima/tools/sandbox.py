@@ -398,16 +398,22 @@ _builtins.__import__ = _safe_import
         f.write(f"_input_image_b64 = _input_images_b64[0] if _input_images_b64 else ''\n")
         f.write("""# 快捷：第一张图的 PIL Image 对象（无图时为 None）
 import io as _io, base64 as _b64
+_input_image = None
 try:
     from PIL import Image as _Image
     from PIL import Image  # LLM 代码可以直接用 Image
-    _input_image = _Image.open(_io.BytesIO(_b64.b64decode(_input_image_b64))) if _input_image_b64 else None
-except Exception:
-    _input_image = None
+except Exception as _e:
+    import sys as _s2; print(f'[sandbox] PIL import failed: {_e}', file=_s2.stderr)
+    _Image = None
+    Image = None
+if _input_image_b64 and _Image is not None:
     try:
-        from PIL import Image
-    except Exception:
-        Image = None
+        _raw = _b64.b64decode(_input_image_b64)
+        _input_image = _Image.open(_io.BytesIO(_raw))
+        _input_image.load()  # 强制解码像素数据，避免懒加载在后续操作中失败
+    except Exception as _e:
+        import sys as _s2; print(f'[sandbox] image decode failed ({type(_e).__name__}): {_e}', file=_s2.stderr)
+        _input_image = None
 
 # 输出图片辅助：调用 _save_output(pil_image, filename='output.png') 保存到共享目录并打印路径
 def _save_output(img, filename='output.png'):
