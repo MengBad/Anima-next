@@ -221,7 +221,9 @@ class ToolRegistry:
             _img_paths = _re.findall(r"\[output_image\]\s*(\S+)", text)
             if _img_paths:
                 ctx = get_call_context()
-                existing = ctx.get("generated_image_paths", [])
+                # setdefault 确保列表存入 context——ctx.get(key, []) 返回临时对象，
+                # extend 后不会写回，导致出站层永远拿不到图片路径。
+                existing = ctx.setdefault("generated_image_paths", [])
                 if isinstance(existing, list):
                     existing.extend(_img_paths[:2])
         self._audit("tool_executed", tool=tool.name, ok=ok, result_len=len(text))
