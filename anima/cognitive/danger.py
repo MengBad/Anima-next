@@ -504,7 +504,7 @@ class DangerBehaviors:
                     from anima.cognitive.controlled_iteration import get_controlled_iteration
                     data_dir = str(self.core.config.persistence.data_dir)
                     if get_controlled_iteration(data_dir).has_open_fault_tickets(self.core):
-                        logger.info("DANGER: 存在未关闭故障工单，跳过随机自升级合成")
+                        logger.debug("DANGER: 存在未关闭故障工单，跳过随机自升级合成")
                         return
                 except Exception:
                     pass
