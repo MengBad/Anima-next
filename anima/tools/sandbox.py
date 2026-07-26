@@ -17,6 +17,7 @@ import shlex
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -438,6 +439,15 @@ def _save_output(img, filename='output.png'):
     _output_base = (_data_dir / "sandbox_output").resolve()
     _output_base.mkdir(parents=True, exist_ok=True)
     _output_dir = tempfile.mkdtemp(prefix="out_", dir=str(_output_base))
+    # 清理 1 小时前的旧输出目录，防止磁盘累积
+    _now = time.time()
+    try:
+        for _old in _output_base.iterdir():
+            if _old.is_dir() and _old.name.startswith("out_"):
+                if _now - _old.stat().st_mtime > 3600:
+                    shutil.rmtree(_old, ignore_errors=True)
+    except OSError:
+        pass
 
     try:
         config = SandboxConfig(
