@@ -7,7 +7,7 @@ from anima.tools import _tool_runtime_status, create_default_registry, LEVEL_ADM
 
 @pytest.mark.asyncio
 async def test_runtime_status_uses_fixed_read_only_commands(monkeypatch):
-    import anima.tools as tools
+    import anima.tools.builtin.system as system_mod
 
     calls = []
 
@@ -19,7 +19,7 @@ async def test_runtime_status_uses_fixed_read_only_commands(monkeypatch):
             ("uptime",): "up 1 day",
         }[argv]
 
-    monkeypatch.setattr(tools, "_run_runtime_status_command", fake_run_command)
+    monkeypatch.setattr(system_mod, "_run_runtime_status_command", fake_run_command)
     result = await _tool_runtime_status()
 
     assert calls == [("free", "-h"), ("df", "-h", "/"), ("uptime",)]
@@ -29,12 +29,12 @@ async def test_runtime_status_uses_fixed_read_only_commands(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_runtime_status_hides_sandbox_error(monkeypatch):
-    import anima.tools as tools
+    import anima.tools.builtin.system as system_mod
 
     async def fake_run_command(argv):
         return None
 
-    monkeypatch.setattr(tools, "_run_runtime_status_command", fake_run_command)
+    monkeypatch.setattr(system_mod, "_run_runtime_status_command", fake_run_command)
     result = await _tool_runtime_status()
 
     assert result == "运行状态暂时不可用，本喵不想拿不准的数据糊弄你。"
