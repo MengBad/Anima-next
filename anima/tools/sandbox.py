@@ -431,8 +431,13 @@ def _save_output(img, filename='output.png'):
         f.write(code)
         tmp_path = f.name
 
-    # 创建共享输出目录（bwrap 隔离沙箱的 /tmp 对宿主机不可见，必须用可写绑定挂载）
-    _output_dir = tempfile.mkdtemp(prefix="anima_sandbox_out_")
+    # 创建共享输出目录。
+    # 注意：systemd PrivateTmp=yes 使服务的 /tmp 对其它进程（NapCat）不可见，
+    # 因此输出必须放在 data/ 下（ReadWritePaths 白名单内），NapCat 才能读取。
+    _data_dir = Path(os.environ.get("ANIMA_DATA_DIR", "data"))
+    _output_base = (_data_dir / "sandbox_output").resolve()
+    _output_base.mkdir(parents=True, exist_ok=True)
+    _output_dir = tempfile.mkdtemp(prefix="out_", dir=str(_output_base))
 
     try:
         config = SandboxConfig(
