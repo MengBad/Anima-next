@@ -360,11 +360,13 @@ _orig_import = _builtins.__import__
 # 用户代码文件路径（临时 .py）
 _USER_FILE = __file__
 _output_dir = _os.environ.get('SANDBOX_OUTPUT_DIR', '/tmp')
-# 注意：shutil 不在阻止列表——tempfile 内部依赖 shutil，而 PIL 等标准库
-# 在 import 链中会触发 tempfile。沙箱内 shutil 操作（copy/move/rmtree）
-# 受限于临时目录 + rlimit，实际无害。
+# 注意：shutil / importlib 不在阻止列表：
+# - shutil：tempfile 内部依赖，PIL 等标准库 import 链会触发
+# - importlib：PIL 12.x 用 importlib.import_module() 懒加载格式插件（GIF/PNG/WebP），
+#   阻止会导致 Image.open() 报 UnidentifiedImageError（所有格式插件加载失败）
+# 安全性：importlib.import_module("subprocess") 仍被拦截（subprocess 在列表里）
 _blocked = {{"subprocess", "socket", "requests", "ctypes",
-            "importlib", "multiprocessing"}}
+            "multiprocessing"}}
 
 def _safe_import(name, *args, **kwargs):
     root = name.split(".")[0]
