@@ -106,6 +106,13 @@ async def test_guardrail_strips_speaker_labels():
 def test_strip_speaker_labels_unit():
     assert _strip_speaker_labels("[哈基米]: 干嘛喵") == "干嘛喵"
     assert _strip_speaker_labels("正常接话") == "正常接话"
+    # text: 前缀也能剥离
+    assert _strip_speaker_labels("text:[哈基米]: 喵") == "喵"
+    assert _strip_speaker_labels("text: [哈基米]: 喵") == "喵"
+    # MengWuy 标签
+    assert _strip_speaker_labels("[MengWuy]: 喵") == "喵"
+    # 无标签不剥
+    assert _strip_speaker_labels("本喵觉得不行") == "本喵觉得不行"
 
 
 @pytest.mark.asyncio

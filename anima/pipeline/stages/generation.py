@@ -212,11 +212,11 @@ def _apply_capability_feedback(core, trace: list) -> None:
 # ---------------------------------------------------------------------------
 
 _REPLY_LABEL_RE = re.compile(
-    r"^\s*(?:\[(?:你|哈基米|anima|Anima|bot|Bot)\]|(?:你|哈基米|anima))\s*[:：]\s*",
+    r"^\s*(?:text\s*[:：]\s*)?(?:\[(?:你|哈基米|anima|Anima|bot|Bot|MengWuy)\]|(?:你|哈基米|anima))\s*[:：]\s*",
     re.IGNORECASE,
 )
 _REPLY_LABEL_INLINE_RE = re.compile(
-    r"(?:^|\n)\s*\[(?:你|哈基米|anima|Anima)\]\s*[:：]\s*",
+    r"(?:^|\n)\s*(?:text\s*[:：]\s*)?\[(?:你|哈基米|anima|Anima|MengWuy)\]\s*[:：]\s*",
     re.IGNORECASE,
 )
 
