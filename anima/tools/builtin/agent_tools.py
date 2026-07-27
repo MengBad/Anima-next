@@ -92,10 +92,12 @@ def _sync_http_request(req: urllib.request.Request, max_body: int, timeout: int)
         return e.code, body
 
 
-async def agent_http_request(core, method: str, url: str, *,
+async def agent_http_request(core, method: str = "GET", url: str = "", *,
                              headers: dict | None = None,
                              body: str | None = None,
                              timeout: int = 30) -> str:
+    if not url:
+        return "[agent] 缺少 url 参数"
     method = (method or "GET").upper()
     if method not in {"GET", "POST", "PUT", "DELETE", "HEAD", "PATCH"}:
         return f"[agent] 不支持的 HTTP 方法: {method}"
@@ -153,15 +155,24 @@ async def agent_write_file(core, path: str, content: str) -> str:
 
 
 async def agent_list_dir(core, path: str = "") -> str:
-    root = _data_dir(core)
+    # 与 read/write 保持一致：优先在 agent_workspace 内解析；
+    # 若工作区内不存在，再回退到 data 目录（便于查看 agent_tasks.json 等）。
+    ws = _workspace_root(core)
+    data_root = _data_dir(core)
     if path:
-        candidate = _resolve_within(root, path)
+        candidate = _resolve_within(ws, path)
+        if candidate is not None and not candidate.exists():
+            fallback = _resolve_within(data_root, path)
+            if fallback is not None and fallback.exists():
+                candidate = fallback
+        if candidate is None:
+            candidate = _resolve_within(data_root, path)
         if candidate is None:
             return f"[agent] 拒绝越界目录: {path}"
     else:
-        candidate = root
+        candidate = ws
     if not candidate.exists():
-        return f"[agent] 目录不存在: {path or '<data>'}"
+        return f"[agent] 目录不存在: {path or '<workspace>'}"
     if not candidate.is_dir():
         return f"[agent] 不是目录: {path or '<data>'}"
     try:
