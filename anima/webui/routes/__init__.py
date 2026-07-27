@@ -233,6 +233,8 @@ def _register_social(app: web.Application, s: "WebUIServer") -> None:
         web.get("/api/permissions", s.permissions),
         web.post("/api/permissions/admins", s.add_admin),
         web.delete("/api/permissions/admins/{qq}", s.remove_admin),
+        web.get("/api/tools", s.tools_list),
+        web.patch("/api/tools/level", s.tools_update_level),
         web.get("/api/subscriptions", s.subscriptions),
         web.post("/api/subscriptions", s.create_subscription),
         web.delete("/api/subscriptions/{subscription_id}", s.remove_subscription),

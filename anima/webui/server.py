@@ -1811,6 +1811,56 @@ class WebUIServer:
             self.core.audit.emit("webui_admin_removed", reviewer=owner_id, target_qq=qq)
         return web.json_response({"admins": admins})
 
+    async def tools_list(self, request: web.Request) -> web.Response:
+        """返回所有已注册工具的名称、描述、最低权限等级和启用状态。"""
+        self._owner_id()
+        registry = getattr(self.core, "tools", None)
+        if registry is None:
+            return web.json_response({"tools": []})
+        level_names = {0: "banned", 1: "readonly", 2: "user", 3: "admin", 4: "owner"}
+        tools = []
+        for t in registry.tools.values():
+            tools.append({
+                "name": t.name,
+                "description": t.description[:120],
+                "min_level": t.min_level,
+                "min_level_name": level_names.get(t.min_level, "unknown"),
+                "enabled": t.enabled,
+                "danger": t.danger,
+            })
+        return web.json_response({"tools": tools})
+
+    async def tools_update_level(self, request: web.Request) -> web.Response:
+        """修改某个工具的最低权限等级。仅 Owner 可操作。"""
+        owner_id = self._owner_id()
+        try:
+            body = await request.json()
+            tool_name = str(body.get("name", "")).strip()
+            new_level = int(body.get("min_level", 2))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            raise web.HTTPBadRequest(text="需要 name 和 min_level")
+        if not tool_name:
+            raise web.HTTPBadRequest(text="工具名不能为空")
+        if new_level not in (0, 1, 2, 3, 4):
+            raise web.HTTPBadRequest(text="min_level 必须为 0–4")
+        registry = getattr(self.core, "tools", None)
+        if registry is None or tool_name not in registry.tools:
+            raise web.HTTPNotFound(text=f"工具 '{tool_name}' 不存在")
+        tool = registry.tools[tool_name]
+        old_level = tool.min_level
+        tool.min_level = new_level
+        if self.core.audit:
+            self.core.audit.emit("webui_tool_level_changed", reviewer=owner_id,
+                                 tool=tool_name, old_level=old_level, new_level=new_level)
+        level_names = {0: "banned", 1: "readonly", 2: "user", 3: "admin", 4: "owner"}
+        return web.json_response({
+            "name": tool_name,
+            "old_level": old_level,
+            "old_level_name": level_names.get(old_level, "unknown"),
+            "new_level": new_level,
+            "new_level_name": level_names.get(new_level, "unknown"),
+        })
+
     async def tasks(self, request: web.Request) -> web.Response:
         self._owner_id()
         items = self.core.tasks.list()
