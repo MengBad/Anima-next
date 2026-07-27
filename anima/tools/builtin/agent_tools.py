@@ -79,6 +79,19 @@ def _resolve_within(root: Path, path: str) -> Path | None:
 # 工具实现
 # ---------------------------------------------------------------------------
 
+def _sync_http_request(req: urllib.request.Request, max_body: int, timeout: int) -> tuple[int, bytes]:
+    """同步 HTTP 请求实现；在独立线程中运行以避免阻塞事件循环。"""
+    try:
+        with urllib.request.urlopen(req, timeout=max(1, int(timeout))) as resp:
+            return resp.status, resp.read(max_body + 1)
+    except urllib.error.HTTPError as e:
+        try:
+            body = e.read(max_body + 1)
+        except Exception:
+            body = b""
+        return e.code, body
+
+
 async def agent_http_request(core, method: str, url: str, *,
                              headers: dict | None = None,
                              body: str | None = None,
@@ -91,19 +104,13 @@ async def agent_http_request(core, method: str, url: str, *,
 
     data = body.encode("utf-8") if body and method != "GET" else None
     req = urllib.request.Request(url, data=data, method=method)
+    # 部分站点会拒绝无 User-Agent 的请求
+    req.add_header("User-Agent", "Anima-Agent/1.0")
     if headers:
         for k, v in headers.items():
             req.add_header(str(k), str(v))
     try:
-        with urllib.request.urlopen(req, timeout=max(1, int(timeout))) as resp:
-            status = resp.status
-            raw = resp.read(_MAX_HTTP_BODY + 1)
-    except urllib.error.HTTPError as e:
-        try:
-            raw = e.read(_MAX_HTTP_BODY + 1)
-        except Exception:
-            raw = b""
-        status = e.code
+        status, raw = await asyncio.to_thread(_sync_http_request, req, _MAX_HTTP_BODY, max(1, int(timeout)))
     except Exception as e:
         _audit(core, "agent_http", ok=False, url=url, error=type(e).__name__)
         return f"[agent] 请求失败: {type(e).__name__}: {str(e)[:200]}"

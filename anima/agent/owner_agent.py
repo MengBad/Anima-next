@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Any
 
 from anima.agent.audit import AgentAuditor
@@ -24,6 +25,8 @@ class OwnerAgent:
         persistence = core.persistence
         data_dir = getattr(getattr(core.config, "persistence", None), "data_dir", "data")
         self.auditor = AgentAuditor(str(data_dir))
+        # 让 agent_tools._audit 能直接找到 AgentAuditor（否则工具审计会落到 core.audit）
+        core.agent_auditor = self.auditor
         self.store = AgentTaskStore(persistence)
         self.executor = AgentExecutor(
             core, self.store,
@@ -57,6 +60,14 @@ class OwnerAgent:
             await self.executor.execute(task)
         except Exception:
             logger.exception("Agent 任务执行异常")
+            try:
+                task.status = "failed"
+                task.error = "执行代理发生未捕获异常"
+                task.updated_at = time.time()
+                self.store.save(task)
+                await self._notify(task, "[失败] 执行代理发生未捕获异常")
+            except Exception:
+                pass
 
     async def approve(self, task_id: str) -> str:
         task = self.store.get(task_id)

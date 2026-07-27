@@ -183,7 +183,7 @@ class AgentExecutor:
                     )
                 else:
                     result = await self._react_for_step(step, task)
-                budget.consume_output(len(result or "") / 1024.0)
+                budget.consume_output(len(str(result or "")) / 1024.0)
                 if tool_result_ok(result):
                     return result
                 last_err = (result or "")[:300]
@@ -212,10 +212,13 @@ class AgentExecutor:
             )},
             {"role": "user", "content": f"任务背景：{task.request}\n当前步骤：{step.description}"},
         ]
-        # 主人分层沙箱：把权限等级注入调用上下文
-        ctx = tools.get_call_context()
-        token = tools.set_call_context(**{**ctx, "permission_level": LEVEL_OWNER})
+        # 主人分层沙箱：把权限等级注入调用上下文（防御式兼容测试桩）
+        ctx_token = None
+        if hasattr(tools, "get_call_context") and hasattr(tools, "set_call_context"):
+            ctx = tools.get_call_context()
+            ctx_token = tools.set_call_context(**{**ctx, "permission_level": LEVEL_OWNER})
         try:
             return await loop.run(messages, temperature=0.3, max_tokens=600)
         finally:
-            tools.reset_call_context(token)
+            if ctx_token is not None and hasattr(tools, "reset_call_context"):
+                tools.reset_call_context(ctx_token)
