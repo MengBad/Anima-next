@@ -919,13 +919,19 @@ class OneBot11Adapter(Module):
         msg_id = await self.send_message(detail_type, target_id, caption)
         return msg_id, upload_result
 
-    async def set_typing_status(self, enabled: bool = True) -> None:
+    async def set_typing_status(self, user_id: int, enabled: bool = True) -> None:
         """NapCat 扩展 API：设置输入状态（对方看到“正在输入...”）。
 
-        fire-and-forget：失败不影响主流程。
+        仅私聊有效。NapCat 的 set_input_status 参数为 user_id + event_type
+        （1=正在输入，0=正在说话）。本部署 action 通道以正向 WS 为准，
+        HTTP 仅作兜底。fire-and-forget：失败不影响主流程。
         """
+        params = {"user_id": int(user_id), "event_type": 1 if enabled else 0}
         try:
-            await self._http_post("set_input_status", {"status": 1 if enabled else 0})
+            if self._ws is not None and not self._ws.closed:
+                await self._call_action("set_input_status", params, timeout=5.0)
+            else:
+                await self._http_post("set_input_status", params)
         except Exception:
             pass  # 输入状态是体验增强，失败不阻塞回复
 

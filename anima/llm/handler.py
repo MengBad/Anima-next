@@ -1175,7 +1175,7 @@ class LLMHandler:
                 qq_cfg = getattr(getattr(self.core, "config", None), "qq", None)
                 _typing_enabled = getattr(qq_cfg, "typing_indicator", True) if qq_cfg else True
                 if _typing_enabled and detail_type == "private":
-                    await _channel.set_typing_status(True)
+                    await _channel.set_typing_status(int(user_id), True)
         except Exception:
             pass
 
