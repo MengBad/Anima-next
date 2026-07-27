@@ -50,6 +50,9 @@ class AnimaCore:
         self.tasks = TaskStore(self.persistence)
         from anima.core.tasks import OwnerTaskAgent
         self.task_agent = OwnerTaskAgent(self)
+        # Phase 3/4：Owner 多步 Agent（规划器/执行器/存储/审计/通知）
+        from anima.agent.owner_agent import OwnerAgent
+        self.agent = OwnerAgent(self)
         self.modules: list[Module] = []
         self.gateway = Gateway(self)
         self.llm = None  # P2: LLM client

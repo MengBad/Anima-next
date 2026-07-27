@@ -203,6 +203,9 @@ class ToolRegistry:
             images_b64 = ctx.get("input_images_b64")
             if images_b64 and "input_images_b64" not in args:
                 args = {**args, "input_images_b64": images_b64}
+            # Phase 1：把当前调用上下文的权限等级透传给沙箱，驱动分级能力。
+            if "permission_level" not in args:
+                args = {**args, "permission_level": ctx.get("permission_level", LEVEL_USER)}
             logger.info("run_python 调用: code_len=%d has_images=%s code_preview=%.200s",
                         len(args.get("code", "")), bool(images_b64), args.get("code", ""))
         result = tool.handler(**args)

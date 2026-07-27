@@ -18,6 +18,7 @@ import shutil
 import sys
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
@@ -34,7 +35,9 @@ logger = logging.getLogger("anima.tools.sandbox")
 MAX_OUTPUT = 8192        # 最大输出字节
 MAX_MEMORY_MB = 128      # 最大内存 MB
 DEFAULT_TIMEOUT = 10     # 默认超时秒
-MAX_TIMEOUT = 30         # 最大超时秒
+# 硬上限：普通用户受到 pipeline 默认约束，Owner 任务经分级沙箱可放宽到 120s。
+# 现有调用方传入的 timeout 均 ≤ DEFAULT_TIMEOUT(10)，因此抬高上限不改变旧行为。
+MAX_TIMEOUT = 120        # 最大超时秒（Owner 分级沙箱上限）
 
 # 外部隔离工具（按优先级）
 ISOLATION_TOOLS = ["bwrap", "unshare"]
@@ -62,6 +65,53 @@ class SandboxConfig:
         self.network = network
         self.writable_dirs = writable_dirs or []
         self.readonly_dirs = readonly_dirs or []
+
+
+# ---------------------------------------------------------------------------
+# 分级沙箱（按权限等级分层能力）—— 统一接口与规范化 Phase 1
+# ---------------------------------------------------------------------------
+
+# 权限等级常量（与 anima.tools 保持一致；此处不反向 import 以避免循环依赖）。
+_LEVEL_USER = 2
+_LEVEL_ADMIN = 3
+_LEVEL_OWNER = 4
+
+@dataclass
+class SandboxTier:
+    """按权限等级分层的沙箱能力。
+
+    - 普通用户（2）：现状不变，无网络 / 10s / 128MB / 严格 import 黑名单。
+    - 管理员（3）：延长超时与内存，仍无网络。
+    - 主人（4）：全能力，开放网络、放宽超时与内存、可写 agent_workspace、
+      仅保留最危险的 import 阻止（ctypes / multiprocessing）。
+    """
+
+    network: bool = False
+    timeout: int = DEFAULT_TIMEOUT
+    memory_mb: int = MAX_MEMORY_MB
+    writable_dirs: list[str] = field(default_factory=list)
+    blocked_imports: set[str] = field(
+        default_factory=lambda: {"subprocess", "socket", "requests", "ctypes", "multiprocessing"}
+    )
+
+
+# 默认分层。key 为权限等级；越权（>4）按 owner 处理。
+SANDBOX_TIERS: dict[int, SandboxTier] = {
+    _LEVEL_USER: SandboxTier(),  # 普通用户：现状不变
+    _LEVEL_ADMIN: SandboxTier(timeout=30, memory_mb=256),  # 管理员：延长超时+内存
+    _LEVEL_OWNER: SandboxTier(  # 主人：全能力
+        network=True,
+        timeout=MAX_TIMEOUT,
+        memory_mb=512,
+        writable_dirs=["data/agent_workspace"],
+        blocked_imports={"ctypes", "multiprocessing"},  # 仅保留最危险阻止
+    ),
+}
+
+
+def sandbox_tier_for(permission_level: int) -> SandboxTier:
+    """返回给定权限等级对应的沙箱分层；越界按 owner（最高）处理。"""
+    return SANDBOX_TIERS.get(min(int(permission_level), _LEVEL_OWNER), SANDBOX_TIERS[_LEVEL_USER])
 
 
 # ---------------------------------------------------------------------------
@@ -341,14 +391,20 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig,
 # ---------------------------------------------------------------------------
 
 async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
-                      input_images_b64: list[str] | None = None) -> str:
+                      input_images_b64: list[str] | None = None,
+                      permission_level: int = _LEVEL_USER) -> str:
     """在沙箱中执行一段 Python 代码。
 
     Args:
         code: Python 代码字符串
-        timeout: 超时秒数（最大 30）
+        timeout: 超时秒数（按权限分层上限夹紧）
         input_images_b64: 可选，入站图片的 base64 列表，注入为 _input_image_b64 / _input_image
+        permission_level: 调用者权限等级（2=普通 3=管理 4=主人），决定沙箱能力分层
     """
+    # Phase 1：按权限等级选取沙箱分层（网络/超时/内存/可写目录/import 黑名单）。
+    tier = sandbox_tier_for(permission_level)
+    blocked = set(tier.blocked_imports)
+    effective_timeout = min(int(timeout), tier.timeout)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix="anima_sandbox_"
     ) as f:
@@ -366,8 +422,8 @@ _output_dir = _os.environ.get('SANDBOX_OUTPUT_DIR', '/tmp')
 # - importlib：PIL 12.x 用 importlib.import_module() 懒加载格式插件（GIF/PNG/WebP），
 #   阻止会导致 Image.open() 报 UnidentifiedImageError（所有格式插件加载失败）
 # 安全性：importlib.import_module("subprocess") 仍被拦截（subprocess 在列表里）
-_blocked = {{"subprocess", "socket", "requests", "ctypes",
-            "multiprocessing"}}
+# 按权限分层注入：普通用户阻止最全，主人仅阻止 ctypes/multiprocessing。
+_blocked = {blocked!r}
 
 def _safe_import(name, *args, **kwargs):
     root = name.split(".")[0]
@@ -449,12 +505,22 @@ def _save_output(img, filename='output.png'):
     except OSError:
         pass
 
+    # Phase 1：主人分层可写 agent_workspace（持久化工作区，路径穿越防护由上层负责）。
+    _writable = [str(Path(tmp_path).parent), _output_dir]
+    for _rel in tier.writable_dirs:
+        _ws = (_data_dir / _rel).resolve()
+        try:
+            _ws.mkdir(parents=True, exist_ok=True)
+            _writable.append(str(_ws))
+        except OSError:
+            logger.warning("主人沙箱工作区创建失败，跳过: %s", _ws)
+
     try:
         config = SandboxConfig(
-            memory_mb=MAX_MEMORY_MB,
-            timeout=timeout,
-            network=False,
-            writable_dirs=[str(Path(tmp_path).parent), _output_dir],
+            memory_mb=tier.memory_mb,
+            timeout=effective_timeout,
+            network=tier.network,
+            writable_dirs=_writable,
         )
         inner_cmd = [sys.executable, "-u", tmp_path]
         _sandbox_env = {**os.environ, "SANDBOX_OUTPUT_DIR": _output_dir}

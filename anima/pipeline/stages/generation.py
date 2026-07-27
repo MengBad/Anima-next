@@ -431,6 +431,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             user_id=ctx.user_id,
             detail_type=ctx.detail_type,
             input_images_b64=_input_images_b64 or None,
+            permission_level=ctx.meta.get("permission_level", 2),
         )
     # 熔断器
     if getattr(core.llm, "circuit_open_until", 0) > time.time():

@@ -163,7 +163,10 @@ class LLMHandler:
             await self._assembler.close()
 
     def _is_owner(self, user_id: int) -> bool:
-        return user_id in self.core.config.permissions.owners
+        # 防御式访问：测试桩 core 可能没有 permissions 配置段。
+        perms = getattr(self.core.config, "permissions", None)
+        owners = getattr(perms, "owners", None) or ()
+        return user_id in owners
 
     def _looks_like_owner_task(self, text: str, user_id: int, detail_type: str) -> bool:
         if detail_type != "private" or not self._is_owner(user_id):
@@ -288,6 +291,23 @@ class LLMHandler:
                 reply = f"{at_prefix}任务 {task.id} 已取消"
             except ValueError:
                 reply = f"{at_prefix}未找到任务"
+        elif raw_cmd.startswith("agent "):
+            sub = raw_cmd[len("agent "):].strip()
+            if sub.startswith("approve "):
+                tid = sub[len("approve "):].strip()
+                reply = f"{at_prefix}{await self.core.agent.approve(tid)}"
+            elif sub.startswith("cancel "):
+                tid = sub[len("cancel "):].strip()
+                reply = f"{at_prefix}{self.core.agent.cancel(tid)}"
+            elif sub in ("list", "tasks"):
+                reply = f"{at_prefix}" + self.core.agent.status_text()
+            elif sub:
+                # 主人专属：把整句作为 Agent 请求直接提交执行
+                task = await self.core.agent.submit(sub, int(user_id), auto_run=True)
+                reply = f"{at_prefix}已创建 Agent 任务 {task.id}，开始执行（进度将推送）。"
+            else:
+                reply = (f"{at_prefix}用法：!anima agent <请求> | "
+                         f"!anima agent approve <id> | !anima agent cancel <id> | !anima agent list")
         elif cmd == "agenda" or cmd == "agenda list":
             items = self.core.agenda.pending()
             if not items:
@@ -1001,6 +1021,27 @@ class LLMHandler:
             return
         if self._looks_like_owner_task(text, int(user_id), detail_type):
             await self.core.gateway.send(OutboundMsg("private", int(user_id), await self._create_owner_task(text, int(user_id))))
+            return
+
+        # Phase 3/4：主人多步 Agent 任务自动路由（仅真正主人，permission_level>=4）。
+        # 审计 B0：is_agent_task 内部已强制 permission_level>=4，QQ 群主角色不会越权进入。
+        from anima.agent.intent import is_agent_task
+        if (self._is_owner(int(user_id)) and is_agent_task(text, 4)
+                and getattr(self.core, "agent", None) is not None):
+            at_prefix = f"[CQ:at,qq={user_id}] " if detail_type == "group" else ""
+            target_id = int(group_id) if detail_type == "group" else int(user_id)
+            if detail_type == "group":
+                # 审计 B2：群聊主人任务只建草稿 + 审批，避免打扰群；私聊则直接执行。
+                task = self.core.agent.store.create(text, int(user_id))
+                await self.core.gateway.send(OutboundMsg(
+                    detail_type, target_id,
+                    f"{at_prefix}已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。",
+                ))
+            else:
+                task = await self.core.agent.submit(text, int(user_id), auto_run=True)
+                await self.core.gateway.send(OutboundMsg(
+                    "private", int(user_id), f"已创建 Agent 任务 {task.id}，开始执行（进度将推送）。",
+                ))
             return
 
         # 私聊连续消息收束为一个语义回合，避免逐条抢答破坏语境。

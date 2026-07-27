@@ -17,6 +17,7 @@ from .social import (
 )
 from .owner import make_propose_skill_draft, make_self_code, make_generate_image
 from .sticker import make_sticker_tools
+from .agent_tools import register_agent_tools
 
 
 def register_all_builtin(registry, core=None) -> None:
@@ -86,6 +87,9 @@ def register_all_builtin(registry, core=None) -> None:
 
     # --- 需要 core 的工具 ---
     if core is not None:
+        # Phase 2：Owner/Admin 专属 Agent 通用工具（受护栏 + 审计门控）
+        register_agent_tools(registry, core)
+
         registry.register(Tool(
             "propose_skill_draft",
             "仅当 owner 明确要求新增、学习或创建 Anima 能力时使用。它只会生成待审核的"

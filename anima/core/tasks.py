@@ -140,6 +140,14 @@ class OwnerTaskAgent:
             "先用只读工具收集证据，再给出明确结论；不要虚构已修改或已部署。\n"
             "任何写入、重启、部署或外部状态变更都必须停在等待 Owner 审批。"
         )}, {"role": "user", "content": f"任务目标：{task.request}"}]
+        # Phase 1：主人分层沙箱——把权限等级注入工具调用上下文，
+        # 使 run_python 在任务内获得网络/放宽超时（与 ReActLoop 的 permission_level=4 一致）。
+        # 防御式访问：测试桩 core 可能没有 tools 属性或旧版 registry 无上下文接口。
+        _tools = getattr(self.core, "tools", None)
+        _ctx_token = None
+        if _tools is not None and hasattr(_tools, "set_call_context"):
+            _base_ctx = _tools.get_call_context() if hasattr(_tools, "get_call_context") else {}
+            _ctx_token = _tools.set_call_context(**{**_base_ctx, "permission_level": 4})
         try:
             loop = ReActLoop(self.core.llm, self.core.tools, max_rounds=8, permission_level=4)
             result = await loop.run(messages, temperature=0.2, max_tokens=800)
@@ -158,3 +166,6 @@ class OwnerTaskAgent:
             task.updated_at = time.time()
             self.core.tasks._save()
             return f"任务执行失败：{type(exc).__name__}: {str(exc)[:160]}"
+        finally:
+            if _tools is not None and _ctx_token is not None:
+                _tools.reset_call_context(_ctx_token)
