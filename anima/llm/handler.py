@@ -1028,7 +1028,13 @@ class LLMHandler:
         from anima.agent.intent import is_agent_task
         if (self._is_owner(int(user_id)) and is_agent_task(text, 4)
                 and getattr(self.core, "agent", None) is not None):
-            at_prefix = f"[CQ:at,qq={user_id}] " if detail_type == "group" else ""
+            # 群里用「引用原消息」而不是裸 @：@ 会渲染成群昵称，容易看起来
+            # 像 bot 在乱发无关内容；引用能明确指向触发的那句话。
+            _msg_id = event.get("message_id")
+            at_prefix = (
+                (f"[CQ:reply,id={_msg_id}] " if _msg_id else f"[CQ:at,qq={user_id}] ")
+                if detail_type == "group" else ""
+            )
             target_id = int(group_id) if detail_type == "group" else int(user_id)
             if detail_type == "group":
                 # 审计 B2：群聊主人任务只建草稿 + 审批，避免打扰群；私聊则直接执行。

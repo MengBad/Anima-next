@@ -61,6 +61,23 @@ def test_store_restart_recovery_marks_executing_failed():
     assert loaded.status == "failed"  # 崩溃中任务标记为 failed，避免幽灵执行
 
 
+def test_store_create_dedups_recent_planning():
+    """5 分钟内同人同文本的 planning 草稿应复用，不重复创建（QQ 重发防抖）。"""
+    p = _Mem()
+    s = AgentTaskStore(p)
+    t1 = s.create("现在就去 搭建mc服务器", 1562290139)
+    t2 = s.create("现在就去 搭建mc服务器", 1562290139)
+    assert t1.id == t2.id
+    # 不同创建者不去重
+    t3 = s.create("现在就去 搭建mc服务器", 42)
+    assert t3.id != t1.id
+    # 已离开 planning 的不去重
+    t1.status = "completed"
+    s.save(t1)
+    t4 = s.create("现在就去 搭建mc服务器", 1562290139)
+    assert t4.id != t1.id
+
+
 def test_store_prune_keeps_recent():
     p = _Mem()
     s = AgentTaskStore(p, max_kept=3)

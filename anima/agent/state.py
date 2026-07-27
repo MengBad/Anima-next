@@ -94,6 +94,13 @@ class AgentTaskStore:
 
     def create(self, request: str, creator: int,
                steps: list[Step] | None = None) -> AgentTask:
+        # 去重：5 分钟内同一创建者、同一请求文本且仍处于 planning 的任务
+        # 直接复用（QQ 消息重发/连点会触发重复入站，避免刷出多个草稿）。
+        now = time.time()
+        for t in self.items.values():
+            if (t.creator == int(creator) and t.request == request[:2000]
+                    and t.status == "planning" and now - t.created_at < 300):
+                return t
         task = AgentTask(
             id=uuid.uuid4().hex[:10],
             request=request[:2000],
