@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import time
 from collections import defaultdict, deque
 from typing import Any
@@ -53,7 +54,8 @@ class CrossGroupManager:
         return user
 
     def add_user_fact(self, user_id: str, content: str, source_group: str,
-                      tags: list[str] | None = None, name: str = "") -> UserFact | None:
+                      tags: list[str] | None = None, name: str = "",
+                      nicknames: list[str] | None = None) -> UserFact | None:
         """新增一条用户事实。
 
         内容去重：若该用户已有"内容标准化后相同"的事实，则跳过（返回 None），
@@ -73,8 +75,113 @@ class CrossGroupManager:
         # FIFO 截断：超出上限时丢弃最旧事实，防止 LLM 抽取无限膨胀存储
         if self.max_facts_per_user > 0 and len(user.facts) > self.max_facts_per_user:
             user.facts = user.facts[-self.max_facts_per_user:]
+        if nicknames:
+            self.add_nicknames(user_id, nicknames, name=name)
         self._save_users()
         return fact
+
+    def add_nicknames(self, user_id: str, nicknames: list[str],
+                      name: str = "") -> int:
+        """追加该用户的外号（他人称呼），去重并封顶 8 个。返回新增条数。"""
+        if not nicknames:
+            return 0
+        user = self.get_user(user_id, name)
+        added = 0
+        for nk in nicknames:
+            nk = (nk or "").strip()
+            if not nk:
+                continue
+            # 不与本名/已有别名/已有外号重复
+            if nk == user.name or nk in user.aliases or nk in user.nicknames:
+                continue
+            user.nicknames.append(nk)
+            added += 1
+        if user.nicknames:
+            user.nicknames = user.nicknames[-8:]  # 最多 8 个外号
+        if added:
+            self._save_users()
+        return added
+
+    def search_by_name(self, query: str, limit: int = 5) -> list[tuple[str, str, int]]:
+        """按名字/别名/外号模糊搜索用户，返回 [(user_id, 匹配到的名字, 优先级), ...]。
+
+        优先级：本名(name)精确=3 > 外号(nicknames)精确=3 > 本名/外号子串=2 > 别名=1。
+        用于「说外号/别名查人」时把自然语映射回 user_id。
+        """
+        q = (query or "").strip().lower()
+        if not q:
+            return []
+        hits: list[tuple[str, str, int]] = []
+        for uid, u in self._users.items():
+            if u.name:
+                if q == u.name.lower():
+                    hits.append((uid, u.name, 3))
+                    continue
+                if q in u.name.lower():
+                    hits.append((uid, u.name, 2))
+            # 外号（他人称呼）——最关键的「叫外号查人」场景
+            for nk in u.nicknames:
+                if q == nk.lower():
+                    hits.append((uid, nk, 3))
+                    break
+                if q in nk.lower():
+                    hits.append((uid, nk, 2))
+                    break
+            # 跨群别名
+            for al in u.aliases:
+                if q == al.lower():
+                    hits.append((uid, al, 2))
+                    break
+                if q in al.lower():
+                    hits.append((uid, al, 1))
+                    break
+        hits.sort(key=lambda h: -h[2])
+        seen = set()
+        out = []
+        for uid, nm, pri in hits:
+            if uid in seen:
+                continue
+            seen.add(uid)
+            out.append((uid, nm, pri))
+        return out[:limit]
+
+    def find_mentioned(self, text, at_uids=None, exclude_uid=None,
+                       group_id=None, limit: int = 2):
+        """反向解析：从消息文本 + @段 找出被提及的已知用户。
+
+        三源：
+          ① CQ:at 的 qq 直接命中（最高优先级，零歧义）；
+          ② 文本子串扫描已知用户的 name/alias/nickname（带短名阈值防误命中）。
+        返回 ``[(uid, display_name, priority), ...]``：已排除 exclude_uid（发言者本人），
+        按优先级降序、截断 limit（默认 2 人）。``group_id`` 预留给后续按群优先排序。
+        """
+        from anima.util.name_clean import clean_display_name
+        candidates: dict[str, tuple[str, int]] = {}
+        text_l = (text or "").lower()
+        # ① CQ:at：qq 直接映射
+        for qq in (at_uids or []):
+            qq = str(qq)
+            if qq in self._users and qq != exclude_uid:
+                u = self._users[qq]
+                candidates.setdefault(qq, (u.name or qq, 3))
+        # ② 文本子串扫描 name / alias / nickname
+        for uid, u in self._users.items():
+            if uid == exclude_uid:
+                continue
+            best = 0
+            for raw_nm in (u.name, *u.aliases, *u.nicknames):
+                nm = clean_display_name(raw_nm).lower()
+                if len(nm) < 2:
+                    # 短名（单字/纯括号）跳过，防「小宝」∈「小宝贝」误伤
+                    continue
+                if nm and nm in text_l:
+                    best = max(best, 2)
+            if best:
+                cur = candidates.get(uid)
+                if cur is None or best > cur[1]:
+                    candidates[uid] = (clean_display_name(u.name) or uid, best)
+        ranked = sorted(candidates.items(), key=lambda kv: -kv[1][1])
+        return [(uid, nm, pri) for uid, (nm, pri) in ranked[:limit]]
 
     def replace_user_fact(self, user_id: str, index: int, content: str) -> bool:
         """按展示序号（1-based）纠正一条跨群事实。"""
@@ -163,6 +270,7 @@ class CrossGroupManager:
                         preferences=d.get("preferences", {}),
                         groups=d.get("groups", {}),
                         aliases=d.get("aliases", []),  # P4: 跨群别名
+                        nicknames=d.get("nicknames", []),  # 外号（他人称呼）
                         topic_preferences=d.get("topic_preferences", {}),  # E2
                         style_hint=d.get("style_hint", ""),               # E2
                         avg_msg_length=float(d.get("avg_msg_length", 0)), # E2
@@ -202,6 +310,7 @@ class CrossGroupManager:
                 "preferences": u.preferences,
                 "groups": u.groups,
                 "aliases": u.aliases,  # P4: 跨群别名持久化
+                "nicknames": u.nicknames,  # 外号（他人称呼）
                 "topic_preferences": u.topic_preferences,  # E2
                 "style_hint": u.style_hint,                # E2
                 "avg_msg_length": u.avg_msg_length,        # E2

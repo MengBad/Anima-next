@@ -303,6 +303,12 @@ class AnimaCore:
                     await _close()
                 except Exception:
                     logger.exception("资源关闭异常: %s", type(_res).__name__)
+        # 关闭 media 模块级共享 ClientSession（否则退出时 Unclosed client session）
+        try:
+            from anima.media import close_media_session
+            await close_media_session()
+        except Exception:
+            logger.exception("media 会话关闭异常")
         if self.sylann:
             try:
                 await self.sylann.close()

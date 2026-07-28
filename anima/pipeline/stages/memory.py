@@ -89,11 +89,13 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.debug("闪光灯情绪检测失败", exc_info=True)
 
-    memory.add(
-        ctx.detail_type, chat_id, "user", ctx.sender_name,
-        ctx.text or "[用户发送了图片]",
-        user_id=ctx.user_id,
-    )
+    # 群聊消息已在 observe_group_message 中持久化到个人桶，这里只补记私聊。
+    if ctx.detail_type != "group":
+        memory.add(
+            ctx.detail_type, chat_id, "user", ctx.sender_name,
+            ctx.text or "[用户发送了图片]",
+            user_id=ctx.user_id,
+        )
     if episodes is not None:
         try:
             agenda_factory = None

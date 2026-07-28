@@ -26,6 +26,8 @@ class UserMemory:
     groups: dict[str, str] = field(default_factory=dict)  # group_id -> 备注/角色
     # P4: 跨群身份统一——不同群的不同名字
     aliases: list[str] = field(default_factory=list)  # 最多保留 5 个别名
+    # 外号：由他人对该用户的称呼/昵称（如「企鹅仔」「胖虎」），由事实抽取结构化捕获
+    nicknames: list[str] = field(default_factory=list)  # 最多保留 8 个外号
     # E2: 用户偏好学习
     topic_preferences: dict[str, int] = field(default_factory=dict)  # 话题 -> 出现次数
     style_hint: str = ""  # 回复风格提示（如“偏简短”“爱发表情”）

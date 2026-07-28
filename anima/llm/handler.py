@@ -26,6 +26,7 @@ from anima.llm.group_gate import (  # noqa: F401
     classify_group_reply_skip,
     should_reply_in_group,
 )
+from anima.util.name_clean import clean_display_name
 
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
@@ -885,21 +886,42 @@ class LLMHandler:
 
     async def _extract_and_store(self, user_id: int, name: str,
                                  group_id: Optional[int], text: str, cfg) -> None:
-        """后台事实抽取任务：调 LLM 抽事实 → 写入跨群记忆。绝不抛出。"""
+        """后台事实抽取任务：调 LLM 抽事实/外号/关系 → 写入记忆。绝不抛出。"""
         try:
             from anima.crossgroup import get_crossgroup_manager, extract_user_facts
             cgm = get_crossgroup_manager()
-            facts = await extract_user_facts(
+            result = await extract_user_facts(
                 self.core.llm, text, name, min_len=cfg.min_fact_text_len
             )
             src = str(group_id) if group_id is not None else "private"
+            facts = result.get("facts", [])
             for f in facts:
                 cgm.add_user_fact(
                     str(user_id), f["content"],
                     source_group=src, tags=f.get("tags", []), name=name,
                 )
-            if facts:
-                logger.info("跨群抽取到 %d 条事实 user=%s", len(facts), user_id)
+            # 外号独立于「事实」落库：即使本次没有抽到事实，只要出现了别人
+            # 对 TA 的称呼（如「大家都叫他企鹅仔」），也必须存下来，否则外号会丢失。
+            if result.get("nicknames"):
+                cgm.add_nicknames(str(user_id), result["nicknames"], name=name)
+            # C: 用户间关系边
+            relations = result.get("relations", [])
+            if relations:
+                from anima.crossgroup.memory.user_relations import (
+                    get_user_relation_store,
+                )
+                store = get_user_relation_store(
+                    self.core.config.persistence.data_dir
+                )
+                for r in relations:
+                    store.add(name or str(user_id), r["target"], r["relation"],
+                              note=r.get("note", ""), source=src)
+                logger.info("跨群抽取到 %d 条关系边 user=%s", len(relations), user_id)
+            if facts or result.get("nicknames") or relations:
+                logger.info(
+                    "跨群抽取 user=%s: 事实%d 外号%d 关系%d",
+                    user_id, len(facts), len(result.get("nicknames", [])), len(relations),
+                )
         except Exception:
             logger.exception("跨群事实抽取后台任务异常")
 
@@ -932,7 +954,7 @@ class LLMHandler:
         group_id = event.get("group_id")
         raw = event.get("raw", {})
         detail_type = raw.get("message_type", "private")
-        sender_name = raw.get("sender", {}).get("nickname", str(user_id))
+        sender_name = clean_display_name(raw.get("sender", {}).get("nickname", str(user_id)))
 
         if not user_id:
             return
@@ -1193,6 +1215,7 @@ class LLMHandler:
             group_id=group_id,
             detail_type=detail_type,
             sender_name=sender_name,
+            mentioned_uids=event.get("at_uids", []),
             inbound_images=event.get("images") or [],
             meta={"core": self.core, "group_presence": event.get("group_presence", "")},
         )

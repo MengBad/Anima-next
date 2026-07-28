@@ -235,10 +235,10 @@ class ChatMemory:
         if chat_type == "group" and notify_group and role == "user" and self._on_group_message:
             self._on_group_message(chat_id)
 
-        # 定期清理
+        # 定期清理（7 天 TTL：短于 2h 会导致偶发用户对话上下文频繁丢失）
         now = time.time()
         if now - self._last_cleanup > 600:
-            self._cleanup(3600 * 2)
+            self._cleanup(3600 * 24 * 7)
             self._last_cleanup = now
 
         # P0-5 修复：运行期新增记忆必须落盘，否则重启即丢全部新对话。
@@ -277,17 +277,26 @@ class ChatMemory:
 
     def observe_group_message(self, group_id: int, user_id: int, sender_name: str,
                               content: str, message_id: object = None) -> None:
-        """记录所有入站群消息的短时群上下文，不落盘、不跨群。"""
+        """记录所有入站群消息：短时群上下文 + 持久化个人桶。
+
+        持久化写入确保即使消息被回复闸门跳过，对话上下文也不会丢失。
+        """
         self._purge_group_recent(group_id)
         text = (content or "").strip()
         if not text:
             return
+        # 1) 短时群上下文（内存，15min TTL）
         self._group_recent[int(group_id)].append({
             "role": "user",
             "content": f"[{sender_name}({user_id})]: {text[:2000]}",
             "message_id": str(message_id) if message_id is not None else None,
             "time": time.time(),
         })
+        # 2) 持久化个人桶 —— 保证被闸门跳过的消息仍保留在对话记忆中
+        # 剥离 CQ 码等传输层载荷，与 memory_stage 的 _clean_transport_text 一致
+        clean_text = _CQ_TRANSPORT_RE.sub("", text).strip() or "[用户发送了图片]"
+        self.add("group", int(group_id), "user", sender_name, clean_text[:2000],
+                 user_id=int(user_id))
         if self._on_group_message:
             self._on_group_message(int(group_id))
 
@@ -443,6 +452,9 @@ class ChatMemory:
                 stale.append(key)
         for key in stale:
             del self._store[key]
+        if stale:
+            logger.info("chat_memory cleanup: 清除 %d 个过期桶 (TTL=%.1fh): %s",
+                        len(stale), ttl / 3600, stale)
 
 
 # 全局单例

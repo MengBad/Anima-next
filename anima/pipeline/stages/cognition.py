@@ -445,6 +445,36 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                     group_id="private", style=AtmosphereStyle.NEUTRAL
                 )
             user_mem = cgm.get_user(str(ctx.user_id), ctx.sender_name)
+            # —— 被提及成员记忆注入（修复「失忆答不出群成员」）——
+            # 消息里 @ 或点名的人，其跨群记忆应一并注入，使 bot 能直接回答
+            # 「亦萱是个怎样的人」之类问题，而非盲目搜网。隐私过滤：排除私聊
+            # 产生的 fact（source_group=="private"），避免他群/私聊私密在公群曝光。
+            try:
+                from anima.crossgroup.memory.user_memory import UserMemory
+                _at = getattr(ctx, "mentioned_uids", None) or []
+                _mentioned = cgm.find_mentioned(
+                    ctx.text or "", at_uids=_at,
+                    exclude_uid=str(ctx.user_id),
+                    group_id=str(ctx.group_id) if ctx.group_id else None,
+                    limit=2,
+                )
+                for _m_uid, _m_name, _m_pri in _mentioned:
+                    _m_full = cgm.get_user(_m_uid, _m_name)
+                    _public = [f for f in _m_full.facts
+                               if f.source_group != "private"]
+                    if not _public:
+                        continue
+                    _m_view = UserMemory(
+                        user_id=_m_uid, name=_m_name, facts=_public,
+                        aliases=_m_full.aliases, nicknames=_m_full.nicknames,
+                    )
+                    _mfrag = (
+                        f"## 被提及成员「{_m_name}」的背景记忆（群友问到 ta 时作参考，"
+                        f"不要主动复述）\n{_m_view.summary()}"
+                    )
+                    add_system_fragment(f"mentioned_{_m_uid}", _mfrag, 60)
+            except Exception:
+                logger.exception("被提及成员记忆注入失败")
             # E2: 用户偏好学习
             try:
                 user_mem.update_style(len(ctx.text or ""))

@@ -14,6 +14,7 @@ from .bilibili import make_bilibili_read, make_subscribe_bilibili_live
 from .social import (
     make_group_poke, make_get_group_members, make_get_group_info,
     make_set_group_card, make_group_ban, make_group_kick,
+    make_get_user_relations, make_get_member_facts,
 )
 from .owner import make_propose_skill_draft, make_self_code, make_generate_image
 from .sticker import make_sticker_tools
@@ -157,12 +158,36 @@ def register_all_builtin(registry, core=None) -> None:
         ))
         registry.register(Tool(
             "get_group_members",
-            "查看群成员列表或某个人的信息。当有人问群里有谁、某人是否在群里、群多少人时调用。",
+            "查看群成员列表或某个人的信息。支持按显示名/群名片搜索（name 参数），"
+            "会自动把名字解析成 QQ 号。当有人问群里有谁、某人是否在群里、群多少人、"
+            "或『看看某某的信息』时调用。",
             {
                 "group_id": {"type": "integer", "description": "群号（可选，默认用当前群）"},
                 "user_id": {"type": "integer", "description": "要查某个人的 QQ 号（可选）"},
+                "name": {"type": "string", "description": "按显示名/群名片搜索某人，如「张三」（会自动解析为 QQ 号）"},
             },
             make_get_group_members(core), required=[], min_level=LEVEL_USER,
+        ))
+        registry.register(Tool(
+            "get_user_relations",
+            "总结某人的人际关系。传 name 即可总结该用户与 bot 的关系（亲密度/信任/阶段）、"
+            "其已知外号与别名、以及他和群里其他人的关系；额外传 with_name 可查两人之间的关系"
+            "（如「张三和李四什么关系」）。当有人问『某某和某某啥关系』『讲讲某人的情况』时调用。",
+            {
+                "name": {"type": "string", "description": "要总结的人（显示名/外号/QQ号）"},
+                "with_name": {"type": "string", "description": "另一个人（可选，查两人之间的关系）"},
+            },
+            make_get_user_relations(core), required=["name"], min_level=LEVEL_USER,
+        ))
+        registry.register(Tool(
+            "get_member_facts",
+            "深度回忆某群成员的已知事实（按名字/外号/QQ号解析，过滤私聊私密）。"
+            "当有人问『某某是个怎样的人』『讲讲某人的事』，或 ReAct 需核实某成员背景时调用。",
+            {
+                "name": {"type": "string", "description": "要回忆的人（显示名/外号/QQ号）"},
+                "limit": {"type": "integer", "description": "返回事实条数上限，默认 10"},
+            },
+            make_get_member_facts(core), required=["name"], min_level=LEVEL_USER,
         ))
         registry.register(Tool(
             "get_group_info",

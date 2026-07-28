@@ -1,0 +1,44 @@
+{
+  "1562290139": {
+    "interaction_count": 0,
+    "last_seen": 0.0,
+    "first_seen": 1785265032.7407246,
+    "familiarity": 0.9,
+    "trust": 0.95,
+    "valence": 0.7,
+    "bond_tension": 0.0,
+    "relational_depth": 0.05,
+    "tags": [
+      "开发者",
+      "主人",
+      "MTF",
+      "HRT"
+    ],
+    "notes": "[种子关系] 吴雨萌",
+    "stage": "CLOSE",
+    "display_name": "",
+    "name_history": [],
+    "first_context": "",
+    "positive_days": 0
+  },
+  "1371704917": {
+    "interaction_count": 0,
+    "last_seen": 0.0,
+    "first_seen": 1785265032.74073,
+    "familiarity": 0.6,
+    "trust": 0.7,
+    "valence": 0.4,
+    "bond_tension": 0.0,
+    "relational_depth": 0.05,
+    "tags": [
+      "雨萌的对象",
+      "MTF"
+    ],
+    "notes": "[种子关系] 华初",
+    "stage": "FRIEND",
+    "display_name": "",
+    "name_history": [],
+    "first_context": "",
+    "positive_days": 0
+  }
+}

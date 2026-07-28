@@ -315,6 +315,16 @@ def parse_onebot_event(raw: dict) -> dict:
             if seg.get("type") == "text"
         ]
         event["text"] = "".join(texts)
+        # 提取 @ 段（CQ:at）的 qq，供「被提及成员记忆」判定使用；排除 bot 自身
+        _self_qq = raw.get("self_id")
+        _at_uids = [
+            str(s.get("data", {}).get("qq"))
+            for s in segments
+            if s.get("type") == "at" and s.get("data", {}).get("qq") is not None
+            and (str(s.get("data", {}).get("qq")) != str(_self_qq) or _self_qq is None)
+        ]
+        if _at_uids:
+            event["at_uids"] = _at_uids
         # 链接卡片/小程序/合并转发：解析 title/desc/url 等安全字段，
         # 不把完整 JSON/XML 原文塞进 LLM 上下文。
         rich_blocks: list[dict[str, str]] = []
@@ -417,9 +427,27 @@ def parse_onebot_event(raw: dict) -> dict:
         ).public_dict()
 
     elif post_type == "notice":
+        # 透传 notice 事件的常用字段，供社交行为（戳一戳/入退群等）判定。
+        # 注意：event 是新建 dict（非 raw 完整副本），若此处漏提字段，
+        # social_reactions 等订阅者会因拿不到 sub_type/target_id 而静默失效。
         event["notice_type"] = raw.get("notice_type")
+        event["sub_type"] = raw.get("sub_type")
         event["user_id"] = raw.get("user_id")
         event["group_id"] = raw.get("group_id")
+        event["target_id"] = raw.get("target_id")
+        event["operator_id"] = raw.get("operator_id")
+        event["message_id"] = raw.get("message_id")
+        event["honor_type"] = raw.get("honor_type")
+        # 自定义戳一戳文案（"拍了拍X的脑袋"等）通常不在顶层，而是藏在
+        # raw_info（原始协议 blob）里；NapCat 部分版本也会把 action/suffix
+        # 提到事件顶层。全部透传，供 social_reactions 解析，并在日志里
+        # 诊断实际字段结构（上线后据日志校准解析逻辑）。
+        if "action" in raw:
+            event["action"] = raw.get("action")
+        if "suffix" in raw:
+            event["suffix"] = raw.get("suffix")
+        if "raw_info" in raw:
+            event["raw_info"] = raw.get("raw_info")
 
     elif post_type == "request":
         event["request_type"] = raw.get("request_type")

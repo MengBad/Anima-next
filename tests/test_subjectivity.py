@@ -149,9 +149,12 @@ class TestSocialReactions:
         assert len(_FAREWELL_TEMPLATES) >= 3
 
     def test_poke_responses_exist(self):
-        """被戳回应模板应存在。"""
-        from anima.cognitive.social_reactions import _POKE_RESPONSES
-        assert len(_POKE_RESPONSES) >= 3
+        """被戳回应模板应存在（中性池 + 动作感知池）。"""
+        from anima.cognitive.social_reactions import (
+            _POKE_NEUTRAL, _POKE_ACTION_RESPONSES,
+        )
+        assert len(_POKE_NEUTRAL) >= 3
+        assert len(_POKE_ACTION_RESPONSES) >= 1
 
 
 # ---------------------------------------------------------------------------

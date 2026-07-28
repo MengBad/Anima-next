@@ -117,3 +117,37 @@ def test_memory_infection_requires_confirm(tmp_path):
     asyncio.run(b.maybe_memory_infection(_ctx()))
     # confirm 未开，即使命中也不应写入
     assert get_desire_system(str(tmp_path)).get_active() == []
+
+
+def test_relationship_inference_timeout_is_warning_not_traceback(tmp_path, caplog):
+    """wait_for 超时（asyncio.TimeoutError）应只记 WARNING，不产生 ERROR/Traceback 噪音。"""
+    import logging
+
+    class _TimeoutLLM:
+        async def chat(self, messages, temperature=0.0, max_tokens=160):
+            raise asyncio.TimeoutError("simulated LLM timeout")
+
+    cfg = DangerConfig(enabled=True, relationship_inference=True)
+    b = DangerBehaviors(_core(str(tmp_path), llm=_TimeoutLLM()), cfg)
+    with caplog.at_level(logging.WARNING, logger="anima.cognitive.danger"):
+        asyncio.run(b.maybe_relationship_inference(_ctx(), "好玩~"))
+    msgs = [r.message for r in caplog.records]
+    assert any("超时" in m for m in msgs), "超时应记录含『超时』的 WARNING"
+    assert not any(r.levelno >= logging.ERROR for r in caplog.records), \
+        "超时不应产生 ERROR 级日志（即原先的 logger.exception Traceback 噪音）"
+
+
+def test_relationship_inference_other_error_still_logged(tmp_path, caplog):
+    """非超时异常仍应走 logger.exception（ERROR 级，保留排障能力）。"""
+    import logging
+
+    class _BoomLLM:
+        async def chat(self, messages, temperature=0.0, max_tokens=160):
+            raise RuntimeError("boom")
+
+    cfg = DangerConfig(enabled=True, relationship_inference=True)
+    b = DangerBehaviors(_core(str(tmp_path), llm=_BoomLLM()), cfg)
+    with caplog.at_level(logging.ERROR, logger="anima.cognitive.danger"):
+        asyncio.run(b.maybe_relationship_inference(_ctx(), "好玩~"))
+    assert any(r.levelno >= logging.ERROR for r in caplog.records), \
+        "非超时异常应仍记 ERROR（logger.exception）以便排障"

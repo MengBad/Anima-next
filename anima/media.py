@@ -64,6 +64,21 @@ async def _get_session():
     return _shared_session
 
 
+async def close_media_session() -> None:
+    """关闭模块级共享 ClientSession，避免进程退出时 aiohttp 报
+    'Unclosed client session'。由 AnimaCore.stop() 在优雅停机时调用。"""
+    global _shared_session
+    session = _shared_session
+    _shared_session = None
+    if session is None:
+        return
+    try:
+        if not session.closed:
+            await session.close()
+    except Exception:
+        logger.debug("media session 关闭异常（可忽略）", exc_info=True)
+
+
 @dataclass(frozen=True)
 class PreparedImage:
     """已经缩放并可安全内联给 LLM 的单帧图片。"""

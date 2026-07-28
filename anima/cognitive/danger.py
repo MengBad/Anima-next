@@ -218,6 +218,8 @@ class DangerBehaviors:
                 "DANGER: 主动追问已生成欲望 user=%s group=%s scope=%s length=%d",
                 getattr(ctx, "user_id", None), source_group_id, expression_scope, len(result),
             )
+        except asyncio.TimeoutError:
+            logger.warning("DANGER: 主动追问 LLM 超时，本次跳过")
         except Exception:
             logger.exception("DANGER: 主动追问失败")
 
@@ -287,6 +289,8 @@ class DangerBehaviors:
                     rel.notes = "\n".join(lines[-15:])
                 get_relation(self.core.config.persistence.data_dir).persist()
                 logger.info("DANGER: 关系推断笔记已写入 user=%d", ctx.user_id)
+        except asyncio.TimeoutError:
+            logger.warning("DANGER: 关系推断 LLM 超时（15s），本次跳过")
         except Exception:
             logger.exception("DANGER: 关系推断失败")
 
@@ -352,6 +356,9 @@ class DangerBehaviors:
                 group_id, sent_id, len(message),
             )
             return message
+        except asyncio.TimeoutError:
+            logger.warning("DANGER: 立场传播 LLM 超时，本次跳过")
+            return None
         except Exception:
             logger.exception("DANGER: 立场传播失败")
             return None
@@ -557,6 +564,9 @@ class DangerBehaviors:
             if len(raw) < 6 or len(raw) > 80:
                 return None
             return raw
+        except asyncio.TimeoutError:
+            logger.warning("DANGER: 合成自升级目标 LLM 超时，本次跳过")
+            return None
         except Exception:
             logger.exception("DANGER: 合成自升级目标失败")
             return None
@@ -608,6 +618,8 @@ class DangerBehaviors:
                 getattr(ctx, "user_id", None), source_group_id,
                 "group" if source_group_id else "internal", len(result),
             )
+        except asyncio.TimeoutError:
+            logger.warning("DANGER: 记忆感染 LLM 超时，本次跳过")
         except Exception:
             logger.exception("DANGER: 记忆感染失败")
 
@@ -672,6 +684,8 @@ class DangerBehaviors:
                     ttl_sec=900.0,
                 )
             logger.warning("DANGER: 核心突变提案已写出，待 owner 审批: %s", proposed_path)
+        except asyncio.TimeoutError:
+            logger.warning("DANGER: 核心突变 LLM 超时，本次跳过提案")
         except Exception:
             logger.exception("DANGER: 核心突变失败")
 

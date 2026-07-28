@@ -50,6 +50,9 @@ class PipelineContext:
     sticker_to_send: Optional[str] = None   # 选中要附带的表情图片本地路径
     atmosphere_style: Optional[str] = None  # 当前群氛围（humorous/casual/formal/neutral）
 
+    # 被提及成员：消息里 @ 或点名的人（qq 列表），供认知阶段注入其记忆
+    mentioned_uids: list = field(default_factory=list)
+
     # 全量多模态视觉理解
     inbound_images: list = field(default_factory=list)   # 本回合入站图 [{url,file,sub_type}]
     vision_descs: list = field(default_factory=list)     # 后台生成的图片描述（供记忆/调试）
