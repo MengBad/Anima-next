@@ -33,7 +33,7 @@ def test_find_mentioned_short_name_guard(tmp_path):
     hits = mgr.find_mentioned("我的小宝贝来了", at_uids=[], exclude_uid="x")
     uids = [u for u, _, _ in hits]
     assert "222" not in uids   # 单字「宝」不误命中「小宝贝」
-    assert "111" in uids       # 「小宝」正常命中
+    assert "111" not in uids   # F4：两字「小宝」不应作为「小宝贝」子串误命中
 
 
 def test_find_mentioned_at_uids(tmp_path):
@@ -105,3 +105,28 @@ def test_find_mentioned_alias_injection_not_substring_matched(tmp_path):
     uids2 = [u for u, _, _ in hits2]
     assert "attacker" not in uids2, "攻击者的注入别名不应被子串劫持"
     assert "real" in uids2, "真实阿布应正常命中"
+
+
+def test_find_mentioned_two_char_boundary_excludes_longer_word(tmp_path):
+    """F4：两字名不应作为更长词（小宝贝）的子串误命中。"""
+    mgr = CrossGroupManager(str(tmp_path))
+    mgr.add_user_fact("111", "x", "727631526", name="小宝")
+    hits = mgr.find_mentioned("小宝贝在吗", at_uids=[], exclude_uid="x")
+    assert not any(u == "111" for u, _, _ in hits)
+
+
+def test_find_mentioned_two_char_boundary_allows_standalone(tmp_path):
+    """F4：两字名在边界安全的位置（小宝在吗）应正常命中。"""
+    mgr = CrossGroupManager(str(tmp_path))
+    mgr.add_user_fact("111", "x", "727631526", name="小宝")
+    hits = mgr.find_mentioned("小宝在吗", at_uids=[], exclude_uid="x")
+    assert any(u == "111" for u, _, _ in hits)
+
+
+def test_find_mentioned_two_char_boundary_punctuation_ok(tmp_path):
+    """F4：名字后紧跟标点/空格视为边界安全，应正常命中。"""
+    mgr = CrossGroupManager(str(tmp_path))
+    mgr.add_user_fact("111", "x", "727631526", name="小宝")
+    for msg in ["小宝，在吗", "小宝！", "小宝 在吗", "小宝。"]:
+        hits = mgr.find_mentioned(msg, at_uids=[], exclude_uid="x")
+        assert any(u == "111" for u, _, _ in hits), f"「{msg}」应命中小宝"

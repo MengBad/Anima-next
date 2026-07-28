@@ -59,3 +59,37 @@ async def test_fetch_reply_message_no_channel():
     h = _make_handler(None)
     res = await LLMHandler._fetch_reply_message(h, 5)
     assert res is None
+
+
+async def test_fetch_reply_message_rejects_wrong_group():
+    """F3-ext：被引用消息归属群与当前群不符时拒绝。"""
+    ch = _FakeChannel(msg={"data": {"group_id": "999"}})
+    h = _make_handler(ch)
+    res = await LLMHandler._fetch_reply_message(h, 5, current_group_id=727)
+    assert res is None, "跨群引用应被拒绝"
+    assert ch.called_with == 5, "仍应先拉取（归属校验在 get_msg 之后）"
+
+
+async def test_fetch_reply_message_allows_same_group():
+    """F3-ext：同群引用正常返回。"""
+    ch = _FakeChannel(msg={"data": {"group_id": "727"}})
+    h = _make_handler(ch)
+    res = await LLMHandler._fetch_reply_message(h, 5, current_group_id=727)
+    assert res is not None
+    assert res["data"]["group_id"] == "727"
+
+
+async def test_fetch_reply_message_group_check_skipped_when_none():
+    """F3-ext：未传 current_group_id（私聊）时不校验归属。"""
+    ch = _FakeChannel(msg={"data": {"group_id": "999"}})
+    h = _make_handler(ch)
+    res = await LLMHandler._fetch_reply_message(h, 5, current_group_id=None)
+    assert res is not None, "无当前群时不校验归属"
+
+
+async def test_fetch_reply_message_group_at_top_level():
+    """F3-ext：group_id 也可能在消息顶层（非 data 内），也应校验。"""
+    ch = _FakeChannel(msg={"group_id": "999"})
+    h = _make_handler(ch)
+    res = await LLMHandler._fetch_reply_message(h, 5, current_group_id=727)
+    assert res is None, "顶层 group_id 不符也应拒绝"

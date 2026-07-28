@@ -967,7 +967,8 @@ class LLMHandler:
         # 「回复哈基米」触发，也避免后面为引用图片重复请求。
         replied_message = None
         if detail_type == "group" and event.get("reply_message_id"):
-            replied_message = await self._fetch_reply_message(event["reply_message_id"])
+            replied_message = await self._fetch_reply_message(
+                event["reply_message_id"], current_group_id=event.get("group_id"))
             if not event.get("reply_to_self"):
                 qq_cfg = getattr(getattr(self.core, "config", None), "qq", None)
                 self_id = event.get("self_id") or raw.get("self_id") or getattr(qq_cfg, "self_id", None)
@@ -1108,6 +1109,7 @@ class LLMHandler:
             try:
                 extra = await self._fetch_reply_images(
                     event["reply_message_id"], message=replied_message,
+                    current_group_id=event.get("group_id"),
                 )
                 if extra:
                     base = event.get("images") or []
@@ -1579,7 +1581,8 @@ class LLMHandler:
         self._mention_times_by_group[_grp] = times
         return len(times)
 
-    async def _fetch_reply_message(self, message_id: Any) -> Optional[dict]:
+    async def _fetch_reply_message(self, message_id: Any,
+                                  current_group_id: Any = None) -> Optional[dict]:
         """拉取一条被引用消息；失败或无有效 id 返回 None，不影响主回复。"""
         ch = getattr(self.core.gateway, "channel", None)
         if ch is None or not hasattr(ch, "get_msg"):
@@ -1597,7 +1600,24 @@ class LLMHandler:
                 return None
         try:
             msg = await ch.get_msg(message_id)
-            return msg if isinstance(msg, dict) else None
+            if not isinstance(msg, dict):
+                return None
+            # F3-ext：归属校验——被引用消息须属于当前群，防跨群伪造引用
+            # （如群 A 引用一条本属于群 B 的消息 id，bot 误读群 B 内容）。
+            if current_group_id is not None:
+                msg_group = msg.get("group_id")
+                if msg_group is None and isinstance(msg.get("data"), dict):
+                    msg_group = msg["data"].get("group_id")
+                if msg_group is not None:
+                    try:
+                        if int(msg_group) != int(current_group_id):
+                            logger.warning(
+                                "reply_message_id %s 归属群 %s 与当前群 %s 不符，拒绝",
+                                message_id, msg_group, current_group_id)
+                            return None
+                    except (TypeError, ValueError):
+                        logger.debug("reply 消息 group_id 非整数，跳过归属校验: %r", msg_group)
+            return msg
         except Exception:
             logger.exception("拉取引用回复消息失败")
             return None
@@ -1628,10 +1648,12 @@ class LLMHandler:
         return " ".join(p for p in parts if p).strip()
 
     async def _fetch_reply_images(self, message_id: Any,
-                                  message: Optional[dict] = None) -> list[dict]:
+                                  message: Optional[dict] = None,
+                                  current_group_id: Any = None) -> list[dict]:
         """拉取被引用消息中的 image 段（供 vision 理解引用图片）。绝不抛出。"""
         try:
-            msg = message if isinstance(message, dict) else await self._fetch_reply_message(message_id)
+            msg = message if isinstance(message, dict) else await self._fetch_reply_message(
+                message_id, current_group_id=current_group_id)
             if not isinstance(msg, dict):
                 return []
             raw_msg = msg.get("message", [])

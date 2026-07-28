@@ -21,6 +21,37 @@ from ..atmosphere.analyzer import analyze, merge
 
 logger = logging.getLogger("anima.crossgroup")
 
+# F4：两字名边界检查用「名字延展后缀」字符集。若两字名后紧跟这些字，通常是一个更长的
+# 词（如「小宝」→「小宝贝」），不应视为对该短名的引用，避免误命中。
+_NAME_EXTENSION_CHARS = set(
+    "宝贝猫狗兔熊仔儿女娃妮娜琳婷轩浩宇晨曦月星雪雨花果糖豆米乐欣怡然安宁静雅萌"
+    "胖球蛋团圆福禄寿喜哥姐弟妹老"
+)
+
+
+def _boundary_hit(text: str, needle: str) -> bool:
+    """子串命中需边界：``needle`` 作为独立称呼出现，而非更长词的一部分。
+
+    规则：命中位置之后若紧跟「文字类」字符（CJK/字母/数字），且该字符属于
+    ``_NAME_EXTENSION_CHARS``（名字延展后缀），则视为更长词的一部分，不命中；
+    其余情况（句尾、标点/空格、或普通文字如动词「在」）均视为边界安全的独立引用。
+    用于防止「小宝」∈「小宝贝」误命中，同时保留「小宝在吗」这类正常引用。
+    """
+    i = text.find(needle)
+    while i >= 0:
+        after = text[i + len(needle):i + len(needle) + 1]
+        if not after:
+            return True  # 句尾
+        if not re.match(r"[\u4e00-\u9fff0-9a-zA-Z]", after):
+            return True  # 标点/空格等非文字类 → 边界安全
+        if after[0] in _NAME_EXTENSION_CHARS:
+            # 紧跟名字延展后缀 → 更长词，跳过此命中继续找
+            i = text.find(needle, i + 1)
+            continue
+        # 紧跟普通文字（如动词/助词）→ 视为独立引用边界
+        return True
+    return False
+
 
 class CrossGroupManager:
     _MAX_USERS = 500  # 总用户上限，超限淘汰最久未交互的
@@ -175,7 +206,7 @@ class CrossGroupManager:
                 if len(nm) < 2:
                     # 短名（单字/纯括号）跳过，防「小宝」∈「小宝贝」误伤
                     continue
-                if nm and nm in text_l:
+                if nm and _boundary_hit(text_l, nm):
                     best = max(best, 2)
                     if nm == text_l:
                         best = max(best, 3)  # 全句精确等于名字 → 最高置信
