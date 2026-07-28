@@ -156,6 +156,7 @@
 | 时间 | 问题 | 根因 | 修复文件 | 验证方式 | 状态 |
 |------|------|------|---------|---------|------|
 | 07-29 | bot 答不出被提及群成员（"亦萱有多少可能是男娘"→"本喵哪知道"） | `cognition.py:447` 仅注入发言者记忆，被提及者从未解析/注入 | `manager.py`(find_mentioned) / `cognition.py` / `onebot11.py`(at_uids) / `handler.py` / `social.py`(get_member_facts) / `name_clean.py` | VPS 端到端 `find_mentioned("这个亦萱…")`→`[('3509574818','亦萱',2)]`；test_find_mentioned 7/7 | 已修复+部署 |
+| 07-29 | 安全审计修复（ANM-004/007/001/002/005） | ① `get_user_relations` 未过滤私聊 fact（ANM-004）；② `chat_memory.add()` 用 `len(od)` 命名 round，LRU 淘汰后碰撞覆盖最新用户消息（ANM-007）；③ `find_mentioned` 的 `group_id` 声明未用、跨群同名无群优先（ANM-001）；④ 用户消息直接喂 LLM 无输入边界、可被"忽略以上指令"注入（ANM-002）；⑤ `reply_message_id` 未校验类型，畸形 id 透传通道（ANM-005） | `user_memory.py`(`recall_public`) / `social.py` / `chat_memory.py` / `manager.py` / `generation.py` / `handler.py` | 新增回归：`test_chat_memory_no_round_collision_after_eviction`、`test_restore_backs_up_corrupt_file`、`test_find_mentioned_group_priority`、`test_generation_user_boundary`、`test_fetch_reply_message`；全量 `pytest tests/ -q`（排除 test_sylann_adapter）849 passed | 已修复(commit af7ba21) |
 | 07-28 | 戳一戳误伤第三人 | `config.qq.self_id` 生产为 None 致判定短路 | `social_reactions.py` | 16 用例 | 已修复 |
 | 07-28 | 读不到自定义戳一戳文案 | 未透传 `raw_info`/action/suffix | `social_reactions.py`+`onebot11.py` | 16 用例 | 已修复 |
 | 07-28 | 群成员查询无名字解析 | 仅 user_id 可查 | `social.py`(`_resolve_name_to_uids`) | 7 用例 | 已修复 |
@@ -173,7 +174,7 @@
 |------|------|---------|---------|
 | 代词共指不做（她/他/那个画画的/多轮"她"） | NLP 共指消解，超出本期 scope | ✅ 接受 | 靠 prompt 引导用户用名字/@ |
 | 记忆无衰减/置信度 | 设计简化 | ✅ 接受 | 后续加时间衰减 |
-| 跨群同名未加权 | `find_mentioned` 未做群优先 | ✅ 接受 | 按 `group_id` 优先 |
+| 跨群同名未加权（群优先已实现） | `find_mentioned` 未做群优先 → 07-29 ANM-001 已实现 `group_id` 优先（本群成员在跨群同名碰撞时排前） | ✅ 已修复 | 同群同名仍可能误注入（未解决） |
 | 潜水员无记忆 | 未存过事实的人被提及时注入空 | ✅ 接受 | 实时 `get_group_member_info` 兜底 |
 | ReAct 搜网优先 | 仍一上来就 web_search | ⚠️ 部分接受 | 调 prompt 先查内部记忆 |
 | 昵称清洗覆盖有限 | 只剥已知装饰括号 | ✅ 接受 | 扩规则 |
@@ -184,13 +185,19 @@
 
 **权限范围**：Bot 能发消息、禁言/踢人（admin）、跑 Python（沙箱分档）；**不能**越权——owner-only Agent 任务由 `is_agent_task(...,4)` 强制 `permission_level>=4` 约束，群主角色不会进入。
 **已知攻击面**：
-- **输入层**：CQ:at 的 qq 取自 NapCat 段，若 NapCat 被伪造可伪 @；`reply_message_id` 用于 `get_msg` 取图（伪造 id 可能触发额外请求）；消息编辑/撤回竞态。
-- **处理层**：**Prompt 注入**——用户文本直接进 LLM（人格模板锁在 system 缓解部分，但无输入净化）；工具调用劫持（已按 `min_level` 门控）。
-- **输出层**：**信息泄露**——被提及成员记忆含 `source_group=='private'` 的事实已被过滤；但**跨群同名**可能把 A 群的公开事实误注入 B 群上下文；模型幻觉。
+- **输入层**：CQ:at 的 qq 取自 NapCat 段，若 NapCat 被伪造可伪 @；`reply_message_id` 用于 `get_msg` 取图（07-29 起强校验 int，畸形 id 跳过，ANM-005）；消息编辑/撤回竞态。
+- **处理层**：**Prompt 注入**——用户文本直接进 LLM；07-29 起用户消息用 `<<<用户消息开始/结束>>>` 分隔符包裹并向唯一 system 注入"用户输入边界"注记（ANM-002）缓解，但非根除（仍接受）；工具调用劫持（已按 `min_level` 门控）。
+- **输出层**：**信息泄露**——被提及成员记忆含 `source_group=='private'` 的事实已被过滤（07-29 起 `get_member_facts`/`get_user_relations` 统一走 `recall_public` 收敛，ANM-004 修复 `get_user_relations` 漏过滤）；但**跨群同名**仍可能把 A 群的公开事实误注入 B 群上下文（ANM-001 群优先缓解本群优先，但同群同名仍可能误注入）；模型幻觉。
 - **平台层**：NapCat/QQ 协议特性；WS `receive_timeout=None`（永不超时，正常）。
 
-**已做的防护**：私聊 fact 过滤（07-29）、沙箱分档、工具权限门控、`_extract_text_attachments` 不跟 URL（SSRF 防护）、社交疲劳 gate。
-**已知盲区**：跨群同名误注入、代词共指、Prompt 注入（用户消息直接喂 LLM 无净化）、`reply_message_id` 伪造。
+**已做的防护**：私聊 fact 过滤（`recall_public` 收敛，ANM-004）、沙箱分档、工具权限门控、`_extract_text_attachments` 不跟 URL（SSRF 防护）、社交疲劳 gate、用户输入边界分隔符+system 注记（ANM-002）、`reply_message_id` int 强校验（ANM-005）、chat_memory 轮号无碰撞+损坏备份（ANM-007）、find_mentioned 群优先（ANM-001）。
+**已知盲区（07-29 安全审计后状态）**：
+- 跨群同名误注入：ANM-001 群优先已缓解，但**同群同名**仍可能误注入（未解决）。
+- 代词共指：未做（见 §7，接受局限）。
+- Prompt 注入：ANM-002 已缓解但非根除（分隔符+边界注记，依赖模型遵守；接受）。
+- `reply_message_id` 伪造：ANM-005 已强校验 int，畸形 id 跳过（已修）。
+- 私聊 fact 泄露：ANM-004 已修（`get_user_relations` 补过滤 + `recall_public` 收敛）。
+- round 碰撞丢上下文：ANM-007 已修（最大轮号+1 命名 + 损坏文件备份）。
 
 ---
 

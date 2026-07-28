@@ -21,6 +21,7 @@ htmlcov/
 None/
 *.bak
 tmp_astrbot_test/
+MagicMock/
 reports/
 
 # 日志与本地诊断（可能含 QQ 号 / token 等敏感信息，禁止上传）
