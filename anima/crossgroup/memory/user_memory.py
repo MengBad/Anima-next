@@ -49,6 +49,17 @@ class UserMemory:
         """
         return sorted(self.facts, key=lambda f: f.timestamp, reverse=True)[:k]
 
+    def recall_public(self, k: int = 3) -> list[UserFact]:
+        """召回最近 k 条『公开』事实（排除私聊来源 ``source_group == 'private'``）。
+
+        ANM-004 修复：用于会暴露给他人的场景（关系总结 / 成员事实回顾），
+        避免私聊私密事实泄漏给其他用户。先过滤私有再按时间截断，保证返回
+        最多 k 条公开事实（不被私有事实挤占配额）。``get_member_facts`` 与
+        ``get_user_relations`` 统一收敛到此方法，避免过滤逻辑分散、再次漏写。
+        """
+        public = [f for f in self.facts if f.source_group != "private"]
+        return sorted(public, key=lambda f: f.timestamp, reverse=True)[:k]
+
     def summary(self, max_facts: int = 3, per_fact_chars: int = 80) -> str:
         if not self.facts:
             return "（暂无已知信息）"

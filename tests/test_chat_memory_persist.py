@@ -102,3 +102,47 @@ def test_restore_strips_cq_media_payload_from_context(tmp_path):
     assert context[0]["content"].endswith("喏")
     assert context[1]["content"].endswith("[用户发送了图片]")
     assert "cafebabe" not in p.read_text(encoding="utf-8")
+
+
+def test_chat_memory_no_round_collision_after_eviction(tmp_path):
+    """ANM-007 回归：LRU 淘汰后轮号不得碰撞，后期用户消息必须仍可召回。
+
+    旧实现用 len(od) 命名新 round：淘汰使 od 长度 < 最大轮号，下一次 bot 回复
+    会用已存在的 round 键覆盖最新非空轮，导致该轮用户消息静默丢失（上下文断裂）。
+    构造 25 轮（max_rounds=20）验证：第 21–25 轮用户消息在 get_context 仍可召回，
+    且 round 编号连续无碰撞。
+    """
+    mem = ChatMemory(max_rounds=20, persist_path=str(tmp_path / "chat_memory.json"))
+    gid, uid = 727631526, 10001
+    for i in range(1, 26):
+        mem.add("group", gid, "user", f"用户{i}", f"用户消息第{i}轮", user_id=uid)
+        mem.add("group", gid, "bot", "Anima", f"bot第{i}轮回复", user_id=uid)
+
+    # 1) 第 21–25 轮用户消息必须仍可召回（证明未被碰撞覆盖丢）
+    ctx = mem.get_context("group", gid, recent_rounds=20, user_id=uid)
+    merged = "\n".join(c["content"] for c in ctx)
+    for i in range(21, 26):
+        assert f"用户消息第{i}轮" in merged, f"第 {i} 轮用户消息丢失（轮碰撞）"
+
+    # 2) 内部 round 编号必须连续、无碰撞
+    key = f"group_{gid}_{uid}"
+    od = mem._store[key]
+    nums = sorted(int(rk[len("round_"):]) for rk in od if rk.startswith("round_"))
+    assert nums == list(range(nums[0], nums[-1] + 1)), f"round 编号不连续：{nums}"
+    # 3) 第 21–25 轮桶内应确实含对应用户条目（直接验证存储未被覆盖）
+    for i in range(21, 26):
+        rk = f"round_{i}"
+        assert rk in od, f"{rk} 不存在"
+        assert any(e.get("role") == "user" and f"用户消息第{i}轮" in e.get("content", "")
+                   for e in od[rk]), f"{rk} 内用户消息被覆盖"
+
+
+def test_restore_backs_up_corrupt_file(tmp_path):
+    """ANM-007 回归：记忆文件损坏时，_restore 先备份到 .corrupt.bak.json 再跳过，不崩溃。"""
+    p = tmp_path / "chat_memory.json"
+    p.write_text("{ 这不是合法 json,,,", encoding="utf-8")
+    mem = ChatMemory(persist_path=str(p))  # 不应抛异常
+    assert len(mem._store) == 0, "损坏文件恢复应回退空记忆"
+    bak = p.with_name("chat_memory.corrupt.bak.json")
+    assert bak.exists(), "损坏文件应被备份到 .corrupt.bak.json"
+    assert "这不是合法" in bak.read_text(encoding="utf-8")

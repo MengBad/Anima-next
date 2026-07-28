@@ -58,3 +58,24 @@ def test_find_mentioned_cleaned_match(tmp_path):
     mgr.add_user_fact("555", "x", "727631526", name="[中国翻訳]亦萱[x]")
     hits = mgr.find_mentioned("亦萱今天咋样", at_uids=[], exclude_uid="x")
     assert any(u == "555" for u, _, _ in hits)
+
+
+def test_find_mentioned_group_priority(tmp_path):
+    """ANM-001：跨群同名碰撞时，当前群成员应排在前面。"""
+    mgr = CrossGroupManager(str(tmp_path))
+    # 同名「小明」两人：A 在当前群 727631526 有交互，B 只在别的群
+    mgr.add_user_fact("2001", "x", "727631526", name="小明")  # 本群成员
+    mgr.add_user_fact("2002", "x", "999999999", name="小明")  # 其他群
+    hits = mgr.find_mentioned("小明来了", at_uids=[], exclude_uid="x",
+                              group_id="727631526", limit=2)
+    assert hits[0][0] == "2001", "本群成员应在跨群同名碰撞时优先"
+
+
+def test_find_mentioned_no_group_priority_without_group_id(tmp_path):
+    """对照：不传 group_id 时不做群优先提升（两人同优先级，均命中）。"""
+    mgr = CrossGroupManager(str(tmp_path))
+    mgr.add_user_fact("2001", "x", "727631526", name="小明")
+    mgr.add_user_fact("2002", "x", "999999999", name="小明")
+    hits = mgr.find_mentioned("小明来了", at_uids=[], exclude_uid="x", limit=2)
+    uids = [u for u, _, _ in hits]
+    assert "2001" in uids and "2002" in uids

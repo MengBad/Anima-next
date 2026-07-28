@@ -93,8 +93,22 @@ class ChatMemory:
 
     def _restore(self) -> None:
         try:
-            data = json.loads(self._persist_path.read_text(encoding="utf-8"))
+            raw_text = self._persist_path.read_text(encoding="utf-8")
         except Exception:
+            logger.exception("读取记忆文件失败（跳过恢复，启动空记忆）")
+            return
+        try:
+            data = json.loads(raw_text)
+        except Exception:
+            # ANM-007：文件存在但已损坏——先备份原内容再跳过恢复，避免静默丢失
+            # 且便于诊断。恢复期为只读，save 不会触发，空记忆不会立即覆盖原文件。
+            try:
+                bak = self._persist_path.with_name("chat_memory.corrupt.bak.json")
+                bak.write_text(raw_text, encoding="utf-8")
+                logger.error(
+                    "记忆文件损坏，已备份至 %s 并跳过恢复（启动空记忆）", bak)
+            except Exception:
+                logger.exception("损坏记忆文件备份失败（不影响启动）")
             return
         # P1-5：旧版群级共享桶（无用户后缀）是跨用户串台与身份污染的历史来源，
         # 恢复时应丢弃；丢弃前写入 chat_memory.legacy.bak.json 备份并告警，
@@ -224,8 +238,16 @@ class ChatMemory:
         od[last_round_key].append(entry)
 
         if role == "bot":
-            round_num = len(od)
-            od[f"round_{round_num + 1}"] = []
+            # ANM-007：用『现有最大轮号 + 1』命名新 round，而非 len(od)。
+            # LRU 淘汰后 od 长度 < 最大轮号，若用 len(od) 会在淘汰后覆盖最新非空轮，
+            # 造成该轮用户消息丢失（round 碰撞 / 上下文断裂）。
+            max_n = 0
+            for rk in od:
+                if rk.startswith("round_"):
+                    suffix = rk[len("round_"):]
+                    if suffix.isdigit():
+                        max_n = max(max_n, int(suffix))
+            od[f"round_{max_n + 1}"] = []
 
         # LRU
         while len(od) > self.max_rounds:

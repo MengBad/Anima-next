@@ -247,7 +247,8 @@ def make_get_user_relations(core):
                 if um.nicknames:
                     lines.append(f"- 外号（别人称呼）：{'、'.join(um.nicknames[:8])}")
                 if um.facts:
-                    fl = [f"- {f.content}" for f in um.recall(k=3)]
+                    # ANM-004：关系总结会暴露给他人，必须排除私聊私密事实
+                    fl = [f"- {f.content}" for f in um.recall_public(k=3)]
                     lines.append("已知事实：\n" + "\n".join(fl))
         except Exception:
             pass
@@ -373,11 +374,10 @@ def make_get_member_facts(core):
             um = get_crossgroup_manager()._users.get(uid)
             if not um or not um.facts:
                 return f"关于「{name}」暂无已知事实"
-            # 隐私过滤：排除私聊产生的 fact
-            facts = [f for f in um.facts if f.source_group != "private"]
+            # 隐私过滤：排除私聊产生的 fact（ANM-004 统一收敛到 recall_public）
+            facts = um.recall_public(limit)
             if not facts:
                 return f"关于「{name}」只有私聊记忆，不便公开"
-            facts = sorted(facts, key=lambda f: f.timestamp, reverse=True)[:limit]
             lines = [f"关于「{name}」（QQ {uid}）的已知事实："]
             for f in facts:
                 lines.append(f"- {f.content}（来源：{f.source_group}）")

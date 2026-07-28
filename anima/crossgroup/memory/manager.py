@@ -153,11 +153,14 @@ class CrossGroupManager:
           ① CQ:at 的 qq 直接命中（最高优先级，零歧义）；
           ② 文本子串扫描已知用户的 name/alias/nickname（带短名阈值防误命中）。
         返回 ``[(uid, display_name, priority), ...]``：已排除 exclude_uid（发言者本人），
-        按优先级降序、截断 limit（默认 2 人）。``group_id`` 预留给后续按群优先排序。
+        按优先级降序、截断 limit（默认 2 人）。若提供 ``group_id``，本群成员
+        （``u.groups`` 含该群，即曾在当前群交互过）优先级提升至 3，实现跨群同名碰撞时
+        本群成员优先（修复「群优先」缺口，此前 group_id 声明但未使用）。
         """
         from anima.util.name_clean import clean_display_name
         candidates: dict[str, tuple[str, int]] = {}
         text_l = (text or "").lower()
+        gid_key = str(group_id) if group_id else None
         # ① CQ:at：qq 直接映射
         for qq in (at_uids or []):
             qq = str(qq)
@@ -177,6 +180,10 @@ class CrossGroupManager:
                 if nm and nm in text_l:
                     best = max(best, 2)
             if best:
+                # ANM-001：群优先——当前群在用户交互过的群集合内时，提升优先级到 3，
+                # 让本群成员在跨群同名碰撞时排在前面。
+                if gid_key and gid_key in getattr(u, "groups", {}):
+                    best = max(best, 3)
                 cur = candidates.get(uid)
                 if cur is None or best > cur[1]:
                     candidates[uid] = (clean_display_name(u.name) or uid, best)

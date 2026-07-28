@@ -1568,10 +1568,21 @@ class LLMHandler:
         return "[语音：转写服务未返回内容]"
 
     async def _fetch_reply_message(self, message_id: Any) -> Optional[dict]:
-        """拉取一条被引用消息；失败返回 None，不影响主回复。"""
+        """拉取一条被引用消息；失败或无有效 id 返回 None，不影响主回复。"""
         ch = getattr(self.core.gateway, "channel", None)
         if ch is None or not hasattr(ch, "get_msg"):
             return None
+        # ANM-005：reply_message_id 强校验为 int。NapCat 偶以字符串传递，
+        # 个别异常事件可能携带非数值；非法 id 直接跳过，避免把脏值透传给通道
+        # （既能防崩溃，也避免被构造的畸形 id 触发非预期行为）。
+        if isinstance(message_id, bool):
+            return None
+        if not isinstance(message_id, int):
+            try:
+                message_id = int(message_id)
+            except (TypeError, ValueError):
+                logger.debug("reply_message_id 非整数，跳过引用拉取: %r", message_id)
+                return None
         try:
             msg = await ch.get_msg(message_id)
             return msg if isinstance(msg, dict) else None
