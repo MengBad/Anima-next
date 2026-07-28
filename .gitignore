@@ -51,3 +51,14 @@ output/playwright/
 .claude/
 .idea/
 .vscode/
+
+# 收尾清理（F8）：一次性诊断 / 探针脚本与测试产物，不进主提交
+.fix_p3.py
+.pytest-tmp*/
+_scan_*.py
+_scan_*.json
+_gen_*.py
+CODE_ASSET_INVENTORY.md
+SELF_PROOF_REPORT.md
+.probe_*.py
+.runtime_scan.py
