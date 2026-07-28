@@ -127,13 +127,10 @@ class CrossGroupManager:
                 if q in nk.lower():
                     hits.append((uid, nk, 2))
                     break
-            # 跨群别名
+            # 跨群别名：仅精确匹配（ANM-006：子串匹配易被注入别名劫持查询）
             for al in u.aliases:
                 if q == al.lower():
                     hits.append((uid, al, 2))
-                    break
-                if q in al.lower():
-                    hits.append((uid, al, 1))
                     break
         hits.sort(key=lambda h: -h[2])
         seen = set()
@@ -172,13 +169,23 @@ class CrossGroupManager:
             if uid == exclude_uid:
                 continue
             best = 0
-            for raw_nm in (u.name, *u.aliases, *u.nicknames):
+            # 本名 / 外号：子串匹配（F4 边界检查在后续提交补充）
+            for raw_nm in (u.name, *u.nicknames):
                 nm = clean_display_name(raw_nm).lower()
                 if len(nm) < 2:
                     # 短名（单字/纯括号）跳过，防「小宝」∈「小宝贝」误伤
                     continue
                 if nm and nm in text_l:
                     best = max(best, 2)
+                    if nm == text_l:
+                        best = max(best, 3)  # 全句精确等于名字 → 最高置信
+            # 跨群别名：仅精确匹配（ANM-006：防攻击者注入别名后被子串误关联）
+            for al in u.aliases:
+                al_l = clean_display_name(al).lower()
+                if len(al_l) < 2:
+                    continue
+                if al_l and al_l == text_l:
+                    best = max(best, 1)  # 别名精确匹配，最低优先级
             if best:
                 # ANM-001：群优先——当前群在用户交互过的群集合内时，提升优先级到 3，
                 # 让本群成员在跨群同名碰撞时排在前面。

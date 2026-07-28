@@ -79,3 +79,29 @@ def test_find_mentioned_no_group_priority_without_group_id(tmp_path):
     hits = mgr.find_mentioned("小明来了", at_uids=[], exclude_uid="x", limit=2)
     uids = [u for u, _, _ in hits]
     assert "2001" in uids and "2002" in uids
+
+
+def test_find_mentioned_alias_injection_not_substring_matched(tmp_path):
+    """ANM-006：攻击者被注入别名「阿布」后，不应在子串语义下劫持对真实阿布的提及。
+
+    攻击路径：攻击者发「大家都叫我阿布」→ bot 将其记入 aliases；随后任何人说
+    「阿布在吗」，旧子串匹配会让攻击者的 alias 命中，导致 bot 把内容关联到攻击者。
+    修复后别名仅精确匹配（q == al），子串语境不再劫持。
+    """
+    mgr = CrossGroupManager(str(tmp_path))
+    # 真实用户：本名「阿布」
+    mgr.add_user_fact("real", "x", "727631526", name="阿布")
+    # 攻击者：本名「黑客」，在某群以「阿布」自称 → 进入 aliases（非 name）
+    mgr.get_user("attacker", name="黑客")
+    mgr.get_user("attacker", name="阿布")  # 与已有 name 不同 → 记入 aliases
+    assert "阿布" in mgr._users["attacker"].aliases
+
+    # 整句就是「阿布」：精确匹配下真实阿布(name, prio 3) 高于攻击者(alias, prio 1)
+    hits = mgr.find_mentioned("阿布", at_uids=[], exclude_uid="x")
+    assert hits[0][0] == "real", "真实阿布应排在注入别名的攻击者之前"
+
+    # 子串语境「阿布在吗」：攻击者别名仅精确匹配，不得命中；真实阿布(name)命中
+    hits2 = mgr.find_mentioned("阿布在吗", at_uids=[], exclude_uid="x")
+    uids2 = [u for u, _, _ in hits2]
+    assert "attacker" not in uids2, "攻击者的注入别名不应被子串劫持"
+    assert "real" in uids2, "真实阿布应正常命中"

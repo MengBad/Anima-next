@@ -993,18 +993,14 @@ class LLMHandler:
             if event.get("mentions_self") or event.get("reply_to_self"):
                 try:
                     from anima.cognitive.mood import get_mood_system
-                    now = time.time()
-                    if not hasattr(self, "_mention_times"):
-                        self._mention_times: list[float] = []
-                    self._mention_times.append(now)
-                    # 清理 5 分钟前的记录
-                    self._mention_times = [t for t in self._mention_times if now - t < 300]
-                    if len(self._mention_times) > 6:
+                    # F6：按群隔离计数，A 群被刷屏的疲劳不拖累 B 群
+                    cnt = self._record_group_mention(group_id)
+                    if cnt > 6:
                         data_dir = str(self.core.config.persistence.data_dir)
                         get_mood_system(data_dir).trigger("overwhelmed", 0.5)
-                        logger.info("社交疲劳触发：5分钟内被@%d次", len(self._mention_times))
+                        logger.info("社交疲劳触发：群%s 5分钟内被@%d次", group_id, cnt)
                         # 疲劳 gate：发简短回复并跳过完整 pipeline，避免被刷屏时每条都走 LLM
-                        if len(self._mention_times) > 8:
+                        if cnt > 8:
                             import random as _rnd
                             _tired_replies = [
                                 "本喵累了喵…先歇会儿…",
@@ -1566,6 +1562,22 @@ class LLMHandler:
             return result.strip()
         self._record_audio_metric("failures")
         return "[语音：转写服务未返回内容]"
+
+    def _record_group_mention(self, group_id: Any) -> int:
+        """记录某群本次被 @/被引用，返回该群近 5 分钟内的有效计数（已过期清理）。
+
+        F6：计数按 ``group_id`` 隔离（私聊归到 key 0），避免 A 群被刷屏的疲劳
+        状态拖累 B 群正常交互。asyncio 单线程模型下无传统竞态，无需加锁。
+        """
+        if not hasattr(self, "_mention_times_by_group"):
+            self._mention_times_by_group: dict = {}
+        _grp = int(group_id) if group_id else 0
+        now = time.time()
+        times = self._mention_times_by_group.setdefault(_grp, [])
+        times.append(now)
+        times = [t for t in times if now - t < 300]  # 5 分钟窗口
+        self._mention_times_by_group[_grp] = times
+        return len(times)
 
     async def _fetch_reply_message(self, message_id: Any) -> Optional[dict]:
         """拉取一条被引用消息；失败或无有效 id 返回 None，不影响主回复。"""
