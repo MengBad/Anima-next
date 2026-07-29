@@ -544,6 +544,20 @@ class Heartbeat:
         except Exception:
             logger.exception("自主外部探索调度失败（已隔离）")
 
+        # B2 每日秘密自动生成（每天至多一次，去重落盘）
+        try:
+            acfg = self.core.config.autonomy
+            if getattr(acfg, "secret_auto_enabled", True):
+                if getattr(self, "_last_secret_gen_date", "") != self._bj_date_str(now):
+                    from anima.cognitive.secret_auto import maybe_generate_daily_secrets
+                    dd = str(self.core.config.persistence.data_dir)
+                    added = maybe_generate_daily_secrets(dd, now=now)
+                    if added:
+                        logger.info("[秘密] 每日自动生成 %d 条", len(added))
+                    self._last_secret_gen_date = self._bj_date_str(now)
+        except Exception:
+            logger.debug("每日秘密生成失败（已隔离）", exc_info=True)
+
         # 议程消费（约定跟进 / calendar 等）
         # 注意：议程消费在 _circadian_gate 之前，必须单独做夜间静默检查，
         # 否则凌晨仍会主动发言（如“秽土转生”事件）。

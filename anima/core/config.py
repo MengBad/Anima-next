@@ -143,6 +143,7 @@ class AutonomyConfig(BaseModel):
     sleepy_max_tokens: int = 20        # 迷糊回复长度上限
     sleepy_temperature: float = 0.4     # 迷糊回复随机度（偏低，含糊）
     sleepy_llm_enabled: bool = True    # 用 LLM 生成迷糊回复；关闭则只用模板
+    secret_auto_enabled: bool = True   # 心跳每日根据群观察自动生成秘密（B2）
 
 
 class DriftConfig(BaseModel):
