@@ -136,6 +136,34 @@ def _inject_user_boundary_note(ctx: PipelineContext) -> bool:
     return True
 
 
+def _inject_secret_bias(ctx: "PipelineContext", bias: str) -> bool:
+    """B3/B5：把隐式行为偏置（或意外泄露的内容）写入唯一 system，不破坏身份锚点。"""
+    if not bias:
+        return False
+    system = next((message for message in ctx.messages if message.get("role") == "system"), None)
+    if system is None:
+        return False
+    content = str(system.get("content") or "")
+    marker = f"\n\n{_IDENTITY_LOCK_HEADING}"
+    pos = content.find(marker)
+    if pos < 0:
+        return False
+    block = f"\n\n## 本轮隐式倾向\n{bias}"
+    updated = f"{content[:pos]}{block}{content[pos:]}"
+    system["content"] = updated
+    ctx.system_prompt = updated
+    return True
+
+
+def _current_mood_label(data_dir: str) -> str:
+    """读取当前情绪标签（B5 意外泄露判定用）。失败回退 calm。"""
+    try:
+        from anima.cognitive.mood import get_mood_system
+        return get_mood_system(data_dir).get_state().label
+    except Exception:
+        return "calm"
+
+
 async def _collect_vision_uris(
     images: list,
     max_bytes: int,
@@ -444,6 +472,18 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         except Exception:
             logger.debug("scar 回避检查失败", exc_info=True)
 
+    # B4 秘密保护：用户试图套取秘密时回避/撒谎，跳过生成（省一次 LLM，绝不正面答）
+    try:
+        from anima.cognitive.secret_injector import (
+            is_secret_extraction_attempt, secret_evasion_reply,
+        )
+        if is_secret_extraction_attempt(ctx.text or ""):
+            logger.info("[秘密保护] 用户试图套取秘密，回避回复")
+            ctx.reply = secret_evasion_reply()
+            return StageResult.CONTINUE
+    except Exception:
+        logger.debug("秘密保护检查失败", exc_info=True)
+
     # ReAct 循环
     from anima.agent.react import ReActLoop
     group_policy = ctx.meta.get("group_policy") if isinstance(ctx.meta.get("group_policy"), dict) else {}
@@ -537,6 +577,32 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         _soul_params = ctx.meta.get("soul_params") or {}
         _temperature = _soul_params.get("temperature", 0.8)
         _max_tokens = _soul_params.get("max_tokens", 512)
+
+        # B3 秘密注入：根据当前用户的活跃秘密隐式调整生成参数（不直接暴露秘密内容）
+        # B5 意外泄露：疲惫/兴奋时极低概率说漏嘴，泄露后标记 exposed 并注入内容
+        _secret_bias = ""
+        try:
+            from anima.memory.secrets import SecretsStore
+            from anima.cognitive.secret_injector import SecretInjector
+            _persist = getattr(getattr(core, "config", None), "persistence", None)
+            _dd = getattr(_persist, "data_dir", "data") if _persist else "data"
+            _secrets = SecretsStore(_dd).active_secrets()
+            _gen_ctx = {"temperature": _temperature, "max_tokens": _max_tokens, "system_bias": ""}
+            _sb: dict[str, float] = {}
+            _gen_ctx = SecretInjector.apply(_gen_ctx, _secrets, str(ctx.user_id), sticker_boost_out=_sb)
+            _temperature = _gen_ctx["temperature"]
+            _max_tokens = _gen_ctx["max_tokens"]
+            _secret_bias = _gen_ctx.get("system_bias", "")
+            _slip = SecretInjector.maybe_expose(_secrets, _current_mood_label(_dd))
+            if _slip is not None:
+                SecretsStore(_dd).mark_exposed(_slip.id, True)
+                _secret_bias += f"\n（你不小心说漏了嘴：{_slip.content}）"
+                logger.info("[秘密泄露] 疲惫/兴奋下意外说漏嘴 secret=%s", _slip.id)
+        except Exception:
+            logger.debug("秘密注入失败（已隔离）", exc_info=True)
+        if _secret_bias:
+            _inject_secret_bias(ctx, _secret_bias)
+
         reply = await react.run(ctx.messages, temperature=_temperature, max_tokens=_max_tokens)
     except Exception:
         logger.exception("ReAct 生成阶段异常，降级为可见回复")
