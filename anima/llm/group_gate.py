@@ -11,6 +11,7 @@
 from __future__ import annotations
 import logging
 import re
+import time
 from typing import Any
 
 logger = logging.getLogger("anima.llm.group_gate")
@@ -183,11 +184,39 @@ def classify_group_reply_skip(
     group_policy: dict | None,
     autonomy,
     data_dir: str = "data",
+    social=None,
 ) -> str | None:
     """若不回复返回原因码，否则 None。
 
-    原因：other_bot | idle | mention_only | unfamiliar | other
+    原因：bot_ignore | bot_cooldown | bot_loop | other_bot | idle | mention_only | unfamiliar | other
     """
+    # ── 多 Bot 社交：防止 Bot 互 @ 死循环（Critical）──
+    # 对所有群消息记录入站（构建连续 Bot 链），再判断发送者是否为其它 Bot。
+    gid = event.get("group_id")
+    if gid is not None and event.get("post_type") == "message":
+        try:
+            from anima.cognitive import bot_social
+            scfg = social
+            if not scfg or getattr(scfg, "bot_social_enabled", True):
+                _now = time.time()
+                _is_bot = bot_social.is_bot_sender(event)
+                bot_social.observe_inbound(
+                    gid, int(user_id), _is_bot, bool(event.get("mentions_self")), _now,
+                )
+                if _is_bot:
+                    _reason = bot_social.classify_bot_reply_skip(
+                        event, text,
+                        self_id=event.get("self_id"),
+                        now=_now,
+                        data_dir=data_dir,
+                        cooldown_sec=int(getattr(scfg, "bot_cooldown_sec", 30) or 30),
+                        max_depth=int(getattr(scfg, "bot_loop_max_depth", 2) or 2),
+                    )
+                    if _reason:
+                        return _reason
+        except Exception:
+            logger.exception("多 Bot 社交 gate 异常，已放行（不阻塞正常回复）")
+
     mode = resolve_group_reply_mode(group_policy, autonomy)
     if is_addressed_to_other_bot(event, text, group_policy=group_policy, autonomy=autonomy):
         return "other_bot"

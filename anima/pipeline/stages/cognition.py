@@ -336,6 +336,22 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     if relation_ctx:
         add_system_fragment("relationship", f"## 你和这个人的关系\n{relation_ctx}", 100)
 
+    # 多 Bot 社交：与另一个 Bot 对话时，注入关系状态上下文（敌对带刺/友好合作/陌生冷淡）
+    try:
+        from anima.cognitive import bot_social
+        if getattr(ctx, "detail_type", "") == "group" and ctx.event.get("_is_bot_sender"):
+            _brel = bot_social.BotRelationStore(data_dir).get(str(ctx.user_id))
+            if _brel is not None:
+                _bctx = bot_social.build_relation_context(_brel)
+                if _bctx:
+                    add_system_fragment(
+                        "bot_relation",
+                        f"## 你正在和另一个 Bot 对话\n{_bctx}",
+                        80,
+                    )
+    except Exception:
+        logger.debug("Bot 关系上下文注入失败", exc_info=True)
+
     # 对话语气检测
     try:
         from anima.cognitive.mood import detect_conversation_tone

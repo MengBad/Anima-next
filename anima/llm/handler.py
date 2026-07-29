@@ -1160,6 +1160,7 @@ class LLMHandler:
                 group_policy=group_policy,
                 autonomy=self.core.config.autonomy,
                 data_dir=str(data_dir or "data"),
+                social=getattr(self.core.config, "social", None),
             )
             if skip_reason:
                 mode = resolve_group_reply_mode(group_policy, self.core.config.autonomy)

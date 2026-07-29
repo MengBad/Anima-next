@@ -883,6 +883,7 @@ class OneBot11Adapter(Module):
         if event["post_type"] == "message" and event.get("group_id"):
             known = self._known_bot_ids()
             event["sender_is_bot"] = is_bot_member(event.get("sender", {}) or {}, known)
+            event["_is_bot_sender"] = event["sender_is_bot"]
             self.record_inbound(event.get("group_id"), event.get("user_id"), event.get("message", ""))
 
         # 消息去重：同一 message_id 只处理一次（NapCat 可能重复推送）
@@ -922,6 +923,17 @@ class OneBot11Adapter(Module):
                     logger.info("[头衔变更] %s", note)
                 except Exception:
                     logger.exception("头衔变更写入 self_notes 失败")
+                # 多 Bot 社交：若操作者是其他已知 Bot（如改我头衔/禁言），记为竞争事件
+                try:
+                    from anima.cognitive import bot_social
+                    op = event.get("operator_id")
+                    if op is not None and bot_social.is_bot_uid(op, self._known_bot_ids()):
+                        bot_social.BotRelationStore(data_dir).record_interaction(
+                            str(op), None, "rivalry", time.time(),
+                        )
+                        logger.info("[多Bot] 头衔被其他 Bot(%s)改动，竞争度+0.3", op)
+                except Exception:
+                    logger.exception("多 Bot 头衔冲突关系更新失败（已隔离）")
 
     # ------------------------------------------------------------------
     # 出站：优先 HTTP API；HTTP 不可用时回退 WS action

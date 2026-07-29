@@ -620,6 +620,27 @@ class Heartbeat:
                 logger.exception("主动发言意图登记失败")
                 proactive_intent = None
 
+        # 多 Bot 社交：每日最多一次「主动找其他 Bot 说话」意图（rivalry>0.3 才触发，config 开启）
+        # 仅入议程，最终是否出站仍受 Agenda 冷却/预算/发送确认约束，不会绕过闸门。
+        try:
+            scfg = getattr(self.core.config, "social", None)
+            if scfg and getattr(scfg, "bot_talk_enabled", False):
+                from anima.cognitive import bot_social
+                _bsd = str(self.core.config.persistence.data_dir)
+                _target = bot_social.pick_bot_talk_target(_bsd, now)
+                if _target and subject is not None:
+                    _intent_text = (
+                        f"在群里和 {_target['name']} 聊两句（它是另一个 Bot，你们竞争度较高，"
+                        f"可以带刺或调侃，但别真的人身攻击，也别刷屏）。"
+                    )
+                    subject.propose_expression(
+                        group_id, _intent_text, source="bot_social", priority=0.3,
+                        expires_at=now + 3600,
+                    )
+                    logger.info("[多Bot] 今日主动找 Bot %s 说话已入议程", _target["name"])
+        except Exception:
+            logger.exception("多 Bot 主动意图失败（已隔离）")
+
         spoke = await self._speak(group_id, now)
         if subject and proactive_intent:
             if spoke:

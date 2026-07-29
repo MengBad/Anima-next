@@ -557,6 +557,15 @@ class SocialConfig(BaseModel):
     welcome_cooldown_sec: int = 300       # 欢迎冷却（防批量入群刷屏）
     farewell_cooldown_sec: int = 60       # 告别冷却
 
+    # ── 多 Bot 社交系统（防循环 / 关系 / 分工）──
+    bot_social_enabled: bool = True       # 总开关：识别其他 Bot + 防循环
+    bot_cooldown_sec: int = 30            # 被某 Bot @后，对该 Bot 的沉默冷却（秒）
+    bot_loop_max_depth: int = 2           # 循环检测最大深度（连续 Bot 消息数≥此且含本喵→截断）
+    bot_discovery_enabled: bool = False   # 动态发现：扫描群成员昵称启发式标记 Bot（默认关，避免误判）
+    bot_talk_enabled: bool = False        # 心跳每日最多一次「找其他 Bot 说话」意图（rivalry>0.3 才触发）
+    bot_whisper_enabled: bool = False      # Bot 间私聊通道（经 NapCat 私聊，标记 [Bot内部]）
+    bot_whisper_daily_limit: int = 10      # 每日私聊上限
+
 
 # ---------------------------------------------------------------------------
 # 人格纹理（F3: 错别字 + 发癫配置）
