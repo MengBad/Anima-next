@@ -90,6 +90,11 @@ class ReActLoop:
         prev_sig = None  # 反工具死循环：记录上一轮工具调用签名
 
         for round_idx in range(self.max_rounds):
+            # Memory-first 引导（任务1）
+            # Thought 阶段强制引导：先评估内部记忆
+            thought = "Thought: 用户问" + str(current_msgs[-1].get("content", ""))[:50] + "，我先检查内部记忆是否有答案。如果有，直接回答；如果没有，再考虑搜网。"
+            current_msgs.append({"role": "user", "content": thought})
+
             # 询问 LLM（带已过滤的工具 schema）
             with llm_scope("chat", "react"):
                 response = await self.llm.chat_structured(
@@ -194,6 +199,18 @@ class ReActLoop:
                 "content": (
                     "根据上面工具结果，用一两句哈基米口吻给出最终回答；"
                     "若工具没拿到有用信息，就老实说没查到，不要编造，也不要输出空话。"
+                ),
+            })
+
+            # Memory-first 引导（任务1 - ReAct 记忆优先）
+            current_msgs.append({
+                "role": "user",
+                "content": (
+                    "你在选择工具时，请遵循以下优先级："
+                    "如果问题关于群成员（\"小明是谁\"、\"亦萱喜欢什么\"），优先使用 get_member_facts / get_user_relations "
+                    "如果问题关于已知事实或历史对话，优先查询内部记忆 "
+                    "只有内部记忆无法回答时，才使用 web_search "
+                    "涉及实时信息（今天天气、新闻、股价）时，可直接使用 web_search"
                 ),
             })
         with llm_scope("chat", "react_finalize"):

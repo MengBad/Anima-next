@@ -44,6 +44,21 @@ def register_all_builtin(registry, core=None) -> None:
         min_level=LEVEL_USER,
     ))
     registry.register(Tool(
+        "get_user_relations",
+        "获取用户关系（跨群用户亲密度、熟悉度）。",
+        {"name": {"type": "string", "description": "目标用户 QQ 号或昵称"}},
+        make_get_user_relations(core),
+        min_level=LEVEL_USER,
+    ))
+    registry.register(Tool(
+        "get_member_facts",
+        "获取群成员的事实记忆（跨群共享事实）。",
+        {"name": {"type": "string", "description": "目标用户 QQ 号或昵称"}},
+        make_get_member_facts(core),
+        min_level=LEVEL_USER,
+    ))
+
+    registry.register(Tool(
         "web_search",
         "联网搜索（Bing，无需 API key）：当用户问到需要实时/最新信息、事实查证、"
         "新闻、具体资料而超出你知识范围时调用。返回标题+链接+摘要，并自动抓取前 2 条网页正文。"

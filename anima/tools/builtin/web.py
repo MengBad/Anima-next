@@ -185,6 +185,16 @@ async def tool_web_search(query: str, num_results: int = 5,
 
         header = f"关于「{query}」的搜索结果（共 {len(results)} 条，展示前 {n} 条）："
         return header + "\n\n" + "\n\n".join(blocks)
+
+    # 自动记忆化（任务1 - 搜网结果自动记忆化）
+    try:
+        from anima.crossgroup.memory.user_memory import UserMemory
+        from anima.core.persistence import PersistenceProvider
+        persistence = PersistenceProvider("data")
+        user_memory = UserMemory("web_user")
+        key_facts = [r["snippet"] or r["title"] for r in results[:3]]
+        for fact in key_facts:
+            user_memory.add_fact(fact, source_group="web", confidence=0.7)
+        persistence.write_json("users.json", [asdict(f) for f in user_memory.facts])  # mock
     except Exception as e:
-        logger.warning("联网搜索失败: %s", e)
-        return f"联网搜索失败（{query}）: {e}。可稍后重试或检查网络。"
+        logger.debug("web_search 自动记忆化失败: %s", e)
