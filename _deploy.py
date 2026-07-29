@@ -93,12 +93,26 @@ while time.time() < _health_deadline:
         time.sleep(1)
 if health is None:
     raise SystemExit("smoke: /api/health not reachable within 30s")
+# channel_connected 依赖 NapCat WS 重连，重启后可能比 WebUI 端口就绪慢数秒；
+# 轮询等待其就绪（最多 60s），避免「部署后立刻检查就报 QQ 未连接」的瞬时误报。
+_chan_deadline = time.time() + 60
+_channel_ok = False
+while time.time() < _chan_deadline:
+    try:
+        _h = get("/api/health")
+        if _h.get("channel_connected"):
+            _channel_ok = True
+            health = _h
+            break
+    except Exception:
+        pass
+    time.sleep(1)
+if not _channel_ok:
+    raise SystemExit("smoke: QQ channel not connected")
 modules = get("/api/modules/status")
 evaluation = get("/api/evaluation")
 if not health.get("running"):
     raise SystemExit("smoke: runtime not running")
-if not health.get("channel_connected"):
-    raise SystemExit("smoke: QQ channel not connected")
 if not health.get("heartbeat_running"):
     raise SystemExit("smoke: heartbeat not running")
 # attention 仅作告警而非硬失败：良性的「待送达自动化」等项不应阻断部署，
