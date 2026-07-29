@@ -294,6 +294,8 @@ def _plan_upload(exclude: set, extra_rel_paths: list[str] | None = None) -> list
     if tracked is not None:
         rel_paths.extend(tracked)
         rel_paths.extend(extra_rel_paths or [])
+        # 确保 console 和 napcat service 加入同步列表（任务1要求）
+        rel_paths.extend(["web/anima-console.service", "web/anima-napcat.service"])
         if "config.yaml" not in exclude and (Path(PROJECT_ROOT) / "config.yaml").is_file():
             rel_paths.append("config.yaml")
     else:
