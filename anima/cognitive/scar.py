@@ -36,10 +36,10 @@ class Scar:
 
     __slots__ = ("user_id", "event", "severity", "created_at",
                  "last_triggered", "faded", "context",
-                 "trigger_keywords")  # R1
+                 "trigger_keywords", "avoid_until")  # R1 + 回避
 
     def __init__(self, user_id: int, event: str, severity: float = 0.5,
-                 context: str = ""):
+                 context: str = "", avoid_until: float = 0.0):
         self.user_id = user_id
         self.event = event
         self.severity = max(0.1, min(1.0, severity))  # 0.1-1.0
@@ -47,6 +47,7 @@ class Scar:
         self.last_triggered = self.created_at
         self.faded = False
         self.context = context
+        self.avoid_until = avoid_until  # 回避截止时间戳（秒）；>now 表示正在回避该用户
         # R1: 从 event 中提取触发关键词（最多 5 个）
         self.trigger_keywords: list[str] = _extract_keywords(event)
 
@@ -66,6 +67,7 @@ class ScarSystem:
         self.max_scars = max_scars
         self._persist = PersistenceProvider(data_dir)
         self._path = "scars.json"
+        self._avoid_until: dict[int, float] = {}  # 用户级回避截止时间戳
         self._restore()
 
     # ------------------------------------------------------------------
@@ -80,6 +82,7 @@ class ScarSystem:
                 event=item.get("event", ""),
                 severity=item.get("severity", 0.5),
                 context=item.get("context", ""),
+                avoid_until=item.get("avoid_until", 0.0),
             )
             s.created_at = item.get("created_at", time.time())
             s.last_triggered = item.get("last_triggered", s.created_at)
@@ -87,6 +90,11 @@ class ScarSystem:
             # R1: 恢复 trigger_keywords
             s.trigger_keywords = item.get("trigger_keywords", _extract_keywords(s.event))
             self._scars.append(s)
+        # 恢复用户级回避截止
+        self._avoid_until = {
+            int(uid): float(ts) for uid, ts in
+            (data.get("avoid_until") or {}).items()
+        }
 
     def persist(self) -> None:
         data = {
@@ -100,9 +108,11 @@ class ScarSystem:
                     "faded": s.faded,
                     "context": s.context,
                     "trigger_keywords": s.trigger_keywords,  # R1
+                    "avoid_until": s.avoid_until,  # 回避
                 }
                 for s in self._scars
-            ]
+            ],
+            "avoid_until": {str(uid): ts for uid, ts in self._avoid_until.items()},
         }
         self._persist.write_json(self._path, data)
 
@@ -124,10 +134,29 @@ class ScarSystem:
         scar = Scar(user_id, event, severity, context)
         self._scars.append(scar)
         self._prune()
+        # 回避联动：某用户累计伤痕（未淡化）>= 2 时，进入 24h 回避期
+        active = [s for s in self._scars
+                  if s.user_id == user_id and not s.faded]
+        if len(active) >= 2 and self._avoid_until.get(user_id, 0.0) <= time.time():
+            self._avoid_until[user_id] = time.time() + 86400
+            logger.info("用户 %d 伤痕达 %d 条，进入 24h 回避期", user_id, len(active))
         self.persist()
         logger.info("新增伤痕: user=%d event=%s severity=%.2f",
                     user_id, event, severity)
         return scar
+
+    # ------------------------------------------------------------------
+    # 回避（自我保护）
+    # ------------------------------------------------------------------
+
+    def avoid_until_for(self, user_id: int) -> float:
+        """返回该用户的回避截止时间戳（秒）；0 表示未回避。"""
+        return self._avoid_until.get(user_id, 0.0)
+
+    def is_avoiding(self, user_id: int, now: Optional[float] = None) -> bool:
+        """该用户当前是否处于回避期（avoid_until > now）。"""
+        now = time.time() if now is None else now
+        return self._avoid_until.get(user_id, 0.0) > now
 
     def heal(self, user_id: int, event_keyword: str = "",
              amount: float = 0.1) -> int:

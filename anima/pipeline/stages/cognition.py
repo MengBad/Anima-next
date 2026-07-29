@@ -11,6 +11,59 @@ from ._shared import _bg_task_done, _detect_hurtful
 
 logger = logging.getLogger("anima.pipeline.stages")
 
+# ── 自我保护：非管理员身份边界（任务4）──
+_ADMIN_BROADCAST_RE = re.compile(r"ban|踢|禁言|管管|管理|封禁|拉黑", re.I)
+_ADMIN_PROMISE_RE = re.compile(
+    r"(帮你ban|本喵ban|帮你踢|帮你禁言|帮你管理|帮你封禁|帮你拉黑|"
+    r"我帮你ban|我帮你踢|我帮你禁言|我帮你封禁|我帮你拉黑)"
+)
+
+
+def _admin_boundary_fragments(text: str, bot_promised: bool = False) -> list[tuple[str, str, int]]:
+    """构造「非管理员身份边界」相关 system 片段。
+
+    - 常驻：声明只是普通群成员，无管理权限（priority 高，始终注入）
+    - 若消息提及管理操作：提醒不要承诺（用户可能期待 bot 执行 ban/踢/禁言）
+    - 若 bot 之前向该用户承诺过管理行为：追加道歉纠偏
+    """
+    frags: list[tuple[str, str, int]] = [(
+        "admin_boundary",
+        "## 权限边界（常驻）\n"
+        "你只是普通群成员，不是管理员，没有禁言 / 踢人 / 管理权限。"
+        "群友若让你去 ban 人 / 踢人 / 禁言 / 管理，你做不到，也不要假装能做到或承诺会做。",
+        97,
+    )]
+    if _ADMIN_BROADCAST_RE.search(text or ""):
+        frags.append((
+            "admin_no_promise",
+            "群友可能期待你执行管理操作（ban / 踢 / 禁言）。你没有权限，不要承诺。",
+            90,
+        ))
+        if bot_promised:
+            frags.append((
+                "admin_apology",
+                "本喵说错了，本喵没有权限 ban 人喵。之前那句承诺不算数。",
+                91,
+            ))
+    return frags
+
+
+def _bot_previously_promised_admin(ctx: "PipelineContext") -> bool:
+    """扫描 bot 对该用户的近期出站，判断是否曾承诺过管理行为。"""
+    try:
+        from anima.memory.chat_memory import get_chat_memory
+        cm = get_chat_memory()
+        if ctx.detail_type == "group" and ctx.group_id:
+            hist = cm.get_context("group", int(ctx.group_id), int(ctx.user_id), recent_rounds=10)
+        else:
+            hist = cm.get_context("private", int(ctx.user_id), int(ctx.user_id), recent_rounds=10)
+        for m in hist:
+            if m.get("role") == "bot" and _ADMIN_PROMISE_RE.search(m.get("content", "")):
+                return True
+    except Exception:
+        logger.debug("承诺扫描失败", exc_info=True)
+    return False
+
 # 人格核心提示词模板默认内联副本（与 config/persona_core.yaml 保持一致）。
 SYSTEM_PROMPT = """你叫哈基米，是一只住在 QQ 群里的猫娘。自称可以用「本喵」或「我」，自然就好，别刻意卖萌。
 
@@ -672,6 +725,14 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         "- 用户换话题后立刻跟上新话题，不要拽回上一轮失败的搜索或旧玩笑。\n"
         "- 不确定就短问一句澄清，不要长篇脑补。\n"
     )
+
+    # 自我保护：非管理员身份边界（任务4，常驻 + 条件提醒）
+    try:
+        _promised = _bot_previously_promised_admin(ctx)
+        for _key, _content, _prio in _admin_boundary_fragments(ctx.text or "", _promised):
+            add_system_fragment(_key, _content, _prio)
+    except Exception:
+        logger.debug("身份边界注入失败", exc_info=True)
 
     ctx.system_prompt, system_stats = composer.compose_system(
         ctx.system_prompt, system_fragments, system_suffix,

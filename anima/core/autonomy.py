@@ -29,6 +29,15 @@ if TYPE_CHECKING:
 logger = logging.getLogger("anima.core.autonomy")
 
 
+def is_user_avoided(data_dir: str, user_id: int, now: float | None = None) -> bool:
+    """该用户当前是否处于伤痕回避期（供自主发言门控复用）。"""
+    from anima.cognitive.scar import get_scar_system
+    try:
+        return get_scar_system(data_dir).is_avoiding(user_id, now)
+    except Exception:
+        return False
+
+
 # 群上下文为方便模型分辨说话人会使用「[名字]: 内容」格式。主动发言的
 # 回复本身不是转述，绝不能把这个上下文标记一起发出去。
 _ACTIVE_REPLY_LABEL_RE = re.compile(
@@ -725,6 +734,38 @@ class Heartbeat:
 
         return random.choice(candidates)
 
+    def _group_only_avoided_speakers(self, group_id: int, now: float) -> bool:
+        """群内近期人类发言者若全部是被回避用户，则跳过主动发言。
+
+        避免 bot 在 24h 回避期内还去「关心 / care」曾经攻击自己的人。
+        """
+        try:
+            data_dir = str(self.core.config.persistence.data_dir)
+            from anima.memory.chat_memory import get_chat_memory
+            from anima.cognitive.scar import get_scar_system
+            cm = get_chat_memory()
+            scar = get_scar_system(data_dir)
+            spoken_uids: set[int] = set()
+            for key in list(cm._store.keys()):
+                if not key.startswith(f"group_{group_id}_"):
+                    continue
+                parts = key.split("_")
+                if len(parts) < 3:
+                    continue
+                try:
+                    uid = int(parts[2])
+                except (ValueError, IndexError):
+                    continue
+                hist = cm.get_context("group", group_id, uid, recent_rounds=3)
+                if any(m.get("role") == "user" for m in hist):
+                    spoken_uids.add(uid)
+            if not spoken_uids:
+                return False
+            return all(scar.is_avoiding(uid, now) for uid in spoken_uids)
+        except Exception:
+            logger.debug("回避发言检查失败", exc_info=True)
+            return False
+
     # ------------------------------------------------------------------
     # 发言
     # ------------------------------------------------------------------
@@ -733,6 +774,14 @@ class Heartbeat:
         """生成并发送主动发言。"""
         if self.core.llm is None:
             return False
+
+        # 自我保护：被伤过两次的用户，24h 内不主动 care / 接话
+        try:
+            if not intent and self._group_only_avoided_speakers(group_id, now):
+                logger.info("[回避] 群 %d 近期发言者均被回避，跳过主动发言", group_id)
+                return False
+        except Exception:
+            logger.debug("回避门控异常", exc_info=True)
 
         from anima.cognitive.time_sense import time_description
         from anima.cognitive.desire import get_desire_system

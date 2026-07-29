@@ -1218,6 +1218,31 @@ class LLMHandler:
             meta={"core": self.core, "group_presence": event.get("group_presence", "")},
         )
 
+        # 霸凌检测（自我保护协议）：收到消息时先过 detector，命中则标记 context。
+        # 后续 generation 阶段据此决定「冷回 / 沉默」，发送阶段据此抑制分段。
+        try:
+            from anima.cognitive.bullying_detector import detect_bullying
+            from anima.memory.chat_memory import get_chat_memory
+            _cm = get_chat_memory()
+            _recent_texts: list[str] = []
+            if detail_type == "group" and group_id:
+                _recent_texts = [m["content"] for m in
+                                 _cm.get_context("group", int(group_id), int(user_id), recent_rounds=8)
+                                 if m.get("role") == "user"]
+            else:
+                _recent_texts = [m["content"] for m in
+                                 _cm.get_context("private", int(user_id), int(user_id), recent_rounds=8)
+                                 if m.get("role") == "user"]
+            _bully = detect_bullying(int(user_id), text, _recent_texts[-8:])
+            if _bully["is_bullying"]:
+                ctx.meta["bullying_detected"] = True
+                ctx.meta["bullying_recent_count"] = _bully["recent_count"]
+                ctx.meta["bullying_severity"] = _bully["severity"]
+                logger.info("[霸凌检测] user=%s is_bullying recent=%d sev=%d",
+                            user_id, _bully["recent_count"], _bully["severity"])
+        except Exception:
+            logger.exception("霸凌检测异常（已隔离，不阻塞回复）")
+
         # 执行流水线。收束窗口外连续到达的私聊仍可能有多个 handle 协程，
         # 必须在此串行化，确保后一回合读取到前一回合已写入的用户/助手记忆。
         async with self._turn_lock(detail_type, group_id, user_id):
@@ -1273,7 +1298,14 @@ class LLMHandler:
         context_aware = getattr(
             getattr(self.core.config, "reply_split", None), "context_aware_interrupt", True
         )
+        _bullying_send = bool(ctx.meta.get("bullying_detected", False))
         for idx, (msg_segs, delay) in enumerate(messages):
+            # 霸凌保护（任务3）：冲突中只发第一段、截断到 30 字、不发送后续分段
+            if _bullying_send:
+                if idx > 0:
+                    logger.info("[霸凌] 抑制后续分段 trace=%s", trace)
+                    break
+                msg_segs = _truncate_first_text_segment(msg_segs, 30)
             # 分段语境感知（P1）：发出后续段前，若用户已插话调侃则中断并自嘲收尾
             if idx > 0 and context_aware and _should_interrupt_for_teasing(
                 getattr(self.core.gateway, "channel", None), group_id, last_send_ts
@@ -1984,3 +2016,22 @@ def _should_interrupt_for_teasing(channel: "Any", group_id: "int | None", since_
         return False
     intr = channel.latest_inbound_since(group_id, since_ts)
     return intr is not None and is_teasing_interrupt(intr[1])
+
+
+def _truncate_first_text_segment(msg_segs: "list[dict]", max_len: int = 30) -> "list[dict]":
+    """霸凌保护：把第一条文本段截断到 max_len 字符（保留 @ 等前置段）。"""
+    out: list[dict] = []
+    done = False
+    for seg in msg_segs:
+        if (
+            not done
+            and isinstance(seg, dict)
+            and seg.get("type") == "text"
+        ):
+            data = seg.get("data") or {}
+            t = data.get("text", "")
+            if isinstance(t, str) and len(t) > max_len:
+                seg = {**seg, "data": {**data, "text": t[:max_len]}}
+            done = True
+        out.append(seg)
+    return out
