@@ -1228,11 +1228,11 @@ class LLMHandler:
             _recent_texts: list[str] = []
             if detail_type == "group" and group_id:
                 _recent_texts = [m["content"] for m in
-                                 _cm.get_context("group", int(group_id), int(user_id), recent_rounds=8)
+                                 _cm.get_context("group", int(group_id), recent_rounds=8, user_id=int(user_id))
                                  if m.get("role") == "user"]
             else:
                 _recent_texts = [m["content"] for m in
-                                 _cm.get_context("private", int(user_id), int(user_id), recent_rounds=8)
+                                 _cm.get_context("private", int(user_id), recent_rounds=8, user_id=int(user_id))
                                  if m.get("role") == "user"]
             _bully = detect_bullying(int(user_id), text, _recent_texts[-8:])
             if _bully["is_bullying"]:

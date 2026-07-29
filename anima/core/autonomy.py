@@ -756,7 +756,7 @@ class Heartbeat:
                     uid = int(parts[2])
                 except (ValueError, IndexError):
                     continue
-                hist = cm.get_context("group", group_id, uid, recent_rounds=3)
+                hist = cm.get_context("group", group_id, recent_rounds=3, user_id=uid)
                 if any(m.get("role") == "user" for m in hist):
                     spoken_uids.add(uid)
             if not spoken_uids:

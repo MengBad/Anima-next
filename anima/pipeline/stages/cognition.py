@@ -54,9 +54,9 @@ def _bot_previously_promised_admin(ctx: "PipelineContext") -> bool:
         from anima.memory.chat_memory import get_chat_memory
         cm = get_chat_memory()
         if ctx.detail_type == "group" and ctx.group_id:
-            hist = cm.get_context("group", int(ctx.group_id), int(ctx.user_id), recent_rounds=10)
+            hist = cm.get_context("group", int(ctx.group_id), recent_rounds=10, user_id=int(ctx.user_id))
         else:
-            hist = cm.get_context("private", int(ctx.user_id), int(ctx.user_id), recent_rounds=10)
+            hist = cm.get_context("private", int(ctx.user_id), recent_rounds=10, user_id=int(ctx.user_id))
         for m in hist:
             if m.get("role") == "bot" and _ADMIN_PROMISE_RE.search(m.get("content", "")):
                 return True
