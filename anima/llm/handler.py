@@ -1049,19 +1049,20 @@ class LLMHandler:
                 and getattr(self.core, "agent", None) is not None):
             # 群里用「引用原消息」而不是裸 @：@ 会渲染成群昵称，容易看起来
             # 像 bot 在乱发无关内容；引用能明确指向触发的那句话。
+            # 引用 / @ 用结构化消息段，避免 [CQ:reply,...] 被当纯文本渲染。
             _msg_id = event.get("message_id")
-            at_prefix = (
-                (f"[CQ:reply,id={_msg_id}] " if _msg_id else f"[CQ:at,qq={user_id}] ")
-                if detail_type == "group" else ""
-            )
             target_id = int(group_id) if detail_type == "group" else int(user_id)
             if detail_type == "group":
                 # 审计 B2：群聊主人任务只建草稿 + 审批，避免打扰群；私聊则直接执行。
                 task = self.core.agent.store.create(text, int(user_id))
-                await self.core.gateway.send(OutboundMsg(
-                    detail_type, target_id,
-                    f"{at_prefix}已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。",
-                ))
+                segments: list[dict] = []
+                if _msg_id:
+                    segments.append({"type": "reply", "data": {"id": str(_msg_id)}})
+                else:
+                    segments.append({"type": "at", "data": {"qq": str(user_id)}})
+                segments.append({"type": "text", "data": {
+                    "text": f"已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。"}})
+                await self.core.gateway.send(OutboundMsg(detail_type, target_id, segments))
             else:
                 task = await self.core.agent.submit(text, int(user_id), auto_run=True)
                 await self.core.gateway.send(OutboundMsg(

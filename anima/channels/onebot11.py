@@ -78,6 +78,19 @@ def _parse_cq_string(s: str) -> list[dict]:
     return segs
 
 
+def build_message_segments(text: str, reply_id: Optional[str] = None) -> list[dict]:
+    """将文本（可能含 [CQ:...] 码）解析为 OneBot11 消息段数组。
+
+    修复「CQ 码文本化」bug：出站字符串消息若含 [CQ:reply,id=...] 等码，解析为
+    独立消息段（reply / at / image ...），而不是让 NapCat 当纯文本渲染。
+    reply_id 单独注入到队首 reply 段。
+    """
+    segs = _parse_cq_string(text or "")
+    if reply_id:
+        segs.insert(0, {"type": "reply", "data": {"id": str(reply_id)}})
+    return segs
+
+
 def _maybe_json_loads(raw: Any) -> Any:
     """尽力解析 QQ 卡片里的嵌套 JSON 字符串（含 &quot; 实体）。"""
     if isinstance(raw, (dict, list)):
@@ -922,6 +935,7 @@ class OneBot11Adapter(Module):
         auto_escape: bool = False,
         extra: Optional[dict] = None,
         retry: int = 2,
+        reply_id: Optional[str] = None,
     ) -> Optional[int]:
         """通过 OneBot11 HTTP API 发送消息，支持重试。
 
@@ -932,12 +946,20 @@ class OneBot11Adapter(Module):
             auto_escape: 是否转义 CQ 码
             extra: 额外参数
             retry: 失败重试次数
+            reply_id: 引用回复的消息 id（注入队首 reply 段，避免 CQ 码文本化）
 
         Returns:
             message_id，失败返回 None
         """
         action = "send_group_msg" if detail_type == "group" else "send_private_msg"
         id_key = "group_id" if detail_type == "group" else "user_id"
+
+        # CQ 码文本化修复：字符串消息里的 [CQ:...] 解析为消息段数组；
+        # reply_id 单独注入 reply 段（仅在非 auto_escape 时转换）。
+        if isinstance(message, str) and not auto_escape:
+            message = build_message_segments(message, reply_id=reply_id)
+        elif reply_id is not None and isinstance(message, list):
+            message = [{"type": "reply", "data": {"id": str(reply_id)}}, *message]
 
         params: dict[str, Any] = {
             "message": message,
@@ -986,6 +1008,36 @@ class OneBot11Adapter(Module):
         logger.warning("消息发送失败（HTTP 已重试 %d 次）: %s", retry, last_error)
         self._record_outbound(False, "OneBot 未返回成功回执")
         return None
+
+    async def send_group_msg(
+        self,
+        group_id: int,
+        message: str | list[dict],
+        reply_id: Optional[str] = None,
+        auto_escape: bool = False,
+        extra: Optional[dict] = None,
+        retry: int = 2,
+    ) -> Optional[int]:
+        """群聊发送；reply_id 自动注入引用回复段（修复 CQ 码文本化）。"""
+        return await self.send_message(
+            "group", group_id, message,
+            auto_escape=auto_escape, extra=extra, retry=retry, reply_id=reply_id,
+        )
+
+    async def send_private_msg(
+        self,
+        user_id: int,
+        message: str | list[dict],
+        reply_id: Optional[str] = None,
+        auto_escape: bool = False,
+        extra: Optional[dict] = None,
+        retry: int = 2,
+    ) -> Optional[int]:
+        """私聊发送；reply_id 自动注入引用回复段（修复 CQ 码文本化）。"""
+        return await self.send_message(
+            "private", user_id, message,
+            auto_escape=auto_escape, extra=extra, retry=retry, reply_id=reply_id,
+        )
 
     async def upload_file(
         self,
