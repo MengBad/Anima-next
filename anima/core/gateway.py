@@ -41,6 +41,7 @@ def _filter_outbound_message(message: "str | list[dict]") -> "str | list[dict]":
     from anima.core.reply_splitter import filter_inner_monologue
 
     if isinstance(message, str):
+        # 可能返回 None（整段都是独白）→ 调用方抑制发送
         return filter_inner_monologue(message)
     if isinstance(message, list):
         out: list[dict] = []
@@ -51,8 +52,11 @@ def _filter_outbound_message(message: "str | list[dict]") -> "str | list[dict]":
                 and isinstance(seg.get("text"), str)
             ):
                 new_seg = dict(seg)
-                new_seg["text"] = filter_inner_monologue(seg["text"])
-                out.append(new_seg)
+                filtered = filter_inner_monologue(seg["text"])
+                new_seg["text"] = filtered if filtered is not None else ""
+                # 过滤后为空文本的段直接丢弃（独白段不发送）
+                if new_seg["text"].strip():
+                    out.append(new_seg)
             else:
                 out.append(seg)
         return out
@@ -93,6 +97,11 @@ class Gateway:
         # P0 纵深防御：所有出站文本统一过滤内心独白（覆盖主动发言 / 生活模拟 /
         # 任何未显式过滤的路径）。filter_inner_monologue 幂等，重复调用安全。
         msg.message = _filter_outbound_message(msg.message)
+
+        # 内心独白被整体过滤 → 抑制发送（不泄漏、不发送空消息）
+        if not msg.message:
+            logger.warning("出站消息被内心独白过滤整体剔除，已抑制发送")
+            return None
 
         message_id = await self.channel.send_message(
             detail_type=msg.detail_type,

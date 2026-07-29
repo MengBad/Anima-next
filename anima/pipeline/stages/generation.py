@@ -598,8 +598,11 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         pass
 
     ctx.reply = _strip_speaker_labels(reply)
-    # P0：过滤混入对外消息的内心独白（自我反思 / 自言自语）
-    ctx.reply = filter_inner_monologue(ctx.reply)
+    # P0：过滤混入对外消息的内心独白（自我反思 / 自言自语）。
+    # 这里只做「短语移除」，不抢先整段抑制——若整段被判为独白，交由下游
+    # split_reply（逐段）与 gateway（出站统一）兜底抑制，避免丢失正常段。
+    _filtered_reply = filter_inner_monologue(ctx.reply)
+    ctx.reply = _filtered_reply if _filtered_reply is not None else ctx.reply
 
     # F1: 出站错别字注入
     ctx.reply = _maybe_inject_typo(ctx.reply, ctx.meta.get("core"))

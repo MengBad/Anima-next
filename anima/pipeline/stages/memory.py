@@ -24,8 +24,11 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
 
     memory = get_chat_memory()
     chat_id = ctx.group_id if ctx.detail_type == "group" else ctx.user_id
+    # 翻旧账防护（P1）：持久桶只注入最近 30 分钟、最多 15 条；更早的话题视为已结束，
+    # 不进 LLM 上下文，Bot 不会把几小时前的旧对话当成「仍在继续」而自顾自辩护。
     history = memory.get_context(
-        ctx.detail_type, chat_id, recent_rounds=8, user_id=ctx.user_id
+        ctx.detail_type, chat_id, recent_rounds=8, user_id=ctx.user_id,
+        max_age_minutes=30, max_messages=15,
     )
     if ctx.detail_type == "group" and ctx.group_id is not None:
         # 群短时缓冲只用于当前群近期可见消息；与个人档案去重后共同构成上下文。

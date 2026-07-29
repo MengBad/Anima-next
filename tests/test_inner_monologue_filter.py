@@ -81,7 +81,7 @@ def test_gateway_filters_outbound_text_segment():
     from anima.core.gateway import _filter_outbound_message
     segs = [
         {"type": "reply", "data": {"id": "1052582"}},
-        {"type": "text", "text": "说起来，本喵还没理清楚（本喵在心里嘀咕：好难）。收尾。"},
+        {"type": "text", "text": "说起来，本喵还没理清楚（本喵在心里嘀咕：好难）。不过现在收尾啦，明天见！"},
         {"type": "image", "data": {"file": "abc.jpg"}},
     ]
     out = _filter_outbound_message(segs)
@@ -89,7 +89,7 @@ def test_gateway_filters_outbound_text_segment():
     # reply / image 段原样保留
     assert out[0] == segs[0]
     assert out[2] == segs[2]
-    # 仅 text 段被过滤
+    # 仅 text 段被过滤（独白短语移除，但「收尾啦/明天见」正常内容保留）
     assert "说起来" not in out[1]["text"]
     assert "本喵在心里嘀咕" not in out[1]["text"]
     assert "收尾" in out[1]["text"]

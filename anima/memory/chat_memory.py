@@ -274,7 +274,9 @@ class ChatMemory:
 
     def get_context(self, chat_type: str, chat_id: int,
                     recent_rounds: int = 10,
-                    user_id: Optional[int] = None) -> list[dict]:
+                    user_id: Optional[int] = None,
+                    max_age_minutes: Optional[float] = None,
+                    max_messages: Optional[int] = None) -> list[dict]:
         key = self._key(chat_type, chat_id, user_id)
         od = self._store.get(key, OrderedDict())
         if not od:
@@ -282,8 +284,14 @@ class ChatMemory:
 
         rounds = list(od.items())[-recent_rounds:]
         messages: list[dict] = []
+        now = time.time()
         for _, entries in rounds:
             for entry in entries:
+                # 翻旧账防护：超过时间窗的持久记忆不注入上下文
+                if max_age_minutes is not None:
+                    _t = entry.get("time") or entry.get("ts")
+                    if _t and (now - _t) > max_age_minutes * 60:
+                        continue
                 label = entry["name"] if entry["role"] == "user" else "你"
                 text = entry["content"]
                 vd = entry.get("vision_desc")
@@ -295,6 +303,8 @@ class ChatMemory:
                     "role": "assistant" if entry["role"] == "bot" else entry["role"],
                     "content": f"[{label}]: {text}",
                 })
+        if max_messages is not None and len(messages) > max_messages:
+            messages = messages[-max_messages:]
         return messages
 
     def observe_group_message(self, group_id: int, user_id: int, sender_name: str,

@@ -341,31 +341,72 @@ _INNER_PAREN_RE = re.compile(
 )
 # 以「说起来，」开头的整句反思（通常是对自己说的，不该发出去）
 _INNER_LEADING_RE = re.compile(r"说起来[，,].*?[。！？\n]")
-# 零散自言自语短语（保守匹配，仅在明显自语时移除）
+# 零散自言自语 / 内心评价短语（保守匹配，仅在明显自语时移除）
+# 2026-07-29 扩词库：基于线上泄漏日志（21:46 主动/被动发言含独白片段）
 _INNER_PHRASE_RE = re.compile(
     r"本喵刚又扯远了"
     r"|本喵还没理清楚[^。！？\n]*?"
     r"|用不用去问问[^。！？\n]*?[呀吗]"
     r"|要不要去问[^。！？\n]*?[呀吗]"
     r"|本喵(?:刚刚)?(?:又)?在心里(?:嘀咕|念叨)[^。！？\n]*?"
+    # —— 自我检查 / 待办推演（独白）——
+    r"|本喵倒要看看"
+    r"|需不需要跟进"
+    r"|之前答应了[^。！？\n]{0,30}?一件事"
+    r"|上次答应[^。！？\n]{0,30}?还没"
+    r"|本喵还欠[^。！？\n]{0,20}?一个"
+    r"|要不要[^。！？\n]{0,15}?提醒"
+    r"|要不要[^。！？\n]{0,15}?看看"
+    # —— 对用户的负面内心评价（独白）——
+    r"|我看[^。！？\n]{0,15}?就是"
+    r"|就是单纯闲得慌"
+    r"|就是闲得慌"
+    r"|单纯闲得慌"
+    r"|哼，[^。！？\n]{0,25}?就是"
+    r"|这家伙[^。！？\n]{0,15}?的"
+    r"|那家伙[^。！？\n]{0,15}?的"
+    r"|明明[^。！？\n]{0,15}?还"
+)
+
+# 仅当「发生了独白移除」且「残体几乎全是独白」时才判定整段为独白 → 返回 None
+_FILLER_CHARS = "喵哼啊哦呢吧嘛哎哟嗯哈嘿嗐 \n\t！。，、？！~…—"
+# 删除比例超过该阈值（且确有移除）且残体无明确陈述 → 视为整段独白，抑制发送
+_MONOLOGUE_RATIO_THRESHOLD = 0.55
+# 残体含这些陈述性谓语时，视为仍有正常表达，不抑制
+_SUBSTANCE_VERB_RE = re.compile(
+    r"是|有|做|在|要|帮|给|让|对|问|看|听|吃|喝|来|去|回|带|找|写|说|觉得|认为|讲|聊|件"
 )
 
 
-def filter_inner_monologue(text: str) -> str:
-    """过滤混入对外消息的内部独白（自我反思 / 自言自语）。
+def filter_inner_monologue(text: "str | None") -> "str | None":
+    """过滤混入对外消息的内部独白（自我反思 / 自言自语 / 负面内心评价）。
 
     只移除明显属于「本喵对自己说」的内容，不触碰正常聊天文本。
-    设计原则：宁少勿错，避免误伤正常发言。幂等：多次调用结果一致。
+    若整段都被判定为独白（移除后残体占比极小且无明确陈述），返回 None，由调用方抑制发送。
+    设计原则：宁少勿错，且「无移除则不抑制」，避免误伤正常发言。幂等。
     """
     if not text:
         return text
+    orig = text
     cleaned = _INNER_PAREN_RE.sub(" ", text)
     cleaned = _INNER_LEADING_RE.sub(" ", cleaned)
     cleaned = _INNER_PHRASE_RE.sub(" ", cleaned)
+    if cleaned == orig:
+        # 没有任何独白片段被移除：绝不误伤正常发言
+        return orig
     # 清理因删除产生的多余空白与孤立标点（不删结尾标点，避免损伤正常文本）
     cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
     cleaned = re.sub(r"\s*([。！？，；])", r"\1", cleaned)
     cleaned = re.sub(r"^[，。！？\s]+", "", cleaned).strip()
+    # 整段都是独白 → 抑制（返回 None）；否则保留已清理文本。
+    # 判定：残体过短，或（删除比例过高 且 残体无明确陈述谓语）。
+    orig_nf = len(orig.strip(_FILLER_CHARS))
+    clean_nf = len(cleaned.strip(_FILLER_CHARS))
+    if clean_nf < 5:
+        return None
+    if (orig_nf > 0 and (orig_nf - clean_nf) / orig_nf > _MONOLOGUE_RATIO_THRESHOLD
+            and not _SUBSTANCE_VERB_RE.search(cleaned)):
+        return None
     return cleaned
 
 
@@ -375,12 +416,20 @@ def split_reply(
     mood_label: str = "neutral",
     relation_stage: str = "ACQUAINTANCE",
 ) -> SplitResult:
-    """将回复文本分段并计算每段延迟。"""
+    """将回复文本分段并计算每段延迟。
+
+    P0：逐段过滤内心独白——独白段（过滤后为空）丢弃，正常段保留，
+    避免「独白 + 正常句」整段被误判为独白而丢失正常内容。
+    """
     cfg = cfg or SplitConfig()
-    text = filter_inner_monologue(text)  # P0：分段前过滤内心独白
     segments = split_text(text, cfg)
+    filtered: list[str] = []
+    for seg in segments:
+        f = filter_inner_monologue(seg)
+        if f:  # 非 None 且非空才保留
+            filtered.append(f)
     delays = [
         compute_delay(seg, i, cfg, mood_label, relation_stage)
-        for i, seg in enumerate(segments)
+        for i, seg in enumerate(filtered)
     ]
-    return SplitResult(segments=segments, delays=delays)
+    return SplitResult(segments=filtered, delays=delays)
