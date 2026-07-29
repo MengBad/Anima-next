@@ -62,3 +62,42 @@ def test_split_reply_filters_inner_monologue():
     assert "本喵暗自纠结" not in joined
     assert "说起来" not in joined
     assert len(result.segments) >= 1
+
+
+# ---------------------------------------------------------------------------
+# 出站统一过滤（gateway.send 入口）：覆盖主动发言 / 生活模拟 / 任何未显式过滤的路径
+# ---------------------------------------------------------------------------
+
+def test_gateway_filters_outbound_string():
+    from anima.core.gateway import _filter_outbound_message
+    text = "今天天气真好（本喵暗自想：其实本喵更想睡觉）。我们一起去玩吧。"
+    out = _filter_outbound_message(text)
+    assert isinstance(out, str)
+    assert "本喵暗自想" not in out
+    assert "我们一起去玩吧" in out
+
+
+def test_gateway_filters_outbound_text_segment():
+    from anima.core.gateway import _filter_outbound_message
+    segs = [
+        {"type": "reply", "data": {"id": "1052582"}},
+        {"type": "text", "text": "说起来，本喵还没理清楚（本喵在心里嘀咕：好难）。收尾。"},
+        {"type": "image", "data": {"file": "abc.jpg"}},
+    ]
+    out = _filter_outbound_message(segs)
+    assert isinstance(out, list)
+    # reply / image 段原样保留
+    assert out[0] == segs[0]
+    assert out[2] == segs[2]
+    # 仅 text 段被过滤
+    assert "说起来" not in out[1]["text"]
+    assert "本喵在心里嘀咕" not in out[1]["text"]
+    assert "收尾" in out[1]["text"]
+
+
+def test_gateway_filters_outbound_keeps_non_text_untouched():
+    from anima.core.gateway import _filter_outbound_message
+    # 兜底：非 str/list 的消息原样返回（理论上不会传入，但防御性）
+    assert _filter_outbound_message(None) is None
+    assert _filter_outbound_message(123) == 123
+

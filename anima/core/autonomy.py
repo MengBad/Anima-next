@@ -786,6 +786,7 @@ class Heartbeat:
         from anima.cognitive.time_sense import time_description
         from anima.cognitive.desire import get_desire_system
         from anima.memory.chat_memory import get_chat_memory
+        from anima.core.reply_splitter import filter_inner_monologue
 
         desire = get_desire_system()
         memory = get_chat_memory()
@@ -912,6 +913,8 @@ class Heartbeat:
             return False
 
         reply = _clean_active_reply(reply)
+        # P0 纵深防御：主动发言同样过滤内心独白（_speak 不经 generation 的过滤）
+        reply = filter_inner_monologue(reply)
         if not reply or "[skip]" in reply.lower() or len(reply.strip()) < 4:
             return False
         if _is_low_value_active_reply(reply):

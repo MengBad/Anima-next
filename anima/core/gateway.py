@@ -32,6 +32,33 @@ class OutboundMsg:
         return isinstance(self.message, list)
 
 
+def _filter_outbound_message(message: "str | list[dict]") -> "str | list[dict]":
+    """P0 纵深防御：出站前统一过滤内心独白（自我反思 / 自言自语）。
+
+    覆盖主动发言、生活模拟、以及任何未显式过滤的路径。文本段经
+    filter_inner_monologue（幂等，重复调用安全）处理；非文本消息原样返回。
+    """
+    from anima.core.reply_splitter import filter_inner_monologue
+
+    if isinstance(message, str):
+        return filter_inner_monologue(message)
+    if isinstance(message, list):
+        out: list[dict] = []
+        for seg in message:
+            if (
+                isinstance(seg, dict)
+                and seg.get("type") == "text"
+                and isinstance(seg.get("text"), str)
+            ):
+                new_seg = dict(seg)
+                new_seg["text"] = filter_inner_monologue(seg["text"])
+                out.append(new_seg)
+            else:
+                out.append(seg)
+        return out
+    return message
+
+
 class Gateway:
     """消息路由中枢。"""
 
@@ -62,6 +89,10 @@ class Gateway:
         if self.channel is None:
             logger.warning("Gateway 未绑定渠道，消息丢弃")
             return None
+
+        # P0 纵深防御：所有出站文本统一过滤内心独白（覆盖主动发言 / 生活模拟 /
+        # 任何未显式过滤的路径）。filter_inner_monologue 幂等，重复调用安全。
+        msg.message = _filter_outbound_message(msg.message)
 
         message_id = await self.channel.send_message(
             detail_type=msg.detail_type,
