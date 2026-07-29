@@ -559,6 +559,15 @@ class Heartbeat:
             return
 
         if not self._circadian_gate():
+            # 睡眠时段（01-05 点）：不主动发言，但生成梦境（灵魂补丁 A2）。
+            # 每夜至多一次，异步调度不阻塞心跳；DreamEngine 缺失时静默跳过。
+            try:
+                from anima.cognitive.dream_engine import DreamEngine
+                data_dir = str(self.core.config.persistence.data_dir)
+                eng = DreamEngine(data_dir, self.core)
+                asyncio.create_task(eng.maybe_generate_during_sleep(now))
+            except Exception:
+                logger.debug("梦境生成调度失败（已隔离）", exc_info=True)
             self.persist()
             return
 

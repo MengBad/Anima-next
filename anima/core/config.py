@@ -133,6 +133,17 @@ class AutonomyConfig(BaseModel):
     active_feedback_min_samples: int = 4
     active_feedback_min_acceptance: float = 0.20
 
+    # —— 睡眠模式（灵魂补丁 A1）——
+    # 凌晨 01:00-05:00 进入「睡眠」：被 @ 时大概率装睡不回，少数情况迷糊回一句；
+    # 心跳在该时段不主动发言，只生成梦境（见 cognitive/dream_engine.py）。
+    sleep_enabled: bool = True
+    sleep_start_hour: int = 1          # 含
+    sleep_end_hour: int = 5            # 不含
+    sleep_silent_prob: float = 0.8     # 被 @ 时不回复的概率（迷糊回复概率 = 1 - 此值）
+    sleepy_max_tokens: int = 20        # 迷糊回复长度上限
+    sleepy_temperature: float = 0.4     # 迷糊回复随机度（偏低，含糊）
+    sleepy_llm_enabled: bool = True    # 用 LLM 生成迷糊回复；关闭则只用模板
+
 
 class DriftConfig(BaseModel):
     """人格漂移幅度上限（与 SelfLearning 对齐）。

@@ -947,6 +947,51 @@ class LLMHandler:
             for k in unlocked[:len(unlocked) // 4]:
                 locks.pop(k, None)
 
+    # ------------------------------------------------------------------
+    # A1 睡眠模式：凌晨被 @ 时迷糊回一句（不调工具 / 不跑 ReAct）
+    # ------------------------------------------------------------------
+    async def _sleepy_reply(self, group_id, user_id, text, acfg) -> None:
+        """睡眠时段被 @ 时的迷糊回复：短、含糊、绝不动工具。
+
+        优先用一次极低 max_tokens 的 LLM 调用（temperature 偏低，含糊），
+        LLM 不可用或结果异常时回退到模板，保证夜间永远有回应且不崩。
+        """
+        import random as _rnd
+
+        _canned = [
+            "呜…干嘛…本喵睡着了喵…",
+            "唔…谁啊…本喵在睡觉…",
+            "喵…（翻个身）…别闹…",
+            "哼…大半夜的…本喵困了…",
+            "呜…干嘛啦…明天再说喵…",
+        ]
+        reply = None
+        if getattr(acfg, "sleepy_llm_enabled", True) and self.core.llm is not None:
+            try:
+                _prompt = (
+                    "你是猫娘 Bot 哈基米，现在凌晨正在睡觉，被人叫醒了。"
+                    "用半睡半醒、含糊、爱理不理的语气回一句话"
+                    "（不超过 20 字，可带喵/呜/唔）。"
+                    f"对方刚才说：{text[:50]}"
+                )
+                reply = await self.core.llm.chat(
+                    [{"role": "user", "content": _prompt}],
+                    temperature=getattr(acfg, "sleepy_temperature", 0.4),
+                    max_tokens=getattr(acfg, "sleepy_max_tokens", 20),
+                    module="sleep", operation="sleepy_reply",
+                )
+                reply = (reply or "").strip().strip('"\'')
+                if not reply or len(reply) > 60:
+                    reply = None
+            except Exception:
+                logger.debug("[睡眠] 迷糊回复 LLM 失败，回退模板", exc_info=True)
+        if not reply:
+            reply = _rnd.choice(_canned)
+        try:
+            await self.core.gateway.send(OutboundMsg("group", int(group_id), reply))
+        except Exception:
+            logger.exception("[睡眠] 迷糊回复发送失败")
+
     async def handle(self, event: dict) -> None:
         # 提取事件信息
         text = event.get("text", "").strip()
@@ -1141,6 +1186,34 @@ class LLMHandler:
                     return
             except Exception:
                 logger.exception("AstrBot 插件分发异常")
+
+        # A1 睡眠模式：凌晨 1-5 点，群聊被 @ 本喵时 80% 装睡不回、20% 迷糊回一句。
+        # 不走完整 Pipeline / 不调工具（ReAct），保证夜间不打扰且不会误触发复杂动作。
+        # 未 @ 本喵的消息直接落到下方闸门（常态 skip），无需特殊处理。
+        try:
+            acfg = self.core.config.autonomy
+            if getattr(acfg, "sleep_enabled", False) and detail_type == "group" and group_id:
+                from anima.cognitive.sleep_state import is_sleep_time, classify_sleep_reply
+                if is_sleep_time(
+                    start_hour=getattr(acfg, "sleep_start_hour", 1),
+                    end_hour=getattr(acfg, "sleep_end_hour", 5),
+                ):
+                    _at_me = bool(event.get("mentions_self") or event.get("reply_to_self"))
+                    _decision = classify_sleep_reply(
+                        _at_me, getattr(acfg, "sleep_silent_prob", 0.8),
+                    )
+                    if _decision == "silent":
+                        logger.info(
+                            "[睡眠][trace=%s] 群%s @本喵，睡眠中装睡不回", trace, group_id,
+                        )
+                        return
+                    if _decision == "sleepy":
+                        await self._sleepy_reply(
+                            group_id, int(user_id), text, acfg,
+                        )
+                        return
+        except Exception:
+            logger.exception("[睡眠] 模式判定异常（已隔离，退回正常流程）")
 
         # 群聊回复闸门：仅当被 @、被回复或文字喊「哈基米」时才回复；私聊始终回复。
         # owner 命令已在上方 _handle_command 处理，不受此闸门影响。
