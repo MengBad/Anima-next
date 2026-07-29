@@ -36,15 +36,18 @@ _IMAGE_MANIP_RE = re.compile(
 )
 _IMAGE_MANIP_GUIDANCE = (
     "用户要求对图片进行处理（翻转/旋转/缩放/滤镜等），你已有 run_python 工具可用，"
-    "沙箱内已注入 _input_image（PIL Image 对象，无图时为 None）和 _input_image_b64（原始 base64）。"
-    "用 _input_image 做操作后调用 _save_output(result_image) 保存并返回路径。"
-    "必须先检查 _input_image is not None。不要拒绝，直接调用工具处理。"
+    "沙箱内已注入 _input_image（PIL Image 对象，无图时为 None）、_input_image_b64（原始 base64）、"
+    "_input_is_animated（是否为动画 GIF/动态图）、_input_frames（全部帧列表）。"
+    "若是动画 GIF，必须用 _edit_each_frame(lambda im: im.<操作>) 处理每一帧，"
+    "再 _save_output(frames, 'out.gif') 保存，否则会丢动画变成静图；"
+    "普通单图可用 _input_image 直接操作。必须先检查 _input_image is not None。不要拒绝，直接调用工具处理。"
 )
 _IMAGE_PRESENT_GUIDANCE = (
     "用户消息附带了图片。若需对图片做任何操作，调用 run_python 工具——"
-    "沙箱内已注入 _input_image（PIL Image 对象）和 _input_image_b64（原始 base64），"
-    "操作后调用 _save_output(result_image) 保存并返回路径。"
-    "沙箱无网络，禁止用 urllib/requests 下载任何 URL；图片数据已在 _input_image 中，直接用。"
+    "沙箱内已注入 _input_image（PIL Image 对象）、_input_image_b64（原始 base64）、"
+    "_input_is_animated、_input_frames。"
+    "动画 GIF 必须用 _edit_each_frame(lambda im: ...) 处理每一帧后 _save_output(frames, 'out.gif')，"
+    "否则会丢失动画。沙箱无网络，禁止用 urllib/requests 下载任何 URL；图片数据已在 _input_image 中，直接用。"
 )
 _REALTIME_TOOL_GUIDANCE = (
     "若当前问题涉及实时状态、天气、搜索、链接、单位换算、最新新闻、具体事实或"

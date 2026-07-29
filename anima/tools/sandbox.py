@@ -457,6 +457,12 @@ _builtins.__import__ = _safe_import
         f.write("""# 快捷：第一张图的 PIL Image 对象（无图时为 None）
 import io as _io, base64 as _b64
 _input_image = None
+# 动画 GIF / APNG / 动态 WebP 支持：加载全部帧 + 元数据，避免编辑后丢失动画
+_input_frames = []          # 所有帧的 PIL.Image（单图 -> [img]）
+_input_duration = []        # 每帧时长 ms（单图 -> [0]）
+_input_loop = 0             # 循环次数（0 = 无限）
+_input_is_animated = False  # 是否为动画图
+_input_format = ''
 try:
     from PIL import Image as _Image
     from PIL import Image  # LLM 代码可以直接用 Image
@@ -467,8 +473,28 @@ except Exception as _e:
 if _input_image_b64 and _Image is not None:
     try:
         _raw = _b64.b64decode(_input_image_b64)
-        _input_image = _Image.open(_io.BytesIO(_raw))
-        _input_image.load()  # 强制解码像素数据，避免懒加载在后续操作中失败
+        _src = _Image.open(_io.BytesIO(_raw))
+        _input_format = _src.format
+        try:
+            _input_is_animated = bool(getattr(_src, "is_animated", False)) and _src.n_frames > 1
+        except Exception:
+            _input_is_animated = False
+        if _input_is_animated:
+            for _i in range(_src.n_frames):
+                _src.seek(_i)
+                _input_frames.append(_src.copy())  # 保留原 mode / 调色板
+                try:
+                    _input_duration.append(int(_src.info.get("duration", 100)))
+                except Exception:
+                    _input_duration.append(100)
+            try:
+                _input_loop = int(_src.info.get("loop", 0))
+            except Exception:
+                _input_loop = 0
+        else:
+            _input_frames = [_src.copy()]
+            _input_duration = [0]
+        _input_image = _input_frames[0] if _input_frames else None
     except Exception as _e:
         import sys as _s2
         _diag = f'b64_len={len(_input_image_b64)} raw_len={len(_raw) if "_raw" in dir() else -1}'
@@ -477,10 +503,37 @@ if _input_image_b64 and _Image is not None:
         print(f'[sandbox] image decode failed ({type(_e).__name__}): {_e} | {_diag}', file=_s2.stderr)
         _input_image = None
 
-# 输出图片辅助：调用 _save_output(pil_image, filename='output.png') 保存到共享目录并打印路径
+def _edit_each_frame(func):
+    '''对动画的每一帧应用 func(frame) -> frame，返回帧列表（单图也返回 [func(frame)]）。
+
+    动画 GIF 必须用它处理全部帧，否则编辑后只剩第一帧 -> 变成静图。
+    用法：_save_output(_edit_each_frame(lambda im: im.transpose(Image.FLIP_LEFT_RIGHT)), 'out.gif')
+    '''
+    return [func(_f.copy()) for _f in _input_frames]
+
+# 输出图片辅助：_save_output(img) 或 _save_output(frames, 'out.gif') 保存到共享目录并打印路径
 def _save_output(img, filename='output.png'):
     out_path = _os.path.join(_output_dir, filename)
-    img.save(out_path)
+    _is_list = isinstance(img, (list, tuple))
+    _frames = list(img) if _is_list else None
+    _multi = _is_list and len(_frames) > 1
+    _want_anim = _multi or (not _is_list and _input_is_animated and str(filename).lower().endswith('.gif'))
+    if _want_anim:
+        # 动画输出：保存为多帧 GIF，保留每帧时长与循环，避免编辑后变静图
+        if not _is_list:
+            _frames = [img]
+        if not str(filename).lower().endswith('.gif'):
+            filename = _os.path.splitext(filename)[0] + '.gif'
+            out_path = _os.path.join(_output_dir, filename)
+        _frames[0].save(
+            out_path, save_all=True, append_images=_frames[1:],
+            duration=_input_duration[:len(_frames)] or None,
+            loop=_input_loop, disposal=2, optimize=False,
+        )
+    else:
+        # 单图或单帧列表：存为普通图片（_edit_each_frame 对静图返回 [img] 也能正确保存）
+        _single = _frames[0] if _is_list else img
+        _single.save(out_path)
     print(f'[output_image] {out_path}')
     return out_path
 

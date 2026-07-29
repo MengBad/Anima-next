@@ -94,7 +94,7 @@ def register_all_builtin(registry, core=None) -> None:
         min_level=LEVEL_USER,
     ))
     registry.register(Tool(
-        "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片操作（旋转/翻转/缩放/滤镜，PIL 可用）等。禁止访问网络和文件系统。",
+        "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片操作（旋转/翻转/缩放/滤镜，PIL 可用；动画 GIF 用 _edit_each_frame 处理每帧后 _save_output(frames,'out.gif') 保留动画）。禁止访问网络和文件系统。",
         {"code": {"type": "string", "description": "要执行的 Python 代码"}},
         run_python,
         min_level=LEVEL_USER,
