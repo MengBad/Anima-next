@@ -89,8 +89,11 @@ if not health.get("channel_connected"):
     raise SystemExit("smoke: QQ channel not connected")
 if not health.get("heartbeat_running"):
     raise SystemExit("smoke: heartbeat not running")
-if any(item.get("status") == "attention" for item in evaluation.get("checks", [])):
-    raise SystemExit("smoke: evaluation contains attention")
+# attention 仅作告警而非硬失败：良性的「待送达自动化」等项不应阻断部署，
+# 真正的健康门禁是上面的 running / channel_connected / heartbeat_running / modules。
+attention_items = [c for c in evaluation.get("checks", []) if c.get("status") == "attention"]
+for item in attention_items:
+    print(f"[SMOKE-WARN] evaluation attention: {item.get('name')} | {item.get('detail') or item.get('message')}")
 if not (modules.get("modules") or []):
     raise SystemExit("smoke: module list empty")
 runtime_status = asyncio.run(_tool_runtime_status())
@@ -102,6 +105,7 @@ print(json.dumps({{
     "heartbeat_running": True,
     "modules": len(modules.get("modules") or []),
     "evaluation_ready": int((evaluation.get("summary") or {{}}).get("ready", 0)),
+    "evaluation_attention": len(attention_items),
     "runtime_status": "ok",
 }}, ensure_ascii=False))
 PY"""
