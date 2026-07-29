@@ -93,7 +93,7 @@ if not health.get("heartbeat_running"):
 # 真正的健康门禁是上面的 running / channel_connected / heartbeat_running / modules。
 attention_items = [c for c in evaluation.get("checks", []) if c.get("status") == "attention"]
 for item in attention_items:
-    print(f"[SMOKE-WARN] evaluation attention: {item.get('name')} | {item.get('detail') or item.get('message')}")
+    print(f"[SMOKE-WARN] evaluation attention: {{item.get('name')}} | {{item.get('detail') or item.get('message')}}")
 if not (modules.get("modules") or []):
     raise SystemExit("smoke: module list empty")
 runtime_status = asyncio.run(_tool_runtime_status())
