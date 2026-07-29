@@ -17,10 +17,10 @@ Environment=ANIMA_CONSOLE_SSL_CERT=/etc/ssl/certs/anima-console.crt
 Environment=ANIMA_CONSOLE_SSL_KEY=/etc/ssl/private/anima-console.key
 Environment=ANIMA_CONSOLE_HTTPS_PORT=8443
 # 控制台鉴权 token。安全规范：禁止在版本库写入真实值。
-# 推荐：在 /opt/anima/web/.env 写入 ANIMA_CONSOLE_TOKEN=<真实值>（该文件已被 .gitignore 忽略，模板见 web/.env.example）
-# 兜底：如需直接写入，请仅限本机且不提交。
+# token 唯一来源是 /opt/anima/web/.env（ANIMA_CONSOLE_TOKEN=<真实值>，已被 .gitignore 忽略，模板见 web/.env.example）。
+# 注意：不得在此文件写 Environment=ANIMA_CONSOLE_TOKEN=... —— 它会覆盖 EnvironmentFile 的值，
+# 导致 .env 的 token 失效。若 .env 缺失或仍为占位值，web/server.py 会在启动期 fail-fast 拒绝启动。
 EnvironmentFile=-/opt/anima/web/.env
-Environment=ANIMA_CONSOLE_TOKEN=__REPLACE_WITH_REAL_TOKEN_AT_DEPLOY__
 Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/anima/venv/bin/python -m web.server
 Restart=on-failure

@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import sys
 import sqlite3
 import subprocess
 import time
@@ -42,7 +43,15 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = Path(os.environ.get("ANIMA_CONFIG", ROOT / "config.yaml"))
 STATIC_HTML = Path(__file__).resolve().parent / "console.html"
 CATALOG_PATH = Path(__file__).resolve().parent / "plugins_catalog.json"
+# 占位默认值（绝不可作为真实 token 使用）。若部署未通过 .env 提供真实值，
+# 必须在启动期 fail-fast，避免控制台以可猜测的占位串对外暴露（此前线上曾因此暴露）。
+_CONSOLE_PLACEHOLDER_TOKEN = "__REPLACE_WITH_REAL_TOKEN_AT_DEPLOY__"
 TOKEN = os.environ.get("ANIMA_CONSOLE_TOKEN", "")
+if not TOKEN or TOKEN == _CONSOLE_PLACEHOLDER_TOKEN:
+    logging.error(
+        "ANIMA_CONSOLE_TOKEN 未设置或仍为默认占位值，Console 拒绝启动（安全风险）"
+    )
+    sys.exit(1)
 PORT = int(os.environ.get("ANIMA_CONSOLE_PORT", "8080"))
 SERVICE_NAME = os.environ.get("ANIMA_SERVICE", "anima")
 LOG_CMD = os.environ.get(
@@ -53,9 +62,6 @@ CORS_ORIGINS = [
     for o in os.environ.get("ANIMA_CONSOLE_CORS", "http://localhost:8080,http://127.0.0.1:8080").split(",")
     if o.strip()
 ]
-
-if not TOKEN:
-    logging.warning("ANIMA_CONSOLE_TOKEN 未设置 —— 鉴权关闭（仅限开发环境）")
 
 
 def data_dir_path() -> Path:
@@ -321,8 +327,7 @@ bearer_scheme = HTTPBearer(auto_error=False)
 async def require_auth(
     creds: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
 ) -> None:
-    if not TOKEN:
-        return  # dev 模式：关闭鉴权
+    # TOKEN 在模块加载期已 fail-fast 保证非空，此处恒需有效令牌。
     if creds is None or creds.credentials != TOKEN:
         raise HTTPException(status_code=401, detail="无效或过期的令牌")
 

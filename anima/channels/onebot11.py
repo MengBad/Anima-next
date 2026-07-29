@@ -580,6 +580,14 @@ class OneBot11Adapter(Module):
 
     async def init(self, core: "AnimaCore") -> None:
         self.core = core
+        # 防御性校验：NapCat WS 应仅监听本机（ws://127.0.0.1:3001），
+        # bot 作为客户端连接。若指向非 localhost，意味着 OneBot 流量会离开本机，
+        # 存在被中间人/外部重连的风险——此处仅告警不阻断（bind 限制由防火墙负责）。
+        if not self.ws_url.startswith("ws://127.0.0.1"):
+            logger.warning(
+                "NapCat WS 地址非本机（当前: %s），建议改为 ws://127.0.0.1 并由防火墙限制 3001 仅允许 localhost",
+                self.ws_url,
+            )
         timeout = aiohttp.ClientTimeout(total=30)
         self._ws_session = aiohttp.ClientSession(timeout=timeout)
         self._http_session = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=60))
