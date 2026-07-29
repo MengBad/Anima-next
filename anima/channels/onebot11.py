@@ -501,6 +501,39 @@ def is_bot_member(
     return False
 
 
+def is_bot_message(
+    event: "dict | None",
+    known_ids: "set[int] | list[int] | None" = None,
+) -> bool:
+    """判定入站消息是否来自其他 Bot（UID 为唯一主键）。
+
+    判定优先级：
+    1. sender_uid ∈ KNOWN_BOT_UIDS（配置 known_bot_ids ∪ known_bots.json confirmed）→ 是
+    2. OneBot11/NapCat 平台显式 role=='bot' → 是（平台真相，非昵称启发式）
+    3. 事件级标记（_is_bot_sender / sender_is_bot）→ 是
+    昵称启发式不作为判定依据（见 bot_social.discover_bots_from_members 仅记日志）。
+    """
+    if not isinstance(event, dict):
+        return False
+    # UID：优先取事件顶层 user_id，回退到 sender.user_id
+    uid = event.get("user_id")
+    if uid is None:
+        sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+        uid = sender.get("user_id")
+    if uid is not None and known_ids:
+        try:
+            if int(uid) in {int(x) for x in known_ids}:
+                return True
+        except (TypeError, ValueError):
+            pass
+    # 平台显式标记（role=='bot' 是 OneBot11/NapCat 自带字段，非昵称启发式）
+    sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+    if str(sender.get("role", "")).lower() == "bot":
+        return True
+    # 兼容既有的事件级标记
+    return bool(event.get("_is_bot_sender") or event.get("sender_is_bot"))
+
+
 def build_title_change_note(event: "dict | None", self_id: "int | None") -> "str | None":
     """群专属头衔变更且目标是自己时，生成一条 self_notes 文本；否则返回 None。
 
@@ -882,7 +915,7 @@ class OneBot11Adapter(Module):
         # 多 bot 环境：标记发信人是否为其他 bot；并登记群内入站（供分段插话判定）
         if event["post_type"] == "message" and event.get("group_id"):
             known = self._known_bot_ids()
-            event["sender_is_bot"] = is_bot_member(event.get("sender", {}) or {}, known)
+            event["sender_is_bot"] = is_bot_message(event, known)
             event["_is_bot_sender"] = event["sender_is_bot"]
             self.record_inbound(event.get("group_id"), event.get("user_id"), event.get("message", ""))
 
@@ -1314,13 +1347,22 @@ class OneBot11Adapter(Module):
     # ------------------------------------------------------------------
 
     def _known_bot_ids(self) -> "set[int]":
-        """从配置读取已知 bot QQ 集合（容错）。"""
+        """已知 bot QQ 集合 = 配置 known_bot_ids ∪ known_bots.json(confirmed)。UID 权威集。"""
         cfg = getattr(getattr(getattr(self, "core", None), "config", None), "qq", None)
         ids = getattr(cfg, "known_bot_ids", None) or []
         try:
-            return {int(x) for x in ids}
+            base = {int(x) for x in ids}
         except (TypeError, ValueError):
-            return set()
+            base = set()
+        # 合并 known_bots.json(confirmed) —— UID 权威集，昵称启发式永不进入
+        try:
+            from anima.cognitive import bot_social
+            persist = getattr(getattr(getattr(self, "core", None), "config", None), "persistence", None)
+            data_dir = str(getattr(persist, "data_dir", "data") or "data")
+            base |= bot_social.authoritative_known_bot_uids(base, data_dir)
+        except Exception:  # noqa: BLE001
+            logger.debug("合并 known_bots.json 失败，仅用配置集")
+        return base
 
     def record_inbound(self, group_id: "int | None", user_id: "int | None", text: str) -> None:
         """记录群内入站消息（用于分段发送时的插话判定）。"""

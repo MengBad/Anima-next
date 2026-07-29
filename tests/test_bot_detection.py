@@ -41,10 +41,15 @@ def test_discover_bots_from_members():
         {"user_id": 999, "nickname": "管事喵", "role": "bot"},
     ]
     found = bot_social.discover_bots_from_members(members, strict=True)
-    assert 838916454 in found
-    assert 888 in found
-    assert 999 in found
-    assert 777 not in found  # 真人「张三」不被误判
+    # 仅平台 role=='bot' 被返回；昵称启发式（丰川刻子/BotHelper）不再自动确认
+    assert found == {999}
+    assert 838916454 not in found  # 昵称疑似 Bot，但不自动确认
+    assert 888 not in found        # 昵称命中 hint，但不自动确认
+    assert 777 not in found        # 真人「张三」不被误判
+    # 昵称启发式仍「发现」并仅作建议（不确认）
+    suggested = bot_social.suggest_bots_from_nickname(members)
+    assert 838916454 in suggested
+    assert 888 in suggested
 
 
 def test_event_mark_symmetry():

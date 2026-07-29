@@ -142,7 +142,8 @@ class BotRelationStore:
         if rel is None:
             rel = BotRelation(bot_uid=uid, bot_name=name or uid)
             self._relations[uid] = rel
-        elif name and not rel.bot_name:
+        elif name:
+            # bot_name 仅作展示：改名时刷新展示名，但关系主键是 UID，不受影响
             rel.bot_name = name
         return rel
 
@@ -317,6 +318,102 @@ def should_delegate(text: str, other_bot_online: bool = True, roles_store: BotRo
 
 
 # ---------------------------------------------------------------------------
+# 已知 Bot 注册表（UID 为唯一主键）
+# ---------------------------------------------------------------------------
+def _canon_uid(uid: Any) -> Optional[str]:
+    try:
+        return str(int(uid))
+    except (TypeError, ValueError):
+        return None
+
+
+class KnownBotsStore:
+    """data/known_bots.json：以 UID(QQ号) 为唯一主键的已确认 Bot 注册表。
+
+    设计铁律：
+    - UID 是唯一真相来源；改名/换昵称不影响识别（主键是 UID，不是昵称）。
+    - 昵称启发式 NEVER 写入本注册表（只作日志建议），避免把真人误判为 Bot。
+    - 只有配置 known_bot_ids 或显式确认（confirmed=true）的 UID 才生效。
+    """
+
+    def __init__(self, data_dir: str = "data"):
+        self.path = Path(data_dir) / "known_bots.json"
+        self._bots: dict[str, dict] = {}
+        self.load()
+
+    def load(self) -> None:
+        with _file_lock:
+            if not self.path.exists():
+                # 惰性物化空注册表，明确 schema（UID 为键 + confirmed 字段）
+                _atomic_write(self.path, {"bots": {}})
+            raw = _load_json(self.path, {"bots": {}})
+            self._bots = {}
+            for uid, d in (raw.get("bots", {}) or {}).items():
+                if not isinstance(d, dict):
+                    continue
+                u = _canon_uid(uid)
+                if u is None:
+                    continue
+                self._bots[u] = {
+                    "bot_name": str(d.get("bot_name", "") or ""),
+                    "confirmed": bool(d.get("confirmed", True)),
+                }
+
+    def save(self) -> None:
+        with _file_lock:
+            _atomic_write(self.path, {"bots": self._bots})
+
+    def is_known(self, uid: Any) -> bool:
+        u = _canon_uid(uid)
+        if u is None:
+            return False
+        return bool(self._bots.get(u, {}).get("confirmed"))
+
+    def add(self, uid: Any, name: str = "", *, confirmed: bool = True) -> None:
+        u = _canon_uid(uid)
+        if u is None:
+            return
+        entry = self._bots.get(u, {"bot_name": "", "confirmed": True})
+        if name:
+            entry["bot_name"] = name
+        entry["confirmed"] = bool(confirmed)
+        self._bots[u] = entry
+        self.save()
+
+    def uids(self) -> set[int]:
+        return {int(u) for u, d in self._bots.items() if d.get("confirmed")}
+
+
+_KNOWN_BOTS_CACHE: dict[str, tuple[float, "KnownBotsStore"]] = {}
+_KNOWN_BOTS_TTL = 15.0
+
+
+def get_known_bots_store(data_dir: str = "data") -> "KnownBotsStore":
+    now = time.time()
+    cached = _KNOWN_BOTS_CACHE.get(data_dir)
+    if cached and (now - cached[0]) < _KNOWN_BOTS_TTL:
+        return cached[1]
+    store = KnownBotsStore(data_dir)
+    _KNOWN_BOTS_CACHE[data_dir] = (now, store)
+    return store
+
+
+def authoritative_known_bot_uids(
+    known_ids: "set[int] | list[int] | None" = None, data_dir: str = "data"
+) -> "set[int]":
+    """UID 权威集 = 配置 known_bot_ids ∪ known_bots.json(confirmed)。
+
+    识别其他 Bot 时只用这个集合做判定；昵称启发式不在此列。
+    """
+    s: set[int] = {int(x) for x in (known_ids or set())}
+    try:
+        s |= get_known_bots_store(data_dir).uids()
+    except Exception:  # noqa: BLE001
+        logger.warning("合并 known_bots.json 失败，仅用配置集")
+    return s
+
+
+# ---------------------------------------------------------------------------
 # Bot 识别
 # ---------------------------------------------------------------------------
 def is_bot_uid(uid: Any, known_ids: set[int] | None = None) -> bool:
@@ -353,9 +450,11 @@ def is_bot_sender(event: dict | None, known_ids: set[int] | None = None) -> bool
 
 
 def discover_bots_from_members(members: list[dict], strict: bool = True) -> set[int]:
-    """按群成员列表动态发现 Bot UID（保守昵称启发式 / role）。
+    """按群成员列表发现 Bot UID。
 
-    strict=True 时只接受 role=='bot' 或昵称命中保守 allowlist，避免误判真人。
+    仅返回平台显式标记 role=='bot' 的 UID（平台真相，非启发式）。
+    昵称命中启发式的 UID 一律只记日志建议（见 suggest_bots_from_nickname），
+    绝不自动确认、绝不进入返回集 —— UID 才是唯一主键，避免把真人误判为 Bot。
     """
     found: set[int] = set()
     for m in members or []:
@@ -371,13 +470,33 @@ def discover_bots_from_members(members: list[dict], strict: bool = True) -> set[
         if str(m.get("role", "")).lower() == "bot":
             found.add(uid)
             continue
-        if not strict:
-            found.add(uid)
+        nick = str(m.get("nickname", "")).lower()
+        if any(h.lower() in nick for h in _BOT_NICKNAME_HINTS):
+            # 仅作日志建议，不自动确认、不加入返回集
+            logger.info(
+                "[多Bot发现-建议] 成员 %s(nick=%s) 昵称疑似 Bot，但仅作人工确认建议，"
+                "不会自动识别——UID 才是唯一主键。", uid, m.get("nickname")
+            )
+    return found
+
+
+def suggest_bots_from_nickname(members: list[dict]) -> list[int]:
+    """返回昵称疑似 Bot 的 UID 列表（仅供日志 / 人工确认建议，绝不自动确认）。"""
+    out: list[int] = []
+    for m in members or []:
+        if not isinstance(m, dict):
+            continue
+        uid = m.get("user_id")
+        if uid is None:
+            continue
+        try:
+            uid = int(uid)
+        except (TypeError, ValueError):
             continue
         nick = str(m.get("nickname", "")).lower()
         if any(h.lower() in nick for h in _BOT_NICKNAME_HINTS):
-            found.add(uid)
-    return found
+            out.append(uid)
+    return out
 
 
 # ---------------------------------------------------------------------------
