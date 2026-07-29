@@ -171,6 +171,24 @@ def compute_self_status_notes(
     return notes
 
 
+def _decide_morning_dream_share(
+    hour: int, last_morning_date: str, today: str, rng: random.Random | None = None,
+) -> "tuple[bool, bool]":
+    """A3 纯函数：仅在 08:00、当天未尝试时以 10% 概率决定分享梦境。
+
+    返回 (should_share, attempted)：
+    - should_share=True 时调用方应在分享成功后标记 _last_morning_dream_date=today；
+    - attempted=True 表示「08:00 且今天已抽过」——调用方应标记尝试，避免每 tick 重复抽。
+    """
+    if hour != 8:
+        return (False, False)
+    if last_morning_date == today:
+        return (False, False)
+    if (rng or random).random() >= 0.1:
+        return (False, True)   # 抽不中，今天已尝试
+    return (True, False)       # 抽中分享（成功后再标记）
+
+
 class Heartbeat:
     """自主心跳引擎。"""
 
@@ -571,6 +589,31 @@ class Heartbeat:
             self.persist()
             return
 
+        # A3 早晨分享梦境：08:00「醒来」，读昨晚最后一条梦境，10% 概率主动在群里分享
+        # （并让 mood_tag 覆盖次日 soul 初始情绪）。每「天」至多尝试一次。
+        try:
+            if self._maybe_morning_dream_share(now):
+                gid = self._pick_group(now)
+                if gid is not None:
+                    from anima.cognitive.dream_engine import DreamEngine
+                    eng = DreamEngine(str(self.core.config.persistence.data_dir), self.core)
+                    dream = eng.get_last_dream()
+                    if dream and dream.get("dream"):
+                        _share = (
+                            f"昨晚本喵做了一个好奇怪的梦…{dream['dream']}"
+                            f"（抖耳朵）"
+                        )
+                        await self._speak(gid, now, _share)
+                        eng.apply_dream_mood_to_soul(dream.get("mood_tag", "calm"))
+                        logger.info("[梦境] 早晨主动分享梦境 mood_tag=%s", dream.get("mood_tag"))
+                        self._last_morning_dream_date = _bj_date_str(now)
+                        self._group_last_speak[gid] = now
+                        self._last_active_speak = now
+                        self.persist()
+                        return
+        except Exception:
+            logger.debug("早晨梦境分享失败（已隔离）", exc_info=True)
+
         # 选择发言目标群（已含沉默门控 + 冷却 + 预算 + 占比）
         group_id = self._pick_group(now)
         if group_id is None:
@@ -664,6 +707,19 @@ class Heartbeat:
     # ------------------------------------------------------------------
     # 频率闸门
     # ------------------------------------------------------------------
+
+    def _bj_date_str(self, ts: float) -> str:
+        return datetime.fromtimestamp(ts, _BJ).strftime("%Y-%m-%d")
+
+    def _maybe_morning_dream_share(self, now: float) -> bool:
+        """A3：仅 08:00、每天至多一次、10% 概率主动分享梦境。返回是否本次应当分享。"""
+        today = self._bj_date_str(now)
+        last = getattr(self, "_last_morning_dream_date", "")
+        should_share, attempted = _decide_morning_dream_share(datetime.now(_BJ).hour, last, today)
+        if attempted and not should_share:
+            # 抽不中：标记今天已尝试，避免每 tick 重复抽
+            self._last_morning_dream_date = today
+        return should_share
 
     def _circadian_gate(self) -> bool:
         from datetime import datetime, timezone, timedelta

@@ -195,6 +195,21 @@ class DreamEngine:
             logger.debug("读取最后梦境失败", exc_info=True)
             return None
 
+    def apply_dream_mood_to_soul(self, mood_tag: str) -> bool:
+        """A3：梦境 mood_tag 覆盖次日 soul.json 初始情绪（weird→happy 等）。"""
+        emotion = mood_tag_to_emotion(mood_tag)
+        soul_path = self.data_dir / "soul.json"
+        if not soul_path.exists():
+            return False
+        try:
+            data = json.loads(soul_path.read_text(encoding="utf-8"))
+            data["emotion"] = emotion
+            soul_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            return True
+        except Exception:
+            logger.debug("梦境情绪写入 soul.json 失败", exc_info=True)
+            return False
+
     def _last_dream_date(self) -> str | None:
         d = self.get_last_dream()
         if not d:
