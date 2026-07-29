@@ -57,6 +57,7 @@ def _render_post_deploy_smoke(remote_root: str) -> str:
 {remote_root}/venv/bin/python - <<'PY'
 import asyncio
 import json
+import time
 import urllib.request
 from pathlib import Path
 
@@ -80,7 +81,18 @@ def get(path):
             raise RuntimeError(f"{{path}} status={{response.status}}")
         return json.load(response)
 
-health = get("/api/health")
+# WebUI 绑定 8088 端口有 ~1s 延迟；部署重启后先等端口就绪再探活，
+# 避免「Connection refused」时序竞态误判部署失败。
+_health_deadline = time.time() + 30
+health = None
+while time.time() < _health_deadline:
+    try:
+        health = get("/api/health")
+        break
+    except Exception:
+        time.sleep(1)
+if health is None:
+    raise SystemExit("smoke: /api/health not reachable within 30s")
 modules = get("/api/modules/status")
 evaluation = get("/api/evaluation")
 if not health.get("running"):
