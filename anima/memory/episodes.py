@@ -62,6 +62,7 @@ class Commitment:
     resolved_at: float = 0.0
     agenda_id: str = ""
     due_at: float = 0.0
+    resolution: str = ""  # 新增：完成/取消原因
 
     def __post_init__(self) -> None:
         self.id = self.id or f"com_{uuid.uuid4().hex[:12]}"
@@ -70,6 +71,7 @@ class Commitment:
         self.created_at = float(self.created_at or time.time())
         self.agenda_id = str(self.agenda_id or "")[:64]
         self.due_at = max(0.0, float(self.due_at or 0.0))
+        self.resolution = str(self.resolution)[:200]
         if self.status not in {"open", "completed", "cancelled"}:
             self.status = "open"
 
@@ -172,10 +174,11 @@ class EpisodicMemory:
         self.commitments.append(item)
         return item
 
-    def resolve(self, commitment_id: str, *, status: str = "completed") -> bool:
+    def resolve(self, commitment_id: str, *, status: str = "completed", resolution: str = "") -> bool:
         for item in self.commitments:
             if item.id == commitment_id and item.status == "open":
                 item.status, item.resolved_at = status, time.time()
+                item.resolution = resolution if resolution else status
                 self.save()
                 return True
         return False

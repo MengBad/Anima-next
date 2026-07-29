@@ -18,6 +18,8 @@ from .social import (
 )
 from .owner import make_propose_skill_draft, make_self_code, make_generate_image
 from .sticker import make_sticker_tools
+from .merge import make_merge_forward
+from .honor import make_group_honor
 from .agent_tools import register_agent_tools
 
 
@@ -100,6 +102,12 @@ def register_all_builtin(registry, core=None) -> None:
         tool_runtime_status,
         min_level=LEVEL_ADMIN,
     ))
+
+    # --- A3 新增：合并转发整理员 ---
+    registry.register(make_merge_forward())
+
+    # --- A5 新增：群荣誉读者（只读）---
+    registry.register(make_group_honor())
 
     # --- 需要 core 的工具 ---
     if core is not None:
