@@ -20,6 +20,7 @@ class QQConfig(BaseModel):
     event_concurrency: int = 12       # 同时执行业务事件上限，WS 回执仍独立即时处理
     max_pending_events: int = 128     # 高峰保护；超过后只丢新事件并计入健康指标
     typing_indicator: bool = True     # 私聊回复前发送“正在输入...”状态（NapCat 扩展）
+    known_bot_ids: list[int] = Field(default_factory=list)  # 多 bot 环境：显式标注其他 bot 的 QQ，用于归属/过滤
 
 
 class LLMConfig(BaseModel):
@@ -367,6 +368,7 @@ class ReplySplitConfig(BaseModel):
     delay_base: float = 0.4           # 基础延迟（秒）
     delay_factor: float = 0.02        # 每字延迟（秒/字）
     delay_jitter: float = 0.3         # 随机抖动上限（秒）
+    context_aware_interrupt: bool = True  # 分段发送中若用户插话调侃，停止后续分段并自嘲收尾
 
 
 class DebounceConfig(BaseModel):

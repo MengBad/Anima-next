@@ -1269,13 +1269,32 @@ class LLMHandler:
             return
 
         sent_ids = []
+        last_send_ts = time.time()
+        context_aware = getattr(
+            getattr(self.core.config, "reply_split", None), "context_aware_interrupt", True
+        )
         for idx, (msg_segs, delay) in enumerate(messages):
+            # 分段语境感知（P1）：发出后续段前，若用户已插话调侃则中断并自嘲收尾
+            if idx > 0 and context_aware and _should_interrupt_for_teasing(
+                getattr(self.core.gateway, "channel", None), group_id, last_send_ts
+            ):
+                logger.info(
+                    "[分段中断] 用户在段%d后插话调侃，停止后续发送 trace=%s", idx, trace
+                )
+                try:
+                    await self.core.gateway.send(
+                        OutboundMsg(detail_type, target_id, "（被你抓包了…本喵闭嘴喵）")
+                    )
+                except Exception:
+                    logger.exception("分段中断自嘲回应发送失败")
+                break
             if delay > 0:
                 await asyncio.sleep(delay)
             mid = await self.core.gateway.send(
                 OutboundMsg(detail_type, target_id, msg_segs)
             )
             sent_ids.append(mid)
+            last_send_ts = time.time()
             if mid is None:
                 logger.warning("[出站失败][trace=%s] part=%d text_len=%d | segs=%s",
                                trace, idx, len(ctx.reply or ""), [s.get("type") for s in msg_segs])
@@ -1940,3 +1959,28 @@ def _split_reply_messages_with_split(
             continue
         cleaned.append((msg_segs, delay))
     return cleaned
+
+
+# ---------------------------------------------------------------------------
+# 分段语境感知（P1）：用户插话调侃时中断后续分段
+# ---------------------------------------------------------------------------
+
+_TEASING_RE = re.compile(
+    r"(心里话别说出来|别念叨了|别碎碎念|别自言自语|别自己跟自己说话|"
+    r"别说了|打住|够了|闭嘴|说你呢|你怎么又|别自嗨|别沉浸|别自顾自|"
+    r"你刚在跟谁说话|你在跟谁说话|别自己玩|念叨啥呢|你跟谁聊呢)",
+    re.I,
+)
+
+
+def is_teasing_interrupt(text: str) -> bool:
+    """判定用户插话是否为调侃/打断（此时应停止自顾自的多段输出）。"""
+    return bool(_TEASING_RE.search(text or ""))
+
+
+def _should_interrupt_for_teasing(channel: "Any", group_id: "int | None", since_ts: float) -> bool:
+    """分段发送中，若用户在上一分段后插话调侃，返回 True（供发送循环中断用）。"""
+    if channel is None or not hasattr(channel, "latest_inbound_since"):
+        return False
+    intr = channel.latest_inbound_since(group_id, since_ts)
+    return intr is not None and is_teasing_interrupt(intr[1])

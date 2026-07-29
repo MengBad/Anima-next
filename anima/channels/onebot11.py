@@ -457,6 +457,70 @@ def parse_onebot_event(raw: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# 多 bot 环境：成员/发信人归属 + 头衔变更溯源
+# ---------------------------------------------------------------------------
+
+def is_bot_member(
+    member_info: "dict | None",
+    known_bot_ids: "set[int] | list[int] | None" = None,
+) -> bool:
+    """判定某群成员是否为 bot（多 bot 环境归属，避免把其他 bot 当人）。
+
+    - role == "bot" 直接判定；
+    - user_id 命中 known_bot_ids 也判定为 bot。
+    """
+    if not isinstance(member_info, dict):
+        return False
+    if str(member_info.get("role", "")).lower() == "bot":
+        return True
+    uid = member_info.get("user_id")
+    if uid is None:
+        return False
+    try:
+        uid = int(uid)
+    except (TypeError, ValueError):
+        return False
+    if known_bot_ids:
+        try:
+            return uid in {int(x) for x in known_bot_ids}
+        except (TypeError, ValueError):
+            return False
+    return False
+
+
+def build_title_change_note(event: "dict | None", self_id: "int | None") -> "str | None":
+    """群专属头衔变更且目标是自己时，生成一条 self_notes 文本；否则返回 None。
+
+    OneBot11 的 group_title_update 事件：user_id/target_id 为被改头衔的成员，
+    operator_id 为操作者。只有目标是本 bot 才需要记录（含操作者归因）。
+    """
+    if not isinstance(event, dict):
+        return None
+    if event.get("notice_type") != "group_title_update":
+        return None
+    try:
+        target = int(event.get("user_id") or event.get("target_id") or 0)
+    except (TypeError, ValueError):
+        target = 0
+    try:
+        sid = int(self_id) if self_id is not None else 0
+    except (TypeError, ValueError):
+        sid = 0
+    if target != sid or sid == 0:
+        return None
+    new_title = (event.get("title") or (event.get("raw") or {}).get("title") or "").strip()
+    operator = event.get("operator_id")
+    try:
+        operator = int(operator) if operator is not None else None
+    except (TypeError, ValueError):
+        operator = None
+    operator_desc = f"QQ {operator}" if operator else "有人"
+    if new_title:
+        return f"头衔被{operator_desc}改为【{new_title}】"
+    return f"头衔被{operator_desc}清空了"
+
+
+# ---------------------------------------------------------------------------
 # OneBot11 渠道适配器
 # ---------------------------------------------------------------------------
 
@@ -479,6 +543,10 @@ class OneBot11Adapter(Module):
         self.event_concurrency = max(1, min(int(event_concurrency), 64))
         self.max_pending_events = max(1, min(int(max_pending_events), 2048))
         self.core: Optional["AnimaCore"] = None
+
+        # 多 bot 环境：群内最近入站环形缓冲（供分段发送的「用户是否已回上一段」判定）
+        self._recent_inbound: dict[int, list[tuple[float, int, str]]] = {}
+        self._recent_inbound_max = 200
 
         # 运行时状态
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -798,6 +866,12 @@ class OneBot11Adapter(Module):
             self._record_event_drop("self_echo")
             return
 
+        # 多 bot 环境：标记发信人是否为其他 bot；并登记群内入站（供分段插话判定）
+        if event["post_type"] == "message" and event.get("group_id"):
+            known = self._known_bot_ids()
+            event["sender_is_bot"] = is_bot_member(event.get("sender", {}) or {}, known)
+            self.record_inbound(event.get("group_id"), event.get("user_id"), event.get("message", ""))
+
         # 消息去重：同一 message_id 只处理一次（NapCat 可能重复推送）
         mid = raw.get("message_id")
         if mid is not None:
@@ -823,6 +897,18 @@ class OneBot11Adapter(Module):
 
         # 同时通过 Gateway 记录
         await self.core.gateway.on_event(event)
+
+        # 群头衔（专属头衔）变更且目标是自己 → 写入 self_notes（多 bot 环境归属）
+        if event["post_type"] == "notice" and event.get("notice_type") == "group_title_update":
+            note = build_title_change_note(event, self.self_id)
+            if note:
+                try:
+                    from anima.cognitive.learning import get_learning
+                    data_dir = str(self.core.config.persistence.data_dir)
+                    get_learning(data_dir).add_note(note, delta=0.05, category="self_correction")
+                    logger.info("[头衔变更] %s", note)
+                except Exception:
+                    logger.exception("头衔变更写入 self_notes 失败")
 
     # ------------------------------------------------------------------
     # 出站：优先 HTTP API；HTTP 不可用时回退 WS action
@@ -1159,6 +1245,40 @@ class OneBot11Adapter(Module):
         )
         return resp is not None
 
+    # ------------------------------------------------------------------
+    # 多 bot 环境辅助
+    # ------------------------------------------------------------------
+
+    def _known_bot_ids(self) -> "set[int]":
+        """从配置读取已知 bot QQ 集合（容错）。"""
+        cfg = getattr(getattr(getattr(self, "core", None), "config", None), "qq", None)
+        ids = getattr(cfg, "known_bot_ids", None) or []
+        try:
+            return {int(x) for x in ids}
+        except (TypeError, ValueError):
+            return set()
+
+    def record_inbound(self, group_id: "int | None", user_id: "int | None", text: str) -> None:
+        """记录群内入站消息（用于分段发送时的插话判定）。"""
+        if group_id is None or user_id is None:
+            return
+        buf = self._recent_inbound.setdefault(int(group_id), [])
+        buf.append((time.time(), int(user_id), (text or "").strip()[:200]))
+        if len(buf) > self._recent_inbound_max:
+            del buf[: len(buf) - self._recent_inbound_max]
+
+    def latest_inbound_since(self, group_id: "int | None", since_ts: float) -> "tuple[int, str] | None":
+        """返回 since_ts 之后、最近一条入站消息 (user_id, text)，无则 None。"""
+        if group_id is None:
+            return None
+        buf = self._recent_inbound.get(int(group_id))
+        if not buf:
+            return None
+        for ts, uid, text in reversed(buf):
+            if ts > since_ts:
+                return (uid, text)
+        return None
+
     async def get_group_member_list(self, group_id: int) -> Optional[list[dict]]:
         """获取群成员列表。"""
         resp = await self._call_action(
@@ -1178,7 +1298,11 @@ class OneBot11Adapter(Module):
             {"group_id": group_id, "user_id": user_id},
             timeout=10.0,
         )
-        return resp if isinstance(resp, dict) else None
+        if isinstance(resp, dict):
+            # 多 bot 环境：标记是否为其他 bot
+            resp["is_bot"] = is_bot_member(resp, self._known_bot_ids())
+            return resp
+        return None
 
     async def get_group_info(self, group_id: int) -> Optional[dict]:
         """获取群基本信息（群名/人数/公告等）。"""

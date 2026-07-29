@@ -10,6 +10,7 @@ from typing import Optional
 
 from anima.pipeline import StageResult, PipelineContext
 from anima.pipeline.context import ContextComposer
+from anima.core.reply_splitter import filter_inner_monologue  # P0：内心独白过滤
 from anima.media import fetch_prepared_images, to_data_uri, build_multimodal_user_content
 from ._shared import _detect_promise_and_schedule
 
@@ -546,6 +547,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         pass
 
     ctx.reply = _strip_speaker_labels(reply)
+    # P0：过滤混入对外消息的内心独白（自我反思 / 自言自语）
+    ctx.reply = filter_inner_monologue(ctx.reply)
 
     # F1: 出站错别字注入
     ctx.reply = _maybe_inject_typo(ctx.reply, ctx.meta.get("core"))

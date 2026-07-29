@@ -137,6 +137,31 @@ HOURLY_ACTIVITY = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 自身状态刷新（P3）：每小时核对群头衔/名片，变更写 self_notes
+# ---------------------------------------------------------------------------
+
+def compute_self_status_notes(
+    prev_title: str, new_title: str, prev_card: str, new_card: str, group_id: int
+) -> "list[str]":
+    """比较自身在群内的头衔/名片前后状态，返回需写入 self_notes 的文本列表。
+
+    仅在发生实际变化时返回条目；首跑（prev 为空）由调用方决定是否跳过，避免刷屏。
+    """
+    notes: list[str] = []
+    if prev_title != new_title:
+        if new_title:
+            notes.append(f"群 {group_id} 当前头衔：【{new_title}】")
+        else:
+            notes.append(f"群 {group_id} 头衔被清空了")
+    if prev_card != new_card:
+        if new_card:
+            notes.append(f"群 {group_id} 当前群名片：【{new_card}】")
+        else:
+            notes.append(f"群 {group_id} 群名片被清空了")
+    return notes
+
+
 class Heartbeat:
     """自主心跳引擎。"""
 
@@ -183,6 +208,8 @@ class Heartbeat:
         self._group_speak_count: dict[int, int] = {}
         self._group_total_msgs: dict[int, int] = {}
         self._group_last_msg: dict[int, float] = {}   # 最近一次人类发言时间
+        self._last_self_status_refresh: float = 0.0
+        self._self_status_cache: dict[int, dict] = {}   # group_id -> {title, card}
         self._last_active_speak: float = 0.0           # 最近一次主动发言时间
         # 只在当前进程保留最近主动发言。用于避免模型围绕同一个梗短时间复读，
         # 不写入用户记忆，也不影响正常的被动回复。
@@ -295,6 +322,44 @@ class Heartbeat:
             except Exception:
                 logger.exception("心跳 tick 异常")
 
+    async def _refresh_self_status(self) -> None:
+        """每小时刷新 bot 在各群的专属头衔/群名片，变更则写入 self_notes（P3）。"""
+        channel = getattr(getattr(self.core, "gateway", None), "channel", None)
+        if channel is None or not hasattr(channel, "get_group_member_info"):
+            return
+        self_id = getattr(channel, "self_id", None)
+        if not self_id:
+            return
+        groups = [int(g) for g in getattr(self, "_group_last_msg", {}).keys()]
+        for gid in groups:
+            try:
+                info = await channel.get_group_member_info(gid, int(self_id))
+            except Exception:
+                logger.debug("刷新自身状态失败 group=%s", gid, exc_info=True)
+                continue
+            if not isinstance(info, dict):
+                continue
+            new_title = (info.get("title") or "").strip()
+            new_card = (info.get("card") or "").strip()
+            prev = self._self_status_cache.get(gid)
+            if prev is None:
+                # 首跑只种基线，不刷屏
+                self._self_status_cache[gid] = {"title": new_title, "card": new_card}
+                continue
+            notes = compute_self_status_notes(
+                prev.get("title", ""), new_title, prev.get("card", ""), new_card, gid
+            )
+            if notes:
+                try:
+                    from anima.cognitive.learning import get_learning
+                    data_dir = str(self.core.config.persistence.data_dir)
+                    for n in notes:
+                        get_learning(data_dir).add_note(n, delta=0.05, category="self_correction")
+                    logger.info("[自身状态] group=%s 更新 %d 条", gid, len(notes))
+                except Exception:
+                    logger.exception("自身状态写入 self_notes 失败")
+            self._self_status_cache[gid] = {"title": new_title, "card": new_card}
+
     async def _tick(self) -> None:
         self._expire_active_feedback(time.time())
         try:
@@ -406,6 +471,14 @@ class Heartbeat:
                     logger.debug("selfcode evaluate skipped", exc_info=True)
         except Exception:
             logger.exception("ops_cleanup 心跳清理失败（已隔离）")
+
+        # 每小时刷新自身群状态（头衔/名片），变更写 self_notes（P3）
+        try:
+            if now - float(getattr(self, "_last_self_status_refresh", 0.0) or 0.0) >= 3600:
+                self._last_self_status_refresh = now
+                await self._refresh_self_status()
+        except Exception:
+            logger.exception("自身状态刷新失败（已隔离）")
 
         # 自主发现路径（不依赖是否找到可主动发言的群）：
         # 故障工单扫描 + 自升级熔断/提案。原先挂在 _pick_group 成功之后，

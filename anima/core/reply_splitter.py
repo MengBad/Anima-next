@@ -330,6 +330,45 @@ class SplitResult:
         return len(self.segments) <= 1
 
 
+# ---------------------------------------------------------------------------
+# 内心独白过滤（P0）：拦截混入对外消息的自我反思 / 自言自语
+# ---------------------------------------------------------------------------
+
+# 括号内心活动：含自我指涉或思考动词的整段括号剥除
+_INNER_PAREN_RE = re.compile(
+    r"（[^）]*?(?:本喵|心里|暗自|寻思|嘀咕|碎碎念|自言自语|没理清楚|扯远|"
+    r"琢磨|纠结|走神|走神了|神游|心里话)[^）]*?）"
+)
+# 以「说起来，」开头的整句反思（通常是对自己说的，不该发出去）
+_INNER_LEADING_RE = re.compile(r"说起来[，,].*?[。！？\n]")
+# 零散自言自语短语（保守匹配，仅在明显自语时移除）
+_INNER_PHRASE_RE = re.compile(
+    r"本喵刚又扯远了"
+    r"|本喵还没理清楚[^。！？\n]*?"
+    r"|用不用去问问[^。！？\n]*?[呀吗]"
+    r"|要不要去问[^。！？\n]*?[呀吗]"
+    r"|本喵(?:刚刚)?(?:又)?在心里(?:嘀咕|念叨)[^。！？\n]*?"
+)
+
+
+def filter_inner_monologue(text: str) -> str:
+    """过滤混入对外消息的内部独白（自我反思 / 自言自语）。
+
+    只移除明显属于「本喵对自己说」的内容，不触碰正常聊天文本。
+    设计原则：宁少勿错，避免误伤正常发言。幂等：多次调用结果一致。
+    """
+    if not text:
+        return text
+    cleaned = _INNER_PAREN_RE.sub(" ", text)
+    cleaned = _INNER_LEADING_RE.sub(" ", cleaned)
+    cleaned = _INNER_PHRASE_RE.sub(" ", cleaned)
+    # 清理因删除产生的多余空白与孤立标点（不删结尾标点，避免损伤正常文本）
+    cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+    cleaned = re.sub(r"\s*([。！？，；])", r"\1", cleaned)
+    cleaned = re.sub(r"^[，。！？\s]+", "", cleaned).strip()
+    return cleaned
+
+
 def split_reply(
     text: str,
     cfg: SplitConfig | None = None,
@@ -338,6 +377,7 @@ def split_reply(
 ) -> SplitResult:
     """将回复文本分段并计算每段延迟。"""
     cfg = cfg or SplitConfig()
+    text = filter_inner_monologue(text)  # P0：分段前过滤内心独白
     segments = split_text(text, cfg)
     delays = [
         compute_delay(seg, i, cfg, mood_label, relation_stage)
