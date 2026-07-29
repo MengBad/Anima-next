@@ -356,6 +356,15 @@ class Heartbeat:
             self._group_last_speak.clear()
             self._tokens_today = 0
             self._day_reset = now
+            # 每日低峰：网页知识库置信衰减与过期清理（P1，失败隔离）
+            try:
+                from anima.memory.web_knowledge import WebKnowledgeStore
+                data_dir = str(self.core.config.persistence.data_dir)
+                removed = WebKnowledgeStore(data_dir).decay()
+                if removed:
+                    logger.info("WebKnowledgeStore 每日衰减清理 %d 条过期知识", removed)
+            except Exception as e:
+                logger.warning("WebKnowledgeStore 每日衰减失败（已忽略）: %s", e)
 
         # Token 预算检查
         if self.token_budget and self._tokens_today >= self.token_budget:

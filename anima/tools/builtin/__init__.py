@@ -9,6 +9,7 @@ from anima.tools import Tool, LEVEL_READONLY, LEVEL_USER, LEVEL_ADMIN, LEVEL_OWN
 
 from .system import tool_time, tool_calc, tool_weather, tool_runtime_status
 from .web import tool_web_search
+from .web_memory import tool_query_web_memory
 from .file import make_file_tool
 from .bilibili import make_bilibili_read, make_subscribe_bilibili_live
 from .social import (
@@ -61,10 +62,20 @@ def register_all_builtin(registry, core=None) -> None:
     ))
 
     registry.register(Tool(
+        "query_web_memory",
+        "查询 Bot 之前从网页搜索中学到的知识（本地记忆，无需联网）：当用户问常识性/事实性"
+        "问题（历史、技术、定义、天气、新闻等）时，先调用此工具；命中则返回已学内容，"
+        "避免重复搜网与隐私外传。仅在返回『没有相关的网络记忆』时才改用 web_search。",
+        {"query": {"type": "string", "description": "要查询的关键词，简练中文，如 '2026 奥运会举办地'"}},
+        tool_query_web_memory,
+        required=["query"],
+        min_level=LEVEL_USER,
+    ))
+    registry.register(Tool(
         "web_search",
         "联网搜索（Bing，无需 API key）：当用户问到需要实时/最新信息、事实查证、"
         "新闻、具体资料而超出你知识范围时调用。返回标题+链接+摘要，并自动抓取前 2 条网页正文。"
-        "query 用简练中文描述要查的内容。",
+        "query 用简练中文描述要查的内容。注意：先尝试 query_web_memory 命中本地网页记忆。",
         {
             "query": {"type": "string", "description": "搜索关键词，简练中文，如 '2026 奥运会举办地'"},
             "num_results": {"type": "integer", "description": "返回结果条数，默认 5，范围 1-8"},

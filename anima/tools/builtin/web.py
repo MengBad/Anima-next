@@ -183,6 +183,19 @@ async def tool_web_search(query: str, num_results: int = 5,
                     block += f"\n正文不可获取: {fetch_error}"
             blocks.append(block)
 
+        # --- 自动记忆化（P1）：搜网结果摘要写入独立知识库，避免重复搜网且不污染成员事实 ---
+        try:
+            from anima.memory.web_knowledge import WebKnowledgeStore, extract_summary
+            summary_text = extract_summary(results, max_n=3)
+            if summary_text:
+                WebKnowledgeStore().add(
+                    query=query,
+                    summary=summary_text,
+                    source_urls=[r.get("url", "") for r in results[:3] if r.get("url")],
+                )
+        except Exception as e:  # 记忆化失败绝不拖累搜索本身
+            logger.debug("web_search 自动记忆化跳过: %s", e)
+
         header = f"关于「{query}」的搜索结果（共 {len(results)} 条，展示前 {n} 条）："
         return header + "\n\n" + "\n\n".join(blocks)
 
