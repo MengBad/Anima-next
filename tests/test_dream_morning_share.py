@@ -84,14 +84,33 @@ def test_get_last_dream_empty(tmp_path):
 
 
 def test_apply_dream_mood_to_soul(tmp_path):
-    # mood_tag(weird) -> emotion(happy)，写入 soul.json
-    (tmp_path / "soul.json").write_text(
-        json.dumps({"emotion": "sad"}), encoding="utf-8"
-    )
+    # mood_tag(weird) -> 微调 4 维灵魂能量：creativity +0.20, expression_desire +0.10
+    from anima.cognitive.soul import SoulSystem
+    soul = SoulSystem(str(tmp_path))
+    soul.save()  # 创建 soul.json（apply 要求文件已存在，安全返回 False 不创建）
     eng = DreamEngine(str(tmp_path))
-    assert eng.apply_dream_mood_to_soul("weird") is True
+    assert eng.apply_dream_mood_to_soul("weird", soul=soul) is True
+    assert abs(soul.state.creativity - 0.20) < 1e-6
+    assert abs(soul.state.expression_desire - 0.10) < 1e-6
+    # 未触碰的维度不变
+    assert soul.state.memory_depth == 0.0
+    assert soul.state.social_appetite == 0.0
+    # 持久化回 soul.json 的 state 字段（soul.json 用 4 维能量，无 emotion 字段）
     data = json.loads((tmp_path / "soul.json").read_text(encoding="utf-8"))
-    assert data["emotion"] == mood_tag_to_emotion("weird")
+    assert "state" in data
+    assert "emotion" not in data
+
+
+def test_apply_dream_mood_to_soul_clamps(tmp_path):
+    # 边界夹紧：social_appetite 已在 0.9，sad(-0.25) 应夹到 <=1.0 而非溢出
+    from anima.cognitive.soul import SoulSystem
+    soul = SoulSystem(str(tmp_path))
+    soul.save()
+    soul.state.social_appetite = 0.9
+    eng = DreamEngine(str(tmp_path))
+    assert eng.apply_dream_mood_to_soul("sad", soul=soul) is True
+    assert soul.state.social_appetite <= 1.0
+    assert soul.state.social_appetite == 0.9 - 0.25
 
 
 def test_apply_dream_mood_to_soul_no_soul_file(tmp_path):

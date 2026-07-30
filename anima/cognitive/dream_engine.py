@@ -36,6 +36,23 @@ def mood_tag_to_emotion(mood_tag: str) -> str:
     return _MOOD_TAG_TO_EMOTION.get((mood_tag or "").lower(), "calm")
 
 
+# A3：梦境 mood 对 4 维灵魂能量的微调（覆盖次日初始状态）。
+# soul.json 实际用的是 4 维能量 state（见 anima.cognitive.soul.SoulState），
+# 没有 emotion 字段，所以必须微调能量而非写不存在的字段。
+_MOOD_STATE_DELTA: dict[str, dict[str, float]] = {
+    "weird":   {"creativity": +0.20, "expression_desire": +0.10},  # 怪梦→脑洞大、想多说
+    "happy":   {"social_appetite": +0.20, "expression_desire": +0.15},  # 开心→想聊、话多
+    "anxious": {"social_appetite": -0.20, "creativity": +0.05},   # 焦虑→想独处、思维跳
+    "sad":     {"social_appetite": -0.25, "expression_desire": -0.10},  # 难过→不想说话
+    "calm":    {"creativity": +0.05, "memory_depth": +0.10},      # 平静→略发散、记性好
+    "excited": {"expression_desire": +0.20, "social_appetite": +0.15},  # 兴奋→话多、想聊
+}
+
+
+def _clamp1(v: float) -> float:
+    return max(-1.0, min(1.0, v))
+
+
 def _bj_date(ts: float) -> str:
     return datetime.fromtimestamp(ts, _BJ).strftime("%Y-%m-%d")
 
@@ -195,16 +212,34 @@ class DreamEngine:
             logger.debug("读取最后梦境失败", exc_info=True)
             return None
 
-    def apply_dream_mood_to_soul(self, mood_tag: str) -> bool:
-        """A3：梦境 mood_tag 覆盖次日 soul.json 初始情绪（weird→happy 等）。"""
-        emotion = mood_tag_to_emotion(mood_tag)
+    def apply_dream_mood_to_soul(self, mood_tag: str, soul: Any | None = None) -> bool:
+        """A3：梦境 mood_tag 覆盖次日 soul 初始情绪。
+
+        通过微调 4 维灵魂能量（见 anima.cognitive.soul.SoulState）实现：
+        creativity / expression_desire / memory_depth / social_appetite。
+        soul 可注入（测试用）；否则取 get_soul_system 单例。
+
+        Returns:
+            True 表示成功应用；soul.json 不存在时安全返回 False（不创建、不报错）。
+        """
         soul_path = self.data_dir / "soul.json"
         if not soul_path.exists():
             return False
+        if soul is None:
+            try:
+                from anima.cognitive.soul import get_soul_system
+                soul = get_soul_system(str(self.data_dir))
+            except Exception:
+                logger.debug("梦境情绪：加载 SoulSystem 失败", exc_info=True)
+                return False
+        deltas = _MOOD_STATE_DELTA.get((mood_tag or "").lower(), {})
+        state = soul.state
+        for dim, delta in deltas.items():
+            cur = getattr(state, dim, 0.0)
+            setattr(state, dim, _clamp1(cur + delta))
         try:
-            data = json.loads(soul_path.read_text(encoding="utf-8"))
-            data["emotion"] = emotion
-            soul_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+            soul.save()
+            logger.info("梦境情绪已微调 soul 能量 mood_tag=%s deltas=%s", mood_tag, deltas)
             return True
         except Exception:
             logger.debug("梦境情绪写入 soul.json 失败", exc_info=True)
