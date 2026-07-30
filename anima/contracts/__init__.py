@@ -15,6 +15,18 @@ from __future__ import annotations
 from .capability import CapabilityProtocol, Stability
 from .errors import CapabilityNotFoundError, ContextAbiError, ContractError
 from .execution import ExecutionContextProtocol
+from .facades import (
+    AgendaProtocol,
+    ConfigProtocol,
+    LegacyToolAccessProtocol,
+    MemoryProtocol,
+    OutboundMsg,
+    OutboundProtocol,
+    PermissionProtocol,
+    RAW_ACCESS_ALLOWLIST,
+    RAW_ACCESS_FORBIDDEN,
+    TelemetryProtocol,
+)
 from .lifecycle import CancellationToken, Checkpoint, Deadline, ResourceBudgetProtocol
 from .pipeline import PipelineContextProtocol, PipelineMetaProtocol
 
@@ -31,4 +43,14 @@ __all__ = [
     "ContractError",
     "CapabilityNotFoundError",
     "ContextAbiError",
+    "MemoryProtocol",
+    "AgendaProtocol",
+    "TelemetryProtocol",
+    "ConfigProtocol",
+    "PermissionProtocol",
+    "OutboundMsg",
+    "OutboundProtocol",
+    "LegacyToolAccessProtocol",
+    "RAW_ACCESS_ALLOWLIST",
+    "RAW_ACCESS_FORBIDDEN",
 ]
