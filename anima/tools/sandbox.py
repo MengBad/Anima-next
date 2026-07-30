@@ -390,6 +390,37 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig,
 # 公开 API
 # ---------------------------------------------------------------------------
 
+# 自动捕获（兜底）：用户代码未显式调用 _save_output 但留下了 PIL Image / 帧列表时，
+# 自动保存并标记 [output_image]，避免「模型生成了图却忘记输出」导致发不出图片。
+# 仅当用户代码恰好留下「一个」图片变量（排除注入的 _input_*）时才自动保存，避免误发。
+_AUTO_CAPTURE_BLOCK = '''
+if not _output_emitted:
+    try:
+        _cands = []
+        for _name, _val in list(globals().items()):
+            if _name.startswith('_input') or _name in ('_save_output', '_edit_each_frame', '_Image', 'Image', '_src', '_raw'):
+                continue
+            if isinstance(_val, _Image.Image):
+                _cands.append((_name, _val, False))
+            elif isinstance(_val, (list, tuple)) and _val and all(isinstance(_x, _Image.Image) for _x in _val):
+                _cands.append((_name, _val, True))
+        if len(_cands) == 1:
+            _n, _v, _anim = _cands[0]
+            try:
+                if _anim:
+                    _save_output(_v, 'out.gif')
+                else:
+                    _save_output(_v, 'output.png')
+                import sys as _ac_sys
+                print('[sandbox] 自动保存未显式输出的图片变量: ' + _n, file=_ac_sys.stderr)
+            except Exception as _e:
+                import sys as _ac_sys2
+                print('[sandbox] 自动保存失败: ' + type(_e).__name__ + ': ' + str(_e), file=_ac_sys2.stderr)
+    except Exception:
+        pass
+'''
+
+
 async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
                       input_images_b64: list[str] | None = None,
                       permission_level: int = _LEVEL_USER) -> str:
@@ -457,6 +488,7 @@ _builtins.__import__ = _safe_import
         f.write("""# 快捷：第一张图的 PIL Image 对象（无图时为 None）
 import io as _io, base64 as _b64
 _input_image = None
+_output_emitted = False  # 兜底自动捕获标记：_save_output 调用后置 True
 # 动画 GIF / APNG / 动态 WebP 支持：加载全部帧 + 元数据，避免编辑后丢失动画
 _input_frames = []          # 所有帧的 PIL.Image（单图 -> [img]）
 _input_duration = []        # 每帧时长 ms（单图 -> [0]）
@@ -495,6 +527,9 @@ if _input_image_b64 and _Image is not None:
             _input_frames = [_src.copy()]
             _input_duration = [0]
         _input_image = _input_frames[0] if _input_frames else None
+        # 清理解码残留的打开态 Image，避免污染全局命名空间导致兜底自动捕获误判候选数
+        if '_src' in globals():
+            del _src
     except Exception as _e:
         import sys as _s2
         _diag = f'b64_len={len(_input_image_b64)} raw_len={len(_raw) if "_raw" in dir() else -1}'
@@ -513,6 +548,7 @@ def _edit_each_frame(func):
 
 # 输出图片辅助：_save_output(img) 或 _save_output(frames, 'out.gif') 保存到共享目录并打印路径
 def _save_output(img, filename='output.png'):
+    global _output_emitted
     out_path = _os.path.join(_output_dir, filename)
     _is_list = isinstance(img, (list, tuple))
     _frames = list(img) if _is_list else None
@@ -535,10 +571,13 @@ def _save_output(img, filename='output.png'):
         _single = _frames[0] if _is_list else img
         _single.save(out_path)
     print(f'[output_image] {out_path}')
+    _output_emitted = True
     return out_path
 
 """)
         f.write(code)
+        # 兜底：用户代码跑完后，若未显式 _save_output，自动捕获残留的图片变量
+        f.write(_AUTO_CAPTURE_BLOCK)
         tmp_path = f.name
 
     # 创建共享输出目录。

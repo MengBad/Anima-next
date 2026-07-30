@@ -87,3 +87,38 @@ async def test_input_is_animated_flag_set():
     )
     out = await run_python(code, input_images_b64=[_b64(gif_bytes)], permission_level=4)
     assert "ANIM True 3" in out, f"_input_is_animated/帧数不正确: {out}"
+
+
+async def test_auto_capture_when_forget_save_output():
+    """兜底（修复「发不出图片」）：模型生成了编辑后的图却忘记调用 _save_output，
+
+    沙箱应自动捕获唯一残留的图片变量并标记 [output_image]，确保图片仍被发出。
+    """
+    from anima.tools.sandbox import run_python
+
+    img = Image.new("RGB", (30, 30), (10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    # 模型把图旋转后赋给新变量，但忘记 _save_output
+    code = "edited = _input_image.rotate(90)\n"
+    out = await run_python(code, input_images_b64=[_b64(buf.getvalue())], permission_level=4)
+    assert "[output_image]" in out, f"兜底自动捕获未生效（模型忘记 _save_output 导致发不出图）: {out}"
+    path = out.split("[output_image]")[-1].strip()
+    with Image.open(path) as reloaded:
+        assert reloaded.size == (30, 30)
+
+
+async def test_no_auto_capture_when_explicit_save():
+    """已显式 _save_output 时不重复自动捕获（避免双发 / 误发）。"""
+    from anima.tools.sandbox import run_python
+
+    img = Image.new("RGB", (30, 30), (10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    code = (
+        "edited = _input_image.rotate(90)\n"
+        "_save_output(edited, 'out.png')\n"
+    )
+    out = await run_python(code, input_images_b64=[_b64(buf.getvalue())], permission_level=4)
+    # 只应出现一次 [output_image]
+    assert out.count("[output_image]") == 1, f"重复捕获: {out}"
