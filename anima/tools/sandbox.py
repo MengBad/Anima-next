@@ -538,6 +538,33 @@ if _input_image_b64 and _Image is not None:
         print(f'[sandbox] image decode failed ({type(_e).__name__}): {_e} | {_diag}', file=_s2.stderr)
         _input_image = None
 
+# 直接落盘捕获：很多 LLM 生成的编辑代码会直接 img.save("out.png") 而非调用 _save_output，
+# 导致不打印 [output_image]、图片发不出。monkey-patch Image.save，任何落盘动作都捕获路径并标记输出。
+_save_in_progress = False  # _save_output 内部 save 时置 True，避免重复捕获
+_orig_image_save = _Image.Image.save if _Image is not None else None
+
+def _patched_image_save(self, fp, *args, **kwargs):
+    # 相对路径重定向到共享输出目录（确保 NapCat 可读，避免 PrivateTmp / cwd 差异导致发不出图）
+    if isinstance(fp, str) and not _os.path.isabs(fp) and _output_dir:
+        fp = _os.path.join(_output_dir, _os.path.basename(fp))
+    _ret = _orig_image_save(self, fp, *args, **kwargs) if _orig_image_save is not None else None
+    global _output_emitted, _save_in_progress
+    if _orig_image_save is not None and (not _output_emitted) and (not _save_in_progress):
+        try:
+            _p = fp if isinstance(fp, str) else getattr(fp, "name", None)
+            if _p and isinstance(_p, str):
+                print(f"[output_image] {_os.path.abspath(_p)}")
+                _output_emitted = True
+        except Exception:
+            pass
+    return _ret
+
+if _Image is not None:
+    try:
+        _Image.Image.save = _patched_image_save
+    except Exception:
+        pass
+
 def _edit_each_frame(func):
     '''对动画的每一帧应用 func(frame) -> frame，返回帧列表（单图也返回 [func(frame)]）。
 
@@ -548,31 +575,35 @@ def _edit_each_frame(func):
 
 # 输出图片辅助：_save_output(img) 或 _save_output(frames, 'out.gif') 保存到共享目录并打印路径
 def _save_output(img, filename='output.png'):
-    global _output_emitted
-    out_path = _os.path.join(_output_dir, filename)
-    _is_list = isinstance(img, (list, tuple))
-    _frames = list(img) if _is_list else None
-    _multi = _is_list and len(_frames) > 1
-    _want_anim = _multi or (not _is_list and _input_is_animated and str(filename).lower().endswith('.gif'))
-    if _want_anim:
-        # 动画输出：保存为多帧 GIF，保留每帧时长与循环，避免编辑后变静图
-        if not _is_list:
-            _frames = [img]
-        if not str(filename).lower().endswith('.gif'):
-            filename = _os.path.splitext(filename)[0] + '.gif'
-            out_path = _os.path.join(_output_dir, filename)
-        _frames[0].save(
-            out_path, save_all=True, append_images=_frames[1:],
-            duration=_input_duration[:len(_frames)] or None,
-            loop=_input_loop, disposal=2, optimize=False,
-        )
-    else:
-        # 单图或单帧列表：存为普通图片（_edit_each_frame 对静图返回 [img] 也能正确保存）
-        _single = _frames[0] if _is_list else img
-        _single.save(out_path)
-    print(f'[output_image] {out_path}')
-    _output_emitted = True
-    return out_path
+    global _output_emitted, _save_in_progress
+    _save_in_progress = True
+    try:
+        out_path = _os.path.join(_output_dir, filename)
+        _is_list = isinstance(img, (list, tuple))
+        _frames = list(img) if _is_list else None
+        _multi = _is_list and len(_frames) > 1
+        _want_anim = _multi or (not _is_list and _input_is_animated and str(filename).lower().endswith('.gif'))
+        if _want_anim:
+            # 动画输出：保存为多帧 GIF，保留每帧时长与循环，避免编辑后变静图
+            if not _is_list:
+                _frames = [img]
+            if not str(filename).lower().endswith('.gif'):
+                filename = _os.path.splitext(filename)[0] + '.gif'
+                out_path = _os.path.join(_output_dir, filename)
+            _frames[0].save(
+                out_path, save_all=True, append_images=_frames[1:],
+                duration=_input_duration[:len(_frames)] or None,
+                loop=_input_loop, disposal=2, optimize=False,
+            )
+        else:
+            # 单图或单帧列表：存为普通图片（_edit_each_frame 对静图返回 [img] 也能正确保存）
+            _single = _frames[0] if _is_list else img
+            _single.save(out_path)
+        print(f'[output_image] {out_path}')
+        _output_emitted = True
+        return out_path
+    finally:
+        _save_in_progress = False
 
 """)
         f.write(code)

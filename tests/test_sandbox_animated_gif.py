@@ -5,6 +5,7 @@
 import asyncio
 import base64
 import io
+import os
 
 from PIL import Image, ImageDraw
 
@@ -122,3 +123,35 @@ async def test_no_auto_capture_when_explicit_save():
     out = await run_python(code, input_images_b64=[_b64(buf.getvalue())], permission_level=4)
     # 只应出现一次 [output_image]
     assert out.count("[output_image]") == 1, f"重复捕获: {out}"
+
+
+async def test_direct_save_captured_even_with_multiple_image_vars():
+    """根因回归（2026-07-30）：模型编辑后直接 img.save('out.png') 而非 _save_output，
+    且留下多个 Image 变量（im / left / right / edited 等）。旧的「恰好一个残留变量」
+    兜底会漏掉，导致图片发不出。修复后 Image.save 被拦截，相对路径重定向到共享目录
+    并标记 [output_image]，确保图片仍被发出。
+    """
+    from anima.tools.sandbox import run_python
+
+    img = Image.new("RGB", (30, 30), (10, 20, 30))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    # 模拟真实退化代码：左右翻转合成，最后 edited.save('out.png')（不调 _save_output）
+    code = (
+        "im = _input_image\n"
+        "left = im.crop((0, 0, im.width // 2, im.height))\n"
+        "right = left.transpose(Image.FLIP_LEFT_RIGHT)\n"
+        "edited = Image.new('RGB', (im.width, im.height))\n"
+        "edited.paste(left, (0, 0))\n"
+        "edited.paste(right, (im.width // 2, 0))\n"
+        "edited.save('out.png')\n"
+    )
+    out = await run_python(code, input_images_b64=[_b64(buf.getvalue())], permission_level=4)
+    assert "[output_image]" in out, f"直接 .save() 未被捕获，图片会发不出: {out}"
+    # 路径应为绝对路径（NapCat 按绝对路径读取，相对路径会找不到）
+    path = out.split("[output_image]")[-1].strip()
+    assert os.path.isabs(path), f"输出路径非绝对，NapCat 可能读不到: {path}"
+    # 不应重复标记（避免双发）
+    assert out.count("[output_image]") == 1, f"重复捕获: {out}"
+    with Image.open(path) as reloaded:
+        assert reloaded.size == (30, 30)
