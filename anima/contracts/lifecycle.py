@@ -11,9 +11,10 @@
 """
 from __future__ import annotations
 
-from typing import Protocol
+from typing import Protocol, runtime_checkable
 
 
+@runtime_checkable
 class CancellationToken(Protocol):
     """取消令牌：可查询是否已取消，可主动取消。"""
 
@@ -22,6 +23,7 @@ class CancellationToken(Protocol):
     def cancel(self) -> None: ...
 
 
+@runtime_checkable
 class Deadline(Protocol):
     """截止期限：对应超时（timeout）。"""
 
@@ -30,6 +32,7 @@ class Deadline(Protocol):
     def remaining_seconds(self) -> float | None: ...
 
 
+@runtime_checkable
 class Checkpoint(Protocol):
     """检查点：对应断点续跑（resume）。save 落盘，restore 恢复。"""
 
@@ -38,6 +41,7 @@ class Checkpoint(Protocol):
     def restore(self) -> bool: ...
 
 
+@runtime_checkable
 class ResourceBudgetProtocol(Protocol):
     """解耦契约：对应已存在的 anima.agent.guardrails.ResourceBudget。
 
