@@ -58,6 +58,11 @@ class PipelineContext:
     vision_descs: list = field(default_factory=list)     # 后台生成的图片描述（供记忆/调试）
     generated_image_paths: list[str] = field(default_factory=list)  # 本回合 owner 生图结果
 
+    # M0.1 Commit 3b：Facade Surface（旧 core → 新边界投影入口）。
+    # Stage 仍经 meta["core"] 读取（3c 迁移后移除）；ctx.core 是窄 facade 表面，
+    # 不是数据 ABI（PipelineContextProtocol 不含此字段）。
+    core: Any = None
+
 
 class Pipeline:
     """5 阶段流水线编排器。"""

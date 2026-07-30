@@ -16,3 +16,11 @@ class CapabilityNotFoundError(ContractError):
 
 class ContextAbiError(ContractError):
     """上下文未满足 Protocol ABI（如旧 PipelineContext 缺字段）。"""
+
+
+class RawAccessForbidden(ContractError):
+    """经 raw 访问已有 facade 的能力（应改用 ctx.core.<facade>()）。"""
+
+
+class RawAccessNotAllowed(ContractError):
+    """经 raw 访问不在允许列表的能力（非既定迁移桥）。"""

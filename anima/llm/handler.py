@@ -6,6 +6,7 @@ import base64
 from datetime import datetime, timedelta, timezone
 import json
 import logging
+import os
 import random
 import re
 import secrets
@@ -1292,6 +1293,16 @@ class LLMHandler:
             inbound_images=event.get("images") or [],
             meta={"core": self.core, "group_presence": event.get("group_presence", "")},
         )
+
+        # M0.1 Commit 3b：建立 Facade Surface（仅入口，不迁移 Stage）。
+        # ctx.core 目前未被任何 Stage 消费，仅作为「旧 core → 新边界」投影入口存在；
+        # Stage 迁移到 ctx.core.<facade>() 在 3c 进行。
+        # 保留 meta["core"] 以兼容未迁移 Stage，待 3c 全量迁移后移除。
+        # flag 默认开启（Facade 生效）；设为 false 则仅保留 legacy meta["core"]，可回滚。
+        from anima.contracts.access import DeprecatedCoreAccess, facade_enabled
+
+        if facade_enabled():
+            ctx.core = DeprecatedCoreAccess(self.core)
 
         # 霸凌检测（自我保护协议）：收到消息时先过 detector，命中则标记 context。
         # 后续 generation 阶段据此决定「冷回 / 沉默」，发送阶段据此抑制分段。
