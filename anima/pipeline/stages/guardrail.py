@@ -300,10 +300,10 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         logger.warning("Guardrail: 未提示却塞入固定旧梗，改写为短接话")
         ctx.reply = "（本喵刚又扯远了）你刚才那句本喵听着呢，直接说重点喵。"
         try:
-            core = (ctx.meta or {}).get("core")
-            quality = getattr(core, "reply_quality", None) if core is not None else None
-            if quality is not None:
-                quality.record_guard_fixation()
+            # M0.1 Commit 3c-1a (Telemetry/T1)：经 Facade 表面记录 guard fixation，
+            # 不再经 meta["core"] 抓整个 core。ctx.core 由 handler 无条件注入；
+            # 缺失时静默失败不破坏回复（兼容未迁移测试与 flag=false 探针环境）。
+            ctx.core.telemetry().record_guard_fixation()
         except Exception:
             logger.debug("fixation telemetry failed", exc_info=True)
         await _record_reply_memory(ctx)

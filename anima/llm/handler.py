@@ -1281,6 +1281,20 @@ class LLMHandler:
         except Exception:
             pass
 
+        # M0.1 Commit 3c-1a (D1)：ctx.core 无条件注入。
+        # flag ANIMA_CORE_FACADE_ENABLED 语义翻转（见 access.facade_enabled）：
+        #   现控制「legacy meta["core"] 表面」是否保留，不再控制 ctx.core 是否存在。
+        #   - true（默认）：保留 legacy 表面 + Facade（ctx.core 永远注入）。
+        #   - false：仅移除 legacy 表面，Facade 仍在 → 迁移探针（Phase C：旧路径归零即达标）。
+        # ctx.core 永远存在，Stage 侧单路径、无需 fallback；flag 关闭后若仍有 Stage 走
+        # meta["core"] 即报错，暴露未迁移点。
+        from anima.contracts.access import DeprecatedCoreAccess, facade_enabled
+
+        _legacy_surface = facade_enabled()  # 旧 flag 名保留；现语义 = legacy 表面开关
+        _meta = {"group_presence": event.get("group_presence", "")}
+        if _legacy_surface:
+            _meta["core"] = self.core
+
         # 构建 pipeline 上下文
         ctx = PipelineContext(
             event=event,
@@ -1291,18 +1305,10 @@ class LLMHandler:
             sender_name=sender_name,
             mentioned_uids=event.get("at_uids", []),
             inbound_images=event.get("images") or [],
-            meta={"core": self.core, "group_presence": event.get("group_presence", "")},
+            meta=_meta,
         )
-
-        # M0.1 Commit 3b：建立 Facade Surface（仅入口，不迁移 Stage）。
-        # ctx.core 目前未被任何 Stage 消费，仅作为「旧 core → 新边界」投影入口存在；
-        # Stage 迁移到 ctx.core.<facade>() 在 3c 进行。
-        # 保留 meta["core"] 以兼容未迁移 Stage，待 3c 全量迁移后移除。
-        # flag 默认开启（Facade 生效）；设为 false 则仅保留 legacy meta["core"]，可回滚。
-        from anima.contracts.access import DeprecatedCoreAccess, facade_enabled
-
-        if facade_enabled():
-            ctx.core = DeprecatedCoreAccess(self.core)
+        # ctx.core 永远存在（Facade 表面）；Stage 迁移到 ctx.core.<facade>() 在 3c 进行。
+        ctx.core = DeprecatedCoreAccess(self.core)
 
         # 霸凌检测（自我保护协议）：收到消息时先过 detector，命中则标记 context。
         # 后续 generation 阶段据此决定「冷回 / 沉默」，发送阶段据此抑制分段。

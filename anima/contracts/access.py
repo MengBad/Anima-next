@@ -236,9 +236,12 @@ class DeprecatedCoreAccess:
 
 
 def facade_enabled() -> bool:
-    """M0.1 Commit 3b 的 flag 决策（handler 构造层使用）。
+    """M0.1 Commit 3c-1a (D1)：flag 语义 = legacy meta["core"] 表面开关（非 Facade 开关）。
 
-    默认开启（Facade 生效）；设为 "false" 则仅保留 legacy meta["core"]，可回滚。
-    抽成纯函数以便单测，handler 保持轻量。
+    - true（默认）：保留 legacy meta["core"] 表面 + Facade（ctx.core 永远注入）。
+    - false：仅移除 legacy 表面，Facade 仍在。作为迁移探针——
+      关闭后若仍有 Stage 走 meta["core"] 即报错，暴露未迁移点（Phase C 目标：旧路径归零）。
+    ctx.core（Facade）的存在不受此 flag 影响，永远注入；故 flag 名虽含 FACADE，
+    实控 legacy 表面，Phase C 清理时可顺手重命名为 ANIMA_CORE_LEGACY_SURFACE_ENABLED。
     """
     return os.environ.get("ANIMA_CORE_FACADE_ENABLED", "true").lower() != "false"

@@ -17,6 +17,7 @@ from anima.pipeline.stages import (
     _has_internal_tool_leak,
     _strip_speaker_labels,
 )
+from anima.contracts.access import DeprecatedCoreAccess
 
 
 # 用户贴出的真实破角色回复（已脱敏关键 CQ 码，结构完整）
@@ -253,3 +254,44 @@ async def test_guardrail_rewrites_unprompted_fixation():
     await guardrail_stage(ctx)
     assert "不叫沙琪玛" not in (ctx.reply or "")
     assert "扯远" in (ctx.reply or "") or "重点" in (ctx.reply or "")
+
+
+# ---- 3c-1a：Telemetry 经 Facade 表面的回归守护 ----
+class _FakeReplyQuality:
+    def __init__(self):
+        self.fixations = 0
+    def record_guard_fixation(self):
+        self.fixations += 1
+
+
+class _FakeCore:
+    def __init__(self):
+        self.reply_quality = _FakeReplyQuality()
+
+
+@pytest.mark.asyncio
+async def test_guardrail_records_fixation_via_facade():
+    """unprompted fixation 经 ctx.core.telemetry() 记录，且不依赖 meta['core']。"""
+    ctx = PipelineContext(
+        event={}, text="I ate a dog", user_id=1, group_id=1,
+        detail_type="group", sender_name="t", meta={},  # 无 meta core
+    )
+    fake = _FakeCore()
+    ctx.core = DeprecatedCoreAccess(fake)
+    ctx.reply = "本喵再说最后一遍，本喵叫哈基米，不叫沙琪玛喵！还有小鱼干呢！"
+    await guardrail_stage(ctx)
+    assert "不叫沙琪玛" not in (ctx.reply or ""), "回复未被改写"
+    assert fake.reply_quality.fixations == 1, "telemetry 未经 ctx.core 记录"
+
+
+@pytest.mark.asyncio
+async def test_guardrail_fixation_telemetry_missing_core_is_safe():
+    """ctx.core 缺失时（如未迁移环境）telemetry 静默失败，不破坏回复。"""
+    ctx = PipelineContext(
+        event={}, text="I ate a dog", user_id=1, group_id=1,
+        detail_type="group", sender_name="t", meta={},
+    )
+    ctx.core = None
+    ctx.reply = "本喵再说最后一遍，本喵叫哈基米，不叫沙琪玛喵！还有小鱼干呢！"
+    await guardrail_stage(ctx)
+    assert "不叫沙琪玛" not in (ctx.reply or "")
