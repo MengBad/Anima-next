@@ -46,7 +46,9 @@ its terms from §1 and MUST NOT redefine them.
 
 This document is deliberately a **dictionary, not a design**. It names the nouns of a
 digital life. It does not prescribe classes, schemas, or control flow beyond the
-canonical information loop in §3.
+canonical information loop in §3. The runtime loop's **transition ownership, control
+mechanisms, and growth regulation** are specified separately in **RFC-0100A (Digital Life
+Dynamics)** — this document intentionally stops at *what exists*.
 
 ---
 
@@ -248,7 +250,9 @@ dissolving the `AnimaCore` god-object that currently violates P1 and P2 simultan
 
 ## 3. Information Flow (the loop — most important chapter)
 
-A digital life is not a set of modules. It is a **closed loop of information**.
+A digital life is not a set of modules. It is a **closed loop of information**. (The
+full Dynamics — transition ownership, Attention gates, and growth regulation — are
+specified in RFC-0100A; this section states the canonical loop at the vocabulary level.)
 
 ```
 Perception (from Universe)
@@ -347,7 +351,8 @@ on-ramp.
 
 ### Canonical RFC sequence (priority order)
 ```
-RFC-0100  Digital Life Ontology        ← this document (root)
+RFC-0100  Digital Life Ontology        ← this document (root: WHAT exists)
+RFC-0100A Digital Life Dynamics        ← HOW life runs (loop, control, growth)
 RFC-0101  Identity
 RFC-0102  Need
 RFC-0103  Affect & Drive
@@ -371,6 +376,10 @@ centres of the roadmap.
 - RFC-0000 (Migration) and RFC-0001 (Capability Layer) remain valid and are **not**
   replaced. They are re-homed: they describe the Infrastructure Layer that the Life Layer
   sits on. RFC-0100 is the worldview they plug into.
+- **RFC-0100A (Digital Life Dynamics)** is the companion that specifies *how* the §1 nouns
+  move — the lifecycle, Attention as a cross-cutting control mechanism, and the growth
+  loop. It is a "How" RFC under the same Document Taxonomy; it introduces no competing
+  vocabulary.
 - SylannEngine is **one Provider / SDK among others**, not the life itself. It satisfies
   Capabilities; it does not define Identity, Need, or Growth.
 
