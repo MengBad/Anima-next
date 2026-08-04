@@ -1,6 +1,6 @@
 # RFC-0108: Memory (Life-8) — Foundation Validation #8
 
-> **Status**: **Anchored** — Foundation Validation #8. `ANCHORHASH0108`.
+> **Status**: **Anchored** — Foundation Validation #8. `96644b0`.
 > **Challenge verdict: APPROVED WITH CLARIFICATIONS** (LAWP Phase C, 2026-08-05). Gate:
 > **Foundation Stable → YES**. **0100C deferred (8th consecutive confirmation)** — now an
 > *operational* watchpoint bound to **M1.8 (Memory Ingestion Interface build)** per F1–F4 (F2:
@@ -785,7 +785,7 @@ complete, Gate A). RFC-0108 is a **continuation validation**: it proves the froz
 explains the **closing of the loop** (the `Result → Reflection → Memory`回流) with exactly one Memory
 authority, with no edit at the document level.
 
-Therefore (now anchored — `ANCHORHASH0108`):
+Therefore (now anchored — `96644b0`):
 
 1. **Phase 2A (Architect Phase) remains COMPLETE.** Foundation / Governance / Derived-States stay closed.
 2. **Foundation stays FROZEN** — `RFC-0100` / `RFC-0100A` / `RFC-0100B` / `LAWP` / `Foundation Evolution` /
@@ -802,7 +802,7 @@ Therefore (now anchored — `ANCHORHASH0108`):
    Memory-ingestion consistency need at M1.8 — **not** by Memory's noun validation, and **not** by
    speculation in this Draft.
 
-RFC-0108 is **anchored** (`ANCHORHASH0108`). The Gate verdict is confirmed; M1.8 Memory Ingestion
+RFC-0108 is **anchored** (`96644b0`). The Gate verdict is confirmed; M1.8 Memory Ingestion
 Interface unlocks per the user's sequence.
 
 ---
