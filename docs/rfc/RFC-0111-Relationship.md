@@ -781,7 +781,7 @@ verdict that decides whether the project proceeds to M1.11. Eleventh Life RFC to
 eleventh to record the 0100C operational watchpoint as **satisfied** (M1.8 already built and passed).
 
 > **✅ STATUS: ANCHORED — Phase C verdict: APPROVED WITH CLARIFICATIONS.** The checks below are *confirmed*; the
-> verdict (§13.3 / §13.4) is **finalized**. This RFC is **anchored** (commit `TBD-anchor`); M1.11 Relationship
+> verdict (§13.3 / §13.4) is **finalized**. This RFC is **anchored** (commit `faa8cf3`); M1.11 Relationship
 > Engine is **unlocked**. Zero Ontology base edit; no new Authority; no new Memory type. The user's LAWP Phase C
 > Challenge verdict (APPROVED WITH CLARIFICATIONS, adopting C1–C4) was applied.
 
@@ -872,7 +872,7 @@ Relationship surfaces no new joint as a read-side projection).
 
 ---
 
-> **§13.4 Challenge Record (canonical) — WRITTEN (Anchor `TBD-anchor`).**
+> **§13.4 Challenge Record (canonical) — WRITTEN (Anchor `faa8cf3`).**
 >
 > - **Challenge Result**: **APPROVED WITH CLARIFICATIONS**
 > - **Adopted clarifications (all F4, zero base edit)**: **C1** (Identity Boundary — `relationship.rewrite_identity()`
@@ -887,11 +887,11 @@ Relationship surfaces no new joint as a read-side projection).
 > - **Foundation Patch Required**: **NO** (zero Ontology base edit; Relationship classified as a *reading* of
 >   RFC-0100 §1.13 + matrix line 167; no new noun / state-class / Authority).
 > - **Gate**: **Foundation Stable → YES** (Gate A holds).
-> - **Anchor commit**: `TBD-anchor`.
+> - **Anchor commit**: `faa8cf3`.
 
 ## 14. Phase 2A continuation — Foundation remains Frozen (Anchored)
 
-RFC-0111 is **anchored** (commit `TBD-anchor`); the Foundation (frozen at RFC-0105 §14) remains **frozen** — 0111
+RFC-0111 is **anchored** (commit `faa8cf3`); the Foundation (frozen at RFC-0105 §14) remains **frozen** — 0111
 is a *validation*, not a change. **Zero Ontology base edit; no new Authority; no new Memory type.** M1.11
 Relationship Engine is **unlocked** (the projection act `derive_relationship(memory, identity, external_ref) ->
 RelationshipProjection`, read-only on `Memory.relations` + Identity, emitting a Derived projection that writes
