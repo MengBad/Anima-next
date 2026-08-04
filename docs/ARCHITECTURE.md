@@ -61,7 +61,7 @@ the Foundation in the order below.
                                                   ▼
                       ┌────────────────────────────────────────────────────┐
                       │  Life-layer RFCs = FOUNDATION VALIDATION #N         │
-                      │  RFC-0101 Identity → 0102 Need → … → 0105 Goal → 0106 Plan     │
+                      │  RFC-0101 Identity → 0102 Need → … → 0105 Goal → 0106 Plan → 0107 Execution  │
                       │  each: Draft → Review → Challenge → (patch?|Anchor) │
                       └────────────────────────────────────────────────────┘
 ```
@@ -85,15 +85,17 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 | RFC-0104 | Life-4 | Drive | Foundation Validation #4 | ✅ Stable — anchored (`137be39`) |
 | RFC-0105 | Life-5 | Goal | Foundation Validation #5 | ✅ Stable — anchored (`57ffa3c`); **Gate A → Foundation Frozen** |
 | RFC-0106 | Life-6 | Plan | Foundation Validation #6 | ✅ Stable — anchored (`b2f769f`); Gate A → Plan classified Derived, 0100C deferred (6th) |
-| RFC-0107 | Life-7 | Execution | Foundation Validation #7 | ⏳ pending (Plan→Execution boundary) |
+| RFC-0107 | Life-7 | Execution | Foundation Validation #7 | ✅ Stable — anchored (`9a33274`); Gate A → Execution = Process/Event (not State), 0100C deferred (7th, bound to M1.7 as watchpoint) |
 | RFC-0108+ | Life-8+ | Memory / Persona / Reflection / Relationship | Foundation Validation #8+ | ⏳ pending (reordered after Plan/Execution) |
-| RFC-0100C | — | State Permissions (Transactions) | **Deferred** | ⏸ opened only if a Life RFC proves a need |
+| RFC-0100C | — | State Permissions (Transactions) | **Deferred (7th)** | ⏸ opened only via F1 if M1.7 (or later) surfaces an *observed* execution transaction need |
 
-> The first *real* candidate for RFC-0100C is **Memory** (consolidation / sleep rollback) or an
-> **Execution** transaction need. Identity/Need/Affect/Drive/Goal/Plan (0101–0106) validate the deferral
-> **six times**; Goal's lifecycle (Reading a, 0105) proves the owner is already named and Plan is Derived
-> with no transaction, so 0100C stays deferred. It remains the *next* Foundation document, activated by a
-> concrete Execution/Memory transaction need — **not** Plan.
+> The first *real* candidate for RFC-0100C was **Execution** (transaction / failure / rollback / external
+> side-effect). RFC-0107 made the deferral **operational**: the real test is bound to **M1.7** (Execution
+> Engine build), not abstract. At M1.7 the carrying act is a pure read → emit and the Plan is *consumed*
+> (not mutated), so **no observed contradiction** surfaced — 0100C stays deferred a **7th** time, now as a
+> named watchpoint (RFC-0107 C4). It remains the *next* Foundation document, activated only if a later
+> build step (real transaction/atomicity need) raises an *observed* contradiction per F2 — never by
+> speculation.
 
 ### Governance convergence — the validation pattern is now a Protocol
 
@@ -122,19 +124,22 @@ Constitution Layer. M1 builds the derivation chain as real engines, isolated in 
 | M1.4 | **Drive Engine** `i(Affect)` | RFC-0104 | `f317892` ✅ |
 | M1.5 | **Invariant Guard** `invariants.py` | RFC-0102 C4 / 0103 C3 / 0104 D3 | `8cdae6b` ✅ |
 | M1.6 | **Planner Interface** `derive_plan` + `Planner` | RFC-0106 | `f211767` ✅ |
+| M1.7 | **Execution Engine** `execute_plan` + `ExecutionRuntime` | RFC-0107 | `0203292` ✅ |
 
 The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
 Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
 honors the frozen contract. Foundation changes only if *implementation* surfaces a contradiction no
 Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not Invention).
 
-> **M1.1–M1.6 done (2026-08-04):** the full *derived* chain `Memory → Identity → Need → Affect → Drive`
-> plus the **Planning Authority** (`derive_plan` + `Planner`) are implemented and smoke-tested in
-> `anima/constitution/`. `invariants.py` (M1.5) mechanically guards the frozen contract (no setter / no
-> storage authority / no upstream mutation) — including a dedicated check that `derive_plan` mutates
-> *neither* Goal *nor* Drive, closing the Authority-leak risk the user named at the Goal→Plan seam. M1.6
-> was unlocked only after RFC-0106 anchored (Plan classified Transient-Derived, 0100C deferred a 6th
-> time), so it could not reopen RFC-0100C by building Plan as Owned.
+> **M1.1–M1.7 done (2026-08-04):** the full *derived* chain `Memory → Identity → Need → Affect → Drive`
+> plus the **Planning Authority** (`derive_plan` + `Planner`) and the **Execution Runtime**
+> (`execute_plan` + `ExecutionRuntime`) are implemented and smoke-tested in `anima/constitution/`.
+> `invariants.py` (M1.5) mechanically guards the frozen contract (no setter / no storage authority / no
+> upstream mutation) — including dedicated checks that `derive_plan` mutates *neither* Goal *nor* Drive,
+> and `execute_plan` mutates *neither* Plan *nor* Context (closing the Authority-leak risk the user named
+> at the Goal→Plan and Plan→Execution seams). M1.6 was unlocked only after RFC-0106 anchored; M1.7 only
+> after RFC-0107 anchored (Execution classified Process/Event, 0100C deferred a 7th time as an operational
+> watchpoint) — so neither could reopen RFC-0100C by building Plan/Execution as Owned.
 
 > **Discipline:** do NOT wait for RFC-0108. M1 started at M1.1 and runs in parallel with the remaining Life
 > RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested by real code.
