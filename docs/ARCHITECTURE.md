@@ -89,7 +89,8 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 | RFC-0108 | Life-8 | Memory | Foundation Validation #8 | ✅ Stable — anchored (`96644b0`); Gate A → Memory = single Owned Hybrid sink (loop-closure RFC), 0100C deferred (8th, bound to M1.8 as watchpoint) |
 | RFC-0109 | Life-9 | Reflection | Foundation Validation #9 | ✅ Stable — anchored (`db7aceb`); Gate A → Reflection = Mind-layer transform (Act/Process, not State, not second Memory), Reflection Authority ≠ Memory Authority, 0100C deferred (9th, operational watchpoint satisfied at M1.8) |
 | RFC-0110 | Life-10 | Persona | Foundation Validation #10 | ✅ Stable — anchored (`60b7592`); Gate A → Persona = Derived projection of Identity (presentation mask, not second Identity root, not second Memory), Identity Derivation Authority → Persona (no Persona Authority added), 0100C deferred (10th, operational watchpoint satisfied) |
-| RFC-0100C | — | State Permissions (Transactions) | **Deferred (10th)** | ⏸ opened only via F1 if a *future* build step (e.g. a Life-11 engine) surfaces an *observed* transaction/atomicity contradiction; M1.7 (Execution), M1.8 (Ingest), M1.9 (Reflection) and M1.10 (Persona) all ran and found none |
+| RFC-0111 | Life-11 | Relationship | Foundation Validation #11 | ✅ Stable — anchored (`faa8cf3`); Gate A → Relationship = Derived projection of (Memory.relations ∩ Identity), spanning the Life/Environment boundary (model of an external agent, not second Memory, not motivation source, not second Identity system), Memory Authority owns relation records (no Relationship Authority added), 0100C deferred (11th, operational watchpoint satisfied) |
+| RFC-0100C | — | State Permissions (Transactions) | **Deferred (11th)** | ⏸ opened only via F1 if a *future* build step surfaces an *observed* transaction/atomicity contradiction; M1.7 (Execution), M1.8 (Ingest), M1.9 (Reflection), M1.10 (Persona) and M1.11 (Relationship) all ran and found none |
 
 > The first *real* candidate for RFC-0100C was **Execution** (transaction / failure / rollback / external
 > side-effect). RFC-0107 made the deferral **operational**: the real test is bound to **M1.7** (Execution
@@ -105,8 +106,11 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 > performed, not merely bound). **RFC-0110 made it operational a fourth time**: M1.10 (Persona Engine) is a
 > pure *read-side projection* of Identity — it writes nothing, owns no store, and introduces no new joint,
 > so **no observed contradiction** surfaced either; 0100C stays deferred a **10th** time, operationally satisfied.
-> It remains the *next* Foundation document, activated only if a *future*
-> build step (e.g. a future Life-11 engine surfacing a real transaction/atomicity need) raises an *observed* contradiction
+> **RFC-0111 made it operational a fifth time**: M1.11 (Relationship Engine) is a pure *read-side projection*
+> of `Memory.relations ∩ Identity` (spanning the Life/Environment boundary) — it writes nothing, owns no store,
+> and introduces no new joint, so **no observed contradiction** surfaced either; 0100C stays deferred an **11th**
+> time, operationally satisfied. It remains the *next* Foundation document, activated only if a *future*
+> build step (e.g. a future Life-12 engine surfacing a real transaction/atomicity need) raises an *observed* contradiction
 > per F2 — never by speculation.
 
 ### Governance convergence — the validation pattern is now a Protocol
@@ -140,6 +144,7 @@ Constitution Layer. M1 builds the derivation chain as real engines, isolated in 
 | M1.8 | **Memory Ingestion Interface** `ingest` + `MemoryAuthority` | RFC-0108 | `da30aa5` ✅ |
 | M1.9 | **Reflection Transform** `reflect` + `Reflector` | RFC-0109 | `8b6007d` ✅ |
 | M1.10 | **Persona Engine** `derive_persona` + `Persona` | RFC-0110 | `ffb78cc` ✅ |
+| M1.11 | **Relationship Engine** `derive_relationship` + `RelationshipProjector` | RFC-0111 | `078bf51` ✅ |
 
 The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
 Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
@@ -177,6 +182,19 @@ Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not I
 > transaction vocabulary of its own — it writes nothing and introduces no new joint (the Persona risk is a
 > *second Identity root*, which the projection contract forbids: `Persona` carries no setter, no storage
 > authority, no `update_identity`/`create_goal` API).
+>
+> **M1.11 (Relationship Engine) built by RFC-0111 (`faa8cf3`):** `derive_relationship(memory, identity, external_ref) -> RelationshipProjection`
+> + `RelationshipProjector` — the *projection* act that reads `Memory.relations` (filtered by `external_ref`)
+> and `Identity` and emits a `RelationshipProjection` (the held model of an external agent), for read-side
+> expression/recall only. Now implemented in `relationship.py` (`078bf51`) and smoke-tested (5 new assertions,
+> 40/40 total). It is a pure read→emit: it mutates *neither* the Memory *nor* the Identity it reads, and exposes
+> *no* storage / authority-leak API (the projection X-firewall). Relationship is the **first** Derived projection
+> to span the Life/Environment boundary (its object is an external agent); it is classified as a Derived projection
+> (not a second Memory, not a motivation source, not a second Identity system). 0100C was already operationally
+> satisfied (M1.8 ingest test passed, no contradiction), so M1.11 needs no transaction vocabulary of its own — it
+> writes nothing and introduces no new joint (the three named Relationship risks — Relation→Memory bypass,
+> Relation→Goal mutation, Relation→Identity rewrite — are mechanically forbidden: `RelationshipProjection` carries
+> no setter/storage authority, no `update_identity`/`modify_goal`/`create_memory` API).
 
 > **Discipline:** do NOT wait for RFC-0108. M1 started at M1.1 and runs in parallel with the remaining Life
 > RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested by real code.
