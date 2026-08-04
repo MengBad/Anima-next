@@ -31,6 +31,7 @@ from anima.constitution.need import derive_need
 from anima.constitution.planner import derive_plan
 from anima.constitution.reflection import Reflector, reflect
 from anima.constitution.persona import PersonaProjector, derive_persona
+from anima.constitution.relationship import RelationshipProjector, derive_relationship
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -49,6 +50,7 @@ from anima.constitution.state import (
     Plan,
     PlannerContext,
     ReflectionResult,
+    RelationshipProjection,
 )
 
 
@@ -139,7 +141,7 @@ def _sample_chain():
 def check_constitution_invariants() -> bool:
     """Run every mechanical guard over the real engines. Raises on any breach."""
     # 1. No setters / storage authority on derived / transient state classes
-    for cls in (Need, Affect, Drive, Plan, ExecutionResult, ReflectionResult, Persona):
+    for cls in (Need, Affect, Drive, Plan, ExecutionResult, ReflectionResult, Persona, RelationshipProjection):
         assert_no_setter(cls)
         assert_no_storage_authority(cls)
 
@@ -243,7 +245,69 @@ def check_constitution_invariants() -> bool:
                 f"(forbidden by RFC-0110 C1/C2/C3)"
             )
 
+    # 10. Relationship projects Memory + Identity read-only — does NOT mutate the Memory it reads
+    #     (C3 — the central Relationship → Memory bypass guard) nor the Identity it reads (C1 — the
+    #     second-self-writer guard). It is a read-side projection spanning the Life/Environment
+    #     boundary; neither the sink nor the root may be edited by the model of an external agent.
+    mem_rel, identity_rel, external_ref_rel = _sample_relationship_inputs()
+    assert_no_cross_authority_mutation(
+        lambda m, i: derive_relationship(m, i, external_ref_rel), mem_rel, identity_rel
+    )
+    assert_no_cross_authority_mutation(
+        lambda i, m: derive_relationship(m, i, external_ref_rel), identity_rel, mem_rel
+    )
+
+    # 11. RelationshipProjection (state) and the RelationshipProjector expose NO storage / authority-leak
+    #     method — Relationship is the *projection*, not a second Memory (C3), not a motivation source
+    #     (C2: no goal mutation), not a second Identity system (C1: no identity rewrite). The three named
+    #     relationship risks are mechanically closed here (RFC-0111 C1/C2/C3).
+    for forbidden in ("save", "persist", "load", "restore", "write", "store", "create", "archive"):
+        if hasattr(RelationshipProjection, forbidden):
+            raise ConstitutionViolation(
+                f"RelationshipProjection carries storage authority '{forbidden}' "
+                f"(second store / second root forbidden by RFC-0111 C3)"
+            )
+    for forbidden in (
+        "update_identity",
+        "modify_identity",
+        "rewrite_identity",
+        "patch_self_model",
+        "patch_need",
+        "create_goal",
+        "modify_goal",
+        "patch_goal",
+        "patch_drive",
+        "write_memory",
+        "save_memory",
+        "store_memory",
+        "create_memory",
+        "create_persona",
+    ):
+        if hasattr(RelationshipProjector, forbidden):
+            raise ConstitutionViolation(
+                f"RelationshipProjector exposes authority-leak method '{forbidden}' "
+                f"(forbidden by RFC-0111 C1/C2/C3)"
+            )
+
     return True
+
+
+def _sample_relationship_inputs():
+    """Build a minimal (Memory, Identity, external_ref) triple for the Relationship mutation checks.
+
+    Seeds one relation record for ``external_ref`` so the projection has something to model; the
+    projection is checked to read these read-only (it must not mutate the sink or the root).
+    """
+    mem = Memory()
+    mem.relations.append(
+        MemoryRecord(
+            kind="relation",
+            content={"external_ref": "user_abu", "trust": 0.8, "role": "companion"},
+            salience=0.7,
+        )
+    )
+    identity = derive_identity(mem)
+    return mem, identity, "user_abu"
 
 
 def _sample_plan_inputs():

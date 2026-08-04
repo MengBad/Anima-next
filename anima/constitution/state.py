@@ -291,3 +291,32 @@ class Persona:
     voice: str = ""               # how the self presents (derived from traits/values)
     presentation: dict = field(default_factory=dict)   # the expression projection (read-only view)
 
+
+# --------------------------------------------------------------------------
+# RelationshipProjection — Derived projection of (Memory.relations ∩ Identity) (RFC-0111)
+# --------------------------------------------------------------------------
+@dataclass
+class RelationshipProjection:
+    """The model the life holds of an external agent — a Derived projection (RFC-0111).
+
+    Relationship is the *relational model*: the life's held view of *another* agent (human
+    or bot), computed from ``Memory.relations`` (filtered by ``external_ref``) intersected
+    with ``Identity``. It is **not** a second Memory, **not** a motivation source, **not** a
+    second Identity system. Derived pure-function projection of Memory + Identity; no setter,
+    no storage authority (RFC-0111 P1/C3). It references the sources only by immutable refs
+    (never mutable handles), so it cannot reach back and rewrite the root (Identity) or the
+    sink (Memory) — the three relationship risks the user named (Relationship → Memory bypass,
+    Relationship → Goal mutation, Relationship → Identity rewrite) are mechanically closed
+    (RFC-0100B single-Identity-root / single-Memory rules, lines 162/167; RFC-0111 C1/C2/C3).
+    Re-projected each Recall (RFC-0100 §1.13); never stored, never restored. Deterministic:
+    same inputs ⇒ same RelationshipProjection (no ``timestamp`` / no hidden state) — it is a
+    *reading*, like Need / Persona.
+    """
+
+    external_ref: str = ""       # the modeled external agent (Environment object; not owned by Relationship)
+    trust: float = 0.0           # modeled trust in the external agent (0..1), derived from relation records
+    role: str = ""               # modeled role of the external agent (derived)
+    history: list = field(default_factory=list)   # derived summary of relation records (read-only view)
+    memory_ref: str = ""         # deterministic ref of the Memory.relations slice read (NOT a Memory handle)
+    identity_ref: str = ""       # deterministic ref of the Identity read (NOT an Identity handle)
+

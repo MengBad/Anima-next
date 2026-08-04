@@ -15,6 +15,7 @@ from anima.constitution.execution import ExecutionRuntime, execute_plan
 from anima.constitution.memory_authority import MemoryAuthority, ingest
 from anima.constitution.reflection import Reflector, reflect
 from anima.constitution.persona import PersonaProjector, derive_persona
+from anima.constitution.relationship import RelationshipProjector, derive_relationship
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -25,12 +26,14 @@ from anima.constitution.state import (
     GoalLifecycle,
     Identity,
     Memory,
+    MemoryRecord,
     OrientationAxis,
     Perception,
     Persona,
     Plan,
     PlannerContext,
     ReflectionResult,
+    RelationshipProjection,
 )
 from anima.constitution.memory_engine import MemoryEngine
 
@@ -548,6 +551,101 @@ def test_persona_projector_has_no_authority_leak():
         )
 
 
+# --------------------------------------------------------------------------
+# M1.11 — Relationship Engine (RFC-0111)
+# --------------------------------------------------------------------------
+def _memory_with_relation(external_ref: str = "user_abu", trust: float = 0.8, role: str = "companion") -> Memory:
+    mem = Memory()
+    mem.relations.append(
+        MemoryRecord(
+            kind="relation",
+            content={"external_ref": external_ref, "trust": trust, "role": role},
+            salience=0.7,
+        )
+    )
+    return mem
+
+
+def _identity_for_relationship() -> Identity:
+    return derive_identity(_memory_with_relation())
+
+
+def test_relationship_is_pure_function():
+    # Same (Memory, Identity, external_ref) ⇒ same RelationshipProjection (deterministic projection,
+    # no hidden state / no timestamp, RFC-0111 §4 P1: Relationship is a Derived projection, a reading).
+    mem = _memory_with_relation()
+    identity = derive_identity(mem)
+    rp1 = derive_relationship(mem, identity, "user_abu")
+    rp2 = derive_relationship(mem, identity, "user_abu")
+    assert rp1 == rp2
+    assert rp1.trust == 0.8
+    assert rp1.role == "companion"
+
+
+def test_relationship_does_not_mutate_memory():
+    # The projection reads Memory.relations read-only; it must not mutate the sink it was derived
+    # from (RFC-0111 C3 — the central Relationship → Memory bypass guard: no second Memory written).
+    mem = _memory_with_relation()
+    identity = derive_identity(mem)
+    before_relations = list(mem.relations)
+    before_len = len(mem.relations)
+    derive_relationship(mem, identity, "user_abu")
+    assert len(mem.relations) == before_len
+    assert list(mem.relations) == before_relations
+
+
+def test_relationship_does_not_mutate_identity():
+    # The projection reads Identity read-only; it must not mutate the root it was derived from
+    # (RFC-0111 C1 — the second-self-writer guard: Relationship models only, Identity re-derives upstream).
+    identity = _identity_for_relationship()
+    before_traits = dict(identity.traits)
+    before_self_model = dict(identity.self_model)
+    derive_relationship(_memory_with_relation(), identity, "user_abu")
+    assert dict(identity.traits) == before_traits
+    assert dict(identity.self_model) == before_self_model
+
+
+def test_relationship_is_not_a_store():
+    # RelationshipProjection carries no persistence authority / no lifecycle setter (RFC-0111 C3/V4).
+    # It is a Derived projection, not a second Memory / second Identity root. It must not write Goal.
+    assert not hasattr(RelationshipProjection, "save")
+    assert not hasattr(RelationshipProjection, "persist")
+    assert not hasattr(RelationshipProjection, "restore")
+    assert not hasattr(RelationshipProjection, "archive")
+    # It is not the Memory store type, and it references no Goal/Plan/Execution handle.
+    rp = derive_relationship(_memory_with_relation(), _identity_for_relationship(), "user_abu")
+    assert isinstance(rp, RelationshipProjection)
+    assert not isinstance(rp, Memory)
+    assert not hasattr(rp, "goal")
+    assert not hasattr(rp, "plan")
+
+
+def test_relationship_projector_has_no_authority_leak():
+    # The Relationship Authority (RelationshipProjector) owns the projection act, never a store or a
+    # life state. It must expose NO storage / authority-leak method — the projection X-firewall
+    # (RFC-0111 C1/C2/C3: forbid a second Memory, a motivation source, and a second Identity system).
+    projector = RelationshipProjector()
+    for forbidden in (
+        "save",
+        "persist",
+        "write_memory",
+        "store_memory",
+        "save_memory",
+        "create_memory",
+        "create_persona",
+        "modify_goal",
+        "patch_goal",
+        "patch_drive",
+        "update_identity",
+        "modify_identity",
+        "rewrite_identity",
+        "patch_self_model",
+    ):
+        assert not hasattr(projector, forbidden), (
+            f"RelationshipProjector must not expose {forbidden} (RFC-0111 C1/C2/C3)"
+        )
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -584,4 +682,9 @@ if __name__ == "__main__":
     test_persona_does_not_mutate_identity()
     test_persona_is_not_a_store()
     test_persona_projector_has_no_authority_leak()
+    test_relationship_is_pure_function()
+    test_relationship_does_not_mutate_memory()
+    test_relationship_does_not_mutate_identity()
+    test_relationship_is_not_a_store()
+    test_relationship_projector_has_no_authority_leak()
     print("ALL M1 SMOKE TESTS PASSED")
