@@ -7,6 +7,8 @@ Evolution F1–F4).
 """
 from anima.constitution.identity import derive_identity
 from anima.constitution.need import derive_need
+from anima.constitution.affect import derive_affect
+from anima.constitution.state import Perception
 from anima.constitution.memory_engine import MemoryEngine
 
 
@@ -74,10 +76,35 @@ def test_need_depends_on_identity():
     assert derive_need(curious) != derive_need(passive)
 
 
+# --------------------------------------------------------------------------
+# M1.3 — Affect Engine h(Need, Perception)
+# --------------------------------------------------------------------------
+def _identity_for_affect() -> "Identity":
+    return derive_identity(
+        _engine_with({"curiosity": 0.9, "value": "understanding"}).snapshot()
+    )
+
+
+def test_affect_does_not_mutate_need():
+    need = derive_need(_identity_for_affect())
+    before = (dict(need.vectors), need.urgency)
+    perception = Perception(signals={"novelty": 0.7, "threat": 0.0})
+    derive_affect(need, perception)
+    assert (dict(need.vectors), need.urgency) == before
+
+
+def test_affect_is_pure_function():
+    need = derive_need(_identity_for_affect())
+    p = Perception(signals={"novelty": 0.7, "threat": 0.0})
+    assert derive_affect(need, p) == derive_affect(need, p)
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
     test_identity_inherits_persistence_via_memory()
     test_need_is_pure_function()
     test_need_depends_on_identity()
+    test_affect_does_not_mutate_need()
+    test_affect_is_pure_function()
     print("ALL M1 SMOKE TESTS PASSED")

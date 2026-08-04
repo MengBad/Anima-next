@@ -88,6 +88,22 @@ class Need:
 
 
 # --------------------------------------------------------------------------
+# Perception — instantaneous input to h(Need, Perception) (RFC-0103)
+# --------------------------------------------------------------------------
+@dataclass
+class Perception:
+    """The life's read of the current environment / utterance. Instantaneous input to
+    ``h(Need, Perception)`` — NOT a stored state. Produced by the perception layer each
+    tick; it is read-only for the derivation chain. Affect interprets it; it does not
+    react to it (the ``Environment → Emotion → Action`` collapse is forbidden, RFC-0103
+    Challenge C1).
+    """
+
+    signals: dict[str, float] = field(default_factory=dict)  # e.g. {"novelty": 0.7, "threat": 0.1}
+    raw: str = ""
+
+
+# --------------------------------------------------------------------------
 # Affect — Transient-Derived, h(Need, Perception) (RFC-0103)
 # --------------------------------------------------------------------------
 @dataclass
