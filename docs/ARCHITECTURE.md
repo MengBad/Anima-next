@@ -88,7 +88,8 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 | RFC-0107 | Life-7 | Execution | Foundation Validation #7 | ✅ Stable — anchored (`9a33274`); Gate A → Execution = Process/Event (not State), 0100C deferred (7th, bound to M1.7 as watchpoint) |
 | RFC-0108 | Life-8 | Memory | Foundation Validation #8 | ✅ Stable — anchored (`96644b0`); Gate A → Memory = single Owned Hybrid sink (loop-closure RFC), 0100C deferred (8th, bound to M1.8 as watchpoint) |
 | RFC-0109 | Life-9 | Reflection | Foundation Validation #9 | ✅ Stable — anchored (`db7aceb`); Gate A → Reflection = Mind-layer transform (Act/Process, not State, not second Memory), Reflection Authority ≠ Memory Authority, 0100C deferred (9th, operational watchpoint satisfied at M1.8) |
-| RFC-0100C | — | State Permissions (Transactions) | **Deferred (9th)** | ⏸ opened only via F1 if a *future* build step (e.g. a Life-10/11 engine) surfaces an *observed* transaction/atomicity contradiction; M1.7 (Execution), M1.8 (Ingest) and M1.9 (Reflection) all ran and found none |
+| RFC-0110 | Life-10 | Persona | Foundation Validation #10 | ✅ Stable — anchored (`60b7592`); Gate A → Persona = Derived projection of Identity (presentation mask, not second Identity root, not second Memory), Identity Derivation Authority → Persona (no Persona Authority added), 0100C deferred (10th, operational watchpoint satisfied) |
+| RFC-0100C | — | State Permissions (Transactions) | **Deferred (10th)** | ⏸ opened only via F1 if a *future* build step (e.g. a Life-11 engine) surfaces an *observed* transaction/atomicity contradiction; M1.7 (Execution), M1.8 (Ingest), M1.9 (Reflection) and M1.10 (Persona) all ran and found none |
 
 > The first *real* candidate for RFC-0100C was **Execution** (transaction / failure / rollback / external
 > side-effect). RFC-0107 made the deferral **operational**: the real test is bound to **M1.7** (Execution
@@ -101,8 +102,11 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 > time**: the *real* 0100C test (M1.8 Memory Ingestion Interface) had *already been built and passed* with
 > **no observed contradiction** — a pure read→write into the one store, the ReflectionResult *consumed*
 > (not mutated). So 0100C stays deferred a **9th** time, now **operationally satisfied** (the test was
-> performed, not merely bound). It remains the *next* Foundation document, activated only if a *future*
-> build step (e.g. a future Life-10/11 engine surfacing a real transaction/atomicity need) raises an *observed* contradiction
+> performed, not merely bound). **RFC-0110 made it operational a fourth time**: M1.10 (Persona Engine) is a
+> pure *read-side projection* of Identity — it writes nothing, owns no store, and introduces no new joint,
+> so **no observed contradiction** surfaced either; 0100C stays deferred a **10th** time, operationally satisfied.
+> It remains the *next* Foundation document, activated only if a *future*
+> build step (e.g. a future Life-11 engine surfacing a real transaction/atomicity need) raises an *observed* contradiction
 > per F2 — never by speculation.
 
 ### Governance convergence — the validation pattern is now a Protocol
@@ -135,6 +139,7 @@ Constitution Layer. M1 builds the derivation chain as real engines, isolated in 
 | M1.7 | **Execution Engine** `execute_plan` + `ExecutionRuntime` | RFC-0107 | `0203292` ✅ |
 | M1.8 | **Memory Ingestion Interface** `ingest` + `MemoryAuthority` | RFC-0108 | `da30aa5` ✅ |
 | M1.9 | **Reflection Transform** `reflect` + `Reflector` | RFC-0109 | `8b6007d` ✅ |
+| M1.10 | **Persona Engine** `derive_persona` + `Persona` | RFC-0110 | ⏳ next (unlocked) |
 
 The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
 Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
@@ -162,6 +167,13 @@ Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not I
 > API (the transform X-firewall). 0100C was already operationally satisfied at M1.8 (no observed
 > contradiction); M1.9 confirms it — the single unverified joint `ExecutionResult → ReflectionResult` is
 > now code-level real, and the full loop is genuinely closed.
+>
+> **M1.10 (Persona Engine) unlocked by RFC-0110 (`60b7592`):** `derive_persona(identity) -> Persona` —
+> the *projection* act that reads an Identity and emits a `Persona` (a Derived projection, the presentation
+> mask), for read-side expression only. Not yet built; 0100C already operationally satisfied (M1.8 ingest
+> test passed, no contradiction), so M1.10 needs no transaction vocabulary of its own — it writes nothing
+> and introduces no new joint (the Persona risk is a *second Identity root*, which the projection contract
+> forbids: `Persona` carries no setter, no storage authority, no `update_identity`/`create_goal` API).
 
 > **Discipline:** do NOT wait for RFC-0108. M1 started at M1.1 and runs in parallel with the remaining Life
 > RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested by real code.
