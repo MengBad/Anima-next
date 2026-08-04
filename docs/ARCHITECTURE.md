@@ -139,7 +139,7 @@ Constitution Layer. M1 builds the derivation chain as real engines, isolated in 
 | M1.7 | **Execution Engine** `execute_plan` + `ExecutionRuntime` | RFC-0107 | `0203292` ✅ |
 | M1.8 | **Memory Ingestion Interface** `ingest` + `MemoryAuthority` | RFC-0108 | `da30aa5` ✅ |
 | M1.9 | **Reflection Transform** `reflect` + `Reflector` | RFC-0109 | `8b6007d` ✅ |
-| M1.10 | **Persona Engine** `derive_persona` + `Persona` | RFC-0110 | ⏳ next (unlocked) |
+| M1.10 | **Persona Engine** `derive_persona` + `Persona` | RFC-0110 | `ffb78cc` ✅ |
 
 The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
 Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
@@ -168,12 +168,15 @@ Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not I
 > contradiction); M1.9 confirms it — the single unverified joint `ExecutionResult → ReflectionResult` is
 > now code-level real, and the full loop is genuinely closed.
 >
-> **M1.10 (Persona Engine) unlocked by RFC-0110 (`60b7592`):** `derive_persona(identity) -> Persona` —
+> **M1.10 (Persona Engine) built by RFC-0110 (`60b7592`):** `derive_persona(identity) -> Persona` —
 > the *projection* act that reads an Identity and emits a `Persona` (a Derived projection, the presentation
-> mask), for read-side expression only. Not yet built; 0100C already operationally satisfied (M1.8 ingest
-> test passed, no contradiction), so M1.10 needs no transaction vocabulary of its own — it writes nothing
-> and introduces no new joint (the Persona risk is a *second Identity root*, which the projection contract
-> forbids: `Persona` carries no setter, no storage authority, no `update_identity`/`create_goal` API).
+> mask), for read-side expression only. Now implemented in `persona.py` (`ffb78cc`) and smoke-tested
+> (5 new assertions, 35/35 total). It is a pure read→emit: it mutates *neither* the Identity *nor* any
+> derived/owned state, and exposes *no* storage / authority-leak API (the projection X-firewall). 0100C
+> was already operationally satisfied (M1.8 ingest test passed, no contradiction), so M1.10 needs no
+> transaction vocabulary of its own — it writes nothing and introduces no new joint (the Persona risk is a
+> *second Identity root*, which the projection contract forbids: `Persona` carries no setter, no storage
+> authority, no `update_identity`/`create_goal` API).
 
 > **Discipline:** do NOT wait for RFC-0108. M1 started at M1.1 and runs in parallel with the remaining Life
 > RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested by real code.
