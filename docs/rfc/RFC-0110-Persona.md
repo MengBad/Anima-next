@@ -791,7 +791,7 @@ joint as a read-side projection).
 > Foundation Patch Required: **NO (all F4, zero base edits)**
 > Gate: **Foundation Stable → YES**
 >
-> **Anchor commit: ________**  _(stamped post-commit)_
+> **Anchor commit: 60b7592**
 
 ## 14. Phase 2A continuation — Foundation remains Frozen (Anchored)
 
