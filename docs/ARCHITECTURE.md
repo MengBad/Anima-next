@@ -1,9 +1,9 @@
 # Anima-next — Architecture (Project Navigation)
 
-> ❄️ **FOUNDATION DEFAULT-FROZEN.** The 0100 trilogy (Ontology / Dynamics / State Ownership) is the
-> closed base. Every Life-layer RFC's *default assumption* is **"I will NOT modify the Foundation."**
-> Foundation changes only via the **Foundation Evolution Protocol** (F1–F4), triggered by a
-> Foundation Validation RFC. The 0100 series is **frozen by default**, not continuously built.
+> 🔒 **FOUNDATION FROZEN — maintenance mode.** As of RFC-0105's Gate (2026-08-04, Phase 2A complete),
+> the 0100 trilogy + the three Protocols are **frozen**: default no modification. Changes only via the
+> **Foundation Evolution Protocol** (F1–F4), triggered by a Foundation Validation RFC. The base is now
+> *actually* frozen (not merely "default-frozen"); the project has entered the **Agent Phase (M1)**.
 
 This file is a **navigation entry point**, not a theory document. It is intentionally **outside**
 the Document Taxonomy (it is not an Ontology / RFC / ADR / Protocol file). Start here, then read
@@ -83,16 +83,16 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 | RFC-0102 | Life-2 | Need | Foundation Validation #2 | ✅ Stable — anchored (`2aff491`) |
 | RFC-0103 | Life-3 | Affect | Foundation Validation #3 | ✅ Stable — anchored (`b94440d`) |
 | RFC-0104 | Life-4 | Drive | Foundation Validation #4 | ✅ Stable — anchored (`137be39`) |
-| RFC-0105 | Life-5 | Goal | Foundation Validation #5 | 🟡 Drafted — in review (first Owned/Hybrid state; 0100C crux) |
+| RFC-0105 | Life-5 | Goal | Foundation Validation #5 | ✅ Stable — anchored (`57ffa3c`); **Gate A → Foundation Frozen** |
 | RFC-0106 | Life-6 | Memory | Foundation Validation #6 | ⏳ pending |
 | RFC-0107 | Life-7 | Persona | Foundation Validation #7 | ⏳ pending |
 | RFC-0108 | Life-8 | Reflection | Foundation Validation #8 | ⏳ pending |
 | RFC-0100C | — | State Permissions (Transactions) | **Deferred** | ⏸ opened only if a Life RFC proves a need |
 
-> The first *real* candidate for RFC-0100C is **Memory** (consolidation / sleep rollback) or
-> **Goal** (lifecycle-scoped mutation) — both later in the cycle. Identity (0101), Need (0102), Affect
-> (0103), and Drive (0104) are derived (`Mutated by: none`) states and **four times** validate the
-> deferral.
+> The first *real* candidate for RFC-0100C is **Memory** (consolidation / sleep rollback) or **Goal**
+> (lifecycle-scoped mutation). Identity/Need/Affect/Drive/Goal (0101–0105) validate the deferral **five
+> times**; Goal's lifecycle (Reading a) proves the owner is already named, so 0100C stays deferred.
+> It remains the *next* Foundation document, activated by a concrete Planning/Reflection transaction need.
 
 ### Governance convergence — the validation pattern is now a Protocol
 
@@ -103,6 +103,33 @@ Stability). Rather than copy-evolve this checklist across RFCs, it is **extracte
 §13.4 instead of re-deriving the checks. This is the **third** locked Protocol — together with LAWP
 (how to think) and Foundation Evolution (when base may change), it closes the Life-Architecture
 working-method layer.
+
+---
+
+## Agent Phase (M1) — implementation begins
+
+With the Foundation frozen, the project shifts from *writing RFCs* to *implementing and validating* the
+Constitution Layer. M1 builds the derivation chain as real engines, isolated in a new package
+`anima/constitution/` and grounded in the existing `anima/memory/`, `anima/cognitive/`, and
+`anima/agent/` infrastructure (no entanglement with the legacy ad-hoc cognitive layer):
+
+| M1 step | Engine | Validates (Foundation) | Consumes existing |
+|---------|--------|------------------------|-------------------|
+| M1.1 | **Memory Engine** (canonical store) | RFC-0100B Memory Authority | `anima/memory/*` |
+| M1.2 | **Identity Engine** — `f(Memory)` | RFC-0101 | memory store |
+| M1.3 | **Need Engine** — `g(Identity)` | RFC-0102 | identity |
+| M1.4 | **Affect Engine** — `h(Need, Perception)` | RFC-0103 | need + perception |
+| M1.5 | **Drive Engine** — `i(Affect)` | RFC-0104 | affect |
+| M1.6 | **Planner** (reads Drive, adopts Goal) | RFC-0105 | drive + goal |
+
+The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
+Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
+honors the frozen contract. Foundation changes only if *implementation* surfaces a contradiction no
+Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not Invention).
+
+> **Discipline:** do NOT wait for RFC-0108. M1 starts now (Memory Engine) and runs in parallel with the
+> remaining Life RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested
+> by real code.
 
 ---
 
