@@ -22,6 +22,7 @@ Package layout:
     invariants.py     — M1.5 mechanical Constitution guards
     planner.py        — M1.6 Planning Authority: derive_plan (p) + Planner lifecycle
     execution.py      — M1.7 Execution Runtime: execute_plan (consumption act) + carrier
+    memory_authority.py — M1.8 Memory Authority: ingest (single-writer sink) + MemoryAuthority
 """
 
 __all__ = [
@@ -34,4 +35,5 @@ __all__ = [
     "invariants",
     "planner",
     "execution",
+    "memory_authority",
 ]

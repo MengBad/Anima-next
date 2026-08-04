@@ -250,3 +250,23 @@ class ExecutionResult:
     lessons: list = field(default_factory=list)   # what was learned — feeds Reflection → Memory
     timestamp: float = field(default_factory=time.time)
 
+
+# --------------------------------------------------------------------------
+# ReflectionResult — Transient output of Reflection's transform act (RFC-0108)
+# --------------------------------------------------------------------------
+@dataclass
+class ReflectionResult:
+    """The records Reflection decides to sediment after interpreting an ExecutionResult.
+
+    **Transient** — produced by Reflection (Reflection Authority), consumed by the
+    **Memory Authority** (the *only* legitimate sink), **never stored** as a Constitution
+    state (RFC-0108 C3/V4). It references the *ExecutionResult it consumed* (``result_ref``),
+    **not** the Goal that produced the Plan (RFC-0108 C1 — so Reflection cannot reach back and
+    mutate Goal ownership), and **not** the Plan (RFC-0107 C1). No setter, no storage authority.
+    ``records`` is the *learned* shape that enters Memory; the transform act itself is not persisted.
+    """
+
+    result_ref: str = ""           # deterministic ref of the consumed ExecutionResult (NOT Goal/Plan)
+    records: list = field(default_factory=list)   # list of {"kind","content","salience"} candidates
+    timestamp: float = field(default_factory=time.time)
+

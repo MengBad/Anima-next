@@ -12,6 +12,7 @@ from anima.constitution.drive import derive_drive
 from anima.constitution.invariants import check_constitution_invariants
 from anima.constitution.planner import Planner, derive_plan
 from anima.constitution.execution import ExecutionRuntime, execute_plan
+from anima.constitution.memory_authority import MemoryAuthority, ingest
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -24,6 +25,7 @@ from anima.constitution.state import (
     Perception,
     Plan,
     PlannerContext,
+    ReflectionResult,
 )
 from anima.constitution.memory_engine import MemoryEngine
 
@@ -300,6 +302,82 @@ def test_execution_result_flows_to_memory_shape():
     assert any("understand X" in lesson for lesson in result.lessons)
 
 
+# --------------------------------------------------------------------------
+# M1.8 — Memory Ingestion Interface (RFC-0108)
+# --------------------------------------------------------------------------
+def _reflection_result_for_ingest() -> ReflectionResult:
+    return ReflectionResult(
+        result_ref="plan#understand-X#run-1",  # references ExecutionResult, NOT Goal/Plan object
+        records=[
+            {"kind": "semantic", "content": {"skill": "explain X"}, "salience": 0.8},
+            {"kind": "episode", "content": {"event": "solved X"}, "salience": 0.6},
+        ],
+    )
+
+
+def test_reflection_result_is_transient_not_stored():
+    # ReflectionResult must carry no persistence authority / no lifecycle setter (RFC-0108 C3/V4).
+    assert not hasattr(ReflectionResult, "save")
+    assert not hasattr(ReflectionResult, "persist")
+    assert not hasattr(ReflectionResult, "restore")
+    assert not hasattr(ReflectionResult, "archive")
+    # It references the consumed ExecutionResult, never the Goal/Plan object (RFC-0108 C1).
+    rr = _reflection_result_for_ingest()
+    assert not hasattr(rr, "goal")
+    assert not hasattr(rr, "plan")
+
+
+def test_memory_authority_ingests_reflection_result_only():
+    # The sink accepts a ReflectionResult; it rejects an ExecutionResult.save()-style bypass
+    # (second Memory = O1 violation, RFC-0108 C3).
+    engine = MemoryEngine()
+    rr = _reflection_result_for_ingest()
+    authority = MemoryAuthority(engine)
+    authority.ingest(rr)
+    # records sedimented into the one Memory
+    snap = engine.snapshot()
+    assert len(snap.semantic) == 1 and len(snap.episodes) == 1
+
+    # An ExecutionResult must NOT be ingestible as a store (no ExecutionResult.save()).
+    result = execute_plan(_plan_for_exec(), _ctx_for_exec())
+    raised = False
+    try:
+        ingest(result, engine)  # type: ignore[arg-type]
+    except Exception:
+        raised = True
+    assert raised, "Memory Authority must reject ExecutionResult ingestion (forbids second Memory)"
+
+
+def test_memory_authority_does_not_mutate_reflection_result():
+    # The ingest act must not mutate the ReflectionResult it consumes (RFC-0108 C1/C2).
+    engine = MemoryEngine()
+    rr = _reflection_result_for_ingest()
+    before = list(rr.records)
+    ingest(rr, engine)
+    assert list(rr.records) == before
+
+
+def test_memory_authority_is_sink_not_constitution_authority():
+    # The Memory Authority owns the store; it exposes NO derived/owned-state mutation method
+    # (the sink X-firewall: parallel to RFC-0107's Runtime firewall, RFC-0108 C2).
+    authority = MemoryAuthority()
+    for forbidden in ("update_identity", "apply_to_need", "patch_goal", "set_affect", "modify_drive"):
+        assert not hasattr(authority, forbidden), f"Memory Authority must not expose {forbidden}"
+
+
+def test_memory_authority_closes_the_loop():
+    # After ingestion, the loop closes: Memory reshapes the next cycle's Identity via f(Memory).
+    engine = MemoryEngine()
+    rr = ReflectionResult(
+        result_ref="plan#learn-Y#run-2",
+        records=[{"kind": "semantic", "content": {"value": "persistence"}, "salience": 0.9}],
+    )
+    MemoryAuthority(engine).ingest(rr)
+    # The sedimented value reshapes Identity next cycle (f(Memory)), proving closure.
+    identity = derive_identity(engine.snapshot())
+    assert any("persistence" in str(v) for v in identity.values)
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -321,4 +399,9 @@ if __name__ == "__main__":
     test_execution_does_not_mutate_plan()
     test_execution_runtime_is_infra_carrier_not_authority()
     test_execution_result_flows_to_memory_shape()
+    test_reflection_result_is_transient_not_stored()
+    test_memory_authority_ingests_reflection_result_only()
+    test_memory_authority_does_not_mutate_reflection_result()
+    test_memory_authority_is_sink_not_constitution_authority()
+    test_memory_authority_closes_the_loop()
     print("ALL M1 SMOKE TESTS PASSED")

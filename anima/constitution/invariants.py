@@ -25,6 +25,8 @@ from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
 from anima.constitution.execution import execute_plan
 from anima.constitution.identity import derive_identity
+from anima.constitution.memory_authority import MemoryAuthority, ingest
+from anima.constitution.memory_engine import MemoryEngine
 from anima.constitution.need import derive_need
 from anima.constitution.planner import derive_plan
 from anima.constitution.state import (
@@ -42,6 +44,7 @@ from anima.constitution.state import (
     Perception,
     Plan,
     PlannerContext,
+    ReflectionResult,
 )
 
 
@@ -132,7 +135,7 @@ def _sample_chain():
 def check_constitution_invariants() -> bool:
     """Run every mechanical guard over the real engines. Raises on any breach."""
     # 1. No setters / storage authority on derived / transient state classes
-    for cls in (Need, Affect, Drive, Plan, ExecutionResult):
+    for cls in (Need, Affect, Drive, Plan, ExecutionResult, ReflectionResult):
         assert_no_setter(cls)
         assert_no_storage_authority(cls)
 
@@ -155,6 +158,20 @@ def check_constitution_invariants() -> bool:
     #    C1/C2: Execution reads Plan, mutates neither Plan nor Goal nor Drive nor Context).
     plan, exec_ctx = _sample_execution_inputs()
     assert_no_cross_authority_mutation(execute_plan, plan, exec_ctx)
+
+    # 5. Memory Authority ingests a ReflectionResult read-only — does NOT mutate the result it
+    #    consumes (RFC-0108 C1/C2: the sink reads the ReflectionResult, mutates neither it nor any
+    #    derived/owned state; it is the *store*, not a Constitution Authority over the chain).
+    reflection_result = _sample_reflection_result()
+    engine = MemoryEngine()
+    before_records = len(reflection_result.records)
+    ingest(reflection_result, engine)
+    # the consumed ReflectionResult must be untouched by the ingest act
+    if len(reflection_result.records) != before_records:
+        raise ConstitutionViolation(
+            "Memory Authority mutated the ReflectionResult it ingested "
+            "(cross-authority mutation forbidden by RFC-0108 C1/C2)"
+        )
 
     return True
 
@@ -197,3 +214,14 @@ def _sample_execution_inputs():
     )
     ctx = ExecutionContext(capabilities=["knowledge"], environment={})
     return plan, ctx
+
+
+def _sample_reflection_result() -> ReflectionResult:
+    """Build a minimal ReflectionResult for the Memory Authority ingest check."""
+    return ReflectionResult(
+        result_ref="plan#understand-X#run-1",  # references the ExecutionResult, NOT Goal/Plan object
+        records=[
+            {"kind": "semantic", "content": {"skill": "explain X"}, "salience": 0.8},
+            {"kind": "episode", "content": {"event": "solved X"}, "salience": 0.6},
+        ],
+    )
