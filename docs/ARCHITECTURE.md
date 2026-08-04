@@ -84,9 +84,9 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 | RFC-0103 | Life-3 | Affect | Foundation Validation #3 | ✅ Stable — anchored (`b94440d`) |
 | RFC-0104 | Life-4 | Drive | Foundation Validation #4 | ✅ Stable — anchored (`137be39`) |
 | RFC-0105 | Life-5 | Goal | Foundation Validation #5 | ✅ Stable — anchored (`57ffa3c`); **Gate A → Foundation Frozen** |
-| RFC-0106 | Life-6 | Memory | Foundation Validation #6 | ⏳ pending |
-| RFC-0107 | Life-7 | Persona | Foundation Validation #7 | ⏳ pending |
-| RFC-0108 | Life-8 | Reflection | Foundation Validation #8 | ⏳ pending |
+| RFC-0106 | Life-6 | Plan | Foundation Validation #6 | ⏳ **next** (consumes Goal→Plan boundary; gates M1.6 Planner) |
+| RFC-0107 | Life-7 | Execution | Foundation Validation #7 | ⏳ pending (Plan→Execution boundary) |
+| RFC-0108+ | Life-8+ | Memory / Persona / Reflection / Relationship | Foundation Validation #8+ | ⏳ pending (reordered after Plan/Execution) |
 | RFC-0100C | — | State Permissions (Transactions) | **Deferred** | ⏸ opened only if a Life RFC proves a need |
 
 > The first *real* candidate for RFC-0100C is **Memory** (consolidation / sleep rollback) or **Goal**
@@ -113,23 +113,30 @@ Constitution Layer. M1 builds the derivation chain as real engines, isolated in 
 `anima/constitution/` and grounded in the existing `anima/memory/`, `anima/cognitive/`, and
 `anima/agent/` infrastructure (no entanglement with the legacy ad-hoc cognitive layer):
 
-| M1 step | Engine | Validates (Foundation) | Consumes existing |
-|---------|--------|------------------------|-------------------|
-| M1.1 | **Memory Engine** (canonical store) | RFC-0100B Memory Authority | `anima/memory/*` |
-| M1.2 | **Identity Engine** — `f(Memory)` | RFC-0101 | memory store |
-| M1.3 | **Need Engine** — `g(Identity)` | RFC-0102 | identity |
-| M1.4 | **Affect Engine** — `h(Need, Perception)` | RFC-0103 | need + perception |
-| M1.5 | **Drive Engine** — `i(Affect)` | RFC-0104 | affect |
-| M1.6 | **Planner** (reads Drive, adopts Goal) | RFC-0105 | drive + goal |
+| M1 step | Engine | Validates (Foundation) | Commit |
+|---------|--------|------------------------|--------|
+| M1.1 | **Memory Engine** + **Identity** `f(Memory)` | RFC-0100B / RFC-0101 | `bdad6a4` ✅ |
+| M1.2 | **Need Engine** `g(Identity)` | RFC-0102 | `5406e4e` ✅ |
+| M1.3 | **Affect Engine** `h(Need, Perception)` | RFC-0103 | `4f07567` ✅ |
+| M1.4 | **Drive Engine** `i(Affect)` | RFC-0104 | `f317892` ✅ |
+| M1.5 | **Invariant Guard** `invariants.py` | RFC-0102 C4 / 0103 C3 / 0104 D3 | `8cdae6b` ✅ |
+| M1.6 | **Planner** (reads Drive, adopts Goal) | RFC-0105 | ⏸ DEFERRED — wait for RFC-0106 Plan / RFC-0107 Execution |
 
 The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
 Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
 honors the frozen contract. Foundation changes only if *implementation* surfaces a contradiction no
 Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not Invention).
 
-> **Discipline:** do NOT wait for RFC-0108. M1 starts now (Memory Engine) and runs in parallel with the
-> remaining Life RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested
-> by real code.
+> **M1.2–M1.5 done (2026-08-04):** the full *derived* chain `Memory → Identity → Need → Affect → Drive`
+> is implemented and smoke-tested in `anima/constitution/`. `invariants.py` (M1.5) mechanically guards
+> the frozen contract (no setter / no storage authority / no upstream mutation) so a future Agent cannot
+> silently break it — negative tests confirm the guards actually reject violations. **M1.6 Planner is
+> deliberately deferred**: it is the first node touching `Drive + Goal + Plan + Execution` (Derived +
+> Hybrid + Mutation) and should wait until RFC-0106 Plan / RFC-0107 Execution fix the Goal→Plan boundary,
+> otherwise it risks reopening RFC-0100C.
+
+> **Discipline:** do NOT wait for RFC-0108. M1 started at M1.1 and runs in parallel with the remaining Life
+> RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested by real code.
 
 ---
 
