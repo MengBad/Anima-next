@@ -10,7 +10,17 @@ from anima.constitution.need import derive_need
 from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
 from anima.constitution.invariants import check_constitution_invariants
-from anima.constitution.state import Affect, Drive, Perception
+from anima.constitution.planner import Planner, derive_plan
+from anima.constitution.state import (
+    Affect,
+    Drive,
+    Goal,
+    GoalLifecycle,
+    OrientationAxis,
+    Perception,
+    Plan,
+    PlannerContext,
+)
 from anima.constitution.memory_engine import MemoryEngine
 
 
@@ -129,6 +139,86 @@ def test_constitution_invariants_hold():
     assert check_constitution_invariants() is True
 
 
+# --------------------------------------------------------------------------
+# M1.6 — Planner Interface (RFC-0106)
+# --------------------------------------------------------------------------
+def _goal_for_plan() -> Goal:
+    return Goal(
+        target="understand X",
+        success_criterion="can explain X",
+        horizon="weeks",
+        priority=0.8,
+        lifecycle=GoalLifecycle.ACTIVE,
+    )
+
+
+def _drive_for_plan() -> Drive:
+    return Drive(
+        orientation={
+            OrientationAxis.APPROACH: 0.6,
+            OrientationAxis.AVOID: 0.1,
+            OrientationAxis.INTENSITY: 0.4,
+            OrientationAxis.FOCUS: 0.5,
+        },
+        activated=True,
+    )
+
+
+def _ctx_for_plan() -> PlannerContext:
+    return PlannerContext(capabilities=["knowledge"], environment={"safe_to_retry": True})
+
+
+def test_plan_is_pure_function():
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    assert derive_plan(g, d, c) == derive_plan(g, d, c)
+
+
+def test_plan_is_derived_not_owned():
+    # Plan must carry no persistence authority / no lifecycle setter (RFC-0106 P1/P3).
+    assert not hasattr(Plan, "save")
+    assert not hasattr(Plan, "persist")
+    assert not hasattr(Plan, "restore")
+
+
+def test_plan_does_not_mutate_goal_or_drive():
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    g_before = (g.target, g.lifecycle)
+    d_before = dict(d.orientation)
+    derive_plan(g, d, c)
+    # construction reads upstreams read-only (RFC-0106 C1/C2)
+    assert (g.target, g.lifecycle) == g_before
+    assert dict(d.orientation) == d_before
+
+
+def test_planner_is_single_writer_and_no_goal_mutation():
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    planner = Planner()
+    planner.adopt_goal(g)
+    plan = planner.build_plan(d, c)
+    assert isinstance(plan, Plan)
+    assert plan.goal_target == g.target  # Plan references the Goal's identity, not Drive's
+    # cancellation discards, not archives (RFC-0106 V5)
+    planner.cancel_plan()
+    assert planner.active_plan is None
+
+
+def test_drive_is_not_plan_decider():
+    # Drive orientation influences (emphasis) but Goal target is the required content
+    # source; both Drive readings reference the SAME goal (RFC-0106 C1).
+    g, c = _goal_for_plan(), _ctx_for_plan()
+    d_approach = Drive(
+        orientation={OrientationAxis.APPROACH: 0.9, OrientationAxis.FOCUS: 0.5}, activated=True
+    )
+    d_avoid = Drive(
+        orientation={OrientationAxis.AVOID: 0.9, OrientationAxis.FOCUS: 0.5}, activated=True
+    )
+    plan_a = derive_plan(g, d_approach, c)
+    plan_v = derive_plan(g, d_avoid, c)
+    assert plan_a.goal_target == plan_v.goal_target == g.target
+    assert plan_a.emphasis == "approach"
+    assert plan_v.emphasis == "avoid"
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -140,4 +230,9 @@ if __name__ == "__main__":
     test_drive_is_pure_function()
     test_drive_has_no_goal_authority_edge()
     test_constitution_invariants_hold()
+    test_plan_is_pure_function()
+    test_plan_is_derived_not_owned()
+    test_plan_does_not_mutate_goal_or_drive()
+    test_planner_is_single_writer_and_no_goal_mutation()
+    test_drive_is_not_plan_decider()
     print("ALL M1 SMOKE TESTS PASSED")

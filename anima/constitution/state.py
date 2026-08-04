@@ -163,3 +163,44 @@ class Goal:
     horizon: str  # "weeks" / "months"
     priority: float = 0.0
     lifecycle: GoalLifecycle = GoalLifecycle.ADOPTED
+
+
+# --------------------------------------------------------------------------
+# PlannerContext — read-only situational snapshot for Plan construction (RFC-0106)
+# --------------------------------------------------------------------------
+@dataclass
+class PlannerContext:
+    """Read-only situational snapshot the Planning Authority reads when constructing Plan.
+
+    Available capabilities, current environment, resources. Parallel to how Affect reads
+    Perception (RFC-0103): it is an *input signal*, never a stored state. The Planning
+    Authority reads it but never mutates it (RFC-0106 §5.1 C2).
+    """
+
+    capabilities: list[str] = field(default_factory=list)
+    environment: dict = field(default_factory=dict)
+    resources: dict = field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# Plan — Transient-Derived, p(Goal, Drive, Context) (RFC-0106)
+# --------------------------------------------------------------------------
+@dataclass
+class Plan:
+    """The life's operational structure for reaching its committed Goal (RFC-0106).
+
+    ``Plan = p(Goal, Drive, Context)`` — **Transient-Derived**, *not* Owned (RFC-0106 §4 P1).
+    Constructed by the Planning Authority for the duration of a Goal's pursuit; consumed by
+    Execution; **never stored**. No setter, no storage authority (RFC-0106 P3). Plan is the
+    *graph of Tasks* (RFC-0100 §1.15), not a single Task and not a Goal.
+    """
+
+    goal_target: str = ""          # the Goal this Plan pursues (content source, read-only)
+    task_graph: list = field(default_factory=list)   # decomposition: list of task descriptors
+    ordering: list = field(default_factory=list)     # sequence / dependencies among Tasks
+    branching: dict = field(default_factory=dict)    # conditional / fallback paths (Workflow shape)
+    rollback: dict = field(default_factory=dict)     # unwind-on-failure (not a Plan lifecycle)
+    context_ref: str = ""           # deterministic ref of the Context read (audit only)
+    emphasis: str = ""              # "approach" | "avoid" — Drive orientation, read-only influence
+    focus: float = 0.0              # Drive focus, read-only influence
+

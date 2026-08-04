@@ -25,18 +25,23 @@ from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
 from anima.constitution.identity import derive_identity
 from anima.constitution.need import derive_need
+from anima.constitution.planner import derive_plan
 from anima.constitution.state import (
     Affect,
     Drive,
+    Goal,
+    GoalLifecycle,
     Memory,
     MemoryRecord,
     Need,
+    OrientationAxis,
     Perception,
+    Plan,
+    PlannerContext,
 )
 
 
-class ConstitutionViolation(Exception):
-    """Raised when code violates a frozen Constitution invariant."""
+from anima.constitution.errors import ConstitutionViolation  # re-exported for compat
 
 
 # Mutating / persistence / authority-leak verbs that must never appear as a public
@@ -123,7 +128,7 @@ def _sample_chain():
 def check_constitution_invariants() -> bool:
     """Run every mechanical guard over the real engines. Raises on any breach."""
     # 1. No setters / storage authority on derived state classes
-    for cls in (Need, Affect, Drive):
+    for cls in (Need, Affect, Drive, Plan):
         assert_no_setter(cls)
         assert_no_storage_authority(cls)
 
@@ -135,4 +140,33 @@ def check_constitution_invariants() -> bool:
     assert_no_cross_authority_mutation(derive_affect, need, perception)
     assert_no_cross_authority_mutation(derive_drive, affect)
 
+    # 3. Planner derives Plan without mutating its upstreams (RFC-0106 C1/C2: reads
+    #    Goal/Drive/Context, mutates NONE of them — the Authority-leak guard).
+    goal, drive, ctx = _sample_plan_inputs()
+    assert_no_cross_authority_mutation(derive_plan, goal, drive, ctx)
+    # Drive is also read-only (wrap to put it in the upstream position).
+    assert_no_cross_authority_mutation(lambda d, g, c: derive_plan(g, d, c), drive, goal, ctx)
+
     return True
+
+
+def _sample_plan_inputs():
+    """Build a minimal (Goal, Drive, Context) triple for the planner mutation check."""
+    goal = Goal(
+        target="understand X",
+        success_criterion="can explain X",
+        horizon="weeks",
+        priority=0.8,
+        lifecycle=GoalLifecycle.ACTIVE,
+    )
+    drive = Drive(
+        orientation={
+            OrientationAxis.APPROACH: 0.6,
+            OrientationAxis.AVOID: 0.1,
+            OrientationAxis.INTENSITY: 0.4,
+            OrientationAxis.FOCUS: 0.5,
+        },
+        activated=True,
+    )
+    ctx = PlannerContext(capabilities=["knowledge"], environment={"safe_to_retry": True})
+    return goal, drive, ctx
