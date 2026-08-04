@@ -87,8 +87,8 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 | RFC-0106 | Life-6 | Plan | Foundation Validation #6 | ✅ Stable — anchored (`b2f769f`); Gate A → Plan classified Derived, 0100C deferred (6th) |
 | RFC-0107 | Life-7 | Execution | Foundation Validation #7 | ✅ Stable — anchored (`9a33274`); Gate A → Execution = Process/Event (not State), 0100C deferred (7th, bound to M1.7 as watchpoint) |
 | RFC-0108 | Life-8 | Memory | Foundation Validation #8 | ✅ Stable — anchored (`96644b0`); Gate A → Memory = single Owned Hybrid sink (loop-closure RFC), 0100C deferred (8th, bound to M1.8 as watchpoint) |
-| RFC-0109 | Life-9 | Reflection | Foundation Validation #9 | ⏳ next (consumes Result → Reflection joint; respects Reflection Authority + single Memory) |
-| RFC-0100C | — | State Permissions (Transactions) | **Deferred (8th)** | ⏸ opened only via F1 if M1.8 (or later) surfaces an *observed* memory-ingestion consistency need |
+| RFC-0109 | Life-9 | Reflection | Foundation Validation #9 | ✅ Stable — anchored (`db7aceb`); Gate A → Reflection = Mind-layer transform (Act/Process, not State, not second Memory), Reflection Authority ≠ Memory Authority, 0100C deferred (9th, operational watchpoint satisfied at M1.8) |
+| RFC-0100C | — | State Permissions (Transactions) | **Deferred (9th)** | ⏸ opened only via F1 if a *future* build step (e.g. M1.9) surfaces an *observed* transaction/atomicity contradiction; the M1.8 ingest test already ran and found none |
 
 > The first *real* candidate for RFC-0100C was **Execution** (transaction / failure / rollback / external
 > side-effect). RFC-0107 made the deferral **operational**: the real test is bound to **M1.7** (Execution
@@ -97,8 +97,12 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 > named watchpoint (RFC-0107 C4). **M1.8 (Memory Ingestion) made it operational a second time**: the
 > sink ingest is a pure read → write into the one store and the ReflectionResult is *consumed* (not
 > mutated), so **no observed contradiction** surfaced either — 0100C stays deferred an **8th** time, still
-> bound to a *named* build step (now M1.8) rather than abstract. It remains the *next* Foundation document,
-> activated only if a later build step (real transaction/atomicity need) raises an *observed* contradiction
+> bound to a *named* build step (now M1.8) rather than abstract. **RFC-0109 made it operational a third
+> time**: the *real* 0100C test (M1.8 Memory Ingestion Interface) had *already been built and passed* with
+> **no observed contradiction** — a pure read→write into the one store, the ReflectionResult *consumed*
+> (not mutated). So 0100C stays deferred a **9th** time, now **operationally satisfied** (the test was
+> performed, not merely bound). It remains the *next* Foundation document, activated only if a *future*
+> build step (e.g. M1.9 surfacing a real transaction/atomicity need) raises an *observed* contradiction
 > per F2 — never by speculation.
 
 ### Governance convergence — the validation pattern is now a Protocol
@@ -130,6 +134,7 @@ Constitution Layer. M1 builds the derivation chain as real engines, isolated in 
 | M1.6 | **Planner Interface** `derive_plan` + `Planner` | RFC-0106 | `f211767` ✅ |
 | M1.7 | **Execution Engine** `execute_plan` + `ExecutionRuntime` | RFC-0107 | `0203292` ✅ |
 | M1.8 | **Memory Ingestion Interface** `ingest` + `MemoryAuthority` | RFC-0108 | `da30aa5` ✅ |
+| M1.9 | **Reflection Transform** `reflect` + `ReflectionAuthority` | RFC-0109 | ⏳ next (unlocked) |
 
 The engines are **pure-function contracts** (`f/g/h/i`) — no setters, no in-place mutation — exactly as the
 Foundation specifies. Each engine ships with a smoke test that *is* the validation: it proves the code
@@ -148,6 +153,11 @@ Validation RFC foresaw; then via Foundation Evolution F1–F4 (Refinement, not I
 > Memory=single Owned sink; 0100C deferred a 7th then 8th time as an operational watchpoint) — so none
 > could reopen RFC-0100C by building a second store or an Owned Plan/Execution. **The loop is now closed:**
 > `ExecutionResult → Reflection → Memory → (next cycle) f(Memory) → … → Execution`.
+>
+> **M1.9 (Reflection Transform) unlocked by RFC-0109 (`db7aceb`):** `reflect(result) -> reflection_result`
+> + `ReflectionAuthority` — the *transform* act that consumes an ExecutionResult and emits a
+> ReflectionResult (transient) for `MemoryAuthority.ingest()`. Not yet built; 0100C already operationally
+> satisfied at M1.8 (no observed contradiction), so M1.9 needs no transaction vocabulary of its own.
 
 > **Discipline:** do NOT wait for RFC-0108. M1 started at M1.1 and runs in parallel with the remaining Life
 > RFCs (Plan, Execution, Memory, Persona, Reflection, Relationship). Theory is now tested by real code.
