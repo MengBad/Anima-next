@@ -1,6 +1,6 @@
 # RFC-0109: Reflection (Life-9) — Foundation Validation #9
 
-> **Status**: **Anchored** — Foundation Validation #9. `________` (anchor). **Challenge verdict:
+> **Status**: **Anchored** — Foundation Validation #9. `db7aceb` (anchor). **Challenge verdict:
 > APPROVED WITH CLARIFICATIONS** (LAWP Phase C, 2026-08-05). Gate: **Foundation Stable → YES**. **0100C
 > deferred (9th consecutive confirmation)** — operational watchpoint satisfied (M1.8 built and passed,
 > no observed contradiction). This RFC *consumes* the Foundation; it may not modify it; the four
@@ -881,7 +881,7 @@ Therefore (anchored 2026-08-05):
    *future* build step (e.g. M1.9 surfacing a need for transaction semantics the current theory cannot
    express) — **not** by Reflection's noun validation, and **not** by speculation in this Draft.
 
-RFC-0109 is **Anchored** (2026-08-05, `________`). The Gate verdict is **confirmed**; M1.9 Reflection
+RFC-0109 is **Anchored** (2026-08-05, `db7aceb`). The Gate verdict is **confirmed**; M1.9 Reflection
 transform unlocks per the user's sequence.
 
 ---
