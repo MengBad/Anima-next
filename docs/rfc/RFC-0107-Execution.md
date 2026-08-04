@@ -1,6 +1,6 @@
 # RFC-0107: Execution (Life-7) — Foundation Validation #7
 
-> **Status**: **Anchored** — Foundation Validation #7 (commit `PLACEHOLDERHASH`). Passed LAWP
+> **Status**: **Anchored** — Foundation Validation #7 (commit `9a33274`). Passed LAWP
 > Phase C Challenge: **APPROVED WITH CLARIFICATIONS**; Gate verdict **Foundation Stable → YES**
 > (Gate A). 0100C **7th consecutive deferral — now bound to M1.7 as an implementation watchpoint**,
 > not abstract. This RFC *consumes* the Foundation; it does not modify it. Three F4 clarifications
@@ -645,7 +645,7 @@ RFC-0107 is **consumable** by the next Life-layer RFC:
 
 > **Draft → Review → Challenge → (if Foundation changes, patch 0100 trilogy via F1; else Anchor) → next RFC.**
 
-RFC-0107 has passed **Draft** and **anchored** (commit `PLACEHOLDERHASH`) after LAWP Phase C Challenge:
+RFC-0107 has passed **Draft** and **anchored** (commit `9a33274`) after LAWP Phase C Challenge:
 **APPROVED WITH CLARIFICATIONS**, Gate verdict **Foundation Stable → YES** (Gate A). All checks PASS with
 zero base edits, Execution classified as Event (not State), 0100C deferred a seventh time — now an
 *implementation watchpoint* bound to M1.7 (C4). The Foundation (frozen at RFC-0105 §14) stays frozen —
@@ -755,7 +755,7 @@ Therefore (pending Anchor):
    Execution transaction need at M1.7 — **not** by Execution's noun validation, and **not** by
    speculation in this Draft.
 
-RFC-0107 has anchored (commit `PLACEHOLDERHASH`) after the Gate verdict **Foundation Stable → YES** was
+RFC-0107 has anchored (commit `9a33274`) after the Gate verdict **Foundation Stable → YES** was
 confirmed at Challenge. The 0100C deferral is now operational (bound to M1.7); the next real checkpoint
 is the M1.7 Execution Engine build.
 
