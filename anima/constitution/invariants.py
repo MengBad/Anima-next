@@ -29,6 +29,7 @@ from anima.constitution.memory_authority import MemoryAuthority, ingest
 from anima.constitution.memory_engine import MemoryEngine
 from anima.constitution.need import derive_need
 from anima.constitution.planner import derive_plan
+from anima.constitution.reflection import Reflector, reflect
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -173,6 +174,39 @@ def check_constitution_invariants() -> bool:
             "(cross-authority mutation forbidden by RFC-0108 C1/C2)"
         )
 
+    # 6. Reflection transforms an ExecutionResult read-only — does NOT mutate the
+    #    ExecutionResult it consumes (RFC-0109 C1/C2/C3: reads experience, mutates neither
+    #    it nor any downstream state; it is the *transform*, not a Constitution Authority).
+    execution_result = _sample_execution_result()
+    assert_no_cross_authority_mutation(reflect, execution_result)
+
+    # 7. Reflection Authority (Reflector) and ReflectionResult expose NO storage / authority-
+    #    leak method — they are the *producer*, not a second store, and never edit a life state
+    #    (RFC-0109 C2/C3 transform X-firewall). A second Memory is an O1 violation.
+    for forbidden in ("save", "persist", "load", "restore", "write", "store", "create"):
+        if hasattr(ReflectionResult, forbidden):
+            raise ConstitutionViolation(
+                f"ReflectionResult carries storage authority '{forbidden}' "
+                f"(second Memory forbidden by RFC-0109 C3)"
+            )
+    for forbidden in (
+        "modify_goal",
+        "patch_goal",
+        "modify_drive",
+        "update_identity",
+        "apply_to_need",
+        "set_affect",
+        "write_memory",
+        "save_memory",
+        "create_persona",
+        "store_memory",
+    ):
+        if hasattr(Reflector, forbidden):
+            raise ConstitutionViolation(
+                f"Reflector exposes authority-leak method '{forbidden}' "
+                f"(forbidden by RFC-0109 C1/C2/C3)"
+            )
+
     return True
 
 
@@ -223,5 +257,18 @@ def _sample_reflection_result() -> ReflectionResult:
         records=[
             {"kind": "semantic", "content": {"skill": "explain X"}, "salience": 0.8},
             {"kind": "episode", "content": {"event": "solved X"}, "salience": 0.6},
+        ],
+    )
+
+
+def _sample_execution_result() -> ExecutionResult:
+    """Build a minimal ExecutionResult for the Reflection transform mutation check."""
+    return ExecutionResult(
+        plan_ref="t1|t2|t3",  # deterministic ref of the consumed Plan (NOT a Goal reference)
+        status=ExecutionStatus.SUCCESS,
+        outcome="executed plan for 'understand X'",
+        lessons=[
+            "carried 3 task(s) toward 'understand X'",
+            "drive emphasis at plan time = 'approach'",
         ],
     )

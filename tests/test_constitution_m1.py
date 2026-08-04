@@ -13,6 +13,7 @@ from anima.constitution.invariants import check_constitution_invariants
 from anima.constitution.planner import Planner, derive_plan
 from anima.constitution.execution import ExecutionRuntime, execute_plan
 from anima.constitution.memory_authority import MemoryAuthority, ingest
+from anima.constitution.reflection import Reflector, reflect
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -21,6 +22,7 @@ from anima.constitution.state import (
     ExecutionStatus,
     Goal,
     GoalLifecycle,
+    Memory,
     OrientationAxis,
     Perception,
     Plan,
@@ -378,6 +380,92 @@ def test_memory_authority_closes_the_loop():
     assert any("persistence" in str(v) for v in identity.values)
 
 
+# --------------------------------------------------------------------------
+# M1.9 — Reflection Engine (RFC-0109)
+# --------------------------------------------------------------------------
+def _execution_result_for_reflect() -> ExecutionResult:
+    return ExecutionResult(
+        plan_ref="t1|t2|t3",  # deterministic ref of the consumed Plan (NOT a Goal reference)
+        status=ExecutionStatus.SUCCESS,
+        outcome="executed plan for 'understand X'",
+        lessons=[
+            "carried 3 task(s) toward 'understand X'",
+            "drive emphasis at plan time = 'approach'",
+        ],
+    )
+
+
+def test_reflection_is_pure_function():
+    # Same ExecutionResult ⇒ same ReflectionResult (deterministic transform, no hidden state,
+    # RFC-0109 §2: Reflection = Transform Act, pure like every M1 engine).
+    er = _execution_result_for_reflect()
+    assert reflect(er) == reflect(er)
+
+
+def test_reflection_result_is_not_memory():
+    # ReflectionResult is a transient transform output, NOT a store / second Memory root
+    # (RFC-0109 C3). It carries no persistence authority and references no Goal/Plan handle.
+    rr = reflect(_execution_result_for_reflect())
+    assert isinstance(rr, ReflectionResult)
+    # It is not the Memory store type, and it exposes no storage API.
+    assert not isinstance(rr, Memory)
+    for forbidden in ("save", "persist", "load", "restore", "write", "store"):
+        assert not hasattr(rr, forbidden), f"ReflectionResult must not carry {forbidden}"
+    assert not hasattr(rr, "goal")
+    assert not hasattr(rr, "plan")
+
+
+def test_reflection_does_not_mutate_execution_result():
+    # The transform reads the ExecutionResult read-only; it must not mutate the experience it
+    # interprets (RFC-0109 C1/C2 Authority-leak guard — parallel to execution/planner guards).
+    er = _execution_result_for_reflect()
+    before_status = er.status
+    before_lessons = list(er.lessons)
+    before_plan_ref = er.plan_ref
+    reflect(er)
+    assert er.status == before_status
+    assert list(er.lessons) == before_lessons
+    assert er.plan_ref == before_plan_ref
+
+
+def test_reflector_has_no_storage_or_authority_leak_api():
+    # The Reflection Authority (Reflector) owns the transform act, never a store or a life state.
+    # It must expose NO storage / authority-leak method — the transform X-firewall (RFC-0109
+    # C1/C2/C3: forbid a second Memory and any upstream/downstream mutation).
+    reflector = Reflector()
+    for forbidden in (
+        "save",
+        "persist",
+        "write_memory",
+        "store_memory",
+        "save_memory",
+        "create_persona",
+        "modify_goal",
+        "patch_goal",
+        "modify_drive",
+        "update_identity",
+        "apply_to_need",
+        "set_affect",
+    ):
+        assert not hasattr(reflector, forbidden), (
+            f"Reflector must not expose {forbidden} (RFC-0109 C1/C2/C3)"
+        )
+
+
+def test_reflection_result_is_ingested_by_memory_authority():
+    # The loop closes: ExecutionResult → Reflection → ReflectionResult → Memory Authority.
+    # reflect() output is a legal input to MemoryAuthority.ingest() (RFC-0108 ✓, no second Memory).
+    engine = MemoryEngine()
+    er = _execution_result_for_reflect()
+    rr = reflect(er)
+    assert isinstance(rr, ReflectionResult)
+    MemoryAuthority(engine).ingest(rr)
+    snap = engine.snapshot()
+    # one episode (carried) + two semantic (lessons) sedimented into the ONE Memory
+    assert len(snap.episodes) == 1
+    assert len(snap.semantic) == 2
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -404,4 +492,9 @@ if __name__ == "__main__":
     test_memory_authority_does_not_mutate_reflection_result()
     test_memory_authority_is_sink_not_constitution_authority()
     test_memory_authority_closes_the_loop()
+    test_reflection_is_pure_function()
+    test_reflection_result_is_not_memory()
+    test_reflection_does_not_mutate_execution_result()
+    test_reflector_has_no_storage_or_authority_leak_api()
+    test_reflection_result_is_ingested_by_memory_authority()
     print("ALL M1 SMOKE TESTS PASSED")
