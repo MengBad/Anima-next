@@ -8,7 +8,8 @@ Evolution F1–F4).
 from anima.constitution.identity import derive_identity
 from anima.constitution.need import derive_need
 from anima.constitution.affect import derive_affect
-from anima.constitution.state import Perception
+from anima.constitution.drive import derive_drive
+from anima.constitution.state import Affect, Drive, Perception
 from anima.constitution.memory_engine import MemoryEngine
 
 
@@ -99,6 +100,25 @@ def test_affect_is_pure_function():
     assert derive_affect(need, p) == derive_affect(need, p)
 
 
+# --------------------------------------------------------------------------
+# M1.4 — Drive Engine i(Affect)
+# --------------------------------------------------------------------------
+def test_drive_is_pure_function():
+    a = Affect(valence=0.4, arousal=0.6, curiosity=0.5, confidence=0.7, urgency=0.6)
+    assert derive_drive(a) == derive_drive(a)
+
+
+def test_drive_has_no_goal_authority_edge():
+    # Drive must not expose planner-like methods; it only produces orientation.
+    assert not hasattr(Drive, "create_goal")
+    assert not hasattr(Drive, "plan")
+    # and cannot be constructed with a goal parameter (no Goal field)
+    import inspect
+
+    params = inspect.signature(Drive.__init__).parameters
+    assert "goal" not in params
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -107,4 +127,6 @@ if __name__ == "__main__":
     test_need_depends_on_identity()
     test_affect_does_not_mutate_need()
     test_affect_is_pure_function()
+    test_drive_is_pure_function()
+    test_drive_has_no_goal_authority_edge()
     print("ALL M1 SMOKE TESTS PASSED")
