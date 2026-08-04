@@ -74,7 +74,7 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 |-----|--------|-------|------|--------|
 | RFC-0101 | Life-1 | Identity | Foundation Validation #1 | ✅ Stable — anchored (`ee4bca2`) |
 | RFC-0102 | Life-2 | Need | Foundation Validation #2 | ✅ Stable — anchored (`2aff491`) |
-| RFC-0103 | Life-3 | Affect | Foundation Validation #3 | 🟡 Drafted — in review |
+| RFC-0103 | Life-3 | Affect | Foundation Validation #3 | ✅ Stable — anchored (`b94440d`) |
 | RFC-0104 | Life-4 | Drive | Foundation Validation #4 | ⏳ pending |
 | RFC-0105 | Life-5 | Memory | Foundation Validation #5 | ⏳ pending |
 | RFC-0106 | Life-6 | Persona | Foundation Validation #6 | ⏳ pending |
