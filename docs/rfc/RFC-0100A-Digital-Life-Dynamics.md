@@ -81,6 +81,9 @@ Consequences every Life-layer RFC MUST honor:
 If a proposed design requires a module to rewrite the life's own Identity or Goal directly,
 the design is an *agent*, not a *life*, and is out of scope for the Life Layer.
 
+These consequences are formalized as the authority assignment, ownership matrix, and
+Rules 0–3 in **RFC-0100B (State Ownership)** — the single authority on Life-state mutability.
+
 ---
 
 ## 2. The two loops
@@ -264,7 +267,12 @@ loop, so they are never tempted to leak into Ontology:
 3. **No new stage without extending this doc.** A Life-layer RFC may not introduce a new
    lifecycle stage without first extending §2 (and, if the stage is a noun, RFC-0100 §1).
 4. **No direct self-mutation.** Any RFC that proposes `identity.update()` or
-   `Reflection → Goal` directly violates Principle 0 (§1) and must be revised.
+   `Reflection → Goal` directly violates Principle 0 (§1) and must be revised. The formal
+   authority assignment and ownership matrix that enforces this lives in
+   **RFC-0100B (State Ownership)**.
+
+> **Shared meta-principle across the 0100 trilogy:** Ontology defines what exists. Dynamics
+> defines how life flows. State Ownership defines who governs change.
 
 ---
 

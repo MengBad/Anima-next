@@ -351,8 +351,9 @@ on-ramp.
 
 ### Canonical RFC sequence (priority order)
 ```
-RFC-0100  Digital Life Ontology        ← this document (root: WHAT exists)
+RFC-0100  Digital Life Ontology        ← WHAT exists (root)
 RFC-0100A Digital Life Dynamics        ← HOW life runs (loop, control, growth)
+RFC-0100B State Ownership             ← WHO GOVERNS CHANGE (owner assignment + matrix)
 RFC-0101  Identity
 RFC-0102  Need
 RFC-0103  Affect & Drive
@@ -380,6 +381,15 @@ centres of the roadmap.
   move — the lifecycle, Attention as a cross-cutting control mechanism, and the growth
   loop. It is a "How" RFC under the same Document Taxonomy; it introduces no competing
   vocabulary.
+- **RFC-0100B (State Ownership)** is the third sibling: the *authority* assignment, ownership
+  matrix, and hard rules that formalize RFC-0100A §1 Principle 0 — *elevated*, because mutation
+  is a consequence of ownership, not its premise. It introduces no new life vocabulary or flow; it
+  assigns authority and licenses the writes, and is the single authority on Life-state
+  mutability. Its apex rule: *every life state has exactly one authority* — a semantic contract
+  that exclusively governs a state's evolution, never an implementation object.
+
+> **Shared meta-principle across the 0100 trilogy:** Ontology defines what exists. Dynamics
+> defines how life flows. State Ownership defines who governs change.
 - SylannEngine is **one Provider / SDK among others**, not the life itself. It satisfies
   Capabilities; it does not define Identity, Need, or Growth.
 
