@@ -30,6 +30,7 @@ from anima.constitution.memory_engine import MemoryEngine
 from anima.constitution.need import derive_need
 from anima.constitution.planner import derive_plan
 from anima.constitution.reflection import Reflector, reflect
+from anima.constitution.persona import PersonaProjector, derive_persona
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -38,11 +39,13 @@ from anima.constitution.state import (
     ExecutionStatus,
     Goal,
     GoalLifecycle,
+    Identity,
     Memory,
     MemoryRecord,
     Need,
     OrientationAxis,
     Perception,
+    Persona,
     Plan,
     PlannerContext,
     ReflectionResult,
@@ -136,7 +139,7 @@ def _sample_chain():
 def check_constitution_invariants() -> bool:
     """Run every mechanical guard over the real engines. Raises on any breach."""
     # 1. No setters / storage authority on derived / transient state classes
-    for cls in (Need, Affect, Drive, Plan, ExecutionResult, ReflectionResult):
+    for cls in (Need, Affect, Drive, Plan, ExecutionResult, ReflectionResult, Persona):
         assert_no_setter(cls)
         assert_no_storage_authority(cls)
 
@@ -207,6 +210,39 @@ def check_constitution_invariants() -> bool:
                 f"(forbidden by RFC-0109 C1/C2/C3)"
             )
 
+    # 8. Persona projects Identity read-only — does NOT mutate the Identity it reads
+    #    (RFC-0110 C1/C2 Authority-leak guard: the projection must never rewrite the root
+    #    it was derived from; a second Identity root is the central Persona risk).
+    identity_sample = _sample_identity_for_persona()
+    assert_no_cross_authority_mutation(derive_persona, identity_sample)
+
+    # 9. Persona (state) and the PersonaProjector expose NO storage / authority-leak method
+    #    — Persona is the *projection*, not a second Identity root or a second store (RFC-0110
+    #    C1/C2/C3 transform X-firewall). A second Identity root is a worse violation than a
+    #    second Memory (the life becomes two people).
+    for forbidden in ("save", "persist", "load", "restore", "write", "store", "create"):
+        if hasattr(Persona, forbidden):
+            raise ConstitutionViolation(
+                f"Persona carries storage authority '{forbidden}' "
+                f"(second store / second root forbidden by RFC-0110 C3)"
+            )
+    for forbidden in (
+        "update_identity",
+        "modify_identity",
+        "rewrite_identity",
+        "patch_need",
+        "create_goal",
+        "modify_goal",
+        "write_memory",
+        "save_memory",
+        "store_memory",
+    ):
+        if hasattr(PersonaProjector, forbidden):
+            raise ConstitutionViolation(
+                f"PersonaProjector exposes authority-leak method '{forbidden}' "
+                f"(forbidden by RFC-0110 C1/C2/C3)"
+            )
+
     return True
 
 
@@ -272,3 +308,16 @@ def _sample_execution_result() -> ExecutionResult:
             "drive emphasis at plan time = 'approach'",
         ],
     )
+
+
+def _sample_identity_for_persona() -> Identity:
+    """Build a minimal Identity for the Persona projection mutation check."""
+    mem = Memory()
+    mem.semantic.append(
+        MemoryRecord(
+            kind="semantic",
+            content={"curiosity": 0.9, "value": "understanding", "voice": "warm"},
+            salience=0.8,
+        )
+    )
+    return derive_identity(mem)

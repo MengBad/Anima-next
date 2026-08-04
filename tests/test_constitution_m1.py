@@ -14,6 +14,7 @@ from anima.constitution.planner import Planner, derive_plan
 from anima.constitution.execution import ExecutionRuntime, execute_plan
 from anima.constitution.memory_authority import MemoryAuthority, ingest
 from anima.constitution.reflection import Reflector, reflect
+from anima.constitution.persona import PersonaProjector, derive_persona
 from anima.constitution.state import (
     Affect,
     Drive,
@@ -22,9 +23,11 @@ from anima.constitution.state import (
     ExecutionStatus,
     Goal,
     GoalLifecycle,
+    Identity,
     Memory,
     OrientationAxis,
     Perception,
+    Persona,
     Plan,
     PlannerContext,
     ReflectionResult,
@@ -466,6 +469,85 @@ def test_reflection_result_is_ingested_by_memory_authority():
     assert len(snap.semantic) == 2
 
 
+# --------------------------------------------------------------------------
+# M1.10 — Persona Engine (RFC-0110)
+# --------------------------------------------------------------------------
+def _identity_for_persona() -> Identity:
+    return derive_identity(
+        _engine_with({"curiosity": 0.9, "value": "understanding", "voice": "warm"}).snapshot()
+    )
+
+
+def test_persona_is_pure_function():
+    # Same Identity ⇒ same Persona (deterministic projection, no hidden state / no timestamp,
+    # RFC-0110 §4 P1: Persona is a Derived projection, a reading — like Need/Affect/Drive).
+    i = _identity_for_persona()
+    assert derive_persona(i) == derive_persona(i)
+
+
+def test_persona_depends_on_identity():
+    # Different Identity ⇒ different Persona (the projection tracks the root it was derived from,
+    # no second Identity root — RFC-0100B line 162).
+    curious = derive_identity(
+        _engine_with({"curiosity": 0.9, "value": "understanding"}).snapshot()
+    )
+    passive = derive_identity(
+        _engine_with({"curiosity": 0.1, "value": "rest"}).snapshot()
+    )
+    assert derive_persona(curious) != derive_persona(passive)
+
+
+def test_persona_does_not_mutate_identity():
+    # The projection reads Identity read-only; it must not mutate the root it was derived from
+    # (RFC-0110 C1/C2 Authority-leak guard — the central Persona risk is a second Identity root).
+    i = _identity_for_persona()
+    before_traits = dict(i.traits)
+    before_values = list(i.values)
+    derive_persona(i)
+    assert dict(i.traits) == before_traits
+    assert list(i.values) == before_values
+
+
+def test_persona_is_not_a_store():
+    # Persona carries no persistence authority / no lifecycle setter (RFC-0110 C3/V4). It is a
+    # Derived projection, not a second Memory / second Identity root.
+    assert not hasattr(Persona, "save")
+    assert not hasattr(Persona, "persist")
+    assert not hasattr(Persona, "restore")
+    assert not hasattr(Persona, "archive")
+    # It is not the Memory store type, and it references no Goal/Plan/Execution handle.
+    p = derive_persona(_identity_for_persona())
+    assert isinstance(p, Persona)
+    assert not isinstance(p, Memory)
+    assert not hasattr(p, "goal")
+    assert not hasattr(p, "plan")
+
+
+def test_persona_projector_has_no_authority_leak():
+    # The Persona Authority (PersonaProjector) owns the projection act, never a store or a life
+    # state. It must expose NO storage / authority-leak method — the projection X-firewall
+    # (RFC-0110 C1/C2/C3: forbid a second Identity root and any upstream/downstream mutation).
+    projector = PersonaProjector()
+    for forbidden in (
+        "save",
+        "persist",
+        "write_memory",
+        "store_memory",
+        "save_memory",
+        "create_persona",
+        "modify_goal",
+        "patch_goal",
+        "modify_drive",
+        "update_identity",
+        "modify_identity",
+        "rewrite_identity",
+        "patch_need",
+    ):
+        assert not hasattr(projector, forbidden), (
+            f"PersonaProjector must not expose {forbidden} (RFC-0110 C1/C2/C3)"
+        )
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -497,4 +579,9 @@ if __name__ == "__main__":
     test_reflection_does_not_mutate_execution_result()
     test_reflector_has_no_storage_or_authority_leak_api()
     test_reflection_result_is_ingested_by_memory_authority()
+    test_persona_is_pure_function()
+    test_persona_depends_on_identity()
+    test_persona_does_not_mutate_identity()
+    test_persona_is_not_a_store()
+    test_persona_projector_has_no_authority_leak()
     print("ALL M1 SMOKE TESTS PASSED")

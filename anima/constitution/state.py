@@ -270,3 +270,24 @@ class ReflectionResult:
     records: list = field(default_factory=list)   # list of {"kind","content","salience"} candidates
     timestamp: float = field(default_factory=time.time)
 
+
+# --------------------------------------------------------------------------
+# Persona — Derived projection of Identity (RFC-0110)
+# --------------------------------------------------------------------------
+@dataclass
+class Persona:
+    """The presentation mask — a Derived projection of Identity (RFC-0110).
+
+    Persona is the *expression face* of the self, NOT a second Identity root and NOT a
+    store. Derived pure-function projection of Identity; no setter, no storage authority
+    (RFC-0110 P1/C3). It references the Identity it projected (``identity_ref``), never
+    holds a mutable handle to Identity, so it cannot reach back and rewrite the root
+    (RFC-0100B single-Identity-root rule, line 162; RFC-0110 C1/C2). Re-projected each
+    Recall (RFC-0100 §1.4); never stored, never restored. Deterministic: same Identity
+    ⇒ same Persona (no ``timestamp`` / no hidden state) — it is a *reading*, like Need.
+    """
+
+    identity_ref: str = ""        # deterministic ref of the projected Identity (NOT an Identity handle)
+    voice: str = ""               # how the self presents (derived from traits/values)
+    presentation: dict = field(default_factory=dict)   # the expression projection (read-only view)
+
