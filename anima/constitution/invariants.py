@@ -23,12 +23,16 @@ import copy
 
 from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
+from anima.constitution.execution import execute_plan
 from anima.constitution.identity import derive_identity
 from anima.constitution.need import derive_need
 from anima.constitution.planner import derive_plan
 from anima.constitution.state import (
     Affect,
     Drive,
+    ExecutionContext,
+    ExecutionResult,
+    ExecutionStatus,
     Goal,
     GoalLifecycle,
     Memory,
@@ -127,8 +131,8 @@ def _sample_chain():
 
 def check_constitution_invariants() -> bool:
     """Run every mechanical guard over the real engines. Raises on any breach."""
-    # 1. No setters / storage authority on derived state classes
-    for cls in (Need, Affect, Drive, Plan):
+    # 1. No setters / storage authority on derived / transient state classes
+    for cls in (Need, Affect, Drive, Plan, ExecutionResult):
         assert_no_setter(cls)
         assert_no_storage_authority(cls)
 
@@ -146,6 +150,11 @@ def check_constitution_invariants() -> bool:
     assert_no_cross_authority_mutation(derive_plan, goal, drive, ctx)
     # Drive is also read-only (wrap to put it in the upstream position).
     assert_no_cross_authority_mutation(lambda d, g, c: derive_plan(g, d, c), drive, goal, ctx)
+
+    # 4. Execution consumes a Plan read-only — does NOT mutate the Plan it carries (RFC-0107
+    #    C1/C2: Execution reads Plan, mutates neither Plan nor Goal nor Drive nor Context).
+    plan, exec_ctx = _sample_execution_inputs()
+    assert_no_cross_authority_mutation(execute_plan, plan, exec_ctx)
 
     return True
 
@@ -170,3 +179,21 @@ def _sample_plan_inputs():
     )
     ctx = PlannerContext(capabilities=["knowledge"], environment={"safe_to_retry": True})
     return goal, drive, ctx
+
+
+def _sample_execution_inputs():
+    """Build a minimal (Plan, ExecutionContext) pair for the execution mutation check."""
+    plan = Plan(
+        goal_target="understand X",
+        task_graph=[
+            {"id": "t1", "op": "read", "about": "understand X"},
+            {"id": "t2", "op": "synthesize", "about": "can explain X"},
+            {"id": "t3", "op": "present", "about": "understand X"},
+        ],
+        ordering=["t1", "t2", "t3"],
+        branching={"if_browser_missing": "fallback_to_knowledge"},
+        rollback={"on_t2_fail": "revert_to_t1"},
+        emphasis="approach",
+    )
+    ctx = ExecutionContext(capabilities=["knowledge"], environment={})
+    return plan, ctx

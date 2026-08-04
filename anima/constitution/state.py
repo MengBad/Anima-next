@@ -204,3 +204,49 @@ class Plan:
     emphasis: str = ""              # "approach" | "avoid" — Drive orientation, read-only influence
     focus: float = 0.0              # Drive focus, read-only influence
 
+
+# --------------------------------------------------------------------------
+# ExecutionContext — read-only runtime snapshot for carrying a Plan (RFC-0107)
+# --------------------------------------------------------------------------
+@dataclass
+class ExecutionContext:
+    """Read-only situational snapshot the Execution Runtime reads when carrying a Plan.
+
+    Available capabilities, current environment, resources at execution time. Parallel to
+    PlannerContext / Perception (RFC-0107 §5.1): it is an *input signal* to the carrying act,
+    never a stored Constitution state. The Runtime reads it but never mutates it (RFC-0107 C2).
+    """
+
+    capabilities: list[str] = field(default_factory=list)
+    environment: dict = field(default_factory=dict)
+    resources: dict = field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# ExecutionResult — Transient event output of carrying a Plan (RFC-0107)
+# --------------------------------------------------------------------------
+class ExecutionStatus(Enum):
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCESS = "success"
+    FAILED = "failed"
+    PARTIAL = "partial"
+
+
+@dataclass
+class ExecutionResult:
+    """The event output of carrying a Plan into the Universe (RFC-0107).
+
+    **Transient** — produced by Execution, consumed by Reflection → Memory, **never stored** as a
+    Constitution state (RFC-0107 C3). It references the *Plan it consumed* (``plan_ref``), **not** the
+    Goal that produced the Plan (RFC-0107 C1) — so it cannot reach back and mutate Goal ownership.
+    No setter, no storage authority (RFC-0107 P1/V4). ``lessons`` is what sediments into Memory
+    next cycle; ``status`` / ``outcome`` are the carrying record only.
+    """
+
+    plan_ref: str = ""             # deterministic ref of the consumed Plan (NOT a Goal reference)
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    outcome: str = ""
+    lessons: list = field(default_factory=list)   # what was learned — feeds Reflection → Memory
+    timestamp: float = field(default_factory=time.time)
+

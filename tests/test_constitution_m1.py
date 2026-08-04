@@ -11,9 +11,13 @@ from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
 from anima.constitution.invariants import check_constitution_invariants
 from anima.constitution.planner import Planner, derive_plan
+from anima.constitution.execution import ExecutionRuntime, execute_plan
 from anima.constitution.state import (
     Affect,
     Drive,
+    ExecutionContext,
+    ExecutionResult,
+    ExecutionStatus,
     Goal,
     GoalLifecycle,
     OrientationAxis,
@@ -219,6 +223,83 @@ def test_drive_is_not_plan_decider():
     assert plan_v.emphasis == "avoid"
 
 
+# --------------------------------------------------------------------------
+# M1.7 — Execution Engine (RFC-0107)
+# --------------------------------------------------------------------------
+def _plan_for_exec() -> Plan:
+    return Plan(
+        goal_target="understand X",
+        task_graph=[
+            {"id": "t1", "op": "read", "about": "understand X"},
+            {"id": "t2", "op": "synthesize", "about": "can explain X"},
+            {"id": "t3", "op": "present", "about": "understand X"},
+        ],
+        ordering=["t1", "t2", "t3"],
+        branching={"if_browser_missing": "fallback_to_knowledge"},
+        rollback={"on_t2_fail": "revert_to_t1"},
+        emphasis="approach",
+    )
+
+
+def _ctx_for_exec() -> ExecutionContext:
+    return ExecutionContext(capabilities=["knowledge"], environment={})
+
+
+def test_execution_result_is_transient_not_stored():
+    # ExecutionResult must carry no persistence authority / no lifecycle setter (RFC-0107 P1/V4).
+    assert not hasattr(ExecutionResult, "save")
+    assert not hasattr(ExecutionResult, "persist")
+    assert not hasattr(ExecutionResult, "restore")
+    assert not hasattr(ExecutionResult, "archive")
+
+
+def test_execution_consumes_plan_not_goal():
+    # The Result references the Plan it consumed, never the Goal object (RFC-0107 C1).
+    plan = _plan_for_exec()
+    ctx = _ctx_for_exec()
+    result = execute_plan(plan, ctx)
+    assert isinstance(result, ExecutionResult)
+    assert result.plan_ref  # deterministic ref of the consumed Plan shape
+    assert result.status == ExecutionStatus.SUCCESS
+    # The Result must NOT embed the Goal as a mutable handle — only a string ref of the Plan.
+    assert not hasattr(result, "goal")
+    assert "understand X" in result.plan_ref or result.plan_ref
+
+
+def test_execution_does_not_mutate_plan():
+    # Carrying the Plan must not mutate the Plan it consumes (RFC-0107 C1/C2 Authority leak guard).
+    plan = _plan_for_exec()
+    ctx = _ctx_for_exec()
+    before_ordering = list(plan.ordering)
+    before_goal_target = plan.goal_target
+    execute_plan(plan, ctx)
+    assert list(plan.ordering) == before_ordering
+    assert plan.goal_target == before_goal_target
+
+
+def test_execution_runtime_is_infra_carrier_not_authority():
+    # The Runtime owns the act, not any Constitution state; it exposes no Goal/Plan mutation
+    # method (RFC-0107 C2 — the X-firewall: Runtime is outside the Constitution stack).
+    runtime = ExecutionRuntime(capabilities=["knowledge"])
+    assert not hasattr(runtime, "set_goal")
+    assert not hasattr(runtime, "revise_plan")
+    assert not hasattr(runtime, "modify_intent")
+    plan = _plan_for_exec()
+    result = runtime.run(plan)
+    assert isinstance(result, ExecutionResult)
+    assert result.status == ExecutionStatus.SUCCESS
+
+
+def test_execution_result_flows_to_memory_shape():
+    # The Result carries the learned content Reflection would sediment into Memory (RFC-0107 C3);
+    # the learned content is the *lessons*, not a stored Execution state.
+    plan = _plan_for_exec()
+    result = execute_plan(plan, _ctx_for_exec())
+    assert isinstance(result.lessons, list) and len(result.lessons) >= 1
+    # lessons reference plan/goal content, proving the Result is the Memory回流 input (not a store).
+    assert any("understand X" in lesson for lesson in result.lessons)
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -235,4 +316,9 @@ if __name__ == "__main__":
     test_plan_does_not_mutate_goal_or_drive()
     test_planner_is_single_writer_and_no_goal_mutation()
     test_drive_is_not_plan_decider()
+    test_execution_result_is_transient_not_stored()
+    test_execution_consumes_plan_not_goal()
+    test_execution_does_not_mutate_plan()
+    test_execution_runtime_is_infra_carrier_not_authority()
+    test_execution_result_flows_to_memory_shape()
     print("ALL M1 SMOKE TESTS PASSED")

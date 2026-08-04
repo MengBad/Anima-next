@@ -9,7 +9,7 @@ The chain is strictly:
            → Planning Authority constructs Plan=p(Goal,Drive,Context) → Execution
 
 This package is the implementation half of Phase 2A. The Foundation it consumes
-is FROZEN (RFC-0105 §14, re-confirmed at RFC-0106); changes only via Foundation
+is FROZEN (RFC-0105 §14, re-confirmed at RFC-0106/0107); changes only via Foundation
 Evolution F1–F4.
 
 Package layout:
@@ -21,6 +21,17 @@ Package layout:
     drive.py          — M1.4 i(Affect)
     invariants.py     — M1.5 mechanical Constitution guards
     planner.py        — M1.6 Planning Authority: derive_plan (p) + Planner lifecycle
+    execution.py      — M1.7 Execution Runtime: execute_plan (consumption act) + carrier
 """
 
-__all__ = ["state", "memory_engine", "identity", "need", "affect", "drive", "invariants", "planner"]
+__all__ = [
+    "state",
+    "memory_engine",
+    "identity",
+    "need",
+    "affect",
+    "drive",
+    "invariants",
+    "planner",
+    "execution",
+]
