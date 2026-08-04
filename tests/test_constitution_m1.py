@@ -9,6 +9,7 @@ from anima.constitution.identity import derive_identity
 from anima.constitution.need import derive_need
 from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
+from anima.constitution.invariants import check_constitution_invariants
 from anima.constitution.state import Affect, Drive, Perception
 from anima.constitution.memory_engine import MemoryEngine
 
@@ -119,6 +120,15 @@ def test_drive_has_no_goal_authority_edge():
     assert "goal" not in params
 
 
+# --------------------------------------------------------------------------
+# M1.5 — Invariant Guard
+# --------------------------------------------------------------------------
+def test_constitution_invariants_hold():
+    # Runs every mechanical guard (no setter / no storage authority / no upstream
+    # mutation) over the real engines. This IS the guard against future drift.
+    assert check_constitution_invariants() is True
+
+
 if __name__ == "__main__":
     test_identity_is_pure_function()
     test_identity_derivation_does_not_mutate_memory()
@@ -129,4 +139,5 @@ if __name__ == "__main__":
     test_affect_is_pure_function()
     test_drive_is_pure_function()
     test_drive_has_no_goal_authority_edge()
+    test_constitution_invariants_hold()
     print("ALL M1 SMOKE TESTS PASSED")
