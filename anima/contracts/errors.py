@@ -11,7 +11,15 @@ class ContractError(Exception):
 
 
 class CapabilityNotFoundError(ContractError):
-    """请求的 Capability 不存在（M0.3 Resolver 接入后使用）。"""
+    """请求的 Capability 不存在（RFC-0001 §8 CapabilityNotFound）。"""
+
+
+class NoProviderError(ContractError):
+    """该 Capability 无任何可用 Provider（RFC-0001 §8 NoProvider）。"""
+
+
+class PermissionDeniedError(ContractError):
+    """所有 Provider 权限均不满足该 Capability（RFC-0001 §8 PermissionDenied）。"""
 
 
 class ContextAbiError(ContractError):

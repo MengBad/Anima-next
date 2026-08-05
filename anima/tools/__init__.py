@@ -17,6 +17,9 @@ import time
 import logging
 from typing import Any, Callable, Optional
 
+from anima.capability.index import CapabilityIndex
+from anima.capability.scopes import PermissionScopes
+
 logger = logging.getLogger("anima.tools")
 _CALL_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("anima_tool_context", default={})
 _TOOL_FAILURE_PREFIXES = (
@@ -62,7 +65,9 @@ class Tool:
     def __init__(self, name: str, description: str, parameters: dict,
                  handler: Callable, min_level: int = LEVEL_USER,
                  required: Optional[list] = None, danger: bool = False,
-                 enabled: bool = True):
+                 enabled: bool = True,
+                 capability_ids: Optional[list] = None,
+                 granted_scopes: Any = None):
         self.name = name
         self.description = description
         self.parameters = parameters  # JSON Schema properties
@@ -73,6 +78,11 @@ class Tool:
         self.danger = danger
         # 允许运行时由插件启用/停用；默认工具保持原有行为。
         self.enabled = enabled
+        # --- M0.3 (RFC-0001) Capability 元数据：additive，默认空，不改变任何既有语义 ---
+        # name 仍是唯一执行标识；capability_ids 只是「这个实现满足哪些能力」的声明。
+        self.capability_ids: list[str] = [str(c) for c in (capability_ids or []) if str(c)]
+        # Provider 被授予的权限域（RFC-0001 §7）；None → 空集（不授予任何 scope）。
+        self.granted_scopes = PermissionScopes.from_mapping(granted_scopes)
 
     def to_openai_schema(self) -> dict:
         required = self.required if self.required is not None else list(self.parameters.keys())
@@ -93,12 +103,27 @@ class Tool:
 class ToolRegistry:
     """工具注册中心。"""
 
-    def __init__(self, core=None):
+    def __init__(self, core=None, capability_mode: bool = False):
         self.tools: dict[str, Tool] = {}
         self.core = core
+        # --- M0.3 (RFC-0001) Capability Adapter ---
+        # 索引是 Registry 之上的查询视图；Registry 仍是唯一 execution owner。
+        self.capability_index = CapabilityIndex()
+        # feature flag：默认关闭 → get_schemas 行为 100% 不变。
+        self.capability_mode = bool(capability_mode)
+        self._capability_resolver = None
+
+    @property
+    def capability_resolver(self):
+        """惰性构造的 Resolver（只消费索引，不执行工具）。"""
+        if self._capability_resolver is None:
+            from anima.capability.resolver import CapabilityResolver
+            self._capability_resolver = CapabilityResolver(self.capability_index)
+        return self._capability_resolver
 
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
+        self.capability_index.index_tool(tool)
         logger.debug("注册工具: %s (level=%d)", tool.name, tool.min_level)
 
     def unregister(self, name: str) -> bool:
@@ -106,6 +131,7 @@ class ToolRegistry:
         if name not in self.tools:
             return False
         self.tools.pop(name, None)
+        self.capability_index.remove_tool(name)
         logger.debug("移除工具: %s", name)
         return True
 
@@ -120,13 +146,40 @@ class ToolRegistry:
     def reset_call_context(self, token: contextvars.Token) -> None:
         _CALL_CONTEXT.reset(token)
 
-    def get_schemas(self, permission_level: int = LEVEL_USER) -> list[dict]:
-        """根据用户权限等级过滤可使用的工具 schema。"""
-        return [
-            t.to_openai_schema()
-            for t in self.tools.values()
-            if t.enabled and permission_level >= t.min_level
-        ]
+    def get_schemas(self, permission_level: int = LEVEL_USER,
+                    capability_mode: Optional[bool] = None) -> list[dict]:
+        """根据用户权限等级过滤可使用的工具 schema。
+
+        M0.3 双模式（RFC-0001 §5.4）：
+        - ``capability_mode=False``（默认）：legacy Tool schema，行为逐字节不变；
+        - ``capability_mode=True``：输出 capability schema（不含任何 Provider 名），
+          未标注 capability 的 legacy Tool 仍以 Tool schema 暴露（迁移期混合）。
+
+        参数为 None 时取实例 flag ``self.capability_mode``（默认 False）。
+        """
+        use_capability = self.capability_mode if capability_mode is None else bool(capability_mode)
+        if not use_capability:
+            return [
+                t.to_openai_schema()
+                for t in self.tools.values()
+                if t.enabled and permission_level >= t.min_level
+            ]
+        from anima.capability.schema import capability_schemas, legacy_only_schemas
+        return (
+            capability_schemas(self.capability_index, permission_level)
+            + legacy_only_schemas(list(self.tools.values()), permission_level)
+        )
+
+    async def call_capability(self, capability_ref: str, args: dict,
+                              permission_level: int = LEVEL_USER) -> str:
+        """capability 模式的调用入口：Resolver 选 Provider，执行仍走 ``call()``。
+
+        ``capability_ref`` 可以是 capability id（``search.web``）或其 schema name
+        （``search_web``，LLM 侧看到的名字）。``call(name, args)`` 语义不变。
+        """
+        cap_id = self.capability_index.capability_for_schema_name(capability_ref) or capability_ref
+        resolution = self.capability_resolver.resolve(cap_id, permission_level=permission_level)
+        return await self.call(resolution.provider.tool_name, args, permission_level)
 
     def can_call(self, name: str, permission_level: int) -> bool:
         tool = self.tools.get(name)
