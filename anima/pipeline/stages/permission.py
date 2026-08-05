@@ -23,11 +23,20 @@ def _check_permission(
     user_id: int,
     group_id: Optional[int],
     config: AnimaConfig,
-    sender_role: str = "",
 ) -> tuple[int, str]:
     """返回 (level, role_name)。
 
-    sender_role: OneBot11 群消息中的 sender.role (owner/admin/member)
+    授权模型（M0.4.3 S1 锁定）：
+        QQ UID -> config.permissions -> explicit grant -> level
+
+    唯一授权主体是 QQ UID，且必须由主人显式授予。
+    QQ 群角色（sender.role = owner/admin）**不参与任何授权判定**：
+    群主 != bot owner，群管理员 != bot admin。群身份仅属于聊天上下文，
+    由 permission_stage 单独写入 ctx.meta["group_sender_role"] 供人格/
+    对话层参考，不得回流到 permission_level。
+
+    群维度配置只能**收紧**（banned_groups / readonly_groups），
+    永远不能提升权限。
     """
     # 用户维度权限优先于群维度
     if user_id in config.permissions.banned:
@@ -39,18 +48,14 @@ def _check_permission(
     if user_id in config.permissions.admins:
         return 3, "admin"
 
-    # 群维度封禁 / 只读
+    # 群维度封禁 / 只读（仅收紧，不提升）
     if group_id is not None:
         if group_id in config.permissions.banned_groups:
             return 0, "banned"
         if group_id in config.permissions.readonly_groups:
             return 1, "readonly"
 
-    # QQ 群角色：owner 应映射为 owner 级别，admin 映射为 admin
-    if sender_role == "owner":
-        return 4, "owner"
-    if sender_role == "admin":
-        return 3, "admin"
+    # 未显式授权的 UID 一律为普通用户，无论其 QQ 群角色为何
     return 2, "user"
 
 
@@ -71,12 +76,7 @@ async def permission_stage(ctx: PipelineContext) -> StageResult:
     if core is None:
         return StageResult.CONTINUE
 
-    # 从 OneBot11 事件中提取群角色
-    sender_role = ctx.event.get("raw", {}).get("sender", {}).get("role", "")
-
-    level, role = _check_permission(
-        ctx.user_id, ctx.group_id, core.config, sender_role
-    )
+    level, role = _check_permission(ctx.user_id, ctx.group_id, core.config)
 
     if role == "banned":
         ctx.stop_reason = f"用户 {ctx.user_id} 被封禁"
@@ -92,6 +92,12 @@ async def permission_stage(ctx: PipelineContext) -> StageResult:
     ctx.meta["permission_level"] = level
     ctx.meta["permission_role"] = role
     ctx.meta["group_policy"] = _group_policy_for(core.config, ctx.group_id)
+
+    # QQ 群角色：仅作为聊天上下文元数据保留（人格/称呼/社交图谱可用），
+    # 绝不参与授权。命名刻意与 permission_role 区分，防止误用。
+    ctx.meta["group_sender_role"] = (
+        ctx.event.get("raw", {}).get("sender", {}).get("role", "")
+    )
 
     # 更新 time sense
     time_sense = get_time_sense()

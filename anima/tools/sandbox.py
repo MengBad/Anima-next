@@ -42,6 +42,59 @@ MAX_TIMEOUT = 120        # 最大超时秒（Owner 分级沙箱上限）
 # 外部隔离工具（按优先级）
 ISOLATION_TOOLS = ["bwrap", "unshare"]
 
+# ---------------------------------------------------------------------------
+# M0.4.3 S2 —— 密钥隔离
+# ---------------------------------------------------------------------------
+# 沙箱子进程曾经继承父进程的完整 os.environ，任何注入到环境中的令牌/密钥
+# （LLM API key、NapCat token、数据库口令等）都能被用户代码一行 print 出来，
+# 再经工具结果回流给 LLM 和聊天窗口。此处改为**显式白名单**：
+# 只有运行时确实需要的键才会进入子进程，其余一律丢弃。
+SAFE_ENV_ALLOWLIST = frozenset({
+    # POSIX 基础
+    "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "TZ",
+    "TMPDIR", "TEMP", "TMP", "USER", "LOGNAME",
+    # Windows 运行 Python 必需
+    "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC", "PATHEXT",
+    "NUMBER_OF_PROCESSORS", "PROCESSOR_ARCHITECTURE",
+    # Python 运行时
+    "PYTHONPATH", "PYTHONHOME", "PYTHONIOENCODING",
+    "PYTHONUNBUFFERED", "PYTHONDONTWRITEBYTECODE", "VIRTUAL_ENV",
+})
+
+# 二次防御：即便某个键被误加进白名单，只要名字带敏感语义也一律剔除。
+_SENSITIVE_ENV_MARKERS = (
+    "TOKEN", "SECRET", "PASSWORD", "PASSWD", "APIKEY", "API_KEY",
+    "KEY", "CREDENTIAL", "AUTH", "SESSION", "COOKIE", "PRIVATE",
+    "SIGNATURE", "SALT", "ACCESS", "REFRESH",
+)
+
+
+def _is_sensitive_env_key(key: str) -> bool:
+    upper = key.upper()
+    return any(marker in upper for marker in _SENSITIVE_ENV_MARKERS)
+
+
+def build_sandbox_env(extra: Optional[dict] = None) -> dict:
+    """构造沙箱子进程环境变量（白名单 + 敏感名剔除）。
+
+    绝不返回 None —— 返回 None 会让 subprocess 继承父进程全量环境，
+    正是本函数要消灭的泄漏面。
+    """
+    env: dict[str, str] = {}
+    for key, value in os.environ.items():
+        if key.upper() not in SAFE_ENV_ALLOWLIST:
+            continue
+        if _is_sensitive_env_key(key):
+            continue
+        env[key] = value
+    if extra:
+        for key, value in extra.items():
+            if _is_sensitive_env_key(key):
+                logger.warning("拒绝向沙箱注入敏感环境变量: %s", key)
+                continue
+            env[key] = str(value)
+    return env
+
 
 class SandboxError(Exception):
     pass
@@ -93,6 +146,10 @@ class SandboxTier:
     blocked_imports: set[str] = field(
         default_factory=lambda: {"subprocess", "socket", "requests", "ctypes", "multiprocessing"}
     )
+    # M0.4.3 S3：文件系统禁闭。True 时用户代码只能访问沙箱工作区与
+    # Python 运行时目录，无法读取项目配置 / 家目录 / 密钥文件。
+    # 主人层保持关闭（主人本就拥有等价于宿主机的权限）。
+    fs_confined: bool = True
 
 
 # 默认分层。key 为权限等级；越权（>4）按 owner 处理。
@@ -105,8 +162,44 @@ SANDBOX_TIERS: dict[int, SandboxTier] = {
         memory_mb=512,
         writable_dirs=["data/agent_workspace"],
         blocked_imports={"ctypes", "multiprocessing"},  # 仅保留最危险阻止
+        fs_confined=False,
     ),
 }
+
+# ---------------------------------------------------------------------------
+# M0.4.3 S3 —— 文件系统禁闭
+# ---------------------------------------------------------------------------
+# 无论路径是否落在允许目录内，命中这些标记一律拒绝（deny 优先于 allow）。
+FS_DENY_MARKERS = (
+    ".env", ".ssh", "id_rsa", "id_ed25519", ".pem", ".key", ".p12", ".pfx",
+    "secrets", "credential", "config.yaml", "config.yml", "config.json",
+    ".git", ".netrc", "shadow", "authorized_keys", "known_hosts",
+    ".aws", ".kube", ".docker", "token", ".npmrc", ".pypirc",
+)
+
+
+def _runtime_read_roots() -> list[str]:
+    """允许只读访问的 Python 运行时目录（否则 import 链会断）。"""
+    import sysconfig
+
+    roots = {sys.prefix, sys.base_prefix, os.path.dirname(sys.executable)}
+    try:
+        paths = sysconfig.get_paths()
+        for key in ("stdlib", "platstdlib", "purelib", "platlib", "data"):
+            p = paths.get(key)
+            if p:
+                roots.add(p)
+    except Exception:  # pragma: no cover - sysconfig 异常极罕见
+        logger.debug("sysconfig 路径探测失败", exc_info=True)
+    out = []
+    for r in roots:
+        if not r:
+            continue
+        try:
+            out.append(os.path.realpath(os.path.abspath(r)))
+        except OSError:
+            continue
+    return sorted(set(out))
 
 
 def sandbox_tier_for(permission_level: int) -> SandboxTier:
@@ -344,14 +437,18 @@ def _preexec(config: SandboxConfig) -> Optional[callable]:
 
 async def _run_subprocess(cmd: list[str], config: SandboxConfig,
                           env: dict | None = None) -> str:
-    """运行子进程并返回输出。"""
+    """运行子进程并返回输出。
+
+    S2：env 为 None 时**不再继承**父进程环境，而是回落到白名单环境，
+    确保任何调用方（含未来新增路径）都无法意外泄漏密钥。
+    """
     logger.debug("沙箱执行: %s", cmd)
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         preexec_fn=_preexec(config) if os.name != "nt" else None,
-        env=env,
+        env=env if env is not None else build_sandbox_env(),
     )
 
     try:
@@ -389,6 +486,140 @@ async def _run_subprocess(cmd: list[str], config: SandboxConfig,
 # ---------------------------------------------------------------------------
 # 公开 API
 # ---------------------------------------------------------------------------
+
+# M0.4.3 S3：注入到沙箱子进程的文件系统禁闭守卫。
+# 允许读：沙箱工作区 + Python 运行时目录（否则 import 链断裂）
+# 允许写：仅沙箱工作区（连 site-packages 也不可写，防止植入后门）
+# deny 标记优先于 allow，但不适用于运行时目录（避免误伤库自带的 config.json）
+_FS_GUARD_BLOCK = r'''
+if _FS_CONFINED:
+    import io as _fsio
+    import _io as _fsio_c
+    import sysconfig as _fssc
+
+    _fs_orig_open = _builtins.open
+    _fs_orig_os_open = _os.open
+    _fs_orig_listdir = _os.listdir
+    _fs_orig_scandir = _os.scandir
+    _fs_orig_remove = _os.remove
+    _fs_orig_unlink = _os.unlink
+    _fs_orig_rename = _os.rename
+    _fs_orig_replace = _os.replace
+    _fs_orig_mkdir = _os.mkdir
+    _fs_orig_makedirs = _os.makedirs
+    _fs_orig_rmdir = _os.rmdir
+
+    def _fs_norm(p):
+        try:
+            return _os.path.realpath(_os.path.abspath(_os.fspath(p)))
+        except Exception:
+            return ''
+
+    _FS_RUNTIME_ROOTS = []
+    for _r in (_sys.prefix, _sys.base_prefix, _os.path.dirname(_sys.executable)):
+        _rn = _fs_norm(_r) if _r else ''
+        if _rn and _rn not in _FS_RUNTIME_ROOTS:
+            _FS_RUNTIME_ROOTS.append(_rn)
+    try:
+        for _k, _v in _fssc.get_paths().items():
+            if _k in ('stdlib', 'platstdlib', 'purelib', 'platlib', 'data') and _v:
+                _rn = _fs_norm(_v)
+                if _rn and _rn not in _FS_RUNTIME_ROOTS:
+                    _FS_RUNTIME_ROOTS.append(_rn)
+    except Exception:
+        pass
+
+    _FS_WORK_ROOTS = []
+    for _r in (_os.path.dirname(_USER_FILE), _output_dir):
+        _rn = _fs_norm(_r) if _r else ''
+        if _rn and _rn not in _FS_WORK_ROOTS:
+            _FS_WORK_ROOTS.append(_rn)
+
+    _FS_READ_ROOTS = _FS_WORK_ROOTS + _FS_RUNTIME_ROOTS
+
+    def _fs_under(path_str, roots):
+        for _r in roots:
+            if path_str == _r or path_str.startswith(_r + _os.sep):
+                return True
+        return False
+
+    def _fs_denied(path_str):
+        _low = path_str.replace('\\', '/').lower()
+        for _m in _FS_DENY_MARKERS:
+            if _m in _low:
+                return True
+        return False
+
+    def _fs_check(path, write=False):
+        if isinstance(path, int):
+            return  # 已打开的 fd，不重复校验
+        _norm = _fs_norm(path)
+        if not _norm:
+            raise PermissionError('[sandbox] 路径无法解析，访问被拒绝')
+        _in_runtime = _fs_under(_norm, _FS_RUNTIME_ROOTS)
+        if not _in_runtime and _fs_denied(_norm):
+            raise PermissionError('[sandbox] 敏感路径访问被拒绝: %s' % (path,))
+        if write:
+            if not _fs_under(_norm, _FS_WORK_ROOTS):
+                raise PermissionError(
+                    '[sandbox] 写入越界，仅允许沙箱工作区: %s' % (path,))
+        else:
+            if not _fs_under(_norm, _FS_READ_ROOTS):
+                raise PermissionError(
+                    '[sandbox] 读取越界，仅允许沙箱工作区: %s' % (path,))
+
+    def _fs_guard_open(file, mode='r', *a, **kw):
+        _m = str(kw.get('mode', mode))
+        _fs_check(file, write=any(_c in _m for _c in ('w', 'a', 'x', '+')))
+        if 'mode' in kw:
+            return _fs_orig_open(file, *a, **kw)
+        return _fs_orig_open(file, mode, *a, **kw)
+
+    def _fs_guard_os_open(path, flags, *a, **kw):
+        _wmask = (getattr(_os, 'O_WRONLY', 0) | getattr(_os, 'O_RDWR', 0)
+                  | getattr(_os, 'O_CREAT', 0) | getattr(_os, 'O_APPEND', 0)
+                  | getattr(_os, 'O_TRUNC', 0))
+        _fs_check(path, write=bool(flags & _wmask))
+        return _fs_orig_os_open(path, flags, *a, **kw)
+
+    def _fs_guard_listdir(path='.', *a, **kw):
+        _fs_check(path)
+        return _fs_orig_listdir(path, *a, **kw)
+
+    def _fs_guard_scandir(path='.', *a, **kw):
+        _fs_check(path)
+        return _fs_orig_scandir(path, *a, **kw)
+
+    def _fs_wrap_write1(_orig):
+        def _w(path, *a, **kw):
+            _fs_check(path, write=True)
+            return _orig(path, *a, **kw)
+        return _w
+
+    def _fs_wrap_write2(_orig):
+        def _w(src, dst, *a, **kw):
+            _fs_check(src, write=True)
+            _fs_check(dst, write=True)
+            return _orig(src, dst, *a, **kw)
+        return _w
+
+    _builtins.open = _fs_guard_open
+    for _mod in (_fsio, _fsio_c):
+        try:
+            _mod.open = _fs_guard_open
+        except Exception:
+            pass
+    _os.open = _fs_guard_os_open
+    _os.listdir = _fs_guard_listdir
+    _os.scandir = _fs_guard_scandir
+    _os.remove = _fs_wrap_write1(_fs_orig_remove)
+    _os.unlink = _fs_wrap_write1(_fs_orig_unlink)
+    _os.mkdir = _fs_wrap_write1(_fs_orig_mkdir)
+    _os.makedirs = _fs_wrap_write1(_fs_orig_makedirs)
+    _os.rmdir = _fs_wrap_write1(_fs_orig_rmdir)
+    _os.rename = _fs_wrap_write2(_fs_orig_rename)
+    _os.replace = _fs_wrap_write2(_fs_orig_replace)
+'''
 
 # 自动捕获（兜底）：用户代码未显式调用 _save_output 但留下了 PIL Image / 帧列表时，
 # 自动保存并标记 [output_image]，避免「模型生成了图却忘记输出」导致发不出图片。
@@ -436,6 +667,9 @@ async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
     tier = sandbox_tier_for(permission_level)
     blocked = set(tier.blocked_imports)
     effective_timeout = min(int(timeout), tier.timeout)
+    # S3：文件系统禁闭参数（主人层关闭）
+    fs_confined = bool(tier.fs_confined)
+    fs_deny = tuple(FS_DENY_MARKERS)
     with tempfile.NamedTemporaryFile(
         mode="w", suffix=".py", delete=False, prefix="anima_sandbox_"
     ) as f:
@@ -471,14 +705,21 @@ def _safe_import(name, *args, **kwargs):
 
 _builtins.__import__ = _safe_import
 
+_FS_CONFINED = {fs_confined!r}
+_FS_DENY_MARKERS = {fs_deny!r}
+
 # 注意：不覆盖 exec/compile/eval —— Python stdlib import 内部依赖
 # builtins.exec（如 importlib._bootstrap_external 在加载模块时调用 exec），
 # 覆盖会导致 import io / import PIL 等直接崩溃。
 # 安全性由 import 守卫的栈帧检查保证：即使用户代码 exec("import subprocess")，
 # 栈帧检查仍能发现调用者来自 _USER_FILE 并拦截。
-
-# User code below
 """)
+        # ---- M0.4.3 S3：文件系统禁闭守卫 ----------------------------------
+        # 纯 Python 层纵深防御：拦截 open / io.open / os.* 的常规读写入口，
+        # 把用户代码限制在「沙箱工作区 + Python 运行时目录」内。
+        # 硬边界仍由 bwrap/unshare 命名空间提供，此层用于无隔离工具时兜底。
+        f.write(_FS_GUARD_BLOCK)
+        f.write("\n# User code below\n")
         # 始终注入图片变量（即使无入站图，也定义为 None/空串，避免 LLM 代码引用 NameError）
         import json as _json
         _imgs = input_images_b64 or []
@@ -646,7 +887,8 @@ def _save_output(img, filename='output.png'):
             writable_dirs=_writable,
         )
         inner_cmd = [sys.executable, "-u", tmp_path]
-        _sandbox_env = {**os.environ, "SANDBOX_OUTPUT_DIR": _output_dir}
+        # S2：白名单环境，父进程密钥不进入沙箱
+        _sandbox_env = build_sandbox_env({"SANDBOX_OUTPUT_DIR": _output_dir})
         # 先尝试隔离执行
         cmd = _build_command(config, inner_cmd)
         try:
@@ -734,4 +976,5 @@ async def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
         network=False,
     )
     cmd = _build_command(config, tokens)
-    return await _run_subprocess(cmd, config)
+    # S2：显式白名单环境（`cat /proc/self/environ` 亦无密钥可读）
+    return await _run_subprocess(cmd, config, env=build_sandbox_env())

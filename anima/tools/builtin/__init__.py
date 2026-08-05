@@ -263,12 +263,17 @@ def register_all_builtin(registry, core=None) -> None:
         {"code": {"type": "string", "description": "要执行的 Python 代码"}},
         run_python,
         min_level=LEVEL_USER,
+        # M0.4.3 S5：内置代码执行工具由系统（bot owner）显式授予 exec scope，
+        # 使 exec_permitted() 成为真实门控；additive，不新建 capability_id。
+        granted_scopes={"exec": True},
     ))
     registry.register(Tool(
         "run_shell", "执行安全的只读 shell 命令（仅限 ls/cat/grep/date/df/du 等）",
         {"command": {"type": "string", "description": "shell 命令"}},
         run_shell,
         min_level=LEVEL_ADMIN,
+        # M0.4.3 S5：同 run_python，授予 exec scope 使门控生效。
+        granted_scopes={"exec": True},
     ))
     registry.register(Tool(
         "get_runtime_status",

@@ -307,6 +307,8 @@ def register_agent_tools(registry, core=None) -> None:
         },
         functools.partial(agent_exec, core),
         required=["command"], min_level=LEVEL_OWNER,
+        # M0.4.3 S5：owner 专属执行工具，授予 exec scope 使门控生效。
+        granted_scopes={"exec": True},
     ))
 
     registry.register(Tool(

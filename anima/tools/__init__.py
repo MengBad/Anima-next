@@ -18,7 +18,7 @@ import logging
 from typing import Any, Callable, Optional
 
 from anima.capability.index import CapabilityIndex
-from anima.capability.scopes import PermissionScopes
+from anima.capability.scopes import PermissionScopes, exec_permitted
 
 logger = logging.getLogger("anima.tools")
 _CALL_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("anima_tool_context", default={})
@@ -30,6 +30,22 @@ _TOOL_INTERNAL_MARKERS = (
     "[stderr]", "Traceback", "Operation not permitted", "Permission denied", "unshare failed",
 )
 _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
+
+# M0.4.3 S4：代码执行审计。
+# 这些工具会在宿主上运行任意 payload，必须留下可追责的结构化轨迹：
+# 谁（actor UID）以什么权限（permission_level / sandbox_tier）执行了什么
+# （payload 摘要）、耗时多久、成功与否。
+EXECUTION_TOOLS = frozenset({"run_python", "run_shell", "agent_exec"})
+_EXEC_PAYLOAD_KEYS = ("code", "command", "script")
+_SANDBOX_TIER_NAMES = {0: "banned", 1: "readonly", 2: "user", 3: "admin", 4: "owner"}
+
+
+def _exec_payload(args: dict[str, Any]) -> str:
+    for key in _EXEC_PAYLOAD_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value:
+            return value
+    return ""
 
 
 def get_call_context() -> dict[str, Any]:
@@ -250,6 +266,14 @@ class ToolRegistry:
                     args_digest=item.args_digest, reviewer=int(owner_id))
 
     async def _invoke(self, tool: Tool, args: dict[str, Any]) -> str:
+        # S5：exec scope 真实生效门控。执行类工具必须持有 granted exec scope，
+        # 否则即使 min_level 通过也拒绝执行（与 S4 审计共用 EXECUTION_TOOLS 判定集）。
+        # 此门控与调用者权限等级正交：任何代码执行工具都须经 exec_permitted() 放行。
+        if tool.name in EXECUTION_TOOLS and not exec_permitted(tool.granted_scopes):
+            self._audit("execution_scope_denied", tool=tool.name,
+                        granted_scopes=tool.granted_scopes.as_dict())
+            return "错误: 该工具未获授权执行代码（缺少 exec scope 授权）"
+
         # run_python 特殊处理：从 call context 提取入站图片注入沙箱
         if tool.name == "run_python":
             ctx = get_call_context()
@@ -261,9 +285,26 @@ class ToolRegistry:
                 args = {**args, "permission_level": ctx.get("permission_level", LEVEL_USER)}
             logger.info("run_python 调用: code_len=%d has_images=%s code_preview=%.200s",
                         len(args.get("code", "")), bool(images_b64), args.get("code", ""))
-        result = tool.handler(**args)
-        if asyncio.iscoroutine(result):
-            result = await result
+
+        # S4：执行类工具的结构化审计（started / finished / failed）
+        exec_meta = self._execution_audit_meta(tool, args)
+        if exec_meta is not None:
+            self._audit("execution_started", **exec_meta)
+        _exec_t0 = time.perf_counter()
+
+        try:
+            result = tool.handler(**args)
+            if asyncio.iscoroutine(result):
+                result = await result
+        except Exception as exc:
+            if exec_meta is not None:
+                self._audit(
+                    "execution_failed",
+                    duration_ms=round((time.perf_counter() - _exec_t0) * 1000, 2),
+                    error=type(exc).__name__,
+                    **exec_meta,
+                )
+            raise
         # run_python 原始输出日志（在 normalize 之前，方便排查沙箱问题）
         if tool.name == "run_python":
             logger.info("run_python raw_result (len=%d): %.500s", len(str(result)), str(result))
@@ -278,7 +319,39 @@ class ToolRegistry:
                 if isinstance(existing, list):
                     existing.extend(_img_paths[:2])
         self._audit("tool_executed", tool=tool.name, ok=ok, result_len=len(text))
+        if exec_meta is not None:
+            self._audit(
+                "execution_finished",
+                duration_ms=round((time.perf_counter() - _exec_t0) * 1000, 2),
+                success=ok,
+                result_len=len(text),
+                **exec_meta,
+            )
         return text
+
+    def _execution_audit_meta(self, tool: Tool, args: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """S4：构造代码执行审计的公共字段；非执行类工具返回 None。"""
+        if tool.name not in EXECUTION_TOOLS:
+            return None
+        import hashlib
+
+        ctx = get_call_context()
+        payload = _exec_payload(args)
+        level = args.get("permission_level", ctx.get("permission_level", LEVEL_USER))
+        try:
+            level = int(level)
+        except (TypeError, ValueError):
+            level = LEVEL_USER
+        return {
+            "tool": tool.name,
+            "actor": ctx.get("user_id"),
+            "group_id": ctx.get("group_id"),
+            "permission_level": level,
+            "sandbox_tier": _SANDBOX_TIER_NAMES.get(min(level, 4), "user"),
+            "payload_len": len(payload),
+            "payload_sha256": hashlib.sha256(payload.encode("utf-8", "replace")).hexdigest()[:16],
+            "payload_preview": payload[:200],
+        }
 
     def _requires_approval(self) -> bool:
         return bool(getattr(getattr(self.core, "config", None), "security", None)
