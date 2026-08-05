@@ -78,30 +78,38 @@ def test_existing_tool_registration_unaffected():
     注意：本条随 Pilot 扩展同步调整（透明修正，非回归）。
     - M0.3 时 Adapter 是空索引 → 断言「全部不带 capability」；
     - M0.3.1 在 web_search 上标注 search.web（1 个）；
-    - M0.4 Phase 1.1 新增 read_file 标注 filesystem.read（第 2 个）。
+    - M0.4 Phase 1.1 新增 read_file 标注 filesystem.read（第 2 个）；
+    - M0.4.2 复用 write_file 标注 filesystem.write（第 3 个）。
     每次新增 capability 都须显式更新此处的「已裁定集合」——这是对「顺手多标」的护栏，
     不是禁止扩展。其余工具的 ABI / schema / 索引全部保持 legacy。
     """
     from anima.tools import create_default_registry
-    from anima.tools.builtin import PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2
+    from anima.tools.builtin import (
+        PILOT_CAPABILITY_ID,
+        PILOT_CAPABILITY_ID_2,
+        PILOT_CAPABILITY_ID_3,
+    )
 
     reg = create_default_registry(core=None)
     assert len(reg.tools) > 0
 
-    # 已裁定集合：恰好 2 个工具标注了 capability，身份固定。
+    # 已裁定集合：恰好 3 个工具标注了 capability，身份固定。
     annotated = {t.name: t.capability_ids for t in reg.tools.values() if t.capability_ids}
     assert annotated == {
         "web_search": [PILOT_CAPABILITY_ID],
         "read_file": [PILOT_CAPABILITY_ID_2],
+        "write_file": [PILOT_CAPABILITY_ID_3],
     }
     # 所有「其他」工具保持零标注（legacy ABI 不变）
     assert all(
         t.capability_ids == []
         for t in reg.tools.values()
-        if t.name not in ("web_search", "read_file")
+        if t.name not in ("web_search", "read_file", "write_file")
     )
     # 索引只有已裁定的能力，不含任何 Provider / Tool 名
-    assert reg.capability_index.capabilities() == [PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2]
+    assert reg.capability_index.capabilities() == [
+        PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3,
+    ]
 
     # 默认 flag 关闭 → schema 输出与 legacy 完全一致
     assert reg.capability_mode is False

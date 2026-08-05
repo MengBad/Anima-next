@@ -113,6 +113,51 @@ def declare_filesystem_read_contract(registry) -> None:
     ))
 
 
+# ---------------------------------------------------------------------------
+# M0.4 Expansion Phase 1.2 (M0.4.2) —— filesystem.write Pilot（复用 write_file）
+#
+# 纪律（RFC-0001 anchored 218f86f，沿用 M0.3.1 / M0.4.1）：
+# - 不新增 Provider：直接复用既有 write_file（固定 output/ 目录 + traversal 防护）；
+#   不做全量迁移、不重命名 Provider、不改 capability_mode 默认值。
+# - name/handler/min_level 等 ABI 不变；capability_mode 默认关 → 默认路径无行为差异。
+# - 安全边界：filesystem.write 只写 <data_dir>/output/，符合最小写范围；
+#   write_file 无显式 content size limit、静默覆盖既有文件（宿主动词语义保持）
+#   → 分别挂账 KL-write-1 / KL-write-2，不碰 RFC-0001 §7 与 handler 行为。
+# ---------------------------------------------------------------------------
+
+PILOT_CAPABILITY_ID_3 = "filesystem.write"
+
+#: 能力层描述：只描述「能力」，不出现任何 Provider / Tool 名 / 实现路径。
+_PILOT_FILESYSTEM_WRITE_DESCRIPTION = (
+    "将内容写入 Bot 自身数据目录下的 output/ 子目录（如生成的产物、答案文件）。"
+    "filename 用文件名，content 为要写入的内容；写入范围限定在 output 目录内，禁止目录穿越。"
+    "当需要保存生成结果、导出文件时调用。"
+)
+
+
+def declare_filesystem_write_contract(registry) -> None:
+    """向 CapabilityIndex 显式声明 filesystem.write 能力契约（幂等）。
+
+    与 filesystem.read / search.web 同构：显式 Contract 让 scope 超集校验真实生效
+    （permission=filesystem=True），且描述由能力层给出、不透传 Tool 描述。
+    对没有 ``capability_index`` 的替身 registry 静默跳过，保持 additive。
+    """
+    index = getattr(registry, "capability_index", None)
+    if index is None:
+        return
+    from anima.capability import CapabilityContract, PermissionScopes
+    from anima.contracts.capability import Stability
+
+    index.declare_contract(CapabilityContract(
+        id=PILOT_CAPABILITY_ID_3,
+        version="1.0.0",
+        domain="filesystem",
+        description=_PILOT_FILESYSTEM_WRITE_DESCRIPTION,
+        stability=Stability.EXPERIMENTAL,
+        permission=PermissionScopes(filesystem=True),
+    ))
+
+
 def register_all_builtin(registry, core=None) -> None:
     """注册全部内置工具到 registry。"""
     from anima.tools.sandbox import run_python, run_shell
@@ -121,6 +166,8 @@ def register_all_builtin(registry, core=None) -> None:
     declare_pilot_capability_contracts(registry)
     # M0.4 Expansion Phase 1.1：第二个真实 capability 的契约先于工具注册
     declare_filesystem_read_contract(registry)
+    # M0.4.2 Expansion：复用 write_file 作为 filesystem.write 的 Provider（不新增 Provider）
+    declare_filesystem_write_contract(registry)
 
     # M0.3.1 Pilot：契约先于工具注册（显式 Contract 优先级高于 Tool 派生）
     declare_pilot_capability_contracts(registry)
@@ -192,6 +239,9 @@ def register_all_builtin(registry, core=None) -> None:
         },
         make_file_tool(core),
         min_level=LEVEL_USER,
+        # M0.4.2：filesystem.write 的 Provider。additive —— name/handler/min_level 未变。
+        capability_ids=[PILOT_CAPABILITY_ID_3],
+        granted_scopes={"filesystem": True},
     ))
     registry.register(Tool(
         "read_file",

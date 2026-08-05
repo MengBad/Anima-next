@@ -48,12 +48,14 @@ def test_pilot_is_the_only_declared_capability(registry):
     """Pilot 纪律护栏：内置工具集中标注的能力集合必须与治理裁定完全一致。
 
     最初 M0.3.1 时集合为 ``["search.web"]``（恰好 1 个）。M0.4 Phase 1.1 新增了
-    ``filesystem.read`` 这一个真实 capability，集合变为两个。这条断言**故意写死当前
-    已裁定集合** —— 后续任何一次「顺手多标一个」或「漏标」都会在这里失败，
-    强制走治理裁定而不是悄悄扩散。
+    ``filesystem.read``，M0.4.2 复用 write_file 新增 ``filesystem.write``，集合变为三个。
+    这条断言**故意写死当前已裁定集合** —— 后续任何一次「顺手多标一个」或「漏标」都会
+    在这里失败，强制走治理裁定而不是悄悄扩散。
     """
-    from anima.tools.builtin import PILOT_CAPABILITY_ID_2
-    assert registry.capability_index.capabilities() == [PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2]
+    from anima.tools.builtin import PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3
+    assert registry.capability_index.capabilities() == [
+        PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3
+    ]
 
 
 def test_pilot_contract_is_explicit_not_derived(registry):

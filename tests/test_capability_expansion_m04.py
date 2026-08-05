@@ -32,6 +32,7 @@ from anima.tools import (
 from anima.tools.builtin import (
     PILOT_CAPABILITY_ID,
     PILOT_CAPABILITY_ID_2,
+    PILOT_CAPABILITY_ID_3,
     declare_filesystem_read_contract,
 )
 from anima.tools.builtin.file import read_file
@@ -50,21 +51,25 @@ def registry() -> ToolRegistry:
 # --------------------------------------------------------------------------
 
 def test_filesystem_read_is_second_real_capability(registry):
-    """capability 集合严格等于治理裁定：search.web + filesystem.read，无第三个。"""
+    """capability 集合严格等于治理裁定：search.web + filesystem.read + filesystem.write。
+
+    注：本测试随 Pilot 扩展同步更新集合（KL2 透明修正，非回归）。
+    """
     assert registry.capability_index.capabilities() == [
-        PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2,
+        PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3,
     ]
-    # 恰好 2 个 Tool 被标注，且身份固定
+    # 恰好 3 个 Tool 被标注，且身份固定
     annotated = {t.name: t.capability_ids for t in registry.tools.values() if t.capability_ids}
     assert annotated == {
         "web_search": [PILOT_CAPABILITY_ID],
         "read_file": [PILOT_CAPABILITY_ID_2],
+        "write_file": [PILOT_CAPABILITY_ID_3],
     }
     # 其余全部零标注（legacy ABI 不变）
     assert all(
         t.capability_ids == []
         for t in registry.tools.values()
-        if t.name not in ("web_search", "read_file")
+        if t.name not in ("web_search", "read_file", "write_file")
     )
 
 
