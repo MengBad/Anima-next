@@ -280,9 +280,12 @@ class ToolRegistry:
             images_b64 = ctx.get("input_images_b64")
             if images_b64 and "input_images_b64" not in args:
                 args = {**args, "input_images_b64": images_b64}
-            # Phase 1：把当前调用上下文的权限等级透传给沙箱，驱动分级能力。
-            if "permission_level" not in args:
-                args = {**args, "permission_level": ctx.get("permission_level", LEVEL_USER)}
+            # R1 (M0.4.3-R1)：沙箱分级能力仅由可信 call context 派发，
+            # 严禁信任调用方传入的 permission_level —— 否则普通 UID 可在 tool-call
+            # args 中注入 level=4，把沙箱升级到 owner 层（network=True +
+            # fs_confined=False），构成典型特权参数注入。无条件用 ctx 值覆盖 args，
+            # 丢弃任何调用方提供的 permission_level 字段。
+            args = {**args, "permission_level": ctx.get("permission_level", LEVEL_USER)}
             logger.info("run_python 调用: code_len=%d has_images=%s code_preview=%.200s",
                         len(args.get("code", "")), bool(images_b64), args.get("code", ""))
 
@@ -337,7 +340,9 @@ class ToolRegistry:
 
         ctx = get_call_context()
         payload = _exec_payload(args)
-        level = args.get("permission_level", ctx.get("permission_level", LEVEL_USER))
+        # R1 (M0.4.3-R1)：审计记录的权限等级只能取自可信 ctx，
+        # 绝不回退到调用方传入的 args，避免审计轨迹被伪造。
+        level = ctx.get("permission_level", LEVEL_USER)
         try:
             level = int(level)
         except (TypeError, ValueError):

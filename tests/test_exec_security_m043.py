@@ -9,6 +9,7 @@
     S4  执行审计               —— 结构化审计事件
     S5  exec scope 接线        —— 缺 scope 拒绝执行
     S6  以上集中回归
+    R1  沙箱授权注入防御        —— 调用方 permission_level 注入被 ctx 覆盖
 
 设计原则（锁定）：
     QQ UID -> PermissionStore -> explicit grant -> execution permission
@@ -23,6 +24,7 @@ from anima.core.config import AnimaConfig
 from anima.pipeline import PipelineContext, StageResult
 from anima.pipeline.stages import _check_permission
 from anima.pipeline.stages.permission import permission_stage
+from anima.tools import Tool, ToolRegistry
 
 
 # --------------------------------------------------------------------------
@@ -571,3 +573,134 @@ async def test_s5_non_exec_tool_ignores_exec_scope():
     out = await reg.call("echo", {"text": "hi"}, permission_level=2)
     assert out == "echo:hi"
     assert "execution_scope_denied" not in core.audit.types()
+
+
+# ==========================================================================
+# R1 —— 沙箱授权注入防御 (M0.4.3-R1)
+# ==========================================================================
+#
+# 攻击模型：普通/管理员 UID 在 LLM tool-call args 中携带 {"permission_level": 4}，
+# 企图把 run_python 沙箱升级到 owner 层（network=True + fs_confined=False）。
+# 修复后：_invoke 在调用 handler 前无条件用可信 ctx 的 permission_level 覆盖 args，
+# 审计记录也只信 ctx，调用方传入值被彻底丢弃。
+
+@pytest.mark.asyncio
+async def test_r1_user_cannot_escalate_via_injected_permission_level():
+    """R1：普通 UID(args 注入 4) 沙箱仍须是 user 层，handler 收 ctx 值。"""
+    reg, core = _exec_registry()
+    received: dict = {}
+    async def _capture(code, permission_level=2, **_kw):
+        received["level"] = permission_level
+        return f"executed:{len(code)}"
+    reg.tools["run_python"] = Tool(
+        name="run_python", description="exec",
+        parameters={"code": {"type": "string"}},
+        handler=_capture, granted_scopes={"exec": True},
+    )
+    token = reg.set_call_context(user_id=987654, group_id=100, permission_level=2)
+    try:
+        out = await reg.call(
+            "run_python",
+            {"code": "print(1)", "permission_level": 4},
+            permission_level=2,
+        )
+    finally:
+        reg.reset_call_context(token)
+
+    assert "executed" in out
+    # 关键：handler 收到的必须是 ctx 的 2，而非注入的 4
+    assert received["level"] == 2, f"特权参数注入得逞，handler 收到 {received['level']}"
+    started = core.audit.find("execution_started")
+    assert started["permission_level"] == 2
+    assert started["sandbox_tier"] == "user"
+
+
+@pytest.mark.asyncio
+async def test_r1_admin_cannot_escalate_via_injected_permission_level():
+    """R1：管理员(level 3) 注入 4 也不得越级到 owner 沙箱。"""
+    reg, core = _exec_registry()
+    received: dict = {}
+    async def _capture(code, permission_level=3, **_kw):
+        received["level"] = permission_level
+        return f"executed:{len(code)}"
+    reg.tools["run_python"] = Tool(
+        name="run_python", description="exec",
+        parameters={"code": {"type": "string"}},
+        handler=_capture, granted_scopes={"exec": True},
+    )
+    token = reg.set_call_context(user_id=987654, group_id=100, permission_level=3)
+    try:
+        out = await reg.call(
+            "run_python",
+            {"code": "print(1)", "permission_level": 4},
+            permission_level=3,
+        )
+    finally:
+        reg.reset_call_context(token)
+
+    assert received["level"] == 3, f"管理员越级注入得逞: {received['level']}"
+    started = core.audit.find("execution_started")
+    assert started["permission_level"] == 3
+    assert started["sandbox_tier"] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_r1_owner_context_keeps_owner_sandbox():
+    """R1：合法 owner 上下文(ctx=4) 仍正确映射 owner 沙箱（分级能力不破坏）。"""
+    reg, core = _exec_registry()
+    received: dict = {}
+    async def _capture(code, permission_level=4, **_kw):
+        received["level"] = permission_level
+        return f"executed:{len(code)}"
+    reg.tools["run_python"] = Tool(
+        name="run_python", description="exec",
+        parameters={"code": {"type": "string"}},
+        handler=_capture, granted_scopes={"exec": True},
+    )
+    token = reg.set_call_context(user_id=1, group_id=None, permission_level=4)
+    try:
+        out = await reg.call("run_python", {"code": "print(1)"}, permission_level=4)
+    finally:
+        reg.reset_call_context(token)
+
+    assert received["level"] == 4
+    started = core.audit.find("execution_started")
+    assert started["permission_level"] == 4
+    assert started["sandbox_tier"] == "owner"
+
+
+def test_r1_run_python_schema_excludes_permission_level():
+    """R1：工具 schema 不得向 LLM 暴露 permission_level 参数（仅 code）。"""
+    p = _Path(__file__).resolve().parents[1] / "anima/tools/builtin/__init__.py"
+    src = p.read_text(encoding="utf-8")
+    idx = src.index('"run_python"')
+    block = src[idx: idx + 400]
+    assert '"code"' in block
+    assert '"permission_level"' not in block, "run_python 工具 schema 不得暴露 permission_level 参数"
+
+
+@pytest.mark.asyncio
+async def test_r1_unknown_tool_arg_does_not_inject_permission():
+    """R1：LLM 传入的非 schema 字段（攻击试探）不影响可信 permission_level。"""
+    reg, core = _exec_registry()
+    received: dict = {}
+    async def _capture(code, permission_level=2, **_kw):
+        received["level"] = permission_level
+        return f"executed:{len(code)}"
+    reg.tools["run_python"] = Tool(
+        name="run_python", description="exec",
+        parameters={"code": {"type": "string"}},
+        handler=_capture, granted_scopes={"exec": True},
+    )
+    token = reg.set_call_context(user_id=987654, group_id=100, permission_level=2)
+    try:
+        await reg.call(
+            "run_python",
+            {"code": "print(1)", "evil_field": "x", "permission_level": 4},
+            permission_level=2,
+        )
+    finally:
+        reg.reset_call_context(token)
+
+    assert received["level"] == 2, "未知字段/注入字段影响了可信权限等级"
+
