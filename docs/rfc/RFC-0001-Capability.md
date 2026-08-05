@@ -1,6 +1,6 @@
 # RFC-0001: Capability Layer
 
-- **Status:** Challenge — **APPROVED** (Infrastructure Gate; anchor `TBD-anchor`)
+- **Status:** Challenge — **APPROVED** (Infrastructure Gate; anchor `218f86f`)
 - **Date:** 2026-07-30
 - **Authors:** LIMBot V2 / Senior Developer
 - **Related:** RFC-0002 Task Contract · RFC-0003 Workflow DSL · RFC-0004 Agent Protocol · RFC-0005 Memory Protocol
@@ -346,7 +346,7 @@ RFC-0001A 稳定后，RFC-0002 才能落定（Task 的 Need 需携带 Metadata �
 
 ## 16. Phase C Challenge Record (Infrastructure Gate)
 
-> **Challenge Result: APPROVED (Infrastructure Gate).** All four boundary checks PASS; no Ontology extension, no new Authority, design unchanged. Anchor pending (see `anchor: TBD-anchor`).
+> **Challenge Result: APPROVED (Infrastructure Gate).** All four boundary checks PASS; no Ontology extension, no new Authority, design unchanged. Anchor pending (see `anchor: 218f86f`).
 
 ### 16.1 Check Results
 
@@ -363,6 +363,6 @@ RFC-0001A 稳定后，RFC-0002 才能落定（Task 的 Need 需携带 Metadata �
 
 ### 16.3 Anchor
 
-> **anchor:** `TBD-anchor`
+> **anchor:** `218f86f`
 >
 > Two-stage commit: (A) `docs(rfc): anchor RFC-0001 Capability Layer`; (B) `docs(rfc): stamp RFC-0001 anchor hash`. Document hash filled in stamp commit.
