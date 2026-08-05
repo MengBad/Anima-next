@@ -1,0 +1,257 @@
+"""M0.3.1 Capability Pilot —— 真实 Tool 上的 Capability 边界验证。
+
+Pilot 范围（严格）：内置工具中**只有** ``web_search`` 标注了 capability
+``search.web``。本测试文件把 pilot 的三条验收线钉死：
+
+1. Provider 是否完全隐藏（capability 模式下 LLM 看不到 ``web_search``）；
+2. Resolver 是否正确转发（``search.web`` → 真实 Tool handler）；
+3. Legacy path 是否零影响（默认模式逐字节不变）。
+
+同时把「已裁定的迁移期约束」（混合模式仍暴露未迁移 Tool）写成显式断言，
+使其成为**可见的既定行为**而非隐性意外。
+"""
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from anima.capability import CapabilityContract, PermissionScopes
+from anima.contracts.capability import Stability
+from anima.contracts.errors import PermissionDeniedError
+from anima.tools import LEVEL_OWNER, LEVEL_READONLY, LEVEL_USER, Tool, ToolRegistry, create_default_registry
+from anima.tools.builtin import PILOT_CAPABILITY_ID, declare_pilot_capability_contracts
+
+#: 不允许出现在 capability schema 中的实现层词汇
+PROVIDER_TOKENS = ["web_search", "bing", "wttr", "tavily", "searxng"]
+
+
+@pytest.fixture()
+def registry() -> ToolRegistry:
+    return create_default_registry()
+
+
+# --------------------------------------------------------------------------
+# 1. 索引与契约
+# --------------------------------------------------------------------------
+
+def test_pilot_capability_is_indexed(registry):
+    """默认注册表中，pilot 能力已进入索引且只挂 1 个 Provider。"""
+    index = registry.capability_index
+    assert index.has(PILOT_CAPABILITY_ID)
+    providers = index.providers_for(PILOT_CAPABILITY_ID)
+    assert [p.tool_name for p in providers] == ["web_search"]
+
+
+def test_pilot_is_the_only_declared_capability(registry):
+    """Pilot 纪律护栏：内置工具集中有且仅有 1 个能力被标注。
+
+    这条断言故意写死 —— 后续任何一次「顺手多标一个」都会在这里失败，
+    强制走治理裁定而不是悄悄扩散。
+    """
+    assert registry.capability_index.capabilities() == [PILOT_CAPABILITY_ID]
+
+
+def test_pilot_contract_is_explicit_not_derived(registry):
+    """显式 Contract 生效：domain / permission / stability 均来自声明。"""
+    contract = registry.capability_index.contract_for(PILOT_CAPABILITY_ID)
+    assert contract is not None
+    assert contract.id == "search.web"
+    assert contract.domain == "search"
+    assert contract.version == "1.0.0"
+    assert contract.major == 1
+    assert contract.stability is Stability.EXPERIMENTAL
+    # permission 非空 —— 这正是显式契约相对派生契约的关键差别
+    assert contract.permission.network is True
+    assert tuple(contract.permission.granted()) == ("network",)
+
+
+def test_pilot_contract_description_is_capability_level(registry):
+    """能力层描述不透传 Tool 描述，且不含任何实现层词汇。"""
+    contract = registry.capability_index.contract_for(PILOT_CAPABILITY_ID)
+    tool_description = registry.tools["web_search"].description
+    assert contract.description != tool_description
+    lowered = contract.description.lower()
+    for token in PROVIDER_TOKENS:
+        assert token not in lowered, f"能力描述泄漏实现词汇: {token}"
+
+
+# --------------------------------------------------------------------------
+# 2. Legacy path 零影响
+# --------------------------------------------------------------------------
+
+def test_legacy_schema_is_byte_identical(registry):
+    """默认模式（capability_mode=False）输出与未标注前完全一致。"""
+    for level in (LEVEL_READONLY, LEVEL_USER, LEVEL_OWNER):
+        expected = [
+            t.to_openai_schema()
+            for t in registry.tools.values()
+            if t.enabled and level >= t.min_level
+        ]
+        assert registry.get_schemas(level) == expected
+
+
+def test_legacy_schema_still_exposes_pilot_tool_name(registry):
+    """默认模式下 web_search 仍以 Tool name 暴露 —— legacy path 未被移除。"""
+    names = [s["function"]["name"] for s in registry.get_schemas(LEVEL_USER)]
+    assert "web_search" in names
+    assert "search_web" not in names
+
+
+def test_pilot_tool_abi_unchanged(registry):
+    """标注是纯 additive：name / min_level / required / handler 未被改动。"""
+    tool = registry.tools["web_search"]
+    assert tool.name == "web_search"
+    assert tool.min_level == LEVEL_USER
+    assert tool.required == ["query"]
+    assert callable(tool.handler)
+    assert tool.capability_ids == ["search.web"]
+    assert tuple(tool.granted_scopes.granted()) == ("network",)
+
+
+@pytest.mark.asyncio
+async def test_legacy_call_by_tool_name_still_works(registry):
+    """旧路径 Agent → tool name → call() → handler 未受影响。"""
+    hits = []
+
+    async def stub(query: str = "", num_results: int = 5) -> str:
+        hits.append(query)
+        return f"legacy:{query}"
+
+    registry.tools["web_search"].handler = stub
+    out = await registry.call("web_search", {"query": "anima"}, LEVEL_USER)
+    assert "legacy:anima" in out
+    assert hits == ["anima"]
+
+
+# --------------------------------------------------------------------------
+# 3. Capability 模式：Provider 隐藏
+# --------------------------------------------------------------------------
+
+def test_capability_mode_hides_provider_name(registry):
+    """capability 模式下 LLM 只看到能力 id，看不到 Provider（Tool）名。"""
+    schemas = registry.get_schemas(LEVEL_USER, capability_mode=True)
+    names = [s["function"]["name"] for s in schemas]
+    assert "search_web" in names
+    assert "web_search" not in names, "Provider 名不得作为 function name 暴露"
+
+
+def test_capability_schema_entry_is_clean(registry):
+    """pilot 能力条目自身序列化后不含任何实现层词汇。"""
+    schemas = registry.get_schemas(LEVEL_USER, capability_mode=True)
+    entry = next(s for s in schemas if s["function"]["name"] == "search_web")
+    blob = json.dumps(entry, ensure_ascii=False).lower()
+    for token in PROVIDER_TOKENS:
+        assert token not in blob, f"capability schema 泄漏实现词汇: {token}"
+    # 参数面从 Provider 透传，属能力签名的一部分，必须保留
+    assert set(entry["function"]["parameters"]["properties"]) == {"query", "num_results"}
+    assert entry["function"]["parameters"]["required"] == ["query"]
+
+
+def test_capability_mode_keeps_unmigrated_tools_visible(registry):
+    """已裁定的迁移期约束（Accepted Migration Constraint）——显式钉住。
+
+    混合模式下未迁移 Tool 仍以 Tool name 暴露；这不是泄漏失败，
+    是「不移除 legacy Tool path」纪律的直接后果，迁移窗口内成立。
+    """
+    names = [s["function"]["name"] for s in registry.get_schemas(LEVEL_USER, capability_mode=True)]
+    assert "query_web_memory" in names   # 未迁移 → 仍是 Tool name
+    assert "get_time" in names
+    # 已迁移的那一个则完成了切换
+    assert "search_web" in names and "web_search" not in names
+
+
+# --------------------------------------------------------------------------
+# 4. Resolver 转发
+# --------------------------------------------------------------------------
+
+def test_resolver_resolves_pilot_to_real_provider(registry):
+    resolution = registry.capability_resolver.resolve(PILOT_CAPABILITY_ID, permission_level=LEVEL_USER)
+    assert resolution.capability_id == "search.web"
+    assert resolution.provider.tool_name == "web_search"
+    assert resolution.contract.domain == "search"
+
+
+def test_resolver_reverse_lookup_from_schema_name(registry):
+    assert registry.capability_index.capability_for_schema_name("search_web") == "search.web"
+    assert registry.capability_index.capability_for_schema_name("web_search") is None
+
+
+@pytest.mark.asyncio
+async def test_call_capability_routes_to_real_handler(registry):
+    """capability 入口最终仍由 ToolRegistry.call() 执行真实 handler。"""
+    seen = []
+
+    async def stub(query: str = "", num_results: int = 5) -> str:
+        seen.append((query, num_results))
+        return f"resolved:{query}"
+
+    registry.tools["web_search"].handler = stub
+    out = await registry.call_capability("search.web", {"query": "anima"}, LEVEL_USER)
+    assert "resolved:anima" in out
+    # schema name 入口同样可达
+    out2 = await registry.call_capability("search_web", {"query": "next"}, LEVEL_USER)
+    assert "resolved:next" in out2
+    assert [q for q, _ in seen] == ["anima", "next"]
+
+
+# --------------------------------------------------------------------------
+# 5. 显式契约让 scope 校验真实生效
+# --------------------------------------------------------------------------
+
+def test_declared_contract_makes_scope_gate_real():
+    """未授予 network scope 的 Provider 无法满足 pilot 契约。
+
+    这条证明显式 declare_contract 消除了派生契约 permission 为空时的 no-op。
+    """
+    reg = ToolRegistry()
+    declare_pilot_capability_contracts(reg)
+    reg.register(Tool(
+        "offline_search", "本地检索", {"query": {"type": "string"}},
+        lambda query="": query,
+        capability_ids=[PILOT_CAPABILITY_ID],   # 声明能力但未授予 network
+    ))
+    with pytest.raises(PermissionDeniedError):
+        reg.capability_resolver.resolve(PILOT_CAPABILITY_ID, permission_level=LEVEL_USER)
+
+
+def test_declared_contract_accepts_provider_with_scope():
+    reg = ToolRegistry()
+    declare_pilot_capability_contracts(reg)
+    reg.register(Tool(
+        "online_search", "联网检索", {"query": {"type": "string"}},
+        lambda query="": query,
+        capability_ids=[PILOT_CAPABILITY_ID],
+        granted_scopes={"network": True},
+    ))
+    resolution = reg.capability_resolver.resolve(PILOT_CAPABILITY_ID, permission_level=LEVEL_USER)
+    assert resolution.provider.tool_name == "online_search"
+
+
+def test_declare_pilot_contract_is_idempotent_and_tolerant():
+    """重复声明幂等；对没有 capability_index 的替身 registry 静默跳过。"""
+    reg = ToolRegistry()
+    declare_pilot_capability_contracts(reg)
+    declare_pilot_capability_contracts(reg)
+    assert reg.capability_index.capabilities() == [PILOT_CAPABILITY_ID]
+
+    class FakeRegistry:
+        def register(self, tool):  # pragma: no cover - 仅作替身
+            pass
+
+    declare_pilot_capability_contracts(FakeRegistry())  # 不得抛异常
+
+
+def test_pilot_contract_matches_declared_shape():
+    """契约形状与 builtin 声明一致（防止两处漂移）。"""
+    reg = ToolRegistry()
+    declare_pilot_capability_contracts(reg)
+    contract = reg.capability_index.contract_for(PILOT_CAPABILITY_ID)
+    assert contract == CapabilityContract(
+        id="search.web",
+        version="1.0.0",
+        domain="search",
+        description=contract.description,
+        stability=Stability.EXPERIMENTAL,
+        permission=PermissionScopes(network=True),
+    )

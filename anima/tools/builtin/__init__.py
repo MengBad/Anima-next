@@ -23,10 +23,57 @@ from .merge import make_merge_forward
 from .honor import make_group_honor
 from .agent_tools import register_agent_tools
 
+# ---------------------------------------------------------------------------
+# M0.3.1 Capability Pilot
+#
+# 唯一一个已标注 capability 的内置工具。纪律（RFC-0001 anchored 218f86f）：
+# - 只标注 1 个低风险只读工具，不做全量迁移、不重命名 Provider；
+# - 不改 handler / min_level / Tool name —— legacy path 逐字节不变；
+# - capability_mode 默认关闭，本声明在默认路径上不产生任何行为差异。
+# ---------------------------------------------------------------------------
+
+PILOT_CAPABILITY_ID = "search.web"
+
+#: 能力层描述：只描述「能力」，不出现任何 Provider / Tool 名。
+_PILOT_SEARCH_WEB_DESCRIPTION = (
+    "联网搜索：当需要实时/最新信息、事实查证、新闻，或问题超出既有知识范围时调用。"
+    "返回标题+链接+摘要，并自动抓取前若干条网页正文。query 用简练中文描述要查的内容。"
+    "注意：优先查询本地网页记忆，未命中再联网。"
+)
+
+
+def declare_pilot_capability_contracts(registry) -> None:
+    """向 CapabilityIndex 显式声明 pilot 能力契约（幂等）。
+
+    显式 Contract 相对派生 Contract 的两点差别，正是本次 pilot 要验证的：
+
+    1. ``description`` 由能力层给出，**不透传 Tool 描述**（后者含工具名措辞）；
+    2. ``permission`` 非空 → Resolver 的 scope 超集校验在该能力上真实生效。
+
+    对没有 ``capability_index`` 的替身 registry 静默跳过，保持 additive。
+    """
+    index = getattr(registry, "capability_index", None)
+    if index is None:
+        return
+    from anima.capability import CapabilityContract, PermissionScopes
+    from anima.contracts.capability import Stability
+
+    index.declare_contract(CapabilityContract(
+        id=PILOT_CAPABILITY_ID,
+        version="1.0.0",
+        domain="search",
+        description=_PILOT_SEARCH_WEB_DESCRIPTION,
+        stability=Stability.EXPERIMENTAL,
+        permission=PermissionScopes(network=True),
+    ))
+
 
 def register_all_builtin(registry, core=None) -> None:
     """注册全部内置工具到 registry。"""
     from anima.tools.sandbox import run_python, run_shell
+
+    # M0.3.1 Pilot：契约先于工具注册（显式 Contract 优先级高于 Tool 派生）
+    declare_pilot_capability_contracts(registry)
 
     # --- 基础工具（无需 core）---
     registry.register(Tool(
@@ -83,6 +130,9 @@ def register_all_builtin(registry, core=None) -> None:
         tool_web_search,
         required=["query"],
         min_level=LEVEL_USER,
+        # M0.3.1 Pilot：唯一标注点。additive —— name / handler / min_level 均未变。
+        capability_ids=[PILOT_CAPABILITY_ID],
+        granted_scopes={"network": True},
     ))
     registry.register(Tool(
         "write_file", "将答案/产物写入文件， filename 和 content 必填。返回文件路径。",

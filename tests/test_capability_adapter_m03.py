@@ -73,13 +73,25 @@ def test_capability_metadata_is_additive():
 
 
 def test_existing_tool_registration_unaffected():
-    """既有内置工具注册全部通过，且默认不带 capability。"""
+    """既有内置工具注册全部通过；M0.3.1 Pilot 后仅 1 个工具带 capability，其余 legacy 完全不变。
+
+    注意：本条随 M0.3.1 Capability Pilot 调整。M0.3 时 Adapter 是空索引，
+    故断言「全部不带 capability」。Pilot 在 web_search 上标注了 search.web 这一个能力，
+    系有意、受限（1 个工具）的变更，不是回归。其余工具的 ABI / schema / 索引全部保持 legacy。
+    """
     from anima.tools import create_default_registry
 
     reg = create_default_registry(core=None)
     assert len(reg.tools) > 0
-    assert all(t.capability_ids == [] for t in reg.tools.values())
-    assert reg.capability_index.capabilities() == []
+
+    # M0.3.1：恰好 1 个工具标注了 capability，且只能是 pilot 的 search.web。
+    annotated = {t.name: t.capability_ids for t in reg.tools.values() if t.capability_ids}
+    assert annotated == {"web_search": ["search.web"]}
+    # 所有「其他」工具保持零标注（legacy ABI 不变）
+    assert all(t.capability_ids == [] for t in reg.tools.values() if t.name != "web_search")
+    # 索引只有 pilot 这一个能力，不含任何 Provider / Tool 名
+    assert reg.capability_index.capabilities() == ["search.web"]
+
     # 默认 flag 关闭 → schema 输出与 legacy 完全一致
     assert reg.capability_mode is False
     assert reg.get_schemas(LEVEL_USER) == [
