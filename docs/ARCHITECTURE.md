@@ -128,6 +128,29 @@ Each Life RFC is a **Foundation Validation #N**: it consumes the 0100 trilogy an
 > build step (e.g. a future Life-layer engine surfacing a real transaction/atomicity need) raises an *observed* contradiction
 > per F2 — never by speculation.
 
+---
+
+## Infrastructure Track (RFC-000x)
+
+> 🚀 **INFRASTRUCTURE TRACK: OPEN** — *separate from the CLOSED Life Validation Track (0101 → 0111)*
+
+RFC-000x validates the **carrying layer** (Capability / Task / Workflow / Agent / Memory Protocol), not Life
+states. It consumes the Foundation (RFC-0100 §1.18 / §1.19 / §2 / P1 / P2) and re-homes RFC-0000 / RFC-0001 /
+RFC-0001A as Infrastructure-layer RFCs (RFC-0100 §6). Authority defined here lives **outside** the Life O1
+matrix (P1/P2 isolation) — it does not pollute Life-state single Authority. The Infra Challenge Gate uses
+Q1 Capability Boundary / Q2 Resolver Authority / Q3 Provider Isolation / Q4 Metadata Boundary (not the Life
+Validation V1–V6).
+
+| RFC | Topic | Role | Status |
+|-----|-------|------|--------|
+| RFC-0001 | Capability Layer | Infrastructure Validation #1 (anchor of Infra Track) | ✅ Stable — anchored (`218f86f`); Infrastructure Gate **APPROVED** (Q1 Capability Boundary / Q2 Resolver Authority / Q3 Provider Isolation / Q4 Metadata Boundary all PASS); no new Ontology noun, no new Life Authority; next = RFC-0001 Implementation Readiness Audit |
+| RFC-0001A | Capability Metadata | Infrastructure (dependency of RFC-0002) | ⏳ Draft (in `Downloads/`, pending repo migration + Challenge) |
+| RFC-0000 | Migration Strategy (M0) | Infrastructure (parallel envelope) | ⏳ Draft (in `Downloads/`, pending repo migration + Challenge) |
+| RFC-0002 / 0003 / 0004 / 0005 | Task / Workflow / Agent Protocol / Memory Protocol | Infrastructure (candidates) | ⏳ Not yet drafted |
+
+> **Next Infra step:** RFC-0001 Implementation Readiness Audit (Resolver interface, Contract schema, Provider
+> sandbox boundary, test strategy) — **not** code yet.
+
 ### Governance convergence — the validation pattern is now a Protocol
 
 RFC-0101 → 0104 each ran the **same** LAWP Phase C and surfaced the same shape of clarification
