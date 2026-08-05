@@ -8,9 +8,19 @@ import pytest
 
 from anima.core.config import AnimaConfig
 from anima.core.anima_core import AnimaCore
+from anima.core.event_bus import EventBus
 from anima.channels.onebot11 import parse_onebot_event
 from anima.llm.handler import LLMHandler
 from anima.core.gateway import OutboundMsg
+from anima.memory.chat_memory import reset_chat_memory
+
+
+@pytest.fixture(autouse=True)
+def _isolate_chat_memory_singleton():
+    """F3: 每个测试前/后丢弃进程级 chat_memory 单例，消除跨测试状态污染。"""
+    reset_chat_memory()
+    yield
+    reset_chat_memory()
 
 
 class _FakeLLM:
@@ -50,7 +60,13 @@ class _CapturingGateway:
 
 
 def _make_core() -> AnimaCore:
-    cfg = AnimaConfig()
+    # 测试契约修正：睡眠模式默认开启且判定凌晨 1-5 点，会让群回复以高概率「装睡不回」，
+    # 导致测试依赖真实时钟（夜间确定性失败、白天通过）。测试统一关闭睡眠模式，
+    # 使群回复与时钟无关、确定性可达。同时关闭群聊防抖以消除 ~2s 异步计时依赖。
+    cfg = AnimaConfig.model_validate({
+        "autonomy": {"sleep_enabled": False},
+        "debounce": {"group_enabled": False},
+    })
     core = AnimaCore(cfg)
     core.llm = _FakeLLM()
     core.gateway = _CapturingGateway()
@@ -164,6 +180,8 @@ async def test_dedup_repeated_message():
     core = _make_core()
     adapter = OneBot11Adapter()
     adapter.core = core
+    # F2: 测试模式让 bus 直接重抛 handler 异常（暴露被静默吞掉的真因），不改动生产行为。
+    core.bus = EventBus(raise_on_error=True)
     handler = LLMHandler(core)
 
     # 模拟真实运行时：将 handler 订阅到事件总线（cli._register_llm_handler 的等价写法）

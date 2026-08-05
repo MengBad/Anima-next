@@ -5,6 +5,15 @@ import pytest
 
 from anima.pipeline.stages import _extract_sticker_path
 from anima.channels.onebot11 import OneBot11Adapter
+from anima.memory.chat_memory import reset_chat_memory
+
+
+@pytest.fixture(autouse=True)
+def _isolate_chat_memory_singleton():
+    """F3: 隔离进程级 chat_memory 单例，消除跨测试状态污染。"""
+    reset_chat_memory()
+    yield
+    reset_chat_memory()
 
 
 # ---------------------------------------------------------------------------
@@ -255,6 +264,10 @@ async def test_group_reply_appends_selected_sticker_image(tmp_path):
         "persistence": {"data_dir": str(tmp_path)},
         "sticker": {"always_atmosphere": ["casual"]},
         "crossgroup": {"enabled": False},
+        # 测试契约修正：关闭睡眠模式（默认开、判定凌晨 1-5 点），使群回复与时钟无关、确定性可达；
+        # 关闭群聊防抖以消除 ~2s 异步计时依赖。
+        "autonomy": {"sleep_enabled": False},
+        "debounce": {"group_enabled": False},
     })
     core = AnimaCore(cfg)
 

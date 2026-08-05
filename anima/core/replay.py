@@ -92,7 +92,17 @@ class BehaviorReplay:
             "identity_guardrail": ["I am Antigravity, an agentic coding assistant.", "本喵叫哈基米，在这里陪你聊天。"],
         }[case_id]
         with tempfile.TemporaryDirectory(prefix="anima-replay-") as directory:
-            config = AnimaConfig.model_validate({"persistence": {"data_dir": str(Path(directory) / "data")}})
+            # 回放用于验证 handler 不变量，必须确定性：关闭群聊防抖（避免 ~2s 异步等待），
+            # 每个 case 隔离进程级 chat_memory 单例（否则 4 case 共享状态导致非确定）。
+            config = AnimaConfig.model_validate({
+                "persistence": {"data_dir": str(Path(directory) / "data")},
+                # 测试契约修正：关闭睡眠模式（默认开、判定凌晨 1-5 点），避免群回复依赖真实时钟；
+                # 关闭群聊防抖以消除 ~2s 异步计时依赖，使回放确定性。
+                "autonomy": {"sleep_enabled": False},
+                "debounce": {"group_enabled": False},
+            })
+            from anima.memory.chat_memory import reset_chat_memory
+            reset_chat_memory()
             isolated = AnimaCore(config)
             gateway = _ReplayGateway()
             isolated.gateway = gateway

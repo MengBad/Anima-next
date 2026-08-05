@@ -498,3 +498,13 @@ def get_chat_memory(persist_path: str = "") -> ChatMemory:
     if _chat_memory is None:
         _chat_memory = ChatMemory(persist_path=persist_path)
     return _chat_memory
+
+
+def reset_chat_memory() -> None:
+    """Test seam: discard the process-global singleton so each test starts clean.
+
+    生产代码绝不调用本函数；它仅用于测试隔离，避免跨测试/跨 case 共享同一份
+    群聊短时上下文导致非确定性（见 integration-stability Phase 1 诊断）。
+    """
+    global _chat_memory
+    _chat_memory = None
