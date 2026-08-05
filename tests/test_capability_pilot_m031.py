@@ -1,7 +1,8 @@
-"""M0.3.1 Capability Pilot —— 真实 Tool 上的 Capability 边界验证。
+"""M0.3.1 + M0.4 Capability Pilot —— 真实 Tool 上的 Capability 边界验证。
 
-Pilot 范围（严格）：内置工具中**只有** ``web_search`` 标注了 capability
-``search.web``。本测试文件把 pilot 的三条验收线钉死：
+Pilot 范围（严格，随治理扩展）：M0.3.1 标注了 ``web_search → search.web``；
+M0.4 Phase 1.1 新增 ``read_file → filesystem.read``。本测试文件把 pilot 的三条
+验收线钉死：
 
 1. Provider 是否完全隐藏（capability 模式下 LLM 看不到 ``web_search``）；
 2. Resolver 是否正确转发（``search.web`` → 真实 Tool handler）；
@@ -44,12 +45,15 @@ def test_pilot_capability_is_indexed(registry):
 
 
 def test_pilot_is_the_only_declared_capability(registry):
-    """Pilot 纪律护栏：内置工具集中有且仅有 1 个能力被标注。
+    """Pilot 纪律护栏：内置工具集中标注的能力集合必须与治理裁定完全一致。
 
-    这条断言故意写死 —— 后续任何一次「顺手多标一个」都会在这里失败，
+    最初 M0.3.1 时集合为 ``["search.web"]``（恰好 1 个）。M0.4 Phase 1.1 新增了
+    ``filesystem.read`` 这一个真实 capability，集合变为两个。这条断言**故意写死当前
+    已裁定集合** —— 后续任何一次「顺手多标一个」或「漏标」都会在这里失败，
     强制走治理裁定而不是悄悄扩散。
     """
-    assert registry.capability_index.capabilities() == [PILOT_CAPABILITY_ID]
+    from anima.tools.builtin import PILOT_CAPABILITY_ID_2
+    assert registry.capability_index.capabilities() == [PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2]
 
 
 def test_pilot_contract_is_explicit_not_derived(registry):

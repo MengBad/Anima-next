@@ -73,24 +73,35 @@ def test_capability_metadata_is_additive():
 
 
 def test_existing_tool_registration_unaffected():
-    """既有内置工具注册全部通过；M0.3.1 Pilot 后仅 1 个工具带 capability，其余 legacy 完全不变。
+    """既有内置工具注册全部通过；Capability Pilot 后仅有治理裁定的少数工具带 capability。
 
-    注意：本条随 M0.3.1 Capability Pilot 调整。M0.3 时 Adapter 是空索引，
-    故断言「全部不带 capability」。Pilot 在 web_search 上标注了 search.web 这一个能力，
-    系有意、受限（1 个工具）的变更，不是回归。其余工具的 ABI / schema / 索引全部保持 legacy。
+    注意：本条随 Pilot 扩展同步调整（透明修正，非回归）。
+    - M0.3 时 Adapter 是空索引 → 断言「全部不带 capability」；
+    - M0.3.1 在 web_search 上标注 search.web（1 个）；
+    - M0.4 Phase 1.1 新增 read_file 标注 filesystem.read（第 2 个）。
+    每次新增 capability 都须显式更新此处的「已裁定集合」——这是对「顺手多标」的护栏，
+    不是禁止扩展。其余工具的 ABI / schema / 索引全部保持 legacy。
     """
     from anima.tools import create_default_registry
+    from anima.tools.builtin import PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2
 
     reg = create_default_registry(core=None)
     assert len(reg.tools) > 0
 
-    # M0.3.1：恰好 1 个工具标注了 capability，且只能是 pilot 的 search.web。
+    # 已裁定集合：恰好 2 个工具标注了 capability，身份固定。
     annotated = {t.name: t.capability_ids for t in reg.tools.values() if t.capability_ids}
-    assert annotated == {"web_search": ["search.web"]}
+    assert annotated == {
+        "web_search": [PILOT_CAPABILITY_ID],
+        "read_file": [PILOT_CAPABILITY_ID_2],
+    }
     # 所有「其他」工具保持零标注（legacy ABI 不变）
-    assert all(t.capability_ids == [] for t in reg.tools.values() if t.name != "web_search")
-    # 索引只有 pilot 这一个能力，不含任何 Provider / Tool 名
-    assert reg.capability_index.capabilities() == ["search.web"]
+    assert all(
+        t.capability_ids == []
+        for t in reg.tools.values()
+        if t.name not in ("web_search", "read_file")
+    )
+    # 索引只有已裁定的能力，不含任何 Provider / Tool 名
+    assert reg.capability_index.capabilities() == [PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2]
 
     # 默认 flag 关闭 → schema 输出与 legacy 完全一致
     assert reg.capability_mode is False

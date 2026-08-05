@@ -10,7 +10,7 @@ from anima.tools import Tool, LEVEL_READONLY, LEVEL_USER, LEVEL_ADMIN, LEVEL_OWN
 from .system import tool_time, tool_calc, tool_weather, tool_runtime_status
 from .web import tool_web_search
 from .web_memory import tool_query_web_memory
-from .file import make_file_tool
+from .file import make_file_tool, make_read_file_tool
 from .bilibili import make_bilibili_read, make_subscribe_bilibili_live
 from .social import (
     make_group_poke, make_get_group_members, make_get_group_info,
@@ -68,9 +68,59 @@ def declare_pilot_capability_contracts(registry) -> None:
     ))
 
 
+# ---------------------------------------------------------------------------
+# M0.4 Expansion Phase 1.1 —— filesystem.read Pilot（第二个真实 capability）
+#
+# 纪律（RFC-0001 anchored 218f86f，沿用 M0.3.1）：
+# - 新增 1 个只读 Tool（read_file）作为 filesystem.read 的 Provider；
+#   不做全量迁移、不重命名 Provider、不改 capability_mode 默认值。
+# - name/handler/min_level 等 ABI 不变；capability_mode 默认关 → 默认路径无行为差异。
+# - 只读性由 handler 构造保证（只调读 API + data_dir 边界 + 大小上限 + 目录穿越拦截）；
+#   RFC-0001 §7 的 scope 最小集合不区分 read/write，filesystem.read 的「只读」在 handler 层
+#   保证，sandbox 映射层保持既有 filesystem→writable_dirs 语义（Known Limitation，不碰 RFC-0001 §7）。
+# ---------------------------------------------------------------------------
+
+PILOT_CAPABILITY_ID_2 = "filesystem.read"
+
+#: 能力层描述：只描述「能力」，不出现任何 Provider / Tool 名 / 实现路径。
+_PILOT_FILESYSTEM_READ_DESCRIPTION = (
+    "读取 Bot 自身数据目录中的文件（如已生成的产物、已存储的数据、配置）。"
+    "只读，禁止目录穿越，并有大小上限。当需要回看刚才写出的文件、读取存储的数据或配置时调用。"
+    "filename 用文件名或相对 data 目录的路径。"
+)
+
+
+def declare_filesystem_read_contract(registry) -> None:
+    """向 CapabilityIndex 显式声明 filesystem.read 能力契约（幂等）。
+
+    与 M0.3.1 同构：显式 Contract 让 scope 超集校验真实生效
+    （permission=filesystem=True），且描述由能力层给出、不透传 Tool 描述。
+    对没有 ``capability_index`` 的替身 registry 静默跳过，保持 additive。
+    """
+    index = getattr(registry, "capability_index", None)
+    if index is None:
+        return
+    from anima.capability import CapabilityContract, PermissionScopes
+    from anima.contracts.capability import Stability
+
+    index.declare_contract(CapabilityContract(
+        id=PILOT_CAPABILITY_ID_2,
+        version="1.0.0",
+        domain="filesystem",
+        description=_PILOT_FILESYSTEM_READ_DESCRIPTION,
+        stability=Stability.EXPERIMENTAL,
+        permission=PermissionScopes(filesystem=True),
+    ))
+
+
 def register_all_builtin(registry, core=None) -> None:
     """注册全部内置工具到 registry。"""
     from anima.tools.sandbox import run_python, run_shell
+
+    # M0.3.1 Pilot：契约先于工具注册（显式 Contract 优先级高于 Tool 派生）
+    declare_pilot_capability_contracts(registry)
+    # M0.4 Expansion Phase 1.1：第二个真实 capability 的契约先于工具注册
+    declare_filesystem_read_contract(registry)
 
     # M0.3.1 Pilot：契约先于工具注册（显式 Contract 优先级高于 Tool 派生）
     declare_pilot_capability_contracts(registry)
@@ -142,6 +192,21 @@ def register_all_builtin(registry, core=None) -> None:
         },
         make_file_tool(core),
         min_level=LEVEL_USER,
+    ))
+    registry.register(Tool(
+        "read_file",
+        "读取 Bot 数据目录中的文件（只读）：回看写出的产物、读取已存储的数据或配置。"
+        "filename 用文件名或相对 data 目录的路径（如 'output/answer.txt'）。禁止目录穿越，有大小上限。",
+        {
+            "filename": {"type": "string", "description": "要读取的文件名或相对 data 目录的路径，如 'output/answer.txt' 或 'answer.txt'"},
+            "max_bytes": {"type": "integer", "description": "可选，最大读取字节数，默认 200000"},
+        },
+        make_read_file_tool(core),
+        required=["filename"],
+        min_level=LEVEL_USER,
+        # M0.4 Pilot：filesystem.read 的 Provider。additive —— name/handler/min_level 未变。
+        capability_ids=[PILOT_CAPABILITY_ID_2],
+        granted_scopes={"filesystem": True},
     ))
     registry.register(Tool(
         "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片操作（旋转/翻转/缩放/滤镜，PIL 可用；动画 GIF 用 _edit_each_frame 处理每帧后 _save_output(frames,'out.gif') 保留动画）。禁止访问网络和文件系统。",
