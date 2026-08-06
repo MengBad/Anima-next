@@ -33,6 +33,7 @@ from anima.tools.builtin import (
     PILOT_CAPABILITY_ID,
     PILOT_CAPABILITY_ID_2,
     PILOT_CAPABILITY_ID_3,
+    PILOT_CAPABILITY_ID_4,
     declare_filesystem_read_contract,
 )
 from anima.tools.builtin.file import read_file
@@ -51,12 +52,15 @@ def registry() -> ToolRegistry:
 # --------------------------------------------------------------------------
 
 def test_filesystem_read_is_second_real_capability(registry):
-    """capability 集合严格等于治理裁定：search.web + filesystem.read + filesystem.write。
+    """capability 集合严格等于治理裁定：search.web + filesystem.read + filesystem.write
+    + M0.4.4 预留的 code.execute（声明但无 Provider，故不可执行）。
 
-    注：本测试随 Pilot 扩展同步更新集合（KL2 透明修正，非回归）。
+    注：本测试随 Pilot / Reservation 扩展同步更新集合（KL2 透明修正，非回归）。
+    工具标注集合（下条 annotated）仍严格为 3 个 Tool。
     """
     assert registry.capability_index.capabilities() == [
         PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3,
+        PILOT_CAPABILITY_ID_4,
     ]
     # 恰好 3 个 Tool 被标注，且身份固定
     annotated = {t.name: t.capability_ids for t in registry.tools.values() if t.capability_ids}

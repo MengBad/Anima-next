@@ -158,6 +158,54 @@ def declare_filesystem_write_contract(registry) -> None:
     ))
 
 
+# ---------------------------------------------------------------------------
+# M0.4.4 Capability ID Reservation —— code.execute（仅预留身份，不实现）
+#
+# 纪律（M0.4.4 Approval: APPROVED FOR ID RESERVATION）：
+# - 只向 CapabilityIndex 显式声明契约（declare_contract），完成 namespace reservation；
+# - 不挂载 Provider：不给任何 Tool 加 capability_ids=["code.execute"]，不调 index_tool；
+# - 不激活执行：不改 run_python/run_shell/agent_exec 的 handler / min_level / ABI；
+# - 不扩展 scope：required_scopes 仅 [exec]，复用既有 RFC-0001 §7 scope，不引入新 scope；
+# - 不做 filesystem/network 绑定，不替换 legacy execution path。
+# 该契约存在但不可执行：capabilities() 含 "code.execute"，providers_for() 为空。
+# ---------------------------------------------------------------------------
+
+PILOT_CAPABILITY_ID_4 = "code.execute"
+
+#: 能力层描述：只描述「能力」，不出现任何 Provider / Tool 名 / 实现路径。
+_PILOT_CODE_EXECUTE_DESCRIPTION = (
+    "在受控执行环境中运行用户授权的代码：受显式授权（UID-only）、沙箱分级、"
+    "审计约束。仅声明执行能力（scope=exec），不代表 owner / 文件系统 / 网络权限。"
+    "当前为预留身份，未挂载 Provider，不可执行。"
+)
+
+
+def declare_code_execute_contract(registry) -> None:
+    """向 CapabilityIndex 显式预留 code.execute 能力身份（幂等，仅 reservation）。
+
+    与 search.web / filesystem.read / filesystem.write 同构：显式 Contract 让 scope
+    超集校验在该能力上真实生效（permission=exec=True）。对没有 ``capability_index``
+    的替身 registry 静默跳过，保持 additive。
+
+    刻意**不**在此挂载任何 Provider（无 index_tool 调用、无 Tool 标注
+    capability_ids），故 reservation 完成后该能力存在但不可执行。
+    """
+    index = getattr(registry, "capability_index", None)
+    if index is None:
+        return
+    from anima.capability import CapabilityContract, PermissionScopes
+    from anima.contracts.capability import Stability
+
+    index.declare_contract(CapabilityContract(
+        id=PILOT_CAPABILITY_ID_4,
+        version="1.0.0",
+        domain="code",
+        description=_PILOT_CODE_EXECUTE_DESCRIPTION,
+        stability=Stability.EXPERIMENTAL,
+        permission=PermissionScopes(exec=True),
+    ))
+
+
 def register_all_builtin(registry, core=None) -> None:
     """注册全部内置工具到 registry。"""
     from anima.tools.sandbox import run_python, run_shell
@@ -168,6 +216,9 @@ def register_all_builtin(registry, core=None) -> None:
     declare_filesystem_read_contract(registry)
     # M0.4.2 Expansion：复用 write_file 作为 filesystem.write 的 Provider（不新增 Provider）
     declare_filesystem_write_contract(registry)
+    # M0.4.4 Capability ID Reservation：仅预留 code.execute 身份（APPROVED FOR ID RESERVATION）
+    # 不挂载 Provider / 不激活执行 / 不扩展 scope —— 该能力存在但不可执行。
+    declare_code_execute_contract(registry)
 
     # M0.3.1 Pilot：契约先于工具注册（显式 Contract 优先级高于 Tool 派生）
     declare_pilot_capability_contracts(registry)

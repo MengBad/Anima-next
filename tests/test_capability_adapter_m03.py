@@ -88,12 +88,15 @@ def test_existing_tool_registration_unaffected():
         PILOT_CAPABILITY_ID,
         PILOT_CAPABILITY_ID_2,
         PILOT_CAPABILITY_ID_3,
+        PILOT_CAPABILITY_ID_4,
     )
 
     reg = create_default_registry(core=None)
     assert len(reg.tools) > 0
 
     # 已裁定集合：恰好 3 个工具标注了 capability，身份固定。
+    # M0.4.4 另预留 code.execute 身份（声明契约但无 Tool 标注、无 Provider），
+    # 故 capability_index 含 4 项，但工具标注集合仍严格为 3。
     annotated = {t.name: t.capability_ids for t in reg.tools.values() if t.capability_ids}
     assert annotated == {
         "web_search": [PILOT_CAPABILITY_ID],
@@ -106,9 +109,11 @@ def test_existing_tool_registration_unaffected():
         for t in reg.tools.values()
         if t.name not in ("web_search", "read_file", "write_file")
     )
-    # 索引只有已裁定的能力，不含任何 Provider / Tool 名
+    # 索引含已裁定能力 + M0.4.4 预留的 code.execute（无 Provider，故不可执行）。
+    # 工具标注集合（上条 annotated）不受 reservation 影响，仍严格为 3 个。
     assert reg.capability_index.capabilities() == [
         PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3,
+        PILOT_CAPABILITY_ID_4,
     ]
 
     # 默认 flag 关闭 → schema 输出与 legacy 完全一致

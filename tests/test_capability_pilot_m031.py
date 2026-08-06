@@ -21,7 +21,12 @@ from anima.capability import CapabilityContract, PermissionScopes
 from anima.contracts.capability import Stability
 from anima.contracts.errors import PermissionDeniedError
 from anima.tools import LEVEL_OWNER, LEVEL_READONLY, LEVEL_USER, Tool, ToolRegistry, create_default_registry
-from anima.tools.builtin import PILOT_CAPABILITY_ID, declare_pilot_capability_contracts
+from anima.tools.builtin import (
+    PILOT_CAPABILITY_ID,
+    PILOT_CAPABILITY_ID_4,
+    declare_pilot_capability_contracts,
+    declare_code_execute_contract,
+)
 
 #: 不允许出现在 capability schema 中的实现层词汇
 PROVIDER_TOKENS = ["web_search", "bing", "wttr", "tavily", "searxng"]
@@ -49,12 +54,14 @@ def test_pilot_is_the_only_declared_capability(registry):
 
     最初 M0.3.1 时集合为 ``["search.web"]``（恰好 1 个）。M0.4 Phase 1.1 新增了
     ``filesystem.read``，M0.4.2 复用 write_file 新增 ``filesystem.write``，集合变为三个。
+    M0.4.4 Capability ID Approval（APPROVED FOR ID RESERVATION）新增 ``code.execute``
+    作为**仅预留身份**的能力（存在但无 Provider / 不可执行），集合变为四个。
     这条断言**故意写死当前已裁定集合** —— 后续任何一次「顺手多标一个」或「漏标」都会
     在这里失败，强制走治理裁定而不是悄悄扩散。
     """
     from anima.tools.builtin import PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3
     assert registry.capability_index.capabilities() == [
-        PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3
+        PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3, PILOT_CAPABILITY_ID_4
     ]
 
 
@@ -261,3 +268,56 @@ def test_pilot_contract_matches_declared_shape():
         stability=Stability.EXPERIMENTAL,
         permission=PermissionScopes(network=True),
     )
+
+
+# --------------------------------------------------------------------------
+# 6. M0.4.4 Capability ID Reservation —— code.execute（存在但不可执行）
+# --------------------------------------------------------------------------
+
+def test_code_execute_reservation_is_indexed_without_provider():
+    """M0.4.4 Reservation：code.execute 身份已进入索引，但未挂载任何 Provider。
+
+    契约存在（has == True）但 providers_for 为空 —— 该能力**不可执行**。
+    这是 Reservation 阶段与 Implementation 阶段的硬边界。
+    """
+    reg = ToolRegistry()
+    declare_code_execute_contract(reg)
+    assert reg.capability_index.has(PILOT_CAPABILITY_ID_4)
+    assert reg.capability_index.providers_for(PILOT_CAPABILITY_ID_4) == []
+
+
+def test_code_execute_reservation_required_scope_is_exec_only():
+    """Reservation 不扩展 scope：required_scopes 仅 [exec]，复用既有 RFC-0001 §7。"""
+    reg = ToolRegistry()
+    declare_code_execute_contract(reg)
+    contract = reg.capability_index.contract_for(PILOT_CAPABILITY_ID_4)
+    assert contract.permission == PermissionScopes(exec=True)
+    assert contract.permission.network is False
+    assert contract.permission.filesystem is False
+    assert contract.permission.secrets is False
+
+
+def test_code_execute_reservation_idempotent_and_tolerant():
+    """重复预留幂等；对没有 capability_index 的替身 registry 静默跳过。"""
+    reg = ToolRegistry()
+    declare_code_execute_contract(reg)
+    declare_code_execute_contract(reg)
+    assert reg.capability_index.capabilities() == [PILOT_CAPABILITY_ID_4]
+
+    class FakeRegistry:
+        def register(self, tool):  # pragma: no cover - 仅作替身
+            pass
+
+    declare_code_execute_contract(FakeRegistry())  # 不得抛异常
+
+
+def test_code_execute_reservation_does_not_activate_execution():
+    """Reservation 不激活执行：默认注册表含 code.execute 预留，但无任何 Tool 标注
+    该能力（provider 缺位即不可执行）；legacy 执行工具 ABI 不受影响仍可注册。
+    （agent_exec 需 core，不在默认注册表，故只校验 run_python / run_shell。）
+    """
+    reg = create_default_registry()
+    assert reg.capability_index.has(PILOT_CAPABILITY_ID_4)
+    assert reg.capability_index.providers_for(PILOT_CAPABILITY_ID_4) == []
+    for name in ("run_python", "run_shell"):
+        assert reg.tools.get(name) is not None
