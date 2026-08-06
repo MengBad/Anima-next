@@ -1,6 +1,6 @@
 # RFC-0002: Planning
 
-- **Status:** Draft v0 (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
+- **Status:** Draft v0.1 (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
 - **Date:** 2026-08-07
 - **Authors:** Anima engineering (drafted for governance review; per reviewer ruling A2 — RFC-0002 Infrastructure Planning Authority owns the canonical Plan)
 - **Track:** Infrastructure (000x), consumes RFC-0001 (Capability Layer)
@@ -44,9 +44,9 @@ Today the answer is implicit and scattered:
    M1.6 is unlocked).
 2. `anima/agent/state.py:20` defines `AgentTask` + `Step` — the *de-facto* production
    structure — persisted to `agent_tasks.json`. It conflates **planning** (the step list) with
-   **execution progress** (status / result / current_step) and is **persisted**, which
-   collides with RFC-0106's "Plan never stored" rule (the persisted record is really a
-   *run-state*, an RFC-0003 artifact, not a Plan — see §8).
+   **execution progress** (status / result / current_step) and is **persisted**. Its
+   relationship to RFC-0106's "Plan never stored" rule and to this RFC's `Plan` contract is
+   **out of scope** here and **deferred to RFC-0003** (see §8).
 3. There is **no shared `Plan` contract** that RFC-0003 (Workflow) can consume, no stable
    Planning Interface other RFCs can call, and no agreed Plan lifecycle.
 
@@ -65,7 +65,8 @@ warned about at the Life layer, now surfacing at the Infrastructure layer.
 - **G2.** Define the **Planning Interface** — the stable API the Planner (and, by extension,
   other producers) uses to *request / read / revise* a Plan (§6).
 - **G3.** Define the **Plan lifecycle** — the runtime states a Plan moves through
-  (draft → active → superseded), explicitly *not* a constitutional Owned lifecycle (§7).
+  (draft → active → superseded, plus `deprecated` for invalidation), explicitly *not* a
+  constitutional Owned lifecycle (§7, §7.1).
 - **G4.** Keep Plan **Transient-Derived** at the infrastructure layer, in semantic alignment
   with RFC-0106: the Plan *structure* is recomputed, never restored; any durability for
   crash-recovery belongs to RFC-0003's **run-state**, not to the Plan (§7, §8).
@@ -145,6 +146,39 @@ No Foundation text is edited, no new Authority is introduced, and the single-wri
 is preserved because only the Planning Interface may construct/revise a Plan. Therefore RFC-0002
 proceeds **without** a Foundation Evolution gate.
 
+### 4.4 End-to-end layered view (reference diagram)
+
+This is the diagram every later review should cite — it shows the boundary each RFC owns:
+
+```
+RFC-0106
+Ontology
+      │
+      │ semantic meaning
+      ▼
+
+RFC-0002
+Planning
+      │
+      │ produces
+      ▼
+
+Plan
+
+      │
+      │ consumed by
+      ▼
+
+RFC-0003
+Workflow
+```
+
+- RFC-0106 owns **what Plan means** (ontology).
+- RFC-0002 owns **what the Plan structure + producer API are** (infrastructure) — and is the
+  sole writer of a Plan.
+- RFC-0003 owns **how a Plan is executed** (run-state, crash recovery) — it only *consumes* the
+  Plan structure, it does not own or redefine it.
+
 ---
 
 ## 5. Data Model — the canonical `Plan` contract
@@ -167,7 +201,7 @@ Plan:
   context_ref:   string                    # deterministic ref of the Context read (audit only)
   drive_emphasis: string                   # "approach" | "avoid" — Drive orientation, read-only influence
   focus:         float                     # Drive focus, read-only influence
-  status:        enum                      # draft | active | superseded  (RUNTIME routing state, §7)
+  status:        enum                      # draft | active | superseded | deprecated  (RUNTIME routing state, §7)
   created_at:    timestamp
 ```
 
@@ -223,13 +257,25 @@ class PlanningInterface:
 
     def list_plans(self, goal_ref: str) -> list[Plan]:
         """List Plans (incl. superseded) for a Goal, for audit/introspection."""
+
+    def invalidate_plan(self, plan_id: str, reason: str) -> Plan:
+        """
+        Declare a Plan INVALID without issuing a replacement (distinct from revise_plan).
+        Use when the Plan must not be consumed (e.g. underlying Goal cancelled, or the
+        context it was derived from is found stale/contradicted) but no fresh Plan is being
+        produced yet. Workflow (0003) MUST NOT consume a Plan in `deprecated` state.
+        Only the Planning Authority may invalidate (see §7.1).
+        """
 ```
 
 **Authority boundary (carries RFC-0106 §6.2 / E4 forward).**
 - The Planning Interface is the **only** writer of Plan state.
+- `request_plan` / `revise_plan` / `invalidate_plan` are the only state-mutating operations;
+  all three are **Planning-Authority-only**. `read_plan` / `list_plans` are read-only (any
+  authorized consumer).
 - Workflow (RFC-0003) **consumes** a Plan (reads `task_graph`/`ordering`/…) — it does **not**
-  call `revise_plan`. On execution outcome it reports to the Planning Authority, which may
-  `revise_plan` (RFC-0106 E4).
+  call `revise_plan` or `invalidate_plan`. On execution outcome it reports to the Planning
+  Authority, which may `revise_plan` (RFC-0106 E4).
 - Reflection / Memory (RFC-0004) write to **Memory**, never to Plan (RFC-0106 §8 E5).
 - This preserves the single-writer rule (O1) at the infrastructure layer.
 
@@ -256,6 +302,11 @@ Plan has no independent lifecycle, no storage authority).
                    │  produces a NEW Plan, supersedes this one             │
                    ▼                                                        ▼
             [ superseded ]  (discarded, never restored)        (Plan discarded after consumption)
+
+            invalidate_plan (no replacement: Goal cancelled / context stale)
+                   │  (from draft or active)
+                   ▼
+              [ deprecated ]  (MUST NOT be consumed by Workflow; discarded, never restored)
 ```
 
 | State | Meaning | RFC-0106 alignment |
@@ -263,11 +314,31 @@ Plan has no independent lifecycle, no storage authority).
 | `draft` | Produced, not yet executing. | Transient; recomputed, not restored. |
 | `active` | Handed to Workflow (0003) for execution. | Consumed by Execution (RFC-0106 §5.2 V2). |
 | `superseded` | A newer Plan for the same Goal exists (re-plan). | Old Plan **discarded**, never archived/restored (§5.4 V5). |
+| `deprecated` | Declared invalid by the Planning Authority; MUST NOT be consumed. No replacement implied (distinct from `superseded`). | Transient; **discarded**, never archived/restored (§5.4 V5). |
+
+### 7.1 Transition ownership (the lifecycle needs an owner)
+
+Only the **Planning Authority** — via the Planning Interface (§6) — may *transition* a Plan
+between runtime states. The lifecycle has exactly one owner; no other Authority may move a Plan.
+
+| Transition | Permitted actor | Notes |
+|------------|-----------------|-------|
+| `draft` → `active` (**activate**) | **Planning Authority only** | Workflow does **not** self-activate a Plan; it consumes only an `active` Plan. |
+| `active` → `superseded` (**supersede**, on re-plan) | **Planning Authority only** (`revise_plan`) | Emits a fresh Plan; never mutates the old one. |
+| `draft`/`active` → `deprecated` (**invalidate**) | **Planning Authority only** (`invalidate_plan`) | No replacement implied; Workflow must not consume. |
+| consume (`active` → discarded) | **Workflow (RFC-0003)** | Read-only consumption; Workflow does **not** change the Plan's state. |
+| any state transition | Execution / Memory | **Not permitted.** Neither may transition a Plan (RFC-0106 §8 E4/E5; single-writer rule O1). |
+
+Without a single owner, the lifecycle would have no Authority responsible for moving a Plan to
+`active`, and any consumer could silently transition it — re-introducing the multi-writer risk
+that RFC-0106's single-writer rule (O1) prohibits. `superseded` implies a replacement exists;
+`deprecated` implies **no** replacement — the two are distinct lifecycle events, which is why
+`invalidate` is a separate operation from `revise`.
 
 **No `archived` / `done` / `adopted` state.** Plan completion is tracked by the **Goal's**
 lifecycle (RFC-0105) and by RFC-0003's **run-state**, not by the Plan. The Plan itself ends by
-being *consumed* (active → discarded) or *superseded* (re-plan → discarded). This is exactly
-RFC-0106's "Plan is discarded, not archived."
+being *consumed* (active → discarded), *superseded* (re-plan → discarded), or *deprecated*
+(invalidated → discarded). This is exactly RFC-0106's "Plan is discarded, not archived."
 
 **Re-plan vs restore.** `revise_plan` always emits a **fresh** `Plan` (new `id`); the prior
 Plan becomes `superseded` and is dropped. There is no `Plan.restore()`. Resumability after a
@@ -288,14 +359,13 @@ is resolved here within RFC-0002, without touching the Foundation.
   only the *interface boundary* for resumability: after a crash, (a) RFC-0002 recomputes the
   Plan, (b) RFC-0003 reconciles the recomputed Plan against its persisted run-state to decide
   where to resume.
-- **Consequence for existing code (migration note, not a code change):** the production
-  `AgentTask` + `Step` (`anima/agent/state.py:20`, persisted to `agent_tasks.json`) is an
-  *execution record* (run-state), **not** a Plan. Under this RFC it should be reclassified as
-  RFC-0003 run-state; the `Plan` contract (§5) replaces its embedded step-list as the canonical
-  decomposition. The constitution `Plan` dataclass (`state.py:188`) is the closest existing
-  realization of the §5 contract (transient, matches RFC-0106) and is the natural migration
-  target for the Planner (M1.6). These are *implementation* migrations decided at Approval, not
-  part of this Draft.
+- **Existing production structures are out of scope.** `anima/agent/state.py:20` defines
+  `AgentTask` + `Step` (persisted to `agent_tasks.json`); `anima/constitution/state.py:188`
+  defines a `Plan` dataclass. Their eventual classification — whether `AgentTask`/`Step` map to
+  RFC-0003 run-state, and how the constitution `Plan` dataclass relates to the §5 contract — is
+  **deferred to RFC-0003** (and to implementation at Approval). This RFC neither reclassifies
+  them nor decides their fate; it only fixes the canonical `Plan` contract (§5) and the Planning
+  Interface (§6). Their migration is **not** a decision of this Draft.
 
 This keeps Plan transient (honoring RFC-0106) while still delivering the Roadmap's
 "recoverable / resumable" requirement via RFC-0003's run-state — no contradiction.
@@ -348,9 +418,9 @@ O1). Only the Planning Interface writes Plan.
 - **Q5 — Advanced reasoning strategies.** CoT / Tree Search / Reflection that may *drive*
   `request_plan` are deferred (Roadmap §7), no numbered RFC in M0.5. The Planning Interface is
   strategy-agnostic; strategies plug in later without contract change. *Deferred, not blocked.*
-- **Q6 — Production `AgentTask` reclassification.** The migration of `AgentTask`/`Step` to
-  RFC-0003 run-state + adoption of the §5 `Plan` contract is an *implementation* decision at
-  Approval (§8). *Not a governance blocker.*
+- **Q6 — Existing production structures.** The classification of `AgentTask`/`Step` and of the
+  constitution `Plan` dataclass is **deferred to RFC-0003** (§8). This RFC does not decide it.
+  *Not a governance blocker.*
 
 ---
 
