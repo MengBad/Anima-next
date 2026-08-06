@@ -74,9 +74,10 @@ def _mounted(core=None, run_python_grants_exec: bool = True) -> tuple[ToolRegist
         description="test", stability=Stability.EXPERIMENTAL,
         permission=PermissionScopes(exec=True),
     ))
-    # 挂载 D3 provider（绑定与 register_all_builtin 一字不差）
+    # 挂载 D3 provider（绑定与 register_all_builtin 一字不差；capability_only=True 同 D3）
     reg.register(make_code_exec_tool(
-        reg, capability_ids=["code.execute"], granted_scopes={"exec": True}))
+        reg, capability_ids=["code.execute"], granted_scopes={"exec": True},
+        capability_only=True))
 
     # fake run_python（执行基底）。默认授予 exec scope 使委托路径可达下层审计；
     # run_python_grants_exec=False 用于模拟「缺失 exec scope」的拒绝入口。
@@ -179,7 +180,9 @@ async def test_t5_schema_rejects_privilege_and_io_injection(extra):
     reg, core, captured = _mounted()
     token = reg.set_call_context(user_id=1, group_id=10, permission_level=LEVEL_USER)
     try:
-        out = await reg.call("code_exec", {"code": "print(1)", **extra}, permission_level=LEVEL_USER)
+        # F0 后 code_exec 仅经 capability 路由可达；legacy 直调被治理守卫拒绝。
+        out = await reg.call_capability("code.execute", {"code": "print(1)", **extra},
+                                        permission_level=LEVEL_USER)
     finally:
         reg.reset_call_context(token)
 
@@ -202,7 +205,8 @@ async def test_t6_no_double_audit_single_source():
     reg, core, captured = _mounted()
     token = reg.set_call_context(user_id=123, group_id=55, permission_level=LEVEL_USER)
     try:
-        out = await reg.call("code_exec", {"code": "print('hi')"}, permission_level=LEVEL_USER)
+        out = await reg.call_capability("code.execute", {"code": "print('hi')"},
+                                        permission_level=LEVEL_USER)
     finally:
         reg.reset_call_context(token)
 
@@ -231,7 +235,8 @@ async def test_t7_missing_exec_scope_denied_with_audit():
     reg, core, captured = _mounted(run_python_grants_exec=False)
     token = reg.set_call_context(user_id=1, group_id=10, permission_level=LEVEL_USER)
     try:
-        await reg.call("code_exec", {"code": "print(1)"}, permission_level=LEVEL_USER)
+        await reg.call_capability("code.execute", {"code": "print(1)"},
+                                  permission_level=LEVEL_USER)
     finally:
         reg.reset_call_context(token)
 
@@ -246,7 +251,8 @@ async def test_t7_schema_violation_denied_with_audit():
     reg, core, captured = _mounted()
     token = reg.set_call_context(user_id=1, group_id=10, permission_level=LEVEL_USER)
     try:
-        out = await reg.call("code_exec", {"code": "x", "network": True}, permission_level=LEVEL_USER)
+        out = await reg.call_capability("code.execute", {"code": "x", "network": True},
+                                        permission_level=LEVEL_USER)
     finally:
         reg.reset_call_context(token)
     assert "ran_python" not in out
@@ -256,22 +262,26 @@ async def test_t7_schema_violation_denied_with_audit():
 
 @pytest.mark.asyncio
 async def test_t7_permission_insufficient_denied_with_audit():
-    """入口：permission insufficient —— 调用方权限低于 code_exec min_level 时拒绝。
+    """入口：F0 legacy 直调守卫 —— code_exec 是 capability-only 工具，经 legacy
+    直调（不经过 call_capability 的 _via_capability=True）必须被治理守卫拒绝，
+    并产生 execution_denied{reason=capability_only_called_via_legacy}，绝不委托到
+    run_python。此乃 D-A0 新引入的 deny 路径，核心不变量「无静默拒绝」成立。
 
-    注：真实实现中此门由 ToolRegistry._invoke 的 can_call 守卫，审计事件为
-    ``tool_denied``（与 exec-scope 门区分），核心不变量「无静默拒绝」成立。
-    这与 Review Package T7 表所列的 execution_denied 命名存在差异——属既有门控语义，
-    非 D3 引入；如要求统一为 execution_denied 需单独 gate（不在 T2–T8 范围内）。
+    注：经 capability 路由（call_capability）的权限门槛由 resolver 守卫，抛
+    PermissionDeniedError（见 test_t7_resolver_permission_gate），二者不冲突。
     """
     reg, core, captured = _mounted()
-    # readonly(1) < LEVEL_USER(2) -> can_call False
-    token = reg.set_call_context(user_id=1, group_id=10, permission_level=1)
+    # 即使权限充足（LEVEL_USER），legacy 直调仍被 capability-only 守卫拒绝
+    token = reg.set_call_context(user_id=1, group_id=10, permission_level=LEVEL_USER)
     try:
-        out = await reg.call("code_exec", {"code": "print(1)"}, permission_level=1)
+        out = await reg.call("code_exec", {"code": "print(1)"}, permission_level=LEVEL_USER)
     finally:
         reg.reset_call_context(token)
-    assert "权限不足" in out
-    assert core.audit.by_type("tool_denied"), "权限不足必须产生审计（无静默拒绝）"
+    assert "只能通过 capability 路由调用" in out
+    denied = core.audit.by_type("execution_denied")
+    assert denied and any(f.get("reason") == "capability_only_called_via_legacy" for f in denied), \
+        "F0 守卫必须产生 execution_denied{reason=capability_only_called_via_legacy}"
+    assert captured["calls"] == [], "legacy 直调绝不可委托到 run_python"
     assert "execution_started" not in core.audit.types()
 
 
@@ -307,7 +317,9 @@ async def test_t7_delegate_failure_emits_execution_failed():
     )
     token = reg.set_call_context(user_id=1, group_id=10, permission_level=LEVEL_USER)
     try:
-        await reg.call("code_exec", {"code": "print(1)"}, permission_level=LEVEL_USER)
+        # F0 后须经 capability 路由（_via_capability=True）才可达 code_exec
+        await reg.call_capability("code.execute", {"code": "print(1)"},
+                                  permission_level=LEVEL_USER)
     finally:
         reg.reset_call_context(token)
 
@@ -321,14 +333,22 @@ async def test_t7_delegate_failure_emits_execution_failed():
 # ==========================================================================
 
 def test_t8_legacy_mode_unchanged():
-    """legacy 模式（默认，capability_mode=False）：行为逐字节不变。
-    - code_exec 作为普通 Tool 暴露（与 web_search/read_file 混合模式同构）；
+    """legacy 模式（默认，capability_mode=False）：行为逐字节不变——除 F0 closure。
+
+    M0.4.7 D-A0（F0）后，code_exec 已退出 legacy tool 表面（capability_only=True）：
+    - code_exec 不再经 legacy get_schemas 暴露（治理门控唯一控制面）；
+    - mixed-mode 既有工具 web_search / read_file / write_file 仍 legacy 暴露（不受影响）；
     - capability 路由名 code_execute 不出现；
     - run_python 等 legacy 工具仍是普通 Tool。"""
     reg = _real_wired_registry(capability_mode=False)
     assert reg.capability_mode is False
     names = [s["function"]["name"] for s in reg.get_schemas(permission_level=LEVEL_USER)]
-    assert "code_exec" in names, "legacy 模式应把 code_exec 作为普通 Tool 暴露"
+    # F0 closure：code_exec 退出 legacy 表面
+    assert "code_exec" not in names, "F0 后 legacy 模式不得暴露 code_exec"
+    # mixed-mode 既有工具不受影响
+    assert "web_search" in names, "mixed-mode 工具 web_search 应保持 legacy 暴露"
+    assert "read_file" in names, "mixed-mode 工具 read_file 应保持 legacy 暴露"
+    assert "write_file" in names, "mixed-mode 工具 write_file 应保持 legacy 暴露"
     assert "run_python" in names, "legacy 工具 run_python 应保持暴露"
     assert "code_execute" not in names, "legacy 模式不得暴露 capability 路由名"
 

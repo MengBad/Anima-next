@@ -333,13 +333,14 @@ def register_all_builtin(registry, core=None) -> None:
     # 纪律（APPROVED FOR IMPLEMENTATION，D3 范围锁定）：
     # - 只挂载 1 个 provider（code_exec），不做全量迁移 / 不重命名；
     # - capability_ids 显式声明为 code.execute，granted_scopes 仅 {exec:True}；
-    # - 不读 legacy run_python / 不改其 ABI / 不 retro-tag / 不扩展 scope / 不激活 flag；
-    # - capability_mode 默认关 → 默认路径上 legacy schema 不变，本挂载在 capability
-    #   模式下才作为 code.execute 的解析目标暴露给 LLM（Pilot 激活在独立 gate）。
+    # - M0.4.7 D-A0：capability_only=True 关闭 legacy 直调面（F0 closure）——
+    #   code_exec 退出 legacy schema 且禁止 legacy call，仅经 capability 路由可达；
+    # - 不读 legacy run_python / 不改其 ABI / 不 retro-tag / 不扩展 scope / 不激活 flag。
     registry.register(make_code_exec_tool(
         registry,
         capability_ids=[PILOT_CAPABILITY_ID_4],
         granted_scopes={"exec": True},
+        capability_only=True,
     ))
     registry.register(Tool(
         "get_runtime_status",

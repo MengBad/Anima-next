@@ -83,7 +83,8 @@ class Tool:
                  required: Optional[list] = None, danger: bool = False,
                  enabled: bool = True,
                  capability_ids: Optional[list] = None,
-                 granted_scopes: Any = None):
+                 granted_scopes: Any = None,
+                 capability_only: bool = False):
         self.name = name
         self.description = description
         self.parameters = parameters  # JSON Schema properties
@@ -99,6 +100,11 @@ class Tool:
         self.capability_ids: list[str] = [str(c) for c in (capability_ids or []) if str(c)]
         # Provider 被授予的权限域（RFC-0001 §7）；None → 空集（不授予任何 scope）。
         self.granted_scopes = PermissionScopes.from_mapping(granted_scopes)
+        # M0.4.7 D-A0（F0 closure）：逐工具治理开关。True 表示本工具**只能**经 capability
+        # 路由调用（call_capability 内部传 _via_capability=True），禁止经 legacy 直调，
+        # 防止绕过 capability allowlist / 路由控制。默认 False 保持既有 mixed-mode 行为
+        # （web_search / read_file / write_file 即此模式——仍 legacy 暴露 + capability 路由并存）。
+        self.capability_only = bool(capability_only)
 
     def to_openai_schema(self) -> dict:
         required = self.required if self.required is not None else list(self.parameters.keys())
@@ -179,6 +185,7 @@ class ToolRegistry:
                 t.to_openai_schema()
                 for t in self.tools.values()
                 if t.enabled and permission_level >= t.min_level
+                and not t.capability_only
             ]
         from anima.capability.schema import capability_schemas, legacy_only_schemas
         return (
@@ -195,7 +202,8 @@ class ToolRegistry:
         """
         cap_id = self.capability_index.capability_for_schema_name(capability_ref) or capability_ref
         resolution = self.capability_resolver.resolve(cap_id, permission_level=permission_level)
-        return await self.call(resolution.provider.tool_name, args, permission_level)
+        return await self.call(resolution.provider.tool_name, args, permission_level,
+                               _via_capability=True)
 
     def can_call(self, name: str, permission_level: int) -> bool:
         tool = self.tools.get(name)
@@ -204,11 +212,26 @@ class ToolRegistry:
         return tool.enabled and permission_level >= tool.min_level
 
     async def call(self, name: str, args: dict,
-                   permission_level: int = LEVEL_USER) -> str:
-        """调用工具并返回结果字符串。"""
+                   permission_level: int = LEVEL_USER, *,
+                   _via_capability: bool = False) -> str:
+        """调用工具并返回结果字符串。
+
+        ``_via_capability`` 仅供 ``call_capability`` 内部使用：标记本次调用来自受控的
+        capability 路由，可绕过 capability-only 工具的 legacy 直调守卫（D-A0）。
+        """
         tool = self.tools.get(name)
         if tool is None:
             return f"错误: 工具 '{name}' 不存在"
+
+        # M0.4.7 D-A0（F0 closure）：capability-only 工具禁止经 legacy 直调，
+        # 防止绕过 capability allowlist / 路由控制。仅 call_capability 内部经
+        # _via_capability=True 放行；委托路径自身的 exec gate / sandbox / audit
+        # 仍由 _invoke 统一守卫（capability 不是新的执行权限来源）。
+        if tool.capability_only and not _via_capability:
+            self._audit("execution_denied", reason="capability_only_called_via_legacy",
+                        tool=name)
+            return (f"错误: 工具 '{name}' 只能通过 capability 路由调用，"
+                    "legacy 直调已被治理策略拒绝")
 
         if not self.can_call(name, permission_level):
             self._audit("tool_denied", tool=name, permission_level=permission_level)

@@ -119,11 +119,12 @@ def test_existing_tool_registration_unaffected():
         PILOT_CAPABILITY_ID_4,
     ]
 
-    # 默认 flag 关闭 → schema 输出与 legacy 完全一致
+    # 默认 flag 关闭 → schema 输出与 legacy 一致（F0 后：capability-only 工具
+    # code_exec 退出 legacy 表面，其余不受影响）。
     assert reg.capability_mode is False
     assert reg.get_schemas(LEVEL_USER) == [
         t.to_openai_schema() for t in reg.tools.values()
-        if t.enabled and LEVEL_USER >= t.min_level
+        if t.enabled and LEVEL_USER >= t.min_level and not t.capability_only
     ]
 
 
@@ -155,11 +156,19 @@ def test_unregister_removes_provider_from_index():
 
 
 def test_registry_call_signature_unchanged():
-    """索引不介入执行：ToolRegistry.call(name, args) 仍是唯一执行入口。"""
+    """索引不介入执行：ToolRegistry.call(name, args) 仍是唯一执行入口。
+
+    M0.4.7 D-A0 新增 keyword-only 内部参数 ``_via_capability``（仅供 call_capability
+    标记受控路由，绕过 capability-only 工具的 legacy 直调守卫）。该参数不影响既有
+    调用方（全部按位置传 name/args/permission_level），故外部契约形状不变。
+    """
     import inspect
 
     sig = inspect.signature(ToolRegistry.call)
-    assert list(sig.parameters) == ["self", "name", "args", "permission_level"]
+    params = list(sig.parameters)
+    assert params[:4] == ["self", "name", "args", "permission_level"]
+    assert params[4] == "_via_capability"
+    assert sig.parameters["_via_capability"].kind is inspect.Parameter.KEYWORD_ONLY
 
 
 # ---------------------------------------------------------------------------

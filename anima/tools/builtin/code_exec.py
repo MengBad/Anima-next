@@ -34,7 +34,8 @@ _CODE_EXECUTE_ALLOWED_FIELDS = frozenset({"code"})
 
 
 def make_code_exec_tool(registry, capability_ids: Optional[list] = None,
-                        granted_scopes: Any = None) -> Tool:
+                        granted_scopes: Any = None,
+                        capability_only: bool = False) -> Tool:
     """构造 `code.execute` provider Tool（run_python 之上的 adapter）。
 
     ``capability_ids`` / ``granted_scopes`` 默认 ``None``（等价 ``[]`` / 空集），
@@ -42,6 +43,10 @@ def make_code_exec_tool(registry, capability_ids: Optional[list] = None,
     显式注入 ``capability_ids=["code.execute"]`` + ``granted_scopes={"exec": True}``
     完成单 provider 挂载；在此之前本 Tool 存在但不作为 `code.execute` 的 Provider
     （``providers_for("code.execute")`` 为空）。
+
+    ``capability_only`` 默认 ``False``（保持 D2 无绑定语义：未挂载时直接 ``call``
+    可调）；M0.4.7 D-A0 由 ``register_all_builtin`` 注入 ``True``，使挂载后的
+    ``code_exec`` 退出 legacy schema 并禁止 legacy 直调（F0 closure）。
     """
 
     async def code_exec_handler(code: str, **kw: Any) -> str:
@@ -91,6 +96,8 @@ def make_code_exec_tool(registry, capability_ids: Optional[list] = None,
         # + granted_scopes={"exec": True}）。默认 None → [] / 空集，保持 D2 无绑定语义。
         capability_ids=capability_ids,
         granted_scopes=granted_scopes,
+        # M0.4.7 D-A0：挂载时由 register_all_builtin 注入 True，关闭 legacy 直调面（F0）。
+        capability_only=capability_only,
     )
 
 

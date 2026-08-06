@@ -108,12 +108,17 @@ def test_filesystem_read_description_is_capability_level(registry):
 # --------------------------------------------------------------------------
 
 def test_legacy_schema_byte_identical_with_both_pilots(registry):
-    """默认模式（capability_mode=False）输出与未标注前完全一致。"""
+    """默认模式（capability_mode=False）输出与未标注前一致——除 F0 closure：
+
+    capability-only 工具（code_exec）退出 legacy 表面，其余 mixed-mode 工具
+    （web_search / read_file / write_file）仍 legacy 暴露。该差异是 M0.4.7 D-A0
+    的既定行为，非回归。
+    """
     for level in (LEVEL_READONLY, LEVEL_USER, LEVEL_OWNER):
         expected = [
             t.to_openai_schema()
             for t in registry.tools.values()
-            if t.enabled and level >= t.min_level
+            if t.enabled and level >= t.min_level and not t.capability_only
         ]
         assert registry.get_schemas(level) == expected
 
