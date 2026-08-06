@@ -7,10 +7,11 @@
   ``run_python`` 基底（``registry.call("run_python", {"code": ...})``）。
 - 它**不**实现沙箱、权限模型、或审计管线——这些都由 ``ToolRegistry._invoke``
   在委托的 ``run_python`` 调用上统一执行。
-- 本模块**不**在 ``builtin/__init__.py`` 中 import / 注册（那是 D3）。因此默认情况下
-  它是惰性代码：只有后续单独 gated 的 D3 步骤才会 import 并 ``register`` 它。
-- D2 阶段 Tool 的 ``capability_ids=[]``、**不绑定 capability**（D3 才会加
-  ``capability_ids=["code.execute"]`` + ``granted_scopes={"exec": True}`` 并注册）。
+- D3（独立 gate）已在本模块 import 并 ``register``：``register_all_builtin`` 调用
+  ``make_code_exec_tool(registry, capability_ids=["code.execute"], granted_scopes={"exec": True})``
+  完成单 provider 挂载（``providers_for("code.execute") == ["code_exec"]``）。
+- 模块工厂函数接受可选的 ``capability_ids`` / ``granted_scopes`` 参数，默认 ``[]`` / ``None``，
+  以便 D2 测试（无绑定时）仍能验证「不挂载为 provider」。绑定由 D3 的注册调用显式注入。
 
 审计透明性：``code_exec`` 不在 ``EXECUTION_TOOLS`` 内，因此外层 ``_invoke`` 不产生
 任何 ``execution_*`` 审计事件；唯一的执行轨迹来自被委托的 ``run_python._invoke``。
@@ -19,7 +20,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Optional
 
 from anima.tools import LEVEL_USER, Tool, get_call_context
 
@@ -32,12 +33,15 @@ class CodeExecSchemaViolation(Exception):
 _CODE_EXECUTE_ALLOWED_FIELDS = frozenset({"code"})
 
 
-def make_code_exec_tool(registry) -> Tool:
+def make_code_exec_tool(registry, capability_ids: Optional[list] = None,
+                        granted_scopes: Any = None) -> Tool:
     """构造 `code.execute` provider Tool（run_python 之上的 adapter）。
 
-    返回的 Tool **未绑定 capability**（``capability_ids=[]``）：D3（独立 gate）才会
-    附加 capability 绑定并注册它。在此之前本 Tool 存在但不作为 `code.execute` 的
-    Provider 挂载（``providers_for("code.execute")`` 仍为 ``[]``）。
+    ``capability_ids`` / ``granted_scopes`` 默认 ``None``（等价 ``[]`` / 空集），
+    使 D2 测试在无绑定时仍能验证「不挂载为 provider」。D3 由 ``register_all_builtin``
+    显式注入 ``capability_ids=["code.execute"]`` + ``granted_scopes={"exec": True}``
+    完成单 provider 挂载；在此之前本 Tool 存在但不作为 `code.execute` 的 Provider
+    （``providers_for("code.execute")`` 为空）。
     """
 
     async def code_exec_handler(code: str, **kw: Any) -> str:
@@ -83,11 +87,10 @@ def make_code_exec_tool(registry) -> Tool:
         handler=code_exec_handler,
         required=["code"],
         min_level=LEVEL_USER,
-        # D2：暂**不绑定** capability——capability_ids 为空，不声明任何 scope。
-        #     （D3 会改为 capability_ids=["code.execute"] + granted_scopes={"exec": True}
-        #      并注册——属于独立 gate，不在本步。）
-        capability_ids=[],
-        granted_scopes=None,
+        # D3 由 register_all_builtin 注入真实绑定（capability_ids=["code.execute"]
+        # + granted_scopes={"exec": True}）。默认 None → [] / 空集，保持 D2 无绑定语义。
+        capability_ids=capability_ids,
+        granted_scopes=granted_scopes,
     )
 
 

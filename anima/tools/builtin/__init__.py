@@ -22,6 +22,7 @@ from .sticker import make_sticker_tools
 from .merge import make_merge_forward
 from .honor import make_group_honor
 from .agent_tools import register_agent_tools
+from .code_exec import make_code_exec_tool
 
 # ---------------------------------------------------------------------------
 # M0.3.1 Capability Pilot
@@ -168,6 +169,8 @@ def declare_filesystem_write_contract(registry) -> None:
 # - 不扩展 scope：required_scopes 仅 [exec]，复用既有 RFC-0001 §7 scope，不引入新 scope；
 # - 不做 filesystem/network 绑定，不替换 legacy execution path。
 # 该契约存在但不可执行：capabilities() 含 "code.execute"，providers_for() 为空。
+# （后续 D3 已挂载唯一 provider code_exec；但在 capability_mode 默认关闭时，
+#  该契约仍不在 legacy schema 暴露，执行需经独立 Pilot Activation gate 才能到达。）
 # ---------------------------------------------------------------------------
 
 PILOT_CAPABILITY_ID_4 = "code.execute"
@@ -324,6 +327,18 @@ def register_all_builtin(registry, core=None) -> None:
         run_shell,
         min_level=LEVEL_ADMIN,
         # M0.4.3 S5：同 run_python，授予 exec scope 使门控生效。
+        granted_scopes={"exec": True},
+    ))
+    # M0.4.6 D3：code.execute 的 Provider（极薄 adapter，委托 run_python 基底）。
+    # 纪律（APPROVED FOR IMPLEMENTATION，D3 范围锁定）：
+    # - 只挂载 1 个 provider（code_exec），不做全量迁移 / 不重命名；
+    # - capability_ids 显式声明为 code.execute，granted_scopes 仅 {exec:True}；
+    # - 不读 legacy run_python / 不改其 ABI / 不 retro-tag / 不扩展 scope / 不激活 flag；
+    # - capability_mode 默认关 → 默认路径上 legacy schema 不变，本挂载在 capability
+    #   模式下才作为 code.execute 的解析目标暴露给 LLM（Pilot 激活在独立 gate）。
+    registry.register(make_code_exec_tool(
+        registry,
+        capability_ids=[PILOT_CAPABILITY_ID_4],
         granted_scopes={"exec": True},
     ))
     registry.register(Tool(

@@ -24,6 +24,7 @@ from anima.contracts.errors import (
     PermissionDeniedError,
 )
 from anima.tools import LEVEL_ADMIN, LEVEL_OWNER, LEVEL_USER, Tool, ToolRegistry
+from anima.tools.builtin import PILOT_CAPABILITY_ID_4
 
 
 def _tool(name, **kw):
@@ -94,23 +95,25 @@ def test_existing_tool_registration_unaffected():
     reg = create_default_registry(core=None)
     assert len(reg.tools) > 0
 
-    # 已裁定集合：恰好 3 个工具标注了 capability，身份固定。
-    # M0.4.4 另预留 code.execute 身份（声明契约但无 Tool 标注、无 Provider），
-    # 故 capability_index 含 4 项，但工具标注集合仍严格为 3。
+    # 已裁定集合：恰好 4 个工具标注了 capability，身份固定。
+    # M0.4.6 D3 已挂载 code.execute 的唯一 Provider（code_exec），故工具标注集合
+    # 现为 4（web_search / read_file / write_file / code_exec）。
     annotated = {t.name: t.capability_ids for t in reg.tools.values() if t.capability_ids}
     assert annotated == {
         "web_search": [PILOT_CAPABILITY_ID],
         "read_file": [PILOT_CAPABILITY_ID_2],
         "write_file": [PILOT_CAPABILITY_ID_3],
+        "code_exec": [PILOT_CAPABILITY_ID_4],
     }
     # 所有「其他」工具保持零标注（legacy ABI 不变）
     assert all(
         t.capability_ids == []
         for t in reg.tools.values()
-        if t.name not in ("web_search", "read_file", "write_file")
+        if t.name not in ("web_search", "read_file", "write_file", "code_exec")
     )
-    # 索引含已裁定能力 + M0.4.4 预留的 code.execute（无 Provider，故不可执行）。
-    # 工具标注集合（上条 annotated）不受 reservation 影响，仍严格为 3 个。
+    # 索引含已裁定能力 + M0.4.4 预留的 code.execute（D3 后已有唯一 Provider，可执行
+    # 但仍受 capability_mode 默认关闭 + 独立 Pilot Activation gate 约束）。
+    # 工具标注集合（上条 annotated）随 D3 扩展为 4 个。
     assert reg.capability_index.capabilities() == [
         PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3,
         PILOT_CAPABILITY_ID_4,

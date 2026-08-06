@@ -312,12 +312,20 @@ def test_code_execute_reservation_idempotent_and_tolerant():
 
 
 def test_code_execute_reservation_does_not_activate_execution():
-    """Reservation 不激活执行：默认注册表含 code.execute 预留，但无任何 Tool 标注
-    该能力（provider 缺位即不可执行）；legacy 执行工具 ABI 不受影响仍可注册。
+    """M0.4.6 D3 后：code.execute 已挂载唯一 Provider ``code_exec``，但默认注册表仍：
+
+    - ``capability_mode`` 关闭 → capability 路由未激活（需独立 Pilot Activation gate）；
+    - 不 retro-tag legacy 执行工具：run_python / run_shell 仍零 capability 标注；
+    - 恰好一个 provider（``code_exec``），不引入第二个、不新建执行器。
+
+    legacy 执行工具 ABI 不受影响仍可注册。
     （agent_exec 需 core，不在默认注册表，故只校验 run_python / run_shell。）
     """
     reg = create_default_registry()
     assert reg.capability_index.has(PILOT_CAPABILITY_ID_4)
-    assert reg.capability_index.providers_for(PILOT_CAPABILITY_ID_4) == []
+    providers = [p.id for p in reg.capability_index.providers_for(PILOT_CAPABILITY_ID_4)]
+    assert providers == ["code_exec"]
+    assert reg.capability_mode is False
     for name in ("run_python", "run_shell"):
         assert reg.tools.get(name) is not None
+        assert reg.tools[name].capability_ids == [], f"{name} 被 retro-tag！"

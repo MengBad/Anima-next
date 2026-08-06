@@ -53,27 +53,30 @@ def registry() -> ToolRegistry:
 
 def test_filesystem_read_is_second_real_capability(registry):
     """capability 集合严格等于治理裁定：search.web + filesystem.read + filesystem.write
-    + M0.4.4 预留的 code.execute（声明但无 Provider，故不可执行）。
+    + M0.4.4 预留的 code.execute（D3 已挂载唯一 Provider code_exec，故可执行但受
+    capability_mode 默认关闭 + 独立 Pilot Activation gate 约束）。
 
-    注：本测试随 Pilot / Reservation 扩展同步更新集合（KL2 透明修正，非回归）。
-    工具标注集合（下条 annotated）仍严格为 3 个 Tool。
+    注：本测试随 Pilot / Reservation / D3 扩展同步更新集合（KL2 透明修正，非回归）。
+    工具标注集合（下条 annotated）现为 4 个 Tool：web_search / read_file /
+    write_file / code_exec。
     """
     assert registry.capability_index.capabilities() == [
         PILOT_CAPABILITY_ID, PILOT_CAPABILITY_ID_2, PILOT_CAPABILITY_ID_3,
         PILOT_CAPABILITY_ID_4,
     ]
-    # 恰好 3 个 Tool 被标注，且身份固定
+    # 恰好 4 个 Tool 被标注，且身份固定
     annotated = {t.name: t.capability_ids for t in registry.tools.values() if t.capability_ids}
     assert annotated == {
         "web_search": [PILOT_CAPABILITY_ID],
         "read_file": [PILOT_CAPABILITY_ID_2],
         "write_file": [PILOT_CAPABILITY_ID_3],
+        "code_exec": [PILOT_CAPABILITY_ID_4],
     }
     # 其余全部零标注（legacy ABI 不变）
     assert all(
         t.capability_ids == []
         for t in registry.tools.values()
-        if t.name not in ("web_search", "read_file", "write_file")
+        if t.name not in ("web_search", "read_file", "write_file", "code_exec")
     )
 
 
