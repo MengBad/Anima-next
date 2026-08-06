@@ -270,7 +270,7 @@ class ToolRegistry:
         # 否则即使 min_level 通过也拒绝执行（与 S4 审计共用 EXECUTION_TOOLS 判定集）。
         # 此门控与调用者权限等级正交：任何代码执行工具都须经 exec_permitted() 放行。
         if tool.name in EXECUTION_TOOLS and not exec_permitted(tool.granted_scopes):
-            self._audit("execution_scope_denied", tool=tool.name,
+            self._audit("execution_denied", reason="missing_exec_scope", tool=tool.name,
                         granted_scopes=tool.granted_scopes.as_dict())
             return "错误: 该工具未获授权执行代码（缺少 exec scope 授权）"
 

@@ -524,7 +524,7 @@ async def test_s5_missing_exec_scope_is_denied():
     # 关键：handler 绝不应被实际执行
     assert called["hit"] is False, "缺少 exec scope 的工具不应被实际执行"
     assert "exec scope" in out or "未获授权" in out
-    assert "execution_scope_denied" in core.audit.types()
+    assert "execution_denied" in core.audit.types()
     # 反向断言：不应留下正常执行审计轨迹
     assert "execution_started" not in core.audit.types()
 
@@ -552,7 +552,7 @@ async def test_s5_exec_scope_granted_allows_execution():
 
     assert out == "ran:ls"
     assert "execution_started" in core.audit.types()
-    assert "execution_scope_denied" not in core.audit.types()
+    assert "execution_denied" not in core.audit.types()
 
 
 @pytest.mark.asyncio
@@ -572,7 +572,7 @@ async def test_s5_non_exec_tool_ignores_exec_scope():
     )
     out = await reg.call("echo", {"text": "hi"}, permission_level=2)
     assert out == "echo:hi"
-    assert "execution_scope_denied" not in core.audit.types()
+    assert "execution_denied" not in core.audit.types()
 
 
 # ==========================================================================
