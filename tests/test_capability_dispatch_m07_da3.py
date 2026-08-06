@@ -315,8 +315,9 @@ def test_da3_dispatch_sites_unchanged():
 
 @pytest.mark.asyncio
 async def test_da3_no_telemetry_events():
-    """D-A4 未接：capability 分发路径只产生 ``call`` / ``call_capability`` 既有的审计事件，
-    D-A3 自身未新增任何遥测事件名。"""
+    """审计事件纪律：capability 分发路径只产生 ``call`` / ``call_capability`` / ``_invoke``
+    既有的审计事件类型。D-A4 接入的是指标遥测（``MetricsCollector``），**不**新增审计
+    事件名——审计（取责）与遥测（可观测）在此分流、互不污染。"""
     reg, core, captured = _governed_registry(capability_mode=True, allowlist=[ALICE])
     # 一次成功分发（alice 命中）+ 一次拒绝分发（bob 不匹配）
     tok_a = reg.set_call_context(user_id="alice", group_id=1, permission_level=LEVEL_USER)

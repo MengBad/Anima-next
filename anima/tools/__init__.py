@@ -217,6 +217,11 @@ class ToolRegistry:
 
     def _deny_capability_route(self, capability_id: str, reason: str) -> str:
         self._audit("capability_route_denied", capability=capability_id, reason=reason)
+        # M0.4.7 D-A4（telemetry）：拒绝事件同时计入 capability 路由可观测指标。
+        # 仅发指标、不改执行语义；进入进程级 MetricsCollector（WebUI /api/metrics 可见）。
+        from anima.core.metrics import get_metrics
+        get_metrics().counter("capability.route.denied",
+                               tags={"capability": capability_id, "reason": reason})
         return f"错误: capability '{capability_id}' 未获治理放行（{reason}）"
 
     @property
@@ -312,8 +317,19 @@ class ToolRegistry:
         if (getattr(resolution.provider.tool, "capability_only", False)
                 and not self.pilot_capability_permitted(caller)):
             return self._deny_capability_route(cap_id, self._pilot_denial_reason(caller))
-        return await self.call(resolution.provider.tool_name, args, permission_level,
-                               _via_capability=True)
+        # M0.4.7 D-A4（telemetry）：治理门通过即记录 allowed + routed；Provider 执行
+        # 失败（tool_result_ok 判定）记 failed。仅发指标、不改执行语义；指标进入进程级
+        # MetricsCollector（WebUI /api/metrics 可见），与既有 ``capability_route_denied``
+        # 审计分流（审计=取责，遥测=可观测），互不污染。
+        from anima.core.metrics import get_metrics
+        _m = get_metrics()
+        _m.counter("capability.route.allowed", tags={"capability": cap_id})
+        _m.counter("capability.route.routed", tags={"capability": cap_id})
+        result = await self.call(resolution.provider.tool_name, args, permission_level,
+                                 _via_capability=True)
+        if not tool_result_ok(result):
+            _m.counter("capability.route.failed", tags={"capability": cap_id})
+        return result
 
     def can_call(self, name: str, permission_level: int) -> bool:
         tool = self.tools.get(name)
