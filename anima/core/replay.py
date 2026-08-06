@@ -107,7 +107,11 @@ class BehaviorReplay:
             gateway = _ReplayGateway()
             isolated.gateway = gateway
             isolated.llm = _ReplayLLM(responses)
-            isolated.tools = create_default_registry(isolated)
+            # M0.4.7 D-A2：replay 必须确定性——显式强制 OFF fallback，
+            # 不受 core.config.capability_layer 影响（即便生产配置已翻 flag，
+            # 回放只验证 handler 不变量，不验证 capability 路由治理）。
+            isolated.tools = create_default_registry(
+                isolated, capability_mode=False, pilot_capability_allowlist=[])
             handler = LLMHandler(isolated)
             if case_id == "private_reply":
                 await handler.handle(self._event(private=True, text="在吗", message_id=901))

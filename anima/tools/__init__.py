@@ -505,14 +505,34 @@ class ToolRegistry:
 # create_default_registry — 委托 builtin 子包
 # ---------------------------------------------------------------------------
 
-def create_default_registry(core=None, capability_mode: bool = False,
+def create_default_registry(core=None, capability_mode=None,
                             pilot_capability_allowlist=None) -> ToolRegistry:
     """创建并注册全部内置工具，返回 ToolRegistry。
 
-    M0.4.7 D-A1：新增 activation 参数，**默认值保持现状**（capability 路由未激活、
-    allowlist 空）。本阶段刻意**不**从 ``core.config.capability_layer`` 自动读取——
-    配置注入是 D-A2 的职责，故 CLI / replay 无 config 时行为逐字节不变。
+    M0.4.7 D-A2 —— config 接线（registry wiring）：
+    ``capability_mode`` / ``pilot_capability_allowlist`` 为 ``None``（调用方未显式
+    提供）时，从 ``core.config.capability_layer`` 读取；``core`` 或 config 缺失则
+    回退默认 OFF / 空 allowlist（行为逐字节兼容 D-A1 之前的无 config 状态）。
+    显式传入的值优先（replay 用 ``capability_mode=False`` 强制 OFF fallback，
+    使其不受生产配置影响而保持确定性）。
+
+    kill switch 语义（R4）：本函数只在新构造 registry 时**读取一次** config；
+    运行期变更须受控重启生效——``ConfigService._sync_runtime`` 不热更 registry，
+    本函数也不在运行期被重新调用以热切换 activation 状态。
     """
+    cfg_layer = None
+    if core is not None:
+        cfg_layer = getattr(getattr(core, "config", None), "capability_layer", None)
+    if capability_mode is None:
+        capability_mode = (
+            bool(getattr(cfg_layer, "capability_mode", False))
+            if cfg_layer is not None else False
+        )
+    if pilot_capability_allowlist is None:
+        pilot_capability_allowlist = (
+            list(getattr(cfg_layer, "pilot_capability_allowlist", []) or [])
+            if cfg_layer is not None else []
+        )
     from anima.tools.builtin import register_all_builtin
     registry = ToolRegistry(core, capability_mode=capability_mode,
                             pilot_capability_allowlist=pilot_capability_allowlist)

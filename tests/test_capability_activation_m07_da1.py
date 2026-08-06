@@ -175,7 +175,9 @@ def test_da1_create_default_registry_defaults_unchanged():
 def test_da1_create_default_registry_accepts_activation_params():
     sig = inspect.signature(create_default_registry)
     assert list(sig.parameters) == ["core", "capability_mode", "pilot_capability_allowlist"]
-    assert sig.parameters["capability_mode"].default is False
+    # D-A2：默认 None 表示「未显式提供 → 从 core.config.capability_layer 读取」；
+    # 显式传入的值优先（replay 用 False 强制 OFF fallback）。
+    assert sig.parameters["capability_mode"].default is None
     assert sig.parameters["pilot_capability_allowlist"].default is None
     reg = create_default_registry(None, capability_mode=True,
                                   pilot_capability_allowlist=[ALICE])
@@ -183,11 +185,27 @@ def test_da1_create_default_registry_accepts_activation_params():
     assert reg.pilot_capability_allowlist == (ALICE,)
 
 
-def test_da1_registry_construction_does_not_read_config():
-    """D-A2 边界：D-A1 只提供入参，不自动读取 ``core.config.capability_layer``。"""
-    src = inspect.getsource(create_default_registry)
-    assert "capability_layer" not in src.split('"""')[2], \
-        "配置注入属 D-A2；D-A1 的构造函数体不得读取 config"
+def test_da2_create_default_registry_reads_config_layer():
+    """D-A2 接线：未显式提供时从 ``core.config.capability_layer`` 读取（D-A1 的
+    「不读 config」边界已在 D-A2 被有意反转——本测试钉死新契约）。
+
+    用最小 stub core（仅暴露 ``.config``）即可，无需装配完整 AnimaCore。
+    """
+    cfg_on = AnimaConfig.model_validate({
+        "capability_layer": {"capability_mode": True, "pilot_capability_allowlist": [ALICE]},
+    })
+
+    class _Core:
+        config = cfg_on
+
+    reg = create_default_registry(_Core())
+    assert reg.capability_mode is True
+    assert reg.pilot_capability_allowlist == (ALICE,)
+    # 显式覆盖仍优先：即便 config ON，传 False 也要被尊重（replay fallback 同源）。
+    reg_off = create_default_registry(_Core(), capability_mode=False,
+                                      pilot_capability_allowlist=[])
+    assert reg_off.capability_mode is False
+    assert reg_off.pilot_capability_allowlist == ()
 
 
 def test_da1_allowlist_normalization_and_no_wildcard():
