@@ -328,8 +328,19 @@ class ToolRegistry:
 
         ``_via_capability`` 仅供 ``call_capability`` 内部使用：标记本次调用来自受控的
         capability 路由，可绕过 capability-only 工具的 legacy 直调守卫（D-A0）。
+
+        M0.4.7 D-A3（R3 closure）：请求名若是一个 capability 的 schema name（且不是
+        legacy 工具名），则经 ``call_capability`` 受控路由——Resolver 选 Provider、执行
+        仍由本方法完成，但治理门（``capability_mode`` / allowlist）前置。集中在此唯一入口，
+        react / executor / webui 等所有调用方自动受益，杜绝 F0 同型旁路。普通 legacy 工具
+        名 ``capability_for_schema_name`` 返回 None，逐字节走原路径，不改变普通 tool dispatch。
         """
         tool = self.tools.get(name)
+        # R3 断链修复：capability 模式的 LLM 看到的是 schema name（如 ``code_execute``），
+        # 它并非 legacy 工具名；在此转发到治理路由，避免「工具不存在」的断链。
+        cap_id = self.capability_index.capability_for_schema_name(name)
+        if cap_id is not None and tool is None:
+            return await self.call_capability(name, args, permission_level)
         if tool is None:
             return f"错误: 工具 '{name}' 不存在"
 
