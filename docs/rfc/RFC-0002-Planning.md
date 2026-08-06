@@ -1,6 +1,6 @@
 # RFC-0002: Planning
 
-- **Status:** Draft v0.1 (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
+- **Status:** r1 (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
 - **Date:** 2026-08-07
 - **Authors:** Anima engineering (drafted for governance review; per reviewer ruling A2 — RFC-0002 Infrastructure Planning Authority owns the canonical Plan)
 - **Track:** Infrastructure (000x), consumes RFC-0001 (Capability Layer)
@@ -120,7 +120,7 @@ RFC-0002  (Infrastructure — "what the Plan structure + producer API are")
 | Plan has **no storage authority** (§5.4 P3 / V4) | RFC-0002 does **not** provision a Plan store. Persistence for recovery is delegated to RFC-0003 run-state (§8). |
 | Plan is **constructed by the Planning Authority only** (§6.2, V3) | The Planning Interface (§6) is the *sole* constructor/revise API. Execution/Reflection do not write Plan (carries E4 forward). |
 | Plan is the **graph of Tasks**, not a single Task (§1.15/§4) | The `Plan` contract's `task_graph` is a list of `Task` nodes (§5); a Task is the executable unit, not the Plan. |
-| Plan **reads** Goal/Drive/Context as signals, mutates none (§5.1, V3 C2) | The Planning Interface inputs are read-only Goal/Drive/Context refs; no upstream mutation. |
+| Plan **reads** Goal/Drive/Context as signals, mutates none (RFC-0106 §6.2, V3 C2) | The Planning Interface inputs are read-only Goal/Drive/Context refs; no upstream mutation. |
 | Branching / Rollback are **Workflow shape**, not a Plan lifecycle (§4.1) | The `Plan` contract carries `branching`/`rollback` *descriptors*; their *execution* is RFC-0003. |
 
 ### 4.2 What RFC-0002 does **NOT** inherit / does **NOT** decide (stays in 0106)
@@ -230,9 +230,11 @@ this structure.
 
 ## 6. Planning Interface
 
-The Planning Interface is the stable API the **Planning Authority's implementation** (the
-Planner; M1.6 `construct_plan`) exposes. It is the *sole* constructor/revise surface for a Plan
-(RFC-0106 §6.2 V3 — only the Planning Authority may construct/revise Plan).
+The Planning Interface is the stable API that the **Planning Authority** *owns*; the **Planner**
+(M1.6 `construct_plan`) is its *implementation*. Authority (ownership) and Planner (implementation)
+are distinct: the interface is defined by the Authority and realized by the Planner. The interface
+is the *sole* constructor/revise surface for a Plan (RFC-0106 §6.2 V3 — only the Planning
+Authority may construct/revise Plan).
 
 ```python
 # Semantic interface (NOT implementation — no code in this Draft)
@@ -243,6 +245,16 @@ class PlanningInterface:
         Maps to M1.6 construct_plan(goal, drive, context) once implemented.
         Reads Goal/Drive/Context as signals (read-only); emits a new derived Plan.
         Never restores a prior Plan (RFC-0106 §5.4 V5).
+        New Plan is in `draft` state — it is NOT consumable by Workflow until activated.
+        """
+
+    def activate_plan(self, plan_id: str) -> Plan:
+        """
+        Move a Plan from `draft` to `active`, authorizing RFC-0003 (Workflow) to consume it.
+        This is the single draft→active transition operation (see §7.1). Workflow does NOT
+        self-activate a Plan — it consumes only a Plan already in `active` state. Only the
+        Planning Authority may activate (§7.1); this prevents any consumer from silently
+        promoting a draft Plan.
         """
 
     def read_plan(self, plan_id: str) -> Plan:
@@ -270,9 +282,9 @@ class PlanningInterface:
 
 **Authority boundary (carries RFC-0106 §6.2 / E4 forward).**
 - The Planning Interface is the **only** writer of Plan state.
-- `request_plan` / `revise_plan` / `invalidate_plan` are the only state-mutating operations;
-  all three are **Planning-Authority-only**. `read_plan` / `list_plans` are read-only (any
-  authorized consumer).
+- `request_plan` / `activate_plan` / `revise_plan` / `invalidate_plan` are the only
+  state-mutating operations; all four are **Planning-Authority-only**. `read_plan` / `list_plans`
+  are read-only (any authorized consumer).
 - Workflow (RFC-0003) **consumes** a Plan (reads `task_graph`/`ordering`/…) — it does **not**
   call `revise_plan` or `invalidate_plan`. On execution outcome it reports to the Planning
   Authority, which may `revise_plan` (RFC-0106 E4).
@@ -283,6 +295,14 @@ class PlanningInterface:
 memory-derived, external API) emit the *same* `Plan` structure via their own interfaces. They
 MUST emit a contract-valid `Plan`; they do **not** use `revise_plan` (that is the Planning
 Authority's own re-plan path). RFC-0003 consumes the structure regardless of `source`.
+
+**Origin ≠ authority.** The `source` field records *provenance* (where the Plan came from), not
+*authority* (who may write/transition it). A Plan being `source=memory`, `source=human`, or
+`source=external_api` grants Memory / a human / an external API **no** Plan write or transition
+right — those remain Planning-Authority-only (§7.1, O1). The single-writer rule is therefore
+preserved: `source` is descriptive metadata, not a co-ownership grant. What makes a Plan
+*canonical* is realization through the Planning Interface (the Planning Authority's sole writer
+path per A2), never its `source` value.
 
 ---
 
@@ -296,12 +316,16 @@ Plan has no independent lifecycle, no storage authority).
             request_plan / revise_plan
                    │
                    ▼
-              [ draft ] ───────────────► handed to Workflow (0003) ──► [ active ]
-                   │                                                        │
-                   │  revise_plan (new Goal signal / failure)              │ execution consumed
-                   │  produces a NEW Plan, supersedes this one             │
-                   ▼                                                        ▼
-            [ superseded ]  (discarded, never restored)        (Plan discarded after consumption)
+              [ draft ] ──── activate_plan ────► [ active ]
+                   │                                │
+                   │  (Planning Authority only;     │ execution consumed
+                   │   Workflow consumes            ▼
+                   │   only active Plan)       (Plan discarded after consumption)
+                   │
+                   │  revise_plan (new Goal signal / failure)
+                   │  produces a NEW Plan, supersedes this one
+                   ▼
+            [ superseded ]  (discarded, never restored)
 
             invalidate_plan (no replacement: Goal cancelled / context stale)
                    │  (from draft or active)
@@ -314,7 +338,7 @@ Plan has no independent lifecycle, no storage authority).
 | `draft` | Produced, not yet executing. | Transient; recomputed, not restored. |
 | `active` | Handed to Workflow (0003) for execution. | Consumed by Execution (RFC-0106 §5.2 V2). |
 | `superseded` | A newer Plan for the same Goal exists (re-plan). | Old Plan **discarded**, never archived/restored (§5.4 V5). |
-| `deprecated` | Declared invalid by the Planning Authority; MUST NOT be consumed. No replacement implied (distinct from `superseded`). | Transient; **discarded**, never archived/restored (§5.4 V5). |
+| `deprecated` | Declared invalid by the Planning Authority; MUST NOT be consumed. No replacement implied (distinct from `superseded`). A `deprecated` Plan does **not** block a later `request_plan` for the same Goal — re-planning is always permitted (G4). | Transient; **discarded**, never archived/restored (§5.4 V5). |
 
 ### 7.1 Transition ownership (the lifecycle needs an owner)
 
@@ -323,7 +347,7 @@ between runtime states. The lifecycle has exactly one owner; no other Authority 
 
 | Transition | Permitted actor | Notes |
 |------------|-----------------|-------|
-| `draft` → `active` (**activate**) | **Planning Authority only** | Workflow does **not** self-activate a Plan; it consumes only an `active` Plan. |
+| `draft` → `active` (**activate_plan**) | **Planning Authority only** | Workflow does **not** self-activate a Plan; it consumes only an `active` Plan. |
 | `active` → `superseded` (**supersede**, on re-plan) | **Planning Authority only** (`revise_plan`) | Emits a fresh Plan; never mutates the old one. |
 | `draft`/`active` → `deprecated` (**invalidate**) | **Planning Authority only** (`invalidate_plan`) | No replacement implied; Workflow must not consume. |
 | consume (`active` → discarded) | **Workflow (RFC-0003)** | Read-only consumption; Workflow does **not** change the Plan's state. |
@@ -380,8 +404,9 @@ Context C1, emits `Plan{ id=P1, source=planner, task_graph=[T1,T2,T3], ordering=
 branching=…, status=draft }`. No caller assigned the Plan; it was derived internally (RFC-0106 §7.1).
 
 **E2 — Hand-off to Workflow (no Plan mutation).**
-Plan P1 → `active`; RFC-0003 consumes `task_graph`/`ordering`. Execution does **not** call
-`revise_plan` (RFC-0106 E4). On finishing, it reports outcome to the Planning Authority.
+Planning Authority calls `activate_plan(P1)` → `active`; RFC-0003 consumes `task_graph`/`ordering`.
+Execution does **not** call `revise_plan` (RFC-0106 E4). On finishing, it reports outcome to the
+Planning Authority.
 
 **E3 — Re-plan on failure (fresh, not restore).**
 Execution fails at T2. Planning Authority calls `revise_plan(goal_ref=G1, reason="T2 failed")`
