@@ -54,10 +54,12 @@ class _FakeCore:
         self.audit = _CaptureAudit()
 
 
-def _real_wired_registry(capability_mode: bool = False) -> ToolRegistry:
+def _real_wired_registry(capability_mode: bool = False,
+                         pilot_capability_allowlist=None) -> ToolRegistry:
     """真实接线（与 D3 后生产状态一致）：register_all_builtin 声明契约并挂载
     单 provider code_exec。core=None 跳过 owner-only 工具（不影响本文件断言）。"""
-    reg = ToolRegistry(capability_mode=capability_mode)
+    reg = ToolRegistry(capability_mode=capability_mode,
+                       pilot_capability_allowlist=pilot_capability_allowlist)
     register_all_builtin(reg, None)
     return reg
 
@@ -66,7 +68,12 @@ def _mounted(core=None, run_python_grants_exec: bool = True) -> tuple[ToolRegist
     """聚焦 harness：声明 code.execute 契约 + 挂载 D3 provider（与 register_all_builtin
     完全一致的绑定）+ 安装 fake run_python。用于执行类验证，不依赖真实沙箱。"""
     core = core or _FakeCore()
-    reg = ToolRegistry(core)
+    # M0.4.7 D-A1：code.execute 是治理能力（capability-only Provider），经 capability
+    # 路由须同时满足「总开关激活 + pilot allowlist 放行」。本 harness 显式激活并放行
+    # 本文件使用的主体（call context user_id 1 / 123），使 T5–T8 继续验证 provider
+    # 自身的安全性质，而非停在治理门前。治理门本身由 D-A1 专项测试覆盖。
+    reg = ToolRegistry(core, capability_mode=True,
+                       pilot_capability_allowlist=["user:1", "user:123"])
 
     # 声明契约（幂等；与 reservation/D3 同构）
     reg.capability_index.declare_contract(CapabilityContract(
@@ -358,9 +365,12 @@ def test_t8_pilot_mode_exposes_capability_only_for_code_execute():
     且 legacy-only 工具仍走 Tool schema（混合模式，不残废）。
     核心不变量：capability 提供身份+路由，不是新的执行权限来源——legacy 工具不获得
     新的 code.execute 旁路。"""
-    reg = _real_wired_registry(capability_mode=True)
+    # M0.4.7 D-A1 R6：治理能力的 schema 暴露还须 allowlist 放行（见 D-A1 专项测试）。
+    reg = _real_wired_registry(capability_mode=True,
+                               pilot_capability_allowlist=["user:7"])
     assert reg.capability_mode is True
-    names = [s["function"]["name"] for s in reg.get_schemas(permission_level=LEVEL_USER)]
+    names = [s["function"]["name"]
+             for s in reg.get_schemas(permission_level=LEVEL_USER, caller="user:7")]
     # capability 路由暴露（名 code_execute，不含 Provider 名）
     assert "code_execute" in names
     # 但作为 capability 暴露，原始 Tool 名 code_exec 不应再以 Tool schema 出现

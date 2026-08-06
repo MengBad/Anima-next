@@ -52,10 +52,19 @@ def capability_schema(index: CapabilityIndex, capability_id: str, permission_lev
     }
 
 
-def capability_schemas(index: CapabilityIndex, permission_level: int) -> list[dict]:
-    """全部可见能力的 schema（不含任何 Provider 名）。"""
+def capability_schemas(index: CapabilityIndex, permission_level: int, *,
+                       exclude: "set[str] | None" = None) -> list[dict]:
+    """全部可见能力的 schema（不含任何 Provider 名）。
+
+    ``exclude``（M0.4.7 D-A1 R6）：治理未放行的能力 id 集合，直接不产出 schema。
+    本模块只执行「排除」这一机械动作，**不持有治理策略**——allowlist 判定属
+    ``ToolRegistry``（唯一持 core / audit 的层），保持 schema 层为纯投影。
+    """
+    blocked = set(exclude or ())
     out: list[dict] = []
     for cap_id in index.capabilities():
+        if cap_id in blocked:
+            continue
         schema = capability_schema(index, cap_id, permission_level)
         if schema is not None:
             out.append(schema)

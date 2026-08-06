@@ -43,8 +43,10 @@ class _FakeCore:
         self.audit = _CaptureAudit()
 
 
-def _real_wired_registry(capability_mode: bool = False) -> ToolRegistry:
-    reg = ToolRegistry(capability_mode=capability_mode)
+def _real_wired_registry(capability_mode: bool = False,
+                         pilot_capability_allowlist=None) -> ToolRegistry:
+    reg = ToolRegistry(capability_mode=capability_mode,
+                       pilot_capability_allowlist=pilot_capability_allowlist)
     register_all_builtin(reg, None)
     return reg
 
@@ -52,7 +54,9 @@ def _real_wired_registry(capability_mode: bool = False) -> ToolRegistry:
 def _mounted(capability_only: bool = True) -> tuple[ToolRegistry, _FakeCore, dict]:
     """聚焦 harness：声明契约 + 挂载 code_exec（capability_only 可控）+ fake run_python。"""
     core = _FakeCore()
-    reg = ToolRegistry(core)
+    # M0.4.7 D-A1：capability 路由两级门（总开关 + 治理 allowlist）。本 harness 显式
+    # 放行 call context 主体 user:1，使 D-A0 的 F0 性质仍被独立验证。
+    reg = ToolRegistry(core, capability_mode=True, pilot_capability_allowlist=["user:1"])
     reg.capability_index.declare_contract(CapabilityContract(
         id="code.execute", version="1.0.0", domain="code",
         description="test", stability=Stability.EXPERIMENTAL,
@@ -98,8 +102,11 @@ def test_da0_legacy_schema_keeps_mixed_mode_tools():
 
 def test_da0_pilot_schema_exposes_capability_route_only():
     """pilot 模式 capability 路由暴露 code_execute，但仍不暴露原始 Tool 名 code_exec。"""
-    reg = _real_wired_registry(capability_mode=True)
-    names = [s["function"]["name"] for s in reg.get_schemas(permission_level=LEVEL_USER)]
+    # M0.4.7 D-A1 R6：治理能力的 schema 暴露还须 allowlist 放行。
+    reg = _real_wired_registry(capability_mode=True,
+                               pilot_capability_allowlist=["user:7"])
+    names = [s["function"]["name"]
+             for s in reg.get_schemas(permission_level=LEVEL_USER, caller="user:7")]
     assert "code_execute" in names
     assert "code_exec" not in names
 

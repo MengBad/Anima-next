@@ -204,6 +204,8 @@ async def test_call_capability_routes_to_real_handler(registry):
         return f"resolved:{query}"
 
     registry.tools["web_search"].handler = stub
+    # M0.4.7 D-A1：capability 路由需总开关激活；search.web 非治理能力，无需 allowlist。
+    registry.capability_mode = True
     out = await registry.call_capability("search.web", {"query": "anima"}, LEVEL_USER)
     assert "resolved:anima" in out
     # schema name 入口同样可达

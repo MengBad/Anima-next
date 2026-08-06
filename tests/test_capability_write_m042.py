@@ -108,6 +108,8 @@ async def test_call_capability_routes_write_file_handler(registry):
         return f"written:{filename}"
 
     registry.tools["write_file"].handler = stub
+    # M0.4.7 D-A1：capability 路由需总开关激活；filesystem.write 非治理能力，无需 allowlist。
+    registry.capability_mode = True
     out = await registry.call_capability("filesystem.write", {"filename": "a.txt", "content": "x"}, LEVEL_USER)
     assert "written:a.txt" in out
     # schema name 入口同样可达

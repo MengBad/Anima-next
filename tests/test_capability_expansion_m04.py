@@ -223,6 +223,8 @@ async def test_call_capability_routes_read_file_handler(registry):
         return f"resolved:{filename}"
 
     registry.tools["read_file"].handler = stub
+    # M0.4.7 D-A1：capability 路由需总开关激活；filesystem.read 非治理能力，无需 allowlist。
+    registry.capability_mode = True
     out = await registry.call_capability("filesystem.read", {"filename": "a.txt"}, LEVEL_USER)
     assert "resolved:a.txt" in out
     # schema name 入口同样可达

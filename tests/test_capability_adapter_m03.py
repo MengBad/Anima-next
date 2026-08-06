@@ -221,8 +221,13 @@ def test_permission_denied_when_scopes_insufficient():
 
 
 async def test_call_capability_delegates_to_registry():
-    """Resolver 只选型；执行仍走既有 call()。"""
-    reg = ToolRegistry()
+    """Resolver 只选型；执行仍走既有 call()。
+
+    M0.4.7 D-A1：capability 路由总开关落在 call_capability 自身（唯一入口），
+    故本用例显式激活 ``capability_mode``。search.web 非治理能力（Provider 未置
+    capability_only），不需要 pilot allowlist。
+    """
+    reg = ToolRegistry(capability_mode=True)
     reg.register(_tool("tavily", capability_ids=["search.web"]))
     assert await reg.call_capability("search.web", {"q": "hi"}) == "tavily:hi"
     assert await reg.call_capability("search_web", {"q": "hi"}) == "tavily:hi"   # schema name 反查

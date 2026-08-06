@@ -221,6 +221,26 @@ class CapabilityConfig(BaseModel):
     min_create_text_len: int = 6      # 能力名+描述+用法总内容最小长度（防碎碎念）
 
 
+class CapabilityLayerConfig(BaseModel):
+    """Capability Layer routing controls. Not related to self-growing capability library.
+
+    RFC-0001 Capability Layer 的**治理 / 路由**开关（M0.4.7 D-A1）。与上方
+    ``CapabilityConfig``（``capabilities:`` —— 个人能力自生长系统 P1）**无任何关系**，
+    禁止互相复用：前者管「LLM 经 capability id 路由到 Provider」的准入面，
+    后者管「bot 从经历里长出方法论」的知识库。
+
+    Configuration changes require controlled restart until runtime synchronization
+    is separately authorized.（R4：``ConfigService._sync_runtime`` 不热更 registry，
+    kill switch 语义为受控重启生效。）
+    """
+    # 总开关：capability 路由未激活时，call_capability 一律拒绝、capability schema 不产出。
+    capability_mode: bool = False
+    # Empty allowlist denies all capability routing.
+    # fail-closed（R2）：空 allowlist = 拒绝全部治理能力路由，**不是**放行全部。
+    # 条目为调用主体标识，形如 "user:123456"；刻意不支持任何通配符（通配符即后门）。
+    pilot_capability_allowlist: list[str] = Field(default_factory=list)
+
+
 class NotesCompactConfig(BaseModel):
     """自我笔记压缩（兑现 learning.py docstring 承诺，止住 self_notes.md 无限膨胀）。"""
     enabled: bool = True             # 总开关
@@ -608,6 +628,8 @@ class AnimaConfig(BaseModel):
     crossgroup: CrossGroupConfig = Field(default_factory=CrossGroupConfig)
     tool_learning: ToolLearningConfig = Field(default_factory=ToolLearningConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
+    # RFC-0001 Capability Layer 治理开关（与上一行 capabilities 语义无关，勿混用）
+    capability_layer: CapabilityLayerConfig = Field(default_factory=CapabilityLayerConfig)
     notes_compact: NotesCompactConfig = Field(default_factory=NotesCompactConfig)
     sticker: StickerConfig = Field(default_factory=StickerConfig)
     bilibili_read: BilibiliReadConfig = Field(default_factory=BilibiliReadConfig)

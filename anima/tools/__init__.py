@@ -122,10 +122,30 @@ class Tool:
         }
 
 
+def _normalize_principals(entries) -> tuple[str, ...]:
+    """allowlist 归一：去空白、丢空项、小写、去重（保序）。
+
+    刻意**不支持任何通配符**（``*`` / ``all`` 等）——在 fail-closed 语义下，
+    通配符等于一个静默后门（M0.4.7 D-A1 R2）。
+    """
+    if not entries:
+        return ()
+    out: list[str] = []
+    seen: set[str] = set()
+    for raw in entries:
+        item = str(raw).strip().lower()
+        if not item or item in seen:
+            continue
+        seen.add(item)
+        out.append(item)
+    return tuple(out)
+
+
 class ToolRegistry:
     """工具注册中心。"""
 
-    def __init__(self, core=None, capability_mode: bool = False):
+    def __init__(self, core=None, capability_mode: bool = False,
+                 pilot_capability_allowlist=None):
         self.tools: dict[str, Tool] = {}
         self.core = core
         # --- M0.3 (RFC-0001) Capability Adapter ---
@@ -133,7 +153,71 @@ class ToolRegistry:
         self.capability_index = CapabilityIndex()
         # feature flag：默认关闭 → get_schemas 行为 100% 不变。
         self.capability_mode = bool(capability_mode)
+        # M0.4.7 D-A1：pilot allowlist（fail-closed）。默认空 = 拒绝全部治理能力路由。
+        # 注入由 D-A2 负责（本阶段构造参数默认值保持现状，CLI / replay 行为不变）。
+        self._pilot_allowlist: tuple[str, ...] = _normalize_principals(pilot_capability_allowlist)
         self._capability_resolver = None
+
+    # ---------------- M0.4.7 D-A1：capability 路由治理 ----------------
+
+    @property
+    def pilot_capability_allowlist(self) -> tuple[str, ...]:
+        """治理放行主体清单（已归一）。空 = 拒绝全部（fail-closed）。"""
+        return self._pilot_allowlist
+
+    @pilot_capability_allowlist.setter
+    def pilot_capability_allowlist(self, value) -> None:
+        self._pilot_allowlist = _normalize_principals(value)
+
+    def _pilot_principal(self, caller: Optional[str] = None) -> Optional[str]:
+        """本次调用的主体标识：显式 ``caller`` 优先，否则取可信 call context 的 user_id。
+
+        取不到主体 → 返回 None → 治理判定按 fail-closed 拒绝。
+        """
+        if caller:
+            explicit = str(caller).strip().lower()
+            if explicit:
+                return explicit
+        ctx = get_call_context() or {}
+        uid = ctx.get("user_id")
+        if uid is None:
+            return None
+        uid = str(uid).strip().lower()
+        return f"user:{uid}" if uid else None
+
+    def pilot_capability_permitted(self, caller: Optional[str] = None) -> bool:
+        """治理 allowlist 判定（fail-closed）：空 allowlist / 无主体 / 不匹配 → False。"""
+        if not self._pilot_allowlist:
+            return False
+        principal = self._pilot_principal(caller)
+        if principal is None:
+            return False
+        return principal in self._pilot_allowlist
+
+    def _capability_is_governed(self, capability_id: str) -> bool:
+        """能力是否属治理集：任一 Provider 为 capability-only（D-A0 语义）即为治理能力。
+
+        治理能力 = 已退出 legacy 表面、只走 capability 路由的能力（当前仅
+        ``code.execute``）。mixed-mode 能力（web_search / read_file / write_file）
+        不在治理集内，行为不受 allowlist 影响。
+        """
+        return any(getattr(p.tool, "capability_only", False)
+                   for p in self.capability_index.providers_for(capability_id))
+
+    def _governed_capability_ids(self) -> set[str]:
+        return {cap_id for cap_id in self.capability_index.capabilities()
+                if self._capability_is_governed(cap_id)}
+
+    def _pilot_denial_reason(self, caller: Optional[str] = None) -> str:
+        if not self._pilot_allowlist:
+            return "allowlist_empty"
+        if self._pilot_principal(caller) is None:
+            return "no_principal"
+        return "allowlist_mismatch"
+
+    def _deny_capability_route(self, capability_id: str, reason: str) -> str:
+        self._audit("capability_route_denied", capability=capability_id, reason=reason)
+        return f"错误: capability '{capability_id}' 未获治理放行（{reason}）"
 
     @property
     def capability_resolver(self):
@@ -169,7 +253,8 @@ class ToolRegistry:
         _CALL_CONTEXT.reset(token)
 
     def get_schemas(self, permission_level: int = LEVEL_USER,
-                    capability_mode: Optional[bool] = None) -> list[dict]:
+                    capability_mode: Optional[bool] = None, *,
+                    caller: Optional[str] = None) -> list[dict]:
         """根据用户权限等级过滤可使用的工具 schema。
 
         M0.3 双模式（RFC-0001 §5.4）：
@@ -178,6 +263,15 @@ class ToolRegistry:
           未标注 capability 的 legacy Tool 仍以 Tool schema 暴露（迁移期混合）。
 
         参数为 None 时取实例 flag ``self.capability_mode``（默认 False）。
+
+        M0.4.7 D-A1 R6（暴露面 gate）：``capability_mode=True`` **不等于**所有
+        capability schema 自动公开。治理能力（capability-only Provider，当前仅
+        ``code.execute``）还须 allowlist 放行才可见——否则能力名泄露给全体用户，
+        且 LLM 见即调，产生持续 deny 噪音。判定式::
+
+            schema visible = capability_mode ∧ provider available ∧ allowlist permitted
+
+        mixed-mode 能力不属治理集，可见性不受 allowlist 影响（行为不变）。
         """
         use_capability = self.capability_mode if capability_mode is None else bool(capability_mode)
         if not use_capability:
@@ -188,20 +282,36 @@ class ToolRegistry:
                 and not t.capability_only
             ]
         from anima.capability.schema import capability_schemas, legacy_only_schemas
+        exclude = None if self.pilot_capability_permitted(caller) else self._governed_capability_ids()
         return (
-            capability_schemas(self.capability_index, permission_level)
+            capability_schemas(self.capability_index, permission_level, exclude=exclude)
             + legacy_only_schemas(list(self.tools.values()), permission_level)
         )
 
     async def call_capability(self, capability_ref: str, args: dict,
-                              permission_level: int = LEVEL_USER) -> str:
+                              permission_level: int = LEVEL_USER, *,
+                              caller: Optional[str] = None) -> str:
         """capability 模式的调用入口：Resolver 选 Provider，执行仍走 ``call()``。
 
         ``capability_ref`` 可以是 capability id（``search.web``）或其 schema name
         （``search_web``，LLM 侧看到的名字）。``call(name, args)`` 语义不变。
+
+        M0.4.7 D-A1 两级治理门（gate 落在**唯一入口**，不落调用方，避免 F0 同型旁路）：
+
+        1. ``capability_mode=False`` → 整条 capability 路由未激活，一律拒绝；
+        2. 治理能力（capability-only Provider）→ 还须 pilot allowlist 放行
+           （fail-closed：空 allowlist / 无主体 / 不匹配 → 拒绝）。
+
+        mixed-mode 能力只受第 1 级约束，激活后行为与既有一致。
+        拒绝一律经 ``capability_route_denied`` 审计，无静默拒绝。
         """
         cap_id = self.capability_index.capability_for_schema_name(capability_ref) or capability_ref
+        if not self.capability_mode:
+            return self._deny_capability_route(cap_id, "capability_mode_off")
         resolution = self.capability_resolver.resolve(cap_id, permission_level=permission_level)
+        if (getattr(resolution.provider.tool, "capability_only", False)
+                and not self.pilot_capability_permitted(caller)):
+            return self._deny_capability_route(cap_id, self._pilot_denial_reason(caller))
         return await self.call(resolution.provider.tool_name, args, permission_level,
                                _via_capability=True)
 
@@ -395,10 +505,17 @@ class ToolRegistry:
 # create_default_registry — 委托 builtin 子包
 # ---------------------------------------------------------------------------
 
-def create_default_registry(core=None) -> ToolRegistry:
-    """创建并注册全部内置工具，返回 ToolRegistry。"""
+def create_default_registry(core=None, capability_mode: bool = False,
+                            pilot_capability_allowlist=None) -> ToolRegistry:
+    """创建并注册全部内置工具，返回 ToolRegistry。
+
+    M0.4.7 D-A1：新增 activation 参数，**默认值保持现状**（capability 路由未激活、
+    allowlist 空）。本阶段刻意**不**从 ``core.config.capability_layer`` 自动读取——
+    配置注入是 D-A2 的职责，故 CLI / replay 无 config 时行为逐字节不变。
+    """
     from anima.tools.builtin import register_all_builtin
-    registry = ToolRegistry(core)
+    registry = ToolRegistry(core, capability_mode=capability_mode,
+                            pilot_capability_allowlist=pilot_capability_allowlist)
     register_all_builtin(registry, core)
     return registry
 
