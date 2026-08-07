@@ -209,6 +209,34 @@ class PlanStatus(Enum):
 PLAN_CONTRACT_VERSION: str = "1.0.0"
 
 
+# --------------------------------------------------------------------------
+# Task — a single executable unit inside a Plan (RFC-0100 §1.9 / RFC-0106 §4 / RFC-0002 §5)
+# --------------------------------------------------------------------------
+@dataclass
+class Task:
+    """A single executable unit inside a Plan — the canonical *Task* of the §5 Plan contract.
+
+    **Transient vocabulary, not a stored state** (RFC-0002 §8): a Task node has no setter and
+    no storage authority; it is produced by the Planning Authority and consumed by Execution /
+    Workflow (RFC-0003), never persisted. It carries only descriptors — it does NOT mutate any
+    upstream state (Goal / Drive / Context) and does NOT execute capabilities (RFC-0001 owns
+    that; ``capability_need`` here is metadata, not an action).
+
+    This dataclass is the *representation layer* only. Population of ``Plan.task_graph`` with
+    ``Task`` objects (in place of the current list-of-dicts emitted by ``derive_plan``) is the
+    runtime-wiring slice (T3) — explicitly out of scope for T1.2. ``id`` is assigned at
+    construction (T2/T3), consistent with ``Plan.id``: the default is empty so the pure-function
+    ``derive_plan`` stays deterministic and no nondeterministic value is introduced here.
+    """
+
+    id: str = ""                       # unique per construction (assigned at build time, T2/T3); not a restore key
+    title: str = ""                    # human-readable label
+    intent: str = ""                   # what this Task contributes toward the Goal
+    capability_need: dict = field(default_factory=dict)   # OPTIONAL declared need {type, args}; empty = none declared
+    depends_on: list = field(default_factory=list)       # task ids this Task waits on (list[uuid])
+    estimates: dict = field(default_factory=dict)        # optional planner hints (cost/latency/risk); not commitments
+
+
 @dataclass
 class Plan:
     """The life's operational structure for reaching its committed Goal (RFC-0106).
@@ -220,7 +248,7 @@ class Plan:
     """
 
     goal_target: str = ""          # the Goal this Plan pursues (content source, read-only)
-    task_graph: list = field(default_factory=list)   # decomposition: list of task descriptors
+    task_graph: list["Task"] = field(default_factory=list)   # decomposition: graph of Task nodes (RFC-0002 §5)
     ordering: list = field(default_factory=list)     # sequence / dependencies among Tasks
     branching: dict = field(default_factory=dict)    # conditional / fallback paths (Workflow shape)
     rollback: dict = field(default_factory=dict)     # unwind-on-failure (not a Plan lifecycle)
