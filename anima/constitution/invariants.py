@@ -334,12 +334,15 @@ def _sample_plan_inputs():
 
 def _sample_execution_inputs():
     """Build a minimal (Plan, ExecutionContext) pair for the execution mutation check."""
+    from anima.constitution.state import Task
+
+    # Canonical RFC-0002 §5 Tasks (T4.1): no legacy dict representation.
     plan = Plan(
         goal_target="understand X",
         task_graph=[
-            {"id": "t1", "op": "read", "about": "understand X"},
-            {"id": "t2", "op": "synthesize", "about": "can explain X"},
-            {"id": "t3", "op": "present", "about": "understand X"},
+            Task(id="t1", title="Read", intent="understand X", depends_on=[], capability_need={}, estimates={}),
+            Task(id="t2", title="Synthesize", intent="can explain X", depends_on=["t1"], capability_need={}, estimates={}),
+            Task(id="t3", title="Present", intent="understand X", depends_on=["t2"], capability_need={}, estimates={}),
         ],
         ordering=["t1", "t2", "t3"],
         branching={"if_browser_missing": "fallback_to_knowledge"},

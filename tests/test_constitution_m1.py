@@ -11,7 +11,12 @@ from anima.constitution.affect import derive_affect
 from anima.constitution.drive import derive_drive
 from anima.constitution.invariants import check_constitution_invariants
 from anima.constitution.planner import Planner, derive_plan
-from anima.constitution.execution import ExecutionRuntime, execute_plan
+from anima.constitution.execution import (
+    ExecutionRuntime,
+    ExecutionStep,
+    execute_plan,
+    task_to_execution_step,
+)
 from anima.constitution.memory_authority import MemoryAuthority, ingest
 from anima.constitution.reflection import Reflector, reflect
 from anima.constitution.persona import PersonaProjector, derive_persona
@@ -284,12 +289,13 @@ def test_derive_plan_ordering_stays_in_sync_with_task_graph():
 # M1.7 — Execution Engine (RFC-0107)
 # --------------------------------------------------------------------------
 def _plan_for_exec() -> Plan:
+    # Canonical RFC-0002 §5 Tasks (T4.1): no legacy dict representation.
     return Plan(
         goal_target="understand X",
         task_graph=[
-            {"id": "t1", "op": "read", "about": "understand X"},
-            {"id": "t2", "op": "synthesize", "about": "can explain X"},
-            {"id": "t3", "op": "present", "about": "understand X"},
+            Task(id="t1", title="Read", intent="understand X", depends_on=[], capability_need={}, estimates={}),
+            Task(id="t2", title="Synthesize", intent="can explain X", depends_on=["t1"], capability_need={}, estimates={}),
+            Task(id="t3", title="Present", intent="understand X", depends_on=["t2"], capability_need={}, estimates={}),
         ],
         ordering=["t1", "t2", "t3"],
         branching={"if_browser_missing": "fallback_to_knowledge"},
@@ -355,6 +361,36 @@ def test_execution_result_flows_to_memory_shape():
     assert isinstance(result.lessons, list) and len(result.lessons) >= 1
     # lessons reference plan/goal content, proving the Result is the Memory回流 input (not a store).
     assert any("understand X" in lesson for lesson in result.lessons)
+
+
+def test_task_to_execution_step_adapter_is_explicit():
+    # T4.1: the canonical Task -> runtime step conversion must be an explicit, typed
+    # adapter. No dict is re-introduced as the canonical form; every field is mapped by name.
+    task = Task(
+        id="t2",
+        title="Synthesize",
+        intent="can explain X",
+        capability_need={"type": "knowledge"},
+        depends_on=["t1"],
+        estimates={"cost": 0.3},
+    )
+    step = task_to_execution_step(task)
+    assert isinstance(step, ExecutionStep)
+    assert step.id == "t2"
+    assert step.title == "Synthesize"
+    assert step.intent == "can explain X"
+    assert step.depends_on == ["t1"]
+    assert step.capability_need == {"type": "knowledge"}
+    assert step.estimates == {"cost": 0.3}
+
+
+def test_execute_plan_consumes_canonical_task_graph():
+    # T4.1: a canonical list[Task] enters the execution path directly (no legacy dict needed).
+    plan = _plan_for_exec()
+    assert all(isinstance(t, Task) for t in plan.task_graph)
+    result = execute_plan(plan, _ctx_for_exec())
+    assert result.status == ExecutionStatus.SUCCESS
+    assert "t1|t2|t3" in result.plan_ref  # carried task ids preserved via the adapter
 
 
 # --------------------------------------------------------------------------

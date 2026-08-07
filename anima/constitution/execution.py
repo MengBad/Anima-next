@@ -22,13 +22,49 @@ Foundation cannot express, that routes via Foundation Evolution F1 — not a sil
 """
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from anima.constitution.errors import ConstitutionViolation
 from anima.constitution.state import (
     ExecutionContext,
     ExecutionResult,
     ExecutionStatus,
     Plan,
+    Task,
 )
+
+
+@dataclass
+class ExecutionStep:
+    """Runtime-side representation of a single carried Task (M1.7 carrier internal).
+
+    This is the *adapter output*, not the canonical Plan contract. It is produced from a
+    canonical RFC-0002 §5 ``Task`` by ``task_to_execution_step`` so the Execution Runtime
+    reads a stable, typed shape. The canonical ``Plan.task_graph`` stays ``list[Task]``
+    (RFC-0002 §5); a dict is never re-introduced as the canonical representation (T4.1 rule).
+    """
+    id: str
+    title: str
+    intent: str
+    depends_on: list
+    capability_need: dict
+    estimates: dict
+
+
+def task_to_execution_step(task: Task) -> ExecutionStep:
+    """Explicit, auditable mapping: canonical ``Task`` -> runtime execution representation.
+
+    Every field is assigned by name (no ``ExecutionStep(**task.__dict__)`` implicit
+    unpacking) so the conversion stays reviewable as the canonical §5 contract evolves.
+    """
+    return ExecutionStep(
+        id=task.id,
+        title=task.title,
+        intent=task.intent,
+        depends_on=list(task.depends_on),
+        capability_need=dict(task.capability_need),
+        estimates=dict(task.estimates),
+    )
 
 
 def execute_plan(plan: Plan, context: ExecutionContext) -> ExecutionResult:
@@ -36,12 +72,16 @@ def execute_plan(plan: Plan, context: ExecutionContext) -> ExecutionResult:
 
     Reads the Plan read-only; emits an ``ExecutionResult``. Must NOT mutate ``plan``, the Goal
     behind it, Drive, or ``context`` (RFC-0107 C1/C2/C3). The carrying is simulated for M1.7:
-    we walk ``plan.ordering`` and accumulate a lesson per carried Task. A real carrier would
-    dispatch each Task via Capability→Provider (RFC-0100 §1.18–§1.19); that infra is deliberately
-    out of scope here (RFC-0107 NG1).
+    we walk ``plan.task_graph`` (canonical RFC-0002 §5 Tasks) and accumulate a lesson per
+    carried Task. A real carrier would dispatch each Task via Capability→Provider
+    (RFC-0100 §1.18–§1.19); that infra is deliberately out of scope here (RFC-0107 NG1).
     """
-    # Walk the planned ordering read-only — we read plan.ordering, never write the Plan.
-    carried = list(plan.ordering)
+    # Carry each canonical Task through the explicit adapter (RFC-0002 §5 -> runtime step).
+    # The adapter owns the representation boundary: the canonical Plan stays list[Task]; the
+    # Runtime reads a typed ExecutionStep, never a dict (T4.1). We read task_graph read-only
+    # and never write the Plan.
+    carried_steps = [task_to_execution_step(t) for t in plan.task_graph]
+    carried = [step.id for step in carried_steps]
     status = ExecutionStatus.SUCCESS if carried else ExecutionStatus.FAILED
 
     lessons = [
