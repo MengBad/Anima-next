@@ -1,4 +1,4 @@
-"""RFC-0002 §6 / §7 — Planning Interface + Plan lifecycle (T2.1 / T2.2) smoke test.
+"""RFC-0002 §6 / §7 — Planning Interface + Plan lifecycle (T2.1 / T2.2 / T3.2) smoke test.
 
 Validates the Planning Authority's stable API surface: the six operations, the
 runtime lifecycle transitions, the single-writer enclosure, and the transient
@@ -13,31 +13,114 @@ from anima.constitution.planning_interface import (
     _TERMINAL_STATES,
     PlanningInterface,
 )
-from anima.constitution.state import PLAN_CONTRACT_VERSION, Plan, PlanSource, PlanStatus
+from anima.constitution.state import (
+    PLAN_CONTRACT_VERSION,
+    Drive,
+    Goal,
+    Plan,
+    PlanSource,
+    PlanStatus,
+    PlannerContext,
+    Task,
+)
 
 
 def _new_interface() -> PlanningInterface:
     return PlanningInterface()
 
 
-def test_request_plan_creates_draft_shell():
+def _derive_inputs() -> tuple[Goal, Drive, PlannerContext]:
+    """Canonical, deterministic derivation inputs shared by the request/revise helpers."""
+    return (
+        Goal(target="ship feature", success_criterion="tests pass", horizon="weeks"),
+        Drive(orientation={"approach": 0.8}),
+        PlannerContext(capabilities=["knowledge"], environment={"safe_to_retry": True}),
+    )
+
+
+def _request(iface: PlanningInterface, goal_ref: str) -> Plan:
+    """Thin wrapper: request_plan with the canonical deterministic inputs."""
+    goal, drive, context = _derive_inputs()
+    return iface.request_plan(goal_ref, goal=goal, drive=drive, context=context)
+
+
+def _revise(iface: PlanningInterface, goal_ref: str, reason: str) -> Plan:
+    """Thin wrapper: revise_plan with the canonical deterministic inputs."""
+    goal, drive, context = _derive_inputs()
+    return iface.revise_plan(
+        goal_ref, goal=goal, drive=drive, context=context, reason=reason
+    )
+
+
+# ---------------------------------------------------------------------------
+# T3.2 — creation path wired to derive_plan (no longer an empty shell)
+# ---------------------------------------------------------------------------
+def test_request_plan_creates_draft_populated_by_derive_plan():
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
 
     assert plan.id  # assigned at construction
     assert plan.goal_ref == "goal-1"
-    assert plan.context_ref == "ctx-a"
     assert plan.contract_version == PLAN_CONTRACT_VERSION
     assert plan.source is PlanSource.PLANNER
     assert plan.status is PlanStatus.DRAFT
     assert plan.created_at  # timestamp assigned
-    # Transient shell: task_graph not yet populated (population is T3 wiring).
-    assert plan.task_graph == []
+    # T3.2: task_graph is now populated by derive_plan (canonical RFC-0002 §5 Tasks),
+    # not an empty shell.
+    assert plan.task_graph, "request_plan must populate task_graph via derive_plan"
+    assert all(isinstance(t, Task) for t in plan.task_graph)
+    assert [t.id for t in plan.task_graph] == ["t1", "t2", "t3"]
+    assert plan.ordering == ["t1", "t2", "t3"]
+    # context_ref is derived deterministically from the PlannerContext (audit only).
+    assert plan.context_ref
+
+
+def test_request_plan_content_matches_derive_plan():
+    """The interface must attach identity fields only — never alter derive_plan's content."""
+    from anima.constitution.planner import derive_plan
+
+    goal, drive, context = _derive_inputs()
+    expected = derive_plan(goal, drive, context)
+    iface = _new_interface()
+    plan = iface.request_plan("goal-1", goal=goal, drive=drive, context=context)
+
+    assert plan.task_graph == expected.task_graph
+    assert plan.ordering == expected.ordering
+    assert plan.goal_target == expected.goal_target
+    assert plan.context_ref == expected.context_ref
+    assert plan.emphasis == expected.emphasis
+    assert plan.branching == expected.branching
+    assert plan.rollback == expected.rollback
+
+
+def test_request_plan_task_graph_is_canonical_and_deterministic():
+    """derive_plan stays pure: same inputs ⇒ same content; only key + timestamp vary."""
+    iface = _new_interface()
+    p1 = _request(iface, "goal-1")
+    p2 = _request(iface, "goal-1")
+
+    assert p1.id != p2.id  # construction-boundary uuid, never part of deterministic content
+    assert p1.task_graph == p2.task_graph
+    assert p1.ordering == p2.ordering
+    assert p1.goal_target == p2.goal_target
+    assert p1.context_ref == p2.context_ref
+    assert p1.emphasis == p2.emphasis
+
+
+def test_revise_plan_successor_is_populated_by_derive_plan():
+    """The revised (superseding) Plan is also fully populated, not an empty shell."""
+    iface = _new_interface()
+    _request(iface, "goal-1")
+    successor = _revise(iface, "goal-1", reason="context change")
+
+    assert successor.task_graph, "revise_plan successor must be populated by derive_plan"
+    assert all(isinstance(t, Task) for t in successor.task_graph)
+    assert [t.id for t in successor.task_graph] == ["t1", "t2", "t3"]
 
 
 def test_activate_plan_draft_to_active():
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
 
     activated = iface.activate_plan(plan.id)
     assert activated.status is PlanStatus.ACTIVE
@@ -47,7 +130,7 @@ def test_activate_plan_draft_to_active():
 
 def test_activate_plan_rejects_non_draft():
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
     iface.activate_plan(plan.id)
 
     raised = False
@@ -61,15 +144,15 @@ def test_activate_plan_rejects_non_draft():
 
 def test_read_plan_returns_current_structure():
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
     assert iface.read_plan(plan.id) is plan  # same object from the live registry
 
 
 def test_revise_plan_supersedes_prior_and_emits_new_draft():
     iface = _new_interface()
-    p1 = iface.request_plan("goal-1", "ctx-a")
+    p1 = _request(iface, "goal-1")
     iface.activate_plan(p1.id)
-    p2 = iface.revise_plan("goal-1", reason="context change")
+    p2 = _revise(iface, "goal-1", reason="context change")
 
     # Prior becomes SUPERSEDED (never mutated, never archived).
     assert iface.read_plan(p1.id).status is PlanStatus.SUPERSEDED
@@ -84,7 +167,7 @@ def test_revise_plan_supersedes_prior_and_emits_new_draft():
 
 def test_invalidate_plan_draft_to_deprecated():
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
 
     deprecated = iface.invalidate_plan(plan.id, reason="goal cancelled")
     assert deprecated.status is PlanStatus.DEPRECATED
@@ -93,8 +176,8 @@ def test_invalidate_plan_draft_to_deprecated():
 
 def test_invalidate_plan_rejects_already_superseded_or_deprecated():
     iface = _new_interface()
-    p1 = iface.request_plan("goal-1", "ctx-a")
-    iface.revise_plan("goal-1", reason="x")  # p1 -> SUPERSEDED
+    p1 = _request(iface, "goal-1")
+    _revise(iface, "goal-1", reason="x")  # p1 -> SUPERSEDED
 
     raised = False
     try:
@@ -107,9 +190,9 @@ def test_invalidate_plan_rejects_already_superseded_or_deprecated():
 
 def test_registry_is_in_process_only_no_persistence():
     iface = _new_interface()
-    a = iface.request_plan("goal-a", "ctx-a")
-    b = iface.request_plan("goal-a", "ctx-b")
-    c = iface.request_plan("goal-b", "ctx-c")
+    a = _request(iface, "goal-a")
+    b = _request(iface, "goal-a")
+    c = _request(iface, "goal-b")
 
     # Single in-process registry (no DB / json / archive).
     assert isinstance(iface._registry, dict)
@@ -148,9 +231,9 @@ def test_terminal_states_have_no_outgoing_transition():
 def test_activate_plan_rejects_superseded_and_deprecated():
     """A discarded Plan is never revived (RFC-0106 V5 — recomputed, not restored)."""
     iface = _new_interface()
-    superseded = iface.request_plan("goal-1", "ctx-a")
-    iface.revise_plan("goal-1", reason="re-plan")  # -> SUPERSEDED
-    deprecated = iface.request_plan("goal-2", "ctx-b")
+    superseded = _request(iface, "goal-1")
+    _revise(iface, "goal-1", reason="re-plan")  # -> SUPERSEDED
+    deprecated = _request(iface, "goal-2")
     iface.invalidate_plan(deprecated.id, reason="goal cancelled")  # -> DEPRECATED
 
     for plan in (superseded, deprecated):
@@ -166,8 +249,8 @@ def test_activate_plan_rejects_superseded_and_deprecated():
 def test_revise_plan_supersedes_draft_prior_too():
     """§7 diagram: revise from `draft` supersedes it as well, not only from `active`."""
     iface = _new_interface()
-    p1 = iface.request_plan("goal-1", "ctx-a")  # stays DRAFT
-    p2 = iface.revise_plan("goal-1", reason="context change")
+    p1 = _request(iface, "goal-1")  # stays DRAFT
+    p2 = _revise(iface, "goal-1", reason="context change")
 
     assert iface.read_plan(p1.id).status is PlanStatus.SUPERSEDED
     assert p2.status is PlanStatus.DRAFT
@@ -176,12 +259,12 @@ def test_revise_plan_supersedes_draft_prior_too():
 def test_revise_plan_does_not_retransition_terminal_plans():
     """`superseded` and `deprecated` are distinct events — neither overwrites the other."""
     iface = _new_interface()
-    deprecated = iface.request_plan("goal-1", "ctx-a")
+    deprecated = _request(iface, "goal-1")
     iface.invalidate_plan(deprecated.id, reason="context stale")
-    already_superseded = iface.request_plan("goal-1", "ctx-b")
-    iface.revise_plan("goal-1", reason="first re-plan")  # supersedes `already_superseded`
+    already_superseded = _request(iface, "goal-1")
+    _revise(iface, "goal-1", reason="first re-plan")  # supersedes `already_superseded`
 
-    iface.revise_plan("goal-1", reason="second re-plan")
+    _revise(iface, "goal-1", reason="second re-plan")
 
     # The deprecated Plan was NOT flipped to superseded by a later revise.
     assert iface.read_plan(deprecated.id).status is PlanStatus.DEPRECATED
@@ -190,8 +273,8 @@ def test_revise_plan_does_not_retransition_terminal_plans():
 
 def test_revise_plan_never_supersedes_itself_or_other_goals():
     iface = _new_interface()
-    other = iface.request_plan("goal-2", "ctx-x")
-    new_plan = iface.revise_plan("goal-1", reason="no prior exists")
+    other = _request(iface, "goal-2")
+    new_plan = _revise(iface, "goal-1", reason="no prior exists")
 
     # Fresh successor stays DRAFT; a foreign Goal's Plan is untouched.
     assert new_plan.status is PlanStatus.DRAFT
@@ -201,7 +284,7 @@ def test_revise_plan_never_supersedes_itself_or_other_goals():
 def test_revise_plan_without_prior_is_permitted():
     """Post-crash the registry is empty (§8, transient) — re-planning is always allowed (G4)."""
     iface = _new_interface()
-    plan = iface.revise_plan("goal-never-seen", reason="crash recovery")
+    plan = _revise(iface, "goal-never-seen", reason="crash recovery")
     assert plan.status is PlanStatus.DRAFT
     assert iface.list_plans("goal-never-seen") == [plan]
 
@@ -209,10 +292,10 @@ def test_revise_plan_without_prior_is_permitted():
 def test_deprecated_plan_does_not_block_new_request_plan():
     """§7 table / G4: invalidation implies no replacement, not a ban on re-planning."""
     iface = _new_interface()
-    old = iface.request_plan("goal-1", "ctx-a")
+    old = _request(iface, "goal-1")
     iface.invalidate_plan(old.id, reason="goal cancelled")
 
-    fresh = iface.request_plan("goal-1", "ctx-b")
+    fresh = _request(iface, "goal-1")
     assert fresh.status is PlanStatus.DRAFT
     assert iface.activate_plan(fresh.id).status is PlanStatus.ACTIVE
     assert iface.read_plan(old.id).status is PlanStatus.DEPRECATED  # unchanged
@@ -221,17 +304,17 @@ def test_deprecated_plan_does_not_block_new_request_plan():
 def test_request_plan_does_not_transition_existing_plans():
     """Only `revise_plan` supersedes (§7); `request_plan` is additive by design."""
     iface = _new_interface()
-    first = iface.request_plan("goal-1", "ctx-a")
+    first = _request(iface, "goal-1")
     iface.activate_plan(first.id)
 
-    iface.request_plan("goal-1", "ctx-b")
+    _request(iface, "goal-1")
     assert iface.read_plan(first.id).status is PlanStatus.ACTIVE
 
 
 def test_rejected_transition_leaves_plan_untouched():
     """An invalid transition is never a partial one."""
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
     iface.activate_plan(plan.id)
     before = plan.status
 
@@ -245,7 +328,7 @@ def test_rejected_transition_leaves_plan_untouched():
 def test_read_and_list_are_read_only():
     """Consumption (§7.1) never transitions a Plan — Workflow discards, it does not move state."""
     iface = _new_interface()
-    plan = iface.request_plan("goal-1", "ctx-a")
+    plan = _request(iface, "goal-1")
     iface.activate_plan(plan.id)
 
     for _ in range(3):

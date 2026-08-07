@@ -18,11 +18,14 @@ exists) and ``deprecated`` (no replacement) are both **terminal**: a discarded P
 never re-transitioned and never restored (RFC-0106 V5).
 
 Slice scope. T2.1 established the interface skeleton + registry; T2.2 completes the §7
-lifecycle semantics. The actual Plan *construction* (resolving ``goal_ref``/
-``context_ref`` to Goal/Drive/Context and calling ``derive_plan``) is the runtime-wiring
-slice (T3) and is intentionally NOT performed here: ``request_plan``/``revise_plan``
-therefore produce a ``draft`` Plan shell carrying correct identity/version/source/
-status/created_at; population of ``task_graph``/etc. is deferred to T3.
+lifecycle semantics; T3.1 converges ``derive_plan``'s output to canonical ``Task``;
+T3.2 (this slice) wires the Plan *creation* path — ``request_plan`` and ``revise_plan`` —
+into the pure ``derive_plan`` so every emitted Plan carries a populated ``task_graph``
+(canonical RFC-0002 §5 ``Task`` list), not an empty shell. ``derive_plan`` stays the sole
+construction logic (pure, deterministic); the interface assigns only the construction
+boundary fields (``id``/``contract_version``/``goal_ref``/``source``/``status``/
+``created_at``) and owns every lifecycle transition. Runtime *consumption* of Plans
+(Execution / Workflow / RFC-0003) remains out of scope.
 
 Deferred (cross-boundary, deliberately NOT decided here):
 - Whether a Goal may hold more than one ``active`` Plan at a time. §7 states no
@@ -34,10 +37,20 @@ Deferred (cross-boundary, deliberately NOT decided here):
 from __future__ import annotations
 
 import uuid
+from dataclasses import replace
 from datetime import datetime, timezone
 
 from anima.constitution.errors import ConstitutionViolation
-from anima.constitution.state import PLAN_CONTRACT_VERSION, Plan, PlanSource, PlanStatus
+from anima.constitution.planner import derive_plan
+from anima.constitution.state import (
+    PLAN_CONTRACT_VERSION,
+    Drive,
+    Goal,
+    Plan,
+    PlanSource,
+    PlanStatus,
+    PlannerContext,
+)
 
 
 def _now_iso() -> str:
@@ -77,17 +90,15 @@ class PlanningInterface:
     """The Planning Authority's stable API surface (RFC-0002 §6).
 
     Owns Plan lifecycle transitions (§7) and the in-process Plan registry.
-    **Single-writer**: only this interface mutates Plan state (O1). The actual
-    Plan *construction* (``derive_plan``) is delegated to a constructor supplied by
-    the runtime (T3 wiring); for T2.1 the interface manages lifecycle + registry,
-    and ``request_plan``/``revise_plan`` emit a ``draft`` shell whose ``task_graph``
-    is populated later (T3). The optional ``planner`` is the M1.6 construction impl
-    (RFC-0002 §6: "the Planner is its implementation"); it is a documented seam for
-    T3 and is not invoked in this slice.
+    **Single-writer**: only this interface mutates Plan *state* (O1) — every status
+    transition funnels through ``_transition``. Plan *content* is constructed by the
+    pure ``derive_plan`` (RFC-0106 ``p``); the interface delegates to it for both
+    ``request_plan`` and ``revise_plan`` and assigns only the construction-boundary
+    identity fields. ``derive_plan`` is a function, not an authority: it writes no Plan
+    state and adds no lifecycle writer, so the single-writer rule is preserved.
     """
 
-    def __init__(self, planner: object | None = None) -> None:
-        self._planner = planner  # M1.6 construction impl (seam for T3); still unused at T2.2
+    def __init__(self) -> None:
         self._registry: dict[str, Plan] = {}  # in-process ONLY — never persisted (§8)
 
     # ---- single-writer enclosure (internal helpers) ----
@@ -134,18 +145,33 @@ class PlanningInterface:
         return plan
 
     # ---- §6 operations ----
-    def request_plan(self, goal_ref: str, context_ref: str) -> Plan:
-        """Produce a fresh Plan for an active Goal (RFC-0002 §6).
+    def request_plan(
+        self,
+        goal_ref: str,
+        *,
+        goal: Goal,
+        drive: Drive,
+        context: PlannerContext,
+    ) -> Plan:
+        """Produce a fresh, fully-populated Plan for an active Goal (RFC-0002 §6).
 
-        Creates a ``draft`` Plan carrying correct identity / version / source /
-        status / created_at / context_ref. Population of ``task_graph``/etc. is the
-        runtime-wiring slice (T3); until then the Plan is a ``draft`` shell, not yet
-        consumable by Workflow (it must be ``activate_plan``-ed first).
+        Delegates Plan *construction* to the pure ``derive_plan`` (RFC-0106 ``p``):
+        the resulting ``task_graph`` is the canonical RFC-0002 §5 ``Task`` list. The
+        Plan is a ready ``draft`` — consumable by Workflow once ``activate_plan``-ed —
+        not an empty shell.
+
+        Identity / version / source / status / created_at are assigned **here**, at the
+        construction boundary (deterministic uuid + timestamp), NOT by ``derive_plan``:
+        the pure function stays deterministic (same inputs ⇒ same Plan *content*); only
+        the registry key and audit timestamp vary per construction. ``context_ref`` is
+        derived deterministically inside ``derive_plan`` from the ``PlannerContext``, so
+        it is never a free-form caller string.
         """
-        plan = Plan(
+        derived = derive_plan(goal, drive, context)
+        plan = replace(
+            derived,
             id=uuid.uuid4().hex,
             goal_ref=goal_ref,
-            context_ref=context_ref,
             contract_version=PLAN_CONTRACT_VERSION,
             source=PlanSource.PLANNER,
             status=PlanStatus.DRAFT,
@@ -177,27 +203,38 @@ class PlanningInterface:
         """
         return self._require(plan_id)
 
-    def revise_plan(self, goal_ref: str, reason: str) -> Plan:
+    def revise_plan(
+        self,
+        goal_ref: str,
+        *,
+        goal: Goal,
+        drive: Drive,
+        context: PlannerContext,
+        reason: str,
+    ) -> Plan:
         """Produce a NEW Plan for the same Goal; supersede prior Plans (§7.1).
 
-        Lifecycle semantics (§7):
+        Lifecycle semantics (§7) are unchanged from T2.2:
 
-        - The replacement is constructed **first**; priors are superseded only once a
+        - The replacement is constructed **first** (now via ``derive_plan`` — a fully
+          populated draft, not an empty shell); priors are superseded only once a
           successor actually exists, so a failed construction can never leave a Goal with
           all Plans superseded and no replacement (``superseded`` *implies* a replacement).
         - Only ``draft``/``active`` priors move. Already-terminal Plans are skipped, never
           re-transitioned — a ``deprecated`` Plan stays ``deprecated``; supersede and
           invalidate are distinct lifecycle events and must not overwrite each other.
-        - The prior Plan is only *status*-transitioned and dropped; its content is never
-          mutated and never archived (RFC-0106 V5). The successor is a fresh Plan with a
-          new ``id`` — there is no ``Plan.restore()``.
+        - The prior Plan is only *status*-transitioned; its content is never mutated and
+          never archived (RFC-0106 V5). The successor is a fresh Plan with a new ``id`` —
+          there is no ``Plan.restore()``.
         - No prior Plan is not an error: after a crash the registry is empty (transient,
           §8) and re-planning is always permitted (G4).
 
         ``reason`` is accepted per the §6 contract for audit but is not persisted (§8).
         """
         # Construct the successor before touching any prior state (see docstring).
-        new_plan = Plan(
+        derived = derive_plan(goal, drive, context)
+        new_plan = replace(
+            derived,
             id=uuid.uuid4().hex,
             goal_ref=goal_ref,
             contract_version=PLAN_CONTRACT_VERSION,
