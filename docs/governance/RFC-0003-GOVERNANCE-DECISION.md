@@ -1,6 +1,6 @@
 # RFC-0003 Governance Approval Decision
 
-**Status:** REVIEW COMPLETE (r1) — awaiting human governance approval
+**Status:** APPROVED (Option A) — Implementation authorized, pending M0.4.x readiness gate (2026-08-07)
 **Branch:** `m0.5-roadmap`
 **r1 commit:** `d8622d9`
 **Independent Review commit:** `0e12256` (7 findings: F-01/F-02/F-03 Major; F-04/F-05/F-06/F-07 Minor)
@@ -134,6 +134,19 @@ applied; no Foundation Evolution is triggered; the design is internally consiste
 RFC (0004). Option B leaves a settled RFC unexercised; Option C is not justified by the review record.
 
 This is a recommendation, not an authorization. The decision is the human approver's.
+
+## 7. Approval (received)
+
+- **Decision:** **Option A — Approve RFC-0003 (r1) and authorize Implementation.**
+- **Approver:** governance reviewer (human), this session.
+- **Date:** 2026-08-07.
+- **Rationale (approver's):** all genuine Contract gaps raised by Independent Review are closed
+  (F-01..F-05 in r1); F-06/F-07 are conscious, principled defers (not gaps); no open structural issue
+  remains.
+- **Effect:** r1 becomes the frozen design baseline. Implementation may begin under the Roadmap / M0.4.x
+  Implementation Readiness discipline. No code is written before that gate (Roadmap §8, Principle 5).
+- **Corresponding template box:** `APPROVAL_RECORD_TEMPLATE.md` → Option A is the selected box. The blank
+  template is retained as the canonical form; this section records the received human decision.
 
 ---
 

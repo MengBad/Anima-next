@@ -1,6 +1,6 @@
 # RFC-0003: Workflow
 
-- **Status:** Draft r1 (governance cadence: Independent Review → r-revision → Decision Package → Human Approval → Implementation)
+- **Status:** Approved (Option A, 2026-08-07) — r1 is the frozen design baseline; Implementation authorized pending M0.4.x readiness gate (governance cadence: Independent Review → r-revision → Decision Package → Human Approval → Implementation)
 - **Date:** 2026-08-07
 - **Authors:** Anima engineering (drafted for governance review; per the M0.5 cadence, RFC-0003
   declares its own Infrastructure Workflow owner with semantic alignment to RFC-0106 — the same
