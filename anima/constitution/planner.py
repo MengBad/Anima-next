@@ -71,6 +71,7 @@ def derive_plan(goal: Goal, drive: Drive, context: PlannerContext) -> Plan:
         rollback=rollback,
         context_ref=context_ref,
         emphasis=emphasis,
+        drive_emphasis=emphasis,  # RFC-0002 §5 field (kept in sync with legacy `emphasis`; exact rename deferred)
         focus=round(focus, 3),
     )
 

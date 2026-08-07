@@ -185,6 +185,30 @@ class PlannerContext:
 # --------------------------------------------------------------------------
 # Plan — Transient-Derived, p(Goal, Drive, Context) (RFC-0106)
 # --------------------------------------------------------------------------
+class PlanSource(Enum):
+    """Origin of a Plan (RFC-0002 §5 `source`). Descriptive provenance only —
+    NOT an authority grant. The Planning Authority remains the sole writer
+    regardless of source (RFC-0002 §6 authority boundary)."""
+    PLANNER = "planner"
+    HUMAN = "human"
+    MEMORY = "memory"
+    EXTERNAL_API = "external_api"
+
+
+class PlanStatus(Enum):
+    """Runtime routing state of a Plan (RFC-0002 §5 `status` / §7).
+    Data-only enum; transition *behavior* is owned by the Planning Interface
+    (T2.1 / Slice 2) — not by this dataclass."""
+    DRAFT = "draft"
+    ACTIVE = "active"
+    SUPERSEDED = "superseded"
+    DEPRECATED = "deprecated"
+
+
+# Plan contract version (RFC-0002 §5 `contract_version`, semver of the PLAN CONTRACT).
+PLAN_CONTRACT_VERSION: str = "1.0.0"
+
+
 @dataclass
 class Plan:
     """The life's operational structure for reaching its committed Goal (RFC-0106).
@@ -203,6 +227,18 @@ class Plan:
     context_ref: str = ""           # deterministic ref of the Context read (audit only)
     emphasis: str = ""              # "approach" | "avoid" — Drive orientation, read-only influence
     focus: float = 0.0              # Drive focus, read-only influence
+
+    # --- RFC-0002 §5 canonical contract fields (Slice 1 / T1.1) ---
+    id: str = ""                    # unique per construction (assigned at activation, T2/T3); not a restore key
+    contract_version: str = PLAN_CONTRACT_VERSION  # semver of the PLAN CONTRACT (interface stability)
+    goal_ref: str = ""              # ref to the Goal this Plan serves (read-only; set at wiring T1.2/T3)
+    source: PlanSource = PlanSource.PLANNER  # origin-agnostic provenance (descriptive, not authority)
+    status: PlanStatus = PlanStatus.DRAFT    # RUNTIME routing state (§7); transitions owned by Planning Interface (Slice 2)
+    created_at: str = ""            # construction timestamp (assigned at construction, T2/T3); empty = not yet constructed
+    drive_emphasis: str = ""        # RFC-0002 §5 `drive_emphasis` — "approach" | "avoid", Drive orientation, read-only
+                                   #   (RFC-0002 §5 names the legacy `emphasis` field `drive_emphasis`; `emphasis` is
+                                   #   retained under its current name in T1.1 to avoid touching the out-of-scope runtime
+                                   #   consumer `execution.py`. Exact rename deferred — see slice report.)              # Drive focus, read-only influence
 
 
 # --------------------------------------------------------------------------
