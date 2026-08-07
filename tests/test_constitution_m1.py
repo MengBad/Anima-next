@@ -34,6 +34,7 @@ from anima.constitution.state import (
     PlannerContext,
     ReflectionResult,
     RelationshipProjection,
+    Task,
 )
 from anima.constitution.memory_engine import MemoryEngine
 
@@ -231,6 +232,52 @@ def test_drive_is_not_plan_decider():
     assert plan_a.goal_target == plan_v.goal_target == g.target
     assert plan_a.emphasis == "approach"
     assert plan_v.emphasis == "avoid"
+
+
+# --------------------------------------------------------------------------
+# T3.1 — derive_plan → canonical Task output convergence (RFC-0002 §5)
+# --------------------------------------------------------------------------
+def test_derive_plan_returns_canonical_tasks():
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    plan = derive_plan(g, d, c)
+    assert isinstance(plan.task_graph, list)
+    assert len(plan.task_graph) == 3
+    assert all(isinstance(t, Task) for t in plan.task_graph)  # list[dict] → list[Task]
+
+
+def test_derive_plan_task_mapping_is_explicit():
+    # Legacy (id, op, about) → RFC-0002 §5 (id, title, intent, capability_need,
+    # depends_on, estimates). Every field is asserted by name — no implicit **dict.
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    tasks = derive_plan(g, d, c).task_graph
+    assert [t.id for t in tasks] == ["t1", "t2", "t3"]
+    # title ← op (capitalized human-readable label)
+    assert [t.title for t in tasks] == ["Read", "Synthesize", "Present"]
+    # intent ← about (Goal target / success criterion)
+    assert tasks[0].intent == g.target
+    assert tasks[1].intent == g.success_criterion
+    assert tasks[2].intent == g.target
+    # legacy declared no capability need / no planner hints → honest empty maps
+    assert all(t.capability_need == {} for t in tasks)
+    assert all(t.estimates == {} for t in tasks)
+    # sequential ordering expressed as a DAG edge via depends_on
+    assert tasks[0].depends_on == []
+    assert tasks[1].depends_on == ["t1"]
+    assert tasks[2].depends_on == ["t2"]
+
+
+def test_derive_plan_task_ids_are_deterministic():
+    # Pure-function contract: same inputs ⇒ same task ids — NO uuid/time/random leak.
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    a = derive_plan(g, d, c).task_graph
+    b = derive_plan(g, d, c).task_graph
+    assert [t.id for t in a] == [t.id for t in b] == ["t1", "t2", "t3"]
+
+
+def test_derive_plan_ordering_stays_in_sync_with_task_graph():
+    g, d, c = _goal_for_plan(), _drive_for_plan(), _ctx_for_plan()
+    plan = derive_plan(g, d, c)
+    assert plan.ordering == [t.id for t in plan.task_graph]  # ["t1", "t2", "t3"]
 
 
 # --------------------------------------------------------------------------

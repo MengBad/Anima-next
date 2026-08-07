@@ -16,7 +16,7 @@ Context (situational snapshot) — and mutating NONE of them (RFC-0106 C1 / C2 /
 from __future__ import annotations
 
 from anima.constitution.errors import ConstitutionViolation
-from anima.constitution.state import Drive, Goal, OrientationAxis, Plan, PlannerContext
+from anima.constitution.state import Drive, Goal, OrientationAxis, Plan, PlannerContext, Task
 
 
 def derive_plan(goal: Goal, drive: Drive, context: PlannerContext) -> Plan:
@@ -31,13 +31,33 @@ def derive_plan(goal: Goal, drive: Drive, context: PlannerContext) -> Plan:
     avoid = float(drive.orientation.get(OrientationAxis.AVOID, 0.0))
     focus = float(drive.orientation.get(OrientationAxis.FOCUS, 0.0))
 
-    # Task graph: a minimal decomposition of the Goal (RFC-0106 §4.1).
-    task_graph = [
+    # Task graph: a minimal decomposition of the Goal (RFC-0106 §4.1), emitted as
+    # canonical RFC-0002 §5 ``Task`` objects. T3.1 replaces the legacy list-of-dicts:
+    # the mapping is EXPLICIT (every §5 field assigned by name — no ``Task(**dict)``
+    # unpacking) so field-level changes stay auditable. Legacy ``id`` is preserved as the
+    # deterministic planner-local task handle — NOT a uuid/time (the pure-function contract
+    # forbids nondeterminism); ``ordering`` is derived from the same handles so the graph
+    # stays coherent.
+    _legacy_tasks = [
         {"id": "t1", "op": "read", "about": goal.target},
         {"id": "t2", "op": "synthesize", "about": goal.success_criterion},
         {"id": "t3", "op": "present", "about": goal.target},
     ]
-    ordering = ["t1", "t2", "t3"]
+    task_graph: list[Task] = []
+    _prev_id: str | None = None
+    for _leg in _legacy_tasks:
+        task_graph.append(
+            Task(
+                id=_leg["id"],                      # deterministic planner-local handle (preserved from legacy)
+                title=_leg["op"].capitalize(),      # human-readable op label (RFC-0002 §5 `title`)
+                intent=_leg["about"],               # what this Task contributes toward the Goal (§5 `intent`)
+                capability_need={},                 # legacy declared no capability need → honest empty map (RFC-0001 owns resolution)
+                depends_on=[_prev_id] if _prev_id else [],  # sequential ordering as a DAG edge (§5 `depends_on`)
+                estimates={},                       # legacy provided no planner hints → empty (§5 `estimates`)
+            )
+        )
+        _prev_id = _leg["id"]
+    ordering = [task.id for task in task_graph]  # ["t1", "t2", "t3"] — derived, stays in sync with task_graph
 
     # Branching (Workflow shape): if a capability is unavailable, fall back.
     branching = {
