@@ -1,6 +1,6 @@
 # RFC-0002: Planning
 
-- **Status:** r1 (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
+- **Status:** Approved (Option A, 2026-08-07) — r1 is the frozen design baseline; Implementation authorized pending M0.4.x readiness gate (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
 - **Date:** 2026-08-07
 - **Authors:** Anima engineering (drafted for governance review; per reviewer ruling A2 — RFC-0002 Infrastructure Planning Authority owns the canonical Plan)
 - **Track:** Infrastructure (000x), consumes RFC-0001 (Capability Layer)
