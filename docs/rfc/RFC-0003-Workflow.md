@@ -1,6 +1,6 @@
 # RFC-0003: Workflow
 
-- **Status:** Draft v0 (governance cadence: Draft → Independent Review → r-revision → Decision Package → Human Approval → Implementation)
+- **Status:** Draft r1 (governance cadence: Independent Review → r-revision → Decision Package → Human Approval → Implementation)
 - **Date:** 2026-08-07
 - **Authors:** Anima engineering (drafted for governance review; per the M0.5 cadence, RFC-0003
   declares its own Infrastructure Workflow owner with semantic alignment to RFC-0106 — the same
@@ -215,7 +215,7 @@ executes a Plan" meaning.
 WorkflowRun:
   id:              uuid                      # unique per run (not a restore key)
   contract_version: 1.0.0                    # semver of the WORKFLOWRUN CONTRACT (interface stability)
-  plan_ref:        string                    # ref to the ACTIVE Plan this run executes (read-only)
+  plan_ref:        string                    # captured opaque handle {plan_id, Plan.contract_version} snapshotted at start_run; NOT a live FK to a stored Plan (§5.1 / F-02)
   goal_ref:        string                    # ref to the Goal (content source, read-only, for 0004/0005)
   status:          enum                      # pending | running | completed | suspended | failed | cancelled
                                              #   (RUN lifecycle, distinct from Plan lifecycle, §7)
@@ -258,6 +258,33 @@ change). It is independent of the Plan's `contract_version` (RFC-0002 §5). RFC-
 `contract_version` major; later RFC-0003 revisions bump the major only on a breaking change to this
 structure.
 
+### 5.1 Reference population & invariants (r1 — resolves F-01, F-02, F-05)
+
+**`plan_ref` is a captured opaque handle, not a live foreign key (F-02).** At run-creation
+(`start_run`), the Workflow Authority snapshots `plan_ref` as `{plan_id, Plan.contract_version}`
+taken from the *active* Plan. Per RFC-0106 §5.4 / §4 P1 the Plan is Transient-Derived and may be
+discarded after the run; therefore `plan_ref` is a **stable captured identity**, deliberately **not**
+a live pointer to a persisted Plan entity. On crash-resume (Example E3) a fresh Plan (new id) and a
+fresh run are created — `plan_ref` never implies referential integrity to a stored Plan.
+
+**Reference population rule (F-01).** `goal_ref` / `context_ref` / `budget_ref` are populated
+**at `start_run`**, derived deterministically — no separate interface operation is required:
+- `goal_ref` ← the canonical Goal id the executed Plan was planned for (the Plan's deriving Goal,
+  per RFC-0106 / RFC-0102 — Goal → Need → Plan chain).
+- `context_ref` ← the deterministic reference of the `ExecutionContext` used for this run (captured
+  at run-creation; audit trail).
+- `budget_ref` ← `ExecutionContext.budget` (a `ResourceBudget` ref) **if present**; otherwise `null`.
+All three are read-only thereafter. Downstream RFC-0004/0005 may rely on `goal_ref` being present on
+every run started from an active Plan.
+
+**Resume-anchor invariant (F-05).**
+- At most **one** `TaskState` has `status = running` at any time.
+- `current_task_id` references that `TaskState` (its `task_id`).
+- `current_task_id` is **non-null if and only if** run `status ∈ {running, suspended}`; it is `null`
+  in `pending` / `completed` / `failed` / `cancelled`.
+This keeps the resume anchor (`current_task_id`) synchronised with actual progress so crash-resume
+reconciles correctly (Example E3).
+
 ---
 
 ## 6. Workflow Interface
@@ -274,7 +301,12 @@ class WorkflowInterface:
         """
         Begin executing an ACTIVE Plan. This is the run-activation operation (Study GQ9).
         The Plan must be in `active` state (RFC-0002 activate_plan); a `draft` Plan is rejected.
-        Run starts in `pending`, transitions to `running` on first task dispatch.
+        A Plan with zero tasks is rejected (no run can enter `running` with nothing to execute;
+        this also prevents a 0-task Plan from orphaning in `pending`, F-03).
+        On success the run starts in `pending`, transitions to `running` on first task dispatch.
+        At run-creation the Authority snapshots `plan_ref` as an opaque handle {plan_id,
+        Plan.contract_version} (F-02) and derives `goal_ref` / `context_ref` / `budget_ref`
+        deterministically (F-01) — see §5.1.
         Only the Workflow Authority may start a run — it is the sole run-activator (§7.1).
         """
 
@@ -301,12 +333,23 @@ class WorkflowInterface:
         (terminal failure), but the state transition is the Authority's (§7.1).
         """
 
+    def abort_run(self, run_id: str, reason: str) -> WorkflowRun:
+        """
+        Authority abort BEFORE first task dispatch. Transitions pending → cancelled.
+        This is the terminal exit for the ENTRY state: a run may be aborted before any task runs
+        (process crash before dispatch, or an aborted request) — without it, `pending` could
+        orphan with no legal exit (resolves F-03). Only the Workflow Authority may abort;
+        Execution never calls this (it has not started reporting yet).
+        """
+
     def report_task_outcome(self, run_id: str, task_id: str, outcome: TaskState) -> WorkflowRun:
         """
         Execution reports a single Task's result. Execution does NOT transition the run's
         lifecycle state itself — it reports; the Workflow Authority decides the run transition
-        (running → completed when all tasks done; running → failed on terminal failure). This keeps
-        the single-writer rule: Execution is a reporter, the Workflow Authority is the writer.
+        (Authority transitions `running → completed` when every TaskState.status ∈ {done, skipped};
+        `running → failed` when a Task reports `failed` and no `branching`/`rollback`/retry path
+        remains — see §7 F-04 criterion). This keeps the single-writer rule: Execution is a
+        reporter, the Workflow Authority is the writer.
         """
 
     def list_runs(self, goal_ref: str) -> list[WorkflowRun]:
@@ -315,8 +358,8 @@ class WorkflowInterface:
 
 **Authority boundary (carries RFC-0106 §8 E4 / O1 forward).**
 - The Workflow Interface is the **only** writer of run-state.
-- `start_run` / `suspend_run` / `resume_run` / `cancel_run` are the only run-lifecycle-mutating
-  operations; all four are **Workflow-Authority-only**. `read_run` / `list_runs` are read-only.
+- `start_run` / `suspend_run` / `resume_run` / `cancel_run` / `abort_run` are the only run-lifecycle-mutating
+  operations; all five are **Workflow-Authority-only**. `read_run` / `list_runs` are read-only.
 - Execution (the per-step runner) **reports** outcomes via `report_task_outcome` but does **not**
   transition run lifecycle; it never calls `start_run` / `cancel_run` as a state owner.
 - The Planning Authority owns the Plan (RFC-0002); it does **not** write run-state. On run completion,
@@ -333,10 +376,15 @@ run, deliberately **distinct** from the Plan lifecycle (RFC-0002 §7) and **not*
 lifecycle (RFC-0106 §4 P1 — Workflow is Plan's runtime form, not a new Life state).
 
 ```
-            start_run (from an ACTIVE Plan)
+            start_run (from an ACTIVE Plan, non-empty)
                    │
                    ▼
               [ pending ] ──── first dispatch ────► [ running ]
+                   │
+              abort_run (before dispatch)
+                   │
+                   ▼
+              [ cancelled ]
                                                     │
                   ┌─────────────────────────────────┤
                   │                                 │
@@ -357,12 +405,21 @@ lifecycle (RFC-0106 §4 P1 — Workflow is Plan's runtime form, not a new Life s
 
 | State | Meaning | Alignment |
 |-------|---------|-----------|
-| `pending` | Run created, not yet dispatching first task. | Infra run-state; distinct from Plan `draft`. |
+| `pending` | Run created, not yet dispatching first task. | Infra run-state; distinct from Plan `draft`. May exit via `abort_run → cancelled` before dispatch (F-03). |
 | `running` | Actively executing tasks. | Consumes an `active` Plan; reads `task_graph`/`ordering`/`branching`/`rollback`. |
 | `suspended` | Paused with a checkpoint; resumable. | Run-state only; Plan is untouched (transient, RFC-0106). |
 | `completed` | All tasks done successfully. | Run ends; outcome → Planning Authority → Memory (RFC-0106 §5.4). |
 | `failed` | Terminal failure (not auto-retried at run level — retries are per-Task impl, §8 GQ5). | Re-plan is RFC-0002's `revise_plan`, not a run restore. |
 | `cancelled` | Aborted by Authority / Goal cancel. | Terminal; no restore (re-plan instead). |
+
+**Run-level completion / failure criterion (r1 — F-04).** The Workflow Authority applies a single
+rule when consuming `report_task_outcome`:
+- `running → completed` when **every** `TaskState.status ∈ {done, skipped}` (a `skipped` Task — e.g.
+  pruned by `branching` — counts as satisfactorily resolved).
+- `running → failed` when a Task reports `failed` **and** no `branching` / `rollback` / remaining-retry
+  path remains to continue the run. (Per-Task retry / `branching` recovery are implementation concerns,
+  §8 GQ5; the *run-level* criterion is what RFC-0003 fixes.)
+This removes the ambiguity an independent implementer would otherwise face (F-04).
 
 ### 7.1 Transition ownership (the lifecycle needs an owner)
 
@@ -371,7 +428,8 @@ run-states. The lifecycle has exactly one owner; no other Authority may move a r
 
 | Transition | Permitted actor | Notes |
 |------------|-----------------|-------|
-| `pending` → `running` (**start_run**) | **Workflow Authority only** | Run-activator (Study GQ9). Execution does not self-activate. |
+| `pending` → `running` (**start_run**) | **Workflow Authority only** | Run-activator (Study GQ9). Execution does not self-activate. Rejects a 0-task Plan (F-03). |
+| `pending` → `cancelled` (**abort_run**) | **Workflow Authority only** | Terminal exit for the entry state — abort before first dispatch (resolves F-03). |
 | `running` → `suspended` (**suspend_run**) | **Workflow Authority only** | Captures checkpoint if present. |
 | `suspended` → `running` (**resume_run**) | **Workflow Authority only** | Resumes from checkpoint / `current_task_id`. |
 | `running` → `completed` | **Workflow Authority only** (driven by `report_task_outcome`) | Execution reports; Authority decides completion. |
@@ -494,6 +552,28 @@ RFC-0003 is **consumable** by the next Infrastructure RFCs:
 This Draft proceeds: **Independent Review → r-revision → Decision Package → Human Approval →
 Implementation (if approved)**. No code is written before Approval (Roadmap §8, Principle 5).
 
+### 11.2 r1 — Independent Review disposition (F-01 … F-07)
+
+Independent Review (`docs/governance/M0.5-RFC-0003-REVIEW-REPORT.md`) raised 7 findings. Per the
+user adjudication (2026-08-07) the severity bar is: **"Would two independent implementers produce
+incompatible behaviour?" → Major; otherwise not.** The r1 revision applies the following:
+
+| ID | Severity | Disposition | Change in r1 |
+|----|----------|-------------|--------------|
+| F-01 | Major | **Accept** | §5.1 reference-population rule — `goal_ref`/`context_ref`/`budget_ref` derived deterministically at `start_run` (no orphan fields). |
+| F-02 | Major | **Accept** | §5.1 — `plan_ref` defined as a captured opaque handle `{plan_id, Plan.contract_version}`, explicitly **not** a live FK to a stored Plan. |
+| F-03 | Major | **Accept** | §6 `abort_run` (pending → cancelled) added; `start_run` rejects a 0-task Plan. Lifecycle closed at entry state. |
+| F-04 | Minor | **Accept** | §7 run-level completion/failure criterion stated explicitly (`{done,skipped}` → completed; unrecovered `failed` → failed). |
+| F-05 | Minor | **Accept** | §5.1 resume-anchor invariant — `current_task_id` ↔ single `running` TaskState; non-null iff `status ∈ {running, suspended}`. |
+| F-06 | Minor | **Defer** | `ExecutionResult.contract_version` NOT added. No evidence `ExecutionResult` evolves independently; adding it now would be speculative design. Revisit only if a real versioning need appears. |
+| F-07 | Minor | **Defer** | Per-Plan run concurrency NOT specified. It is a *policy* (allow / forbid / scheduler-managed), not a Workflow-contract requirement; out of scope for r1. |
+
+**Principle applied:** *Review only fills gaps, it does not expand capability.* F-06/F-07 are
+"might be needed later", not "contract cannot stand today" — therefore deferred, not absorbed. The
+five **Major/Minor accepts** are pure contract-text clarifications: no Foundation touch, no owner
+re-litigation, no new Life Authority. `contract_version` remains `1.0.0` (all r1 changes are additive
+/ non-breaking).
+
 ---
 
 ## 12. Appendix — governance trail
@@ -510,3 +590,8 @@ Implementation (if approved)**. No code is written before Approval (Roadmap §8,
   `Recon → Study → Study Review → Draft` (Decision Input as on-demand, not fixed step).
 - Canonical-owner note: RFC-0003 **Infrastructure Workflow Authority** owns the canonical
   Infrastructure Workflow contract, in semantic alignment with RFC-0106/0107 — not a redefinition.
+- **r1 (2026-08-07):** Independent Review complete (`M0.5-RFC-0003-REVIEW-REPORT.md`, 7 findings:
+  3 Major / 4 Minor). User adjudication accepted F-01–F-05 (contract-closure fixes), deferred F-06/F-07
+  (speculative-design / policy, not contract gaps). This r1 file reflects those five fixes. Next gate:
+  Decision Package → Human Approval (no second Independent Review expected unless r1 introduces a
+  structural gap).
