@@ -384,3 +384,105 @@ class RelationshipProjection:
     memory_ref: str = ""         # deterministic ref of the Memory.relations slice read (NOT a Memory handle)
     identity_ref: str = ""       # deterministic ref of the Identity read (NOT an Identity handle)
 
+
+# --------------------------------------------------------------------------
+# WorkflowRun — RFC-0003 §5 run-state vocabulary (Infrastructure Workflow Authority)
+# --------------------------------------------------------------------------
+class RunStatus(Enum):
+    """Lifecycle routing state of a WorkflowRun (RFC-0003 §5 `status` / §7).
+
+    Data-only enum; transition *behavior* is owned by the Workflow Interface (D2 slice) —
+    not by this dataclass. Mirrors the ``PlanStatus`` / ``ExecutionStatus`` vocabulary pattern
+    (RFC-0002 §5 / RFC-0107): the enumeration carries no writer.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    SUSPENDED = "suspended"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+class TaskRunStatus(Enum):
+    """Per-task execution state inside a WorkflowRun (RFC-0003 §5 `task_states[*].status`).
+
+    Data-only enum; resolution of the run-level F-04 completion/failure judgment is owned by
+    the Workflow Interface (D2/D4 slices), not by this dataclass.
+    """
+
+    PENDING = "pending"
+    RUNNING = "running"
+    DONE = "done"
+    FAILED = "failed"
+    SKIPPED = "skipped"
+
+
+# WorkflowRun contract version (RFC-0003 §5 `contract_version`, semver of the WORKFLOWRUN CONTRACT).
+WORKFLOWRUN_CONTRACT_VERSION: str = "1.0.0"
+
+
+@dataclass(frozen=True)
+class PlanRef:
+    """Opaque, immutable handle to a Plan — the *only* way a WorkflowRun references a Plan
+    (RFC-0003 §5 `plan_ref`, F-02).
+
+    It holds **no** Plan object, **no** task_graph, and grants **no** Plan storage or lifecycle
+    authority. The Plan stays transient and owned solely by the Planning Authority (RFC-0002);
+    the Workflow reads Plan content at ``start_run`` time via the Planning Interface (D3 slice)
+    and never holds it. Frozen to enforce opacity — a handle cannot be mutated into a live Plan
+    reference, and it cannot acquire a status writer.
+    """
+
+    plan_id: str = ""
+    contract_version: str = PLAN_CONTRACT_VERSION  # matches the referenced Plan's contract semver
+
+
+@dataclass
+class TaskState:
+    """The run-local state of a single Task within a WorkflowRun (RFC-0003 §5 `task_states[*]`).
+
+    Pure vocabulary: it records an outcome snapshot, it does not execute and it carries no status
+    writer. The Workflow Interface owns the *transition* of run/task state (D2/D4 slices); this
+    class only holds the recorded value. ``result`` / ``error`` are transient recorded payloads,
+    not stored Constitution state (RFC-0003 §4.1 G4).
+    """
+
+    task_id: str = ""                             # corresponds to a Task.id in the consumed Plan
+    status: TaskRunStatus = TaskRunStatus.PENDING
+    attempts: int = 0                             # retry count observed for this task
+    result: dict = field(default_factory=dict)    # recorded outcome payload (transient)
+    error: str = ""                               # recorded failure reason (transient)
+
+
+@dataclass
+class WorkflowRun:
+    """The Infrastructure Workflow Authority's run-state record for executing one Plan
+    (RFC-0003 §5). Vocabulary only — no setter, no storage authority, no Plan lifecycle writer.
+
+    The Workflow consumes a Plan **read-only** (RFC-0003 §1.2 / §4.1): it references the Plan
+    exclusively through the opaque ``plan_ref`` handle (F-02); it never stores the Plan object,
+    never mutates ``Plan.status`` (owned solely by the Planning Interface), and never persists the
+    Plan. ``task_states`` are derived snapshots of the consumed Plan's ``task_graph`` taken at
+    ``start_run`` time (D3 slice), not live references back into the Plan.
+
+    This dataclass is the *representation layer* only. The Workflow Interface (run-state single
+    writer, O1) and the ``start_run`` / ``report_task_outcome`` behavior belong to the D2/D3/D4
+    slices — explicitly out of scope for D1.
+    """
+
+    id: str = ""                                       # unique per construction; not a restore key
+    contract_version: str = WORKFLOWRUN_CONTRACT_VERSION  # semver of the WORKFLOWRUN CONTRACT
+    plan_ref: PlanRef = field(default_factory=PlanRef)    # opaque handle {plan_id, contract_version} (F-02)
+    goal_ref: str = ""                                 # ref to the Goal the consumed Plan serves (read-only)
+    status: RunStatus = RunStatus.PENDING              # RUNTIME routing state (§7); transitions owned by Workflow Interface (D2)
+    task_states: list = field(default_factory=list)    # list[TaskState] — derived run-local snapshots (not live Plan refs)
+    current_task_id: str = ""                          # TaskState in focus (empty iff status not in {running, suspended})
+    checkpoint_ref: str = ""                           # opaque ref to the latest recovery checkpoint (F-05)
+    retry_policy: dict = field(default_factory=dict)   # METADATA ONLY (policy hints; not an action)
+    schedule_ref: str = ""                             # opaque metadata ref (RFC-0003 §5)
+    budget_ref: str = ""                               # opaque metadata ref (RFC-0003 §5)
+    context_ref: str = ""                              # opaque metadata ref (RFC-0003 §5)
+    created_at: str = ""                               # construction timestamp (assigned at construction); empty = not yet constructed
+    completed_at: str = ""                             # terminal timestamp (assigned by Workflow Interface at D2); empty = still running
+

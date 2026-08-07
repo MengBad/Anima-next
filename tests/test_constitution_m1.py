@@ -36,10 +36,18 @@ from anima.constitution.state import (
     Perception,
     Persona,
     Plan,
+    PlanRef,
+    PlanStatus,
+    PLAN_CONTRACT_VERSION,
     PlannerContext,
     ReflectionResult,
     RelationshipProjection,
+    RunStatus,
     Task,
+    TaskRunStatus,
+    TaskState,
+    WorkflowRun,
+    WORKFLOWRUN_CONTRACT_VERSION,
 )
 from anima.constitution.memory_engine import MemoryEngine
 
@@ -391,6 +399,129 @@ def test_execute_plan_consumes_canonical_task_graph():
     result = execute_plan(plan, _ctx_for_exec())
     assert result.status == ExecutionStatus.SUCCESS
     assert "t1|t2|t3" in result.plan_ref  # carried task ids preserved via the adapter
+
+
+# --------------------------------------------------------------------------
+# Phase D1 — RFC-0003 WorkflowRun vocabulary (run-state contract, no behavior)
+# --------------------------------------------------------------------------
+def _plan_ref_for_run() -> PlanRef:
+    # Opaque handle only — never a Plan object (RFC-0003 §5 `plan_ref`, F-02).
+    return PlanRef(plan_id="plan#understand-X", contract_version=PLAN_CONTRACT_VERSION)
+
+
+def _workflow_run_for_test(plan: "Plan | None" = None) -> WorkflowRun:
+    # Build a WorkflowRun referencing a Plan ONLY through the opaque PlanRef handle (F-02).
+    # task_states are explicit run-local snapshots, never the Plan's live task_graph.
+    task_states = (
+        [TaskState(task_id=t.id, status=TaskRunStatus.PENDING) for t in plan.task_graph]
+        if plan is not None
+        else []
+    )
+    return WorkflowRun(
+        id="run-1",
+        plan_ref=_plan_ref_for_run(),
+        goal_ref="goal#understand-X",
+        task_states=task_states,
+    )
+
+
+def test_run_status_enum_is_complete():
+    # RFC-0003 §5: exactly the six run-level statuses (no extra, no missing).
+    assert {s.name for s in RunStatus} == {
+        "PENDING", "RUNNING", "SUSPENDED", "COMPLETED", "FAILED", "CANCELLED",
+    }
+
+
+def test_task_run_status_enum_is_complete():
+    # RFC-0003 §5: exactly the five per-task statuses.
+    assert {s.name for s in TaskRunStatus} == {
+        "PENDING", "RUNNING", "DONE", "FAILED", "SKIPPED",
+    }
+
+
+def test_workflow_run_can_be_constructed_independently():
+    # The run-state vocabulary stands on its own — no Plan object, no PlanningInterface needed.
+    run = WorkflowRun(id="run-1", plan_ref=PlanRef(plan_id="p1"))
+    assert isinstance(run, WorkflowRun)
+    assert run.id == "run-1"
+    assert run.status == RunStatus.PENDING
+    assert run.contract_version == WORKFLOWRUN_CONTRACT_VERSION
+    assert isinstance(run.plan_ref, PlanRef)
+
+
+def test_plan_ref_is_opaque_handle_not_plan_object():
+    # F-02: plan_ref holds only {plan_id, contract_version}; it never embeds a Plan or task_graph,
+    # and grants no Plan storage/lifecycle authority.
+    run = WorkflowRun(id="run-1", plan_ref=PlanRef(plan_id="plan#x", contract_version="1.0.0"))
+    assert isinstance(run.plan_ref, PlanRef)
+    assert run.plan_ref.plan_id == "plan#x"
+    assert run.plan_ref.contract_version == "1.0.0"
+    # opacity: a PlanRef exposes no Plan-shaped surface
+    assert not hasattr(run.plan_ref, "task_graph")
+    assert not hasattr(run.plan_ref, "status")
+    assert not hasattr(run.plan_ref, "save")
+    assert not hasattr(run.plan_ref, "persist")
+
+
+def test_workflow_run_does_not_hold_plan_instance():
+    # Constructing/holding a WorkflowRun must not pull a Plan object into the run-state. The Plan
+    # stays transient and PlanRef-only — never reachable as a live Plan from the run.
+    plan = _plan_for_exec()  # a real canonical Plan with a populated task_graph
+    run = _workflow_run_for_test(plan)
+    assert run.plan_ref.plan_id  # reference by opaque id only
+    assert not isinstance(run.plan_ref, Plan)
+    assert not hasattr(run, "plan")        # no live Plan handle
+    assert not hasattr(run, "task_graph")  # no embedded task_graph (F-02)
+    # task_states are independent snapshots, not the Plan's live task_graph
+    assert all(isinstance(s, TaskState) for s in run.task_states)
+
+
+def test_workflow_run_does_not_trigger_plan_lifecycle():
+    # Holding a WorkflowRun must not mutate the referenced Plan or introduce a Plan status writer.
+    # PlanningInterface remains the SOLE Plan lifecycle writer (RFC-0002 O1) — unchallenged here.
+    plan = _plan_for_exec()
+    plan.status = PlanStatus.ACTIVE  # emulate an active Plan the Workflow might consume
+    before = plan.status
+    run = _workflow_run_for_test(plan)
+    # constructing the run changes nothing about the Plan it references
+    assert plan.status == before == PlanStatus.ACTIVE
+    # WorkflowRun exposes no Plan lifecycle method (no second writer surface)
+    assert not hasattr(run, "activate_plan")
+    assert not hasattr(run, "invalidate_plan")
+    assert not hasattr(run, "revise_plan")
+    # WorkflowRun carries no status writer at all (data vocabulary only)
+    assert not hasattr(WorkflowRun, "transition")
+    assert not hasattr(WorkflowRun, "set_status")
+
+
+def test_workflow_run_is_transient_not_stored():
+    # No storage authority: WorkflowRun must not be persistable as a Constitution state (RFC-0003 §4.1 G4).
+    run = WorkflowRun(id="run-1", plan_ref=PlanRef(plan_id="p1"))
+    for forbidden in ("save", "persist", "restore", "archive", "load", "store"):
+        assert not hasattr(run, forbidden)
+    # F-02: the run references the Plan by opaque id, so persisting the run never persists the Plan
+    assert isinstance(run.plan_ref, PlanRef) and not isinstance(run.plan_ref, Plan)
+
+
+def test_workflow_run_rfc0003_field_coverage():
+    # Every RFC-0003 §5 field is present on WorkflowRun (and TaskState), with the right shape.
+    required_run_fields = {
+        "id", "contract_version", "plan_ref", "goal_ref", "status",
+        "task_states", "current_task_id", "checkpoint_ref", "retry_policy",
+        "schedule_ref", "budget_ref", "context_ref", "created_at", "completed_at",
+    }
+    assert required_run_fields.issubset(set(WorkflowRun.__dataclass_fields__.keys()))
+    # status is the RunStatus enum (data-only, no writer)
+    run = WorkflowRun(id="r", plan_ref=PlanRef(plan_id="p"))
+    assert isinstance(run.status, RunStatus)
+    assert isinstance(run.task_states, list)
+    assert isinstance(run.retry_policy, dict)  # metadata only
+
+    required_taskstate_fields = {"task_id", "status", "attempts", "result", "error"}
+    assert required_taskstate_fields.issubset(set(TaskState.__dataclass_fields__.keys()))
+    ts = TaskState(task_id="t1", status=TaskRunStatus.DONE, attempts=2, result={"ok": True}, error="")
+    assert ts.task_id == "t1" and ts.status == TaskRunStatus.DONE and ts.attempts == 2
+    assert ts.result == {"ok": True} and ts.error == ""
 
 
 # --------------------------------------------------------------------------
