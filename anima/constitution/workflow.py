@@ -14,7 +14,7 @@ Authority boundary (RFC-0003 §4.1 / §6):
 - It does NOT execute capabilities, does NOT write Memory (RFC-0004 territory), does NOT persist
   (persistence / recovery is a later slice, RFC-0003 §8 G4 — the registry here is in-process).
 
-Slice scope (D2 + D3 + D4 + D5). D2 established the authority *skeleton*; D3 opened the Plan
+Slice scope (D2 + D3 + D4 + D5 + D5b). D2 established the authority *skeleton*; D3 opened the Plan
 boundary; D4 closed the Execution boundary and the run's completion semantics; D5 closes the
 lifecycle itself:
 - The run registry (in-process dict) + the §7.1 run-state transition table (``_LEGAL_TRANSITIONS``)
@@ -53,16 +53,31 @@ lifecycle itself:
   unchanged, the verdict still lives in exactly one function, and ``_transition`` is still the
   one write site.
 
+- **D5b — Plan consumption invariant hardening (GAP-3, found in D5 analysis).** The D5 closure
+  exposed a consumption-boundary hole: a Plan whose ``task_graph`` carries a duplicate or empty
+  ``Task.id`` is consumed without complaint, but the resulting run can never satisfy F-04 — a
+  duplicate id yields two ``TaskState`` slots the second of which is unreachable (lookup resolves
+  to the first), and an empty id can be reported against by nothing. ``_validate_consumable_plan``
+  now rejects non-canonical ``Task.id`` values at the *same* boundary D3 built for
+  eligibility (``active`` status + non-empty ``task_graph``), and before any registry mutation.
+  This is a *Workflow consumption invariant* — the Workflow validates the Plan it consumes and
+  refuses a bad one, exactly as it refuses a ``draft``/empty one. It is **not** a Plan-schema
+  change (``state.py`` untouched), **not** a Planning-Authority responsibility
+  (the ``Planning Interface`` and ``derive_plan`` are untouched), and **not** a second ``Task`` model: the
+  Plan object is never written.
+
 Deferred (cross-boundary, deliberately NOT decided here):
 - The retry / branching / rollback engines behind F-04's second clause — this slice implements
   the *criterion* only (see ``_recovery_path_exists``), never a dispatcher.
 - ExecutionResult hand-back to the Planning Authority, and Execution runtime wiring (nothing here
   calls, or is called by, ``execution.py``) — a later slice.
-- Plan *canonicality* invariants at the consumption boundary — notably that ``Task.id`` is unique
-  within a ``task_graph``. A duplicate id yields two ``TaskState`` slots the second of which is
-  unreachable (lookup resolves to the first), so the run can never satisfy F-04. That is a
-  Planning→Workflow contract question, not a lifecycle one, and is left to a later slice;
-  ``start_run``'s gate here still checks only eligibility (``active``, non-empty), not canonicality.
+- ~~Plan *canonicality* invariants at the consumption boundary~~ — **resolved in D5b.**
+  ``Task.id`` must be unique and non-empty within a ``task_graph``; a duplicate id yields two
+  ``TaskState`` slots the second of which is unreachable (lookup resolves to the first), so the
+  run can never satisfy F-04. This is a *Workflow consumption invariant* (the Workflow refuses a
+  non-canonical Plan at ``start_run``), not a Plan-schema change, not a Planning-Authority duty,
+  and not a second ``Task`` model — ``state.py`` / the ``Planning Interface`` / ``derive_plan`` are all
+  untouched.
 - run-state persistence / recovery (§8 G4) — a later slice; the registry here is in-process only.
 - The Checkpoint primitive itself (§8 GQ4) is deferred to the Execution layer; ``suspend_run`` only
   records the resume anchor (``current_task_id``) as the opaque ``checkpoint_ref``.
@@ -291,21 +306,31 @@ class WorkflowInterface:
         run.status = target
         return run
 
-    def _assert_plan_consumable(self, plan: Plan) -> None:
-        """Read-only eligibility gate for the Plan a run is about to be started from (D3).
+    def _validate_consumable_plan(self, plan: Plan) -> None:
+        """Workflow consumption boundary (D3 eligibility + D5b canonicality).
 
-        Rejects — without touching the Plan — anything the Workflow may not consume:
+        Rejects — without touching the Plan — anything the Workflow may not consume. Two
+        gates, both applied **before any registry mutation**:
 
-        1. **Not ``active``** — ``draft`` is uncommitted; ``superseded``/``deprecated`` are
-           discarded and never revived (RFC-0106 V5). The Workflow never self-activates a Plan
-           (that is ``activate_plan``, the Planning Authority's transition): it *refuses*.
-        2. **Empty ``task_graph``** — a Plan with nothing to carry yields a run with no
-           reachable terminal state; there is no work whose outcome could ever complete it.
+        1. **Eligibility (D3, unchanged).** The Plan must be ``active`` (``draft`` is
+           uncommitted; ``superseded``/``deprecated`` are discarded and never revived,
+           RFC-0106 V5; the Workflow never self-activates — that is ``activate_plan``) and
+           carry a non-empty ``task_graph`` (a run with no work can never terminate).
+        2. **Canonicality (D5b).** Every ``Task.id`` must be **non-empty** and **unique**
+           within the ``task_graph``. A duplicate id yields two ``TaskState`` slots the
+           second of which is unreachable (lookup resolves to the first), so the run can
+           never satisfy F-04; an empty id can be reported against by nothing. The Workflow
+           *validates the Plan it consumes and refuses a non-canonical one* — it does not
+           repair the Plan or claim any Plan-writer authority. This is a **Workflow
+           consumption invariant**, not a Plan-schema change (``state.py`` untouched), not a
+           Planning-Authority responsibility (the ``Planning Interface`` and
+           ``derive_plan`` are untouched), and not a second ``Task`` model.
 
-        Refusal, not repair: an ineligible Plan raises ``ConstitutionViolation`` and no run is
-        created, no registry entry is left behind, and the Plan is returned unchanged. This is
-        the boundary's whole point — the Workflow may read a Plan to decide, never to fix it.
+        Refusal, not repair: a non-consumable Plan raises ``ConstitutionViolation`` and no
+        run is created, no registry entry is left behind, and the Plan is returned unchanged.
+        The Workflow may read a Plan to decide, never to fix it.
         """
+        # --- eligibility (D3) ---
         if plan.status not in _CONSUMABLE_PLAN_STATUS:
             allowed = "/".join(sorted(s.value.upper() for s in _CONSUMABLE_PLAN_STATUS))
             raise ConstitutionViolation(
@@ -317,6 +342,20 @@ class WorkflowInterface:
                 "start_run requires a Plan with a non-empty task_graph: "
                 "a run with no tasks can never reach a terminal state"
             )
+        # --- canonicality (D5b: Workflow consumption invariant) ---
+        seen: set[str] = set()
+        for task in plan.task_graph:
+            if not task.id:
+                raise ConstitutionViolation(
+                    "start_run requires every Task to have a non-empty id: "
+                    "a Task without an id cannot be tracked or reported against (F-04)"
+                )
+            if task.id in seen:
+                raise ConstitutionViolation(
+                    f"start_run requires unique Task.id values within a Plan; duplicate "
+                    f"{task.id!r} makes the run's task set unresolvable (F-04 can never be satisfied)"
+                )
+            seen.add(task.id)
 
     def _require_task_state(self, run: WorkflowRun, task_id: str) -> int:
         """Locate the run-local slot a report may write, or refuse it (D4).
@@ -434,9 +473,9 @@ class WorkflowInterface:
         path is exercised against a ``pending`` run held in the registry.
 
         Raises ``ConstitutionViolation`` if the Plan is not consumable (see
-        ``_assert_plan_consumable``); in that case no run is created.
+        ``_validate_consumable_plan``); in that case no run is created.
         """
-        self._assert_plan_consumable(plan)
+        self._validate_consumable_plan(plan)
         run = WorkflowRun(
             id=uuid.uuid4().hex,
             contract_version=WORKFLOWRUN_CONTRACT_VERSION,

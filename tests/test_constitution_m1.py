@@ -1391,6 +1391,175 @@ def test_terminal_run_still_refuses_resume():
 
 
 # --------------------------------------------------------------------------
+# Phase D5b — Plan consumption invariant hardening (GAP-3, RFC-0003 §6 start_run)
+#
+# D5's lifecycle closure exposed a consumption-boundary hole: a Plan whose task_graph
+# carries a duplicate or empty Task.id is consumed without complaint, but the resulting
+# run can never satisfy F-04 (a duplicate id yields an unreachable second TaskState slot;
+# an empty id can be reported against by nothing). The fix is a *Workflow consumption
+# invariant* — the same boundary D3 built for eligibility (active + non-empty task_graph)
+# now also rejects non-canonical Task.id values, before any registry mutation, with the
+# Plan object never written. It is NOT a Plan-schema change, NOT a Planning-Authority
+# duty, and NOT a second Task model.
+# --------------------------------------------------------------------------
+def test_start_run_rejects_a_plan_with_duplicate_task_ids():
+    """GAP-3 (D5b): a duplicate Task.id is rejected at the consumption boundary.
+
+    Refusal, not repair: the run is never created, the registry stays empty, and the
+    Plan object is returned unchanged (the Workflow may read it to decide, never to fix it).
+    """
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    dup = _active_plan_for_run(
+        tasks=[
+            Task(id="t1", title="Read", intent="understand X", depends_on=[]),
+            Task(id="t1", title="Read again", intent="understand X", depends_on=[]),
+        ]
+    )
+    with pytest.raises(ConstitutionViolation):
+        wf.start_run(dup)
+    assert wf._registry == {}               # no half-created run left behind
+    assert dup.status is PlanStatus.ACTIVE   # the Plan is untouched (refusal, not repair)
+    assert [t.id for t in dup.task_graph] == ["t1", "t1"]
+
+
+def test_start_run_rejects_a_plan_with_an_empty_task_id():
+    """GAP-3 (D5b): an empty Task.id is rejected — nothing can track or report against it."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    empty = _active_plan_for_run(
+        tasks=[
+            Task(id="", title="Read", intent="understand X", depends_on=[]),
+            Task(id="t2", title="Synthesize", intent="can explain X", depends_on=["t1"]),
+        ]
+    )
+    with pytest.raises(ConstitutionViolation):
+        wf.start_run(empty)
+    assert wf._registry == {}
+    assert empty.status is PlanStatus.ACTIVE
+
+
+def test_rejected_non_canonical_plan_leaves_no_registry_residue():
+    """D5b: a rejected Plan leaves the registry empty and does not corrupt later valid starts."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    dup = _active_plan_for_run(
+        tasks=[
+            Task(id="t1", title="Read", intent="understand X", depends_on=[]),
+            Task(id="t1", title="Read again", intent="understand X", depends_on=[]),
+        ]
+    )
+    with pytest.raises(ConstitutionViolation):
+        wf.start_run(dup)
+    assert wf._registry == {}  # no residue
+
+    # the same interface instance can still start a *valid* Plan afterwards — nothing lingered
+    good = wf.start_run(_active_plan_for_run(plan_id="plan#good"))
+    assert good.status is RunStatus.RUNNING
+    assert len(wf._registry) == 1
+
+
+def test_valid_plan_start_run_behavior_is_unchanged_by_d5b():
+    """D5b adds a gate; it must not change behavior for a canonical Plan.
+
+    A valid Plan (unique, non-empty Task ids) still produces a RUNNING run whose task_states
+    are derived snapshots in Plan order — exactly as before D5b.
+    """
+    wf = WorkflowInterface()
+    plan = _active_plan_for_run(
+        plan_id="plan#valid",
+        tasks=[
+            Task(id="t1", title="Read", intent="understand X", depends_on=[]),
+            Task(id="t2", title="Synthesize", intent="can explain X", depends_on=["t1"]),
+            Task(id="t3", title="Present", intent="understand X", depends_on=["t2"]),
+        ],
+    )
+    run = wf.start_run(plan)
+    assert run.status is RunStatus.RUNNING
+    assert [s.task_id for s in run.task_states] == ["t1", "t2", "t3"]
+    assert all(s.status is TaskRunStatus.PENDING for s in run.task_states)
+    assert run.plan_ref.plan_id == "plan#valid"
+    assert len(wf._registry) == 1
+
+
+def test_d5b_adds_no_plan_writer_or_lifecycle_authority():
+    """D5b hardens the boundary but must not acquire a Plan writer or second Task model.
+
+    That is the whole point of classifying GAP-3 as a *Workflow consumption invariant* rather
+    than a Planning-Authority / Plan-schema one: ``state.py`` and ``PlanningInterface`` stay the
+    sole Plan owners. Mechanically: workflow.py still assigns no ``plan.*`` and imports no
+    Planning surface; ``_validate_consumable_plan`` reads the Plan but writes nothing on it.
+    """
+    import ast
+    import inspect
+    import pathlib
+    import textwrap
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "anima" / "constitution" / "workflow.py"
+    ).read_text(encoding="utf-8")
+
+    # no Plan runtime-state writer anywhere in the Workflow Authority
+    assert "plan.status = " not in source
+    assert "plan.id = " not in source
+    # no Planning surface imported or invoked (the Plan arrives as an argument)
+    for token in ("planning_interface", "PlanningInterface", ".activate_plan(",
+                  ".invalidate_plan(", ".revise_plan(", ".request_plan("):
+        assert token not in source
+    # and no second Task model is introduced — Task is defined only in state.py
+    assert "class Task" not in source
+
+    # the new gate reads the Plan but assigns nothing on it (refusal, not repair)
+    fn = ast.parse(textwrap.dedent(inspect.getsource(WorkflowInterface._validate_consumable_plan))).body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if (isinstance(target, ast.Attribute)
+                        and isinstance(target.value, ast.Name)
+                        and target.value.id == "plan"):
+                    raise AssertionError(
+                        f"_validate_consumable_plan must not assign plan.{target.attr}"
+                    )
+
+
+def test_d5b_preserves_the_suspended_closure():
+    """D5b's gate sits before registry mutation and must not disturb the D5 resume closure.
+
+    A run whose last Task finished while suspended still resolves on resume — the
+    canonicality check is a pre-flight guard, orthogonal to the lifecycle.
+    """
+    wf = WorkflowInterface()
+    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
+    run = _suspended_run(wf, tasks=single)
+    wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+    assert wf.read_run(run.id).status is RunStatus.SUSPENDED  # D4 semantics intact
+    resumed = wf.resume_run(run.id)
+    assert resumed.status is RunStatus.COMPLETED             # D5 closure intact
+    assert resumed.completed_at != ""
+
+
+def test_legacy_workflow_ledger_is_unchanged_by_d5b():
+    """D5b adds no runtime wiring: the legacy engine still knows nothing of the Authority."""
+    legacy = _constitution_dir().parent / "core" / "workflows.py"
+    if not legacy.exists():  # pragma: no cover - layout guard
+        return
+    source = _executable_source(legacy)
+    for call in ("constitution.workflow", "WorkflowInterface", "report_task_outcome",
+                 "resume_run", "_judge_run_completion", "_validate_consumable_plan",
+                 "start_run"):
+        assert call not in source, f"legacy workflow engine must stay unwired: {call!r}"
+
+
+# --------------------------------------------------------------------------
 # M1.8 — Memory Ingestion Interface (RFC-0108)
 # --------------------------------------------------------------------------
 def _reflection_result_for_ingest() -> ReflectionResult:
