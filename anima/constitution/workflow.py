@@ -14,7 +14,8 @@ Authority boundary (RFC-0003 §4.1 / §6):
 - It does NOT execute capabilities, does NOT write Memory (RFC-0004 territory), does NOT persist
   (persistence / recovery is a later slice, RFC-0003 §8 G4 — the registry here is in-process).
 
-Slice scope (D2 + D3). D2 established the authority *skeleton*; D3 opened the Plan boundary:
+Slice scope (D2 + D3 + D4). D2 established the authority *skeleton*; D3 opened the Plan
+boundary; D4 closes the Execution boundary and the run's completion semantics:
 - The run registry (in-process dict) + the §7.1 run-state transition table (``_LEGAL_TRANSITIONS``)
   + the single private ``_transition`` funnel (the only write site for run status).
 - All eight RFC-0003 §6 operations implemented against the canonical state vocabulary from D1.
@@ -22,9 +23,7 @@ Slice scope (D2 + D3). D2 established the authority *skeleton*; D3 opened the Pl
   immediately transitions ``pending``→``running`` (RFC-0003 §7.1 "``pending`` → ``running``
   (start_run)"). A ``pending`` run may still be ``abort_run``-ed before any task dispatches
   (F-03 entry-state exit) — the abort path is exercised against a ``pending`` run held in the
-  registry. ``report_task_outcome`` records a Task's outcome but does NOT transition the run
-  (Execution reports, the Authority decides); F-04 completion/failure (``{done,skipped}``→
-  ``completed`` / unrecoverable ``failed``→``failed``) is the D4 slice, deliberately deferred.
+  registry.
 - **D3 — the Plan→run consumption boundary.** ``start_run`` takes the *resolved* canonical Plan
   (the caller dereferences the handle via the Planning Interface; the Workflow is given no standing
   pathway back into the Planning registry, so it can never re-read or re-resolve a Plan later).
@@ -33,10 +32,23 @@ Slice scope (D2 + D3). D2 established the authority *skeleton*; D3 opened the Pl
   adapter, populates the F-01 reference fields (``goal_ref`` / ``context_ref``) — and then **drops
   the Plan**. No Plan object, no ``task_graph``, and no live reference survives into the run: the
   Plan stays transient and single-writer-owned by the Planning Authority (RFC-0002 §8 / F-02).
+- **D4 — the Execution outcome boundary + F-04 completion semantics.** ``report_task_outcome``
+  is the *inbound* boundary for Execution, and it splits three responsibilities that D2 left
+  merged: Execution **reports**, the Authority **decides**, ``_transition`` **writes**. A report
+  is copied into the run's own ``TaskState`` (via the explicit ``outcome_to_task_state`` adapter,
+  so the reported object never becomes run-state) and then the Authority re-derives the F-04
+  verdict from the *whole* task set — ``_judge_run_completion`` is handed the run and nothing
+  else, so a report can never name a run outcome. ``report_task_outcome`` itself never calls
+  ``_transition``: an Execution consumer holding only that entry point cannot start, suspend,
+  resume, cancel or abort a run.
 
 Deferred (cross-boundary, deliberately NOT decided here):
-- F-04 run-completion / failure judgment, ExecutionResult hand-back to the Planning Authority —
-  D4 slice.
+- The retry / branching / rollback engines behind F-04's second clause — this slice implements
+  the *criterion* only (see ``_recovery_path_exists``), never a dispatcher.
+- ExecutionResult hand-back to the Planning Authority, and Execution runtime wiring (nothing here
+  calls, or is called by, ``execution.py``) — a later slice.
+- Re-deriving the F-04 verdict on ``resume_run`` (a Task that reports while the run is
+  ``suspended`` is recorded but not judged, §7) — a known gap, deliberately not widened here.
 - run-state persistence / recovery (§8 G4) — a later slice; the registry here is in-process only.
 - The Checkpoint primitive itself (§8 GQ4) is deferred to the Execution layer; ``suspend_run`` only
   records the resume anchor (``current_task_id``) as the opaque ``checkpoint_ref``.
@@ -119,11 +131,11 @@ _TERMINAL_STATES: frozenset[RunStatus] = frozenset(
 #: ``pending``→``running`` is owned by ``start_run`` (the sole run-activator, GQ9);
 #: ``pending``→``cancelled`` is the F-03 entry-state abort; running/suspended terminal
 #: exits go through ``cancel_run``; completion/failure (``completed``/``failed``) are
-#: reached only once D4 wires the F-04 judgment.
+#: reached only through the F-04 judgment (``_judge_run_completion``, D4).
 _LEGAL_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
     # pending --start_run (run-activator)--> running | --abort_run--> cancelled
     RunStatus.PENDING: frozenset({RunStatus.RUNNING, RunStatus.CANCELLED}),
-    # running --suspend_run--> suspended | --(F-04, D4)--> completed | --(F-04, D4)--> failed
+    # running --suspend_run--> suspended | --(F-04)--> completed | --(F-04)--> failed
     #          | --cancel_run--> cancelled
     RunStatus.RUNNING: frozenset(
         {RunStatus.SUSPENDED, RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED}
@@ -138,6 +150,68 @@ _LEGAL_TRANSITIONS: dict[RunStatus, frozenset[RunStatus]] = {
 }
 
 
+# ---------------------------------------------------------------------------
+# D4 — the Execution outcome boundary + F-04 completion semantics (RFC-0003 §6 / §7)
+# ---------------------------------------------------------------------------
+#: Task states that count as *satisfactorily resolved* for the F-04 completion criterion
+#: (RFC-0003 §7: "``running`` → ``completed`` when every ``TaskState.status`` is ``done`` or
+#: ``skipped``" — a skipped Task is a resolved Task, not an unfinished one). Encoded as data so
+#: the criterion lives in one auditable place rather than inside a conditional.
+_SATISFACTORILY_RESOLVED: frozenset[TaskRunStatus] = frozenset(
+    {TaskRunStatus.DONE, TaskRunStatus.SKIPPED}
+)
+
+#: Task states that END a Task's run-local life. A resolved Task's outcome is final: it is not
+#: re-opened by a second report — there is no retry / re-dispatch engine here (see
+#: ``_recovery_path_exists``), so accepting one would silently rewrite recorded history.
+_TERMINAL_TASK_STATES: frozenset[TaskRunStatus] = frozenset(
+    {TaskRunStatus.DONE, TaskRunStatus.FAILED, TaskRunStatus.SKIPPED}
+)
+
+
+def outcome_to_task_state(task_id: str, outcome: TaskState) -> TaskState:
+    """Explicit, auditable mapping: an Execution-reported outcome -> the run's own ``TaskState``.
+
+    The *inbound* mirror of ``plan_to_run_tasks``: the run's two intake boundaries (Planning at
+    ``start_run``, Execution at ``report_task_outcome``) each cross through one explicit adapter.
+    Every field is assigned by name — no ``TaskState(**outcome.__dict__)``, no ``vars(outcome)``,
+    no dict unpacking — so the conversion stays reviewable as the §5 contract evolves.
+
+    Two properties matter more than the copying itself:
+
+    1. **The reported object never becomes run-state.** A fresh ``TaskState`` is constructed and
+       the recorded payload is copied into a new dict, so the reporter keeps no live handle into
+       the run. Execution reports *values*; it does not get to hold — and later mutate — run-state
+       (RFC-0003 §6: only the Workflow Interface writes run-state).
+    2. **The slot's identity belongs to the Authority, not the reporter.** ``task_id`` is taken
+       from the run's own task set (the slot the caller already verified), never from the payload,
+       so a report can neither re-label a Task nor introduce one the consumed Plan never had.
+    """
+    return TaskState(
+        task_id=task_id,
+        status=outcome.status,
+        attempts=outcome.attempts,
+        result=dict(outcome.result),
+        error=outcome.error,
+    )
+
+
+def _recovery_path_exists(run: WorkflowRun, task_state: TaskState) -> bool:
+    """F-04's second clause: does a failed Task still have a way forward? (RFC-0003 §7)
+
+    The criterion is "``running`` → ``failed`` when a Task reports ``failed`` **and** no
+    branching / rollback / remaining-retry path remains". This slice implements the *criterion*,
+    not the engines: there is no branching evaluator, no rollback, and no retry dispatcher here,
+    so no recovery path can exist and a reported failure is unrecoverable by construction.
+
+    It is a named predicate rather than an inlined ``False`` so the deferred clause stays visible
+    and has exactly one place to grow when those engines arrive. Note ``WorkflowRun.retry_policy``
+    is METADATA ONLY (§5): reading it as an instruction would quietly turn this interface into a
+    retry engine, which it is not.
+    """
+    return False
+
+
 class WorkflowInterface:
     """The Infrastructure Workflow Authority's stable API surface (RFC-0003 §6).
 
@@ -146,9 +220,9 @@ class WorkflowInterface:
     transition funnels through ``_transition``. The run is the runtime form of a Plan
     (RFC-0003); this interface consumes the Plan read-only via the opaque ``plan_ref``
     handle and never writes Plan state. ``report_task_outcome`` records a Task's outcome
-    and never transitions the run (Execution reports, the Authority decides — F-04 is D4);
-    the Planning Authority retains ownership of the Plan, and Memory (RFC-0004) writes
-    Memory.
+    and then the Authority *itself* re-derives the F-04 verdict from the whole task set —
+    Execution reports, the Authority decides, ``_transition`` writes; the Planning Authority
+    retains ownership of the Plan, and Memory (RFC-0004) writes Memory.
     """
 
     def __init__(self) -> None:
@@ -224,6 +298,72 @@ class WorkflowInterface:
                 "a run with no tasks can never reach a terminal state"
             )
 
+    def _require_task_state(self, run: WorkflowRun, task_id: str) -> int:
+        """Locate the run-local slot a report may write, or refuse it (D4).
+
+        A run's task set is fixed at ``start_run`` from the consumed Plan's ``task_graph`` and
+        never grows: the Plan is gone (F-02) and the Workflow cannot invent Tasks. So an unknown
+        ``task_id`` is not an insert — it is a report about work this run does not own, and it is
+        refused rather than absorbed.
+
+        Returns the slot *index*, so the update replaces in place and the run's task order (which
+        mirrors the consumed ``task_graph`` order) survives every report.
+        """
+        for index, state in enumerate(run.task_states):
+            if state.task_id == task_id:
+                return index
+        known = ", ".join(sorted(s.task_id for s in run.task_states)) or "<none>"
+        raise ConstitutionViolation(
+            f"report_task_outcome: unknown task_id {task_id!r} for run {run.id!r}; "
+            f"a run's task set is fixed at start_run (known: {known})"
+        )
+
+    def _judge_run_completion(self, run: WorkflowRun) -> WorkflowRun:
+        """The Authority's F-04 verdict on a run — derived from run-state, never reported (D4).
+
+        Deliberately takes **only the run**: not the reported outcome, not the ``task_id``.
+        Execution cannot name a run outcome; it can only change one ``TaskState``, after which the
+        Authority re-derives the verdict from the *whole* task set. That asymmetry is the boundary
+        (RFC-0003 §6: Execution reports; only the Workflow Interface writes run-state).
+
+        The RFC-0003 §7 criterion, applied in order:
+
+        1. a Task is ``failed`` and no recovery path remains -> ``running`` → ``failed``
+        2. every Task is ``done`` or ``skipped``             -> ``running`` → ``completed``
+
+        Only a ``running`` run is judged. A ``suspended`` run is left alone on purpose: a straggler
+        report arriving after ``suspend_run`` records its outcome but must not resurrect the run's
+        lifecycle behind the Authority's back. Terminal runs never reach here — a report into one
+        is refused upstream. ``start_run`` guarantees a non-empty task set, so the "every Task"
+        test is never vacuously true.
+        """
+        if run.status is not RunStatus.RUNNING:
+            return run
+        if any(
+            state.status is TaskRunStatus.FAILED and not _recovery_path_exists(run, state)
+            for state in run.task_states
+        ):
+            return self._conclude(run, RunStatus.FAILED)
+        if all(state.status in _SATISFACTORILY_RESOLVED for state in run.task_states):
+            return self._conclude(run, RunStatus.COMPLETED)
+        return run
+
+    def _conclude(self, run: WorkflowRun, verdict: RunStatus) -> WorkflowRun:
+        """Carry an F-04 verdict out: the terminal transition plus its timestamp (D4).
+
+        The verdict is *decided* in ``_judge_run_completion`` and *written* by ``_transition`` —
+        this only carries it across, so both terminal exits (``completed`` / ``failed``) stamp
+        ``completed_at`` the same way ``cancel_run`` / ``abort_run`` do.
+        """
+        self._transition(
+            run,
+            verdict,
+            operation="report_task_outcome (F-04)",
+            permitted_from=(RunStatus.RUNNING,),
+        )
+        run.completed_at = _now_iso()
+        return run
+
     # ---- §6 operations ----
     def start_run(self, plan: Plan) -> WorkflowRun:
         """Create AND activate a run for an ACTIVE Plan (RFC-0003 §6/§7.1, F-01/F-02).
@@ -295,22 +435,44 @@ class WorkflowInterface:
     def report_task_outcome(
         self, run_id: str, task_id: str, outcome: TaskState
     ) -> WorkflowRun:
-        """Execution reports a single Task's result (RFC-0003 §6).
+        """Execution reports a single Task's result — the inbound boundary (RFC-0003 §6, D4).
 
-        The Workflow Authority (this interface) records the outcome; it does **NOT**
-        transition the run's lifecycle here — Execution reports, the Authority decides
-        (and the F-04 completion/failure judgment is the D4 slice). So in D2 a run's
-        status is unchanged by a report: a ``running`` run stays ``running`` (it was
-        already activated by ``start_run``), and ``pending``→``running`` is owned solely
-        by ``start_run`` (GQ9). The recorded ``TaskState`` is the run-local snapshot; since D3
-        seeds one ``pending`` ``TaskState`` per consumed Plan Task, a report *replaces* that
-        seeded entry rather than growing the list.
+        Three separated responsibilities, in order, of which this method owns only the first:
+
+        1. **record** — the reported outcome is copied into the run's own ``TaskState`` slot
+           (``outcome_to_task_state``); the reported object itself never becomes run-state. Since
+           D3 seeds one ``pending`` ``TaskState`` per consumed Plan Task, a report *replaces* that
+           seeded entry in place — the task set neither grows nor is reordered.
+        2. **decide** — the Authority re-derives the F-04 verdict from the whole task set
+           (``_judge_run_completion``, which is handed the run and nothing else).
+        3. **write** — any resulting lifecycle move goes through ``_transition``, the single
+           run-status write site (O1).
+
+        A report is therefore never a transition *request*: this method does not call
+        ``_transition``, and an Execution consumer holding only this entry point cannot start,
+        suspend, resume, cancel or abort a run. It is refused outright — leaving the run untouched,
+        never partially applied — when the run is already terminal (its record is closed; §7.1
+        gives a terminal run no outgoing transition), when ``task_id`` is not part of the run's
+        fixed task set, or when that Task is already resolved (a resolved outcome is final; this
+        slice has no re-open path).
         """
         run = self._require(run_id)
-        # Upsert the reported TaskState (run-state content, Authority-owned — not a status write).
-        others = [t for t in run.task_states if t.task_id != task_id]
-        run.task_states = others + [outcome]
-        return run
+        if run.status in _TERMINAL_STATES:
+            raise ConstitutionViolation(
+                f"report_task_outcome: run {run_id!r} is {run.status.value!r} (terminal); "
+                f"a concluded run's record is closed to further reports"
+            )
+        index = self._require_task_state(run, task_id)
+        recorded = run.task_states[index]
+        if recorded.status in _TERMINAL_TASK_STATES:
+            raise ConstitutionViolation(
+                f"report_task_outcome: task {task_id!r} of run {run_id!r} is already "
+                f"{recorded.status.value!r}; a resolved Task's outcome is final"
+            )
+        # Record (run-state content, Authority-owned — not a status write), then let the
+        # Authority judge. Execution's payload lands in a slot; it never lands on the run.
+        run.task_states[index] = outcome_to_task_state(task_id, outcome)
+        return self._judge_run_completion(run)
 
     def suspend_run(self, run_id: str, reason: str) -> WorkflowRun:
         """Pause a running run and capture the resume anchor (RFC-0003 §6/§7.1).
@@ -345,9 +507,11 @@ class WorkflowInterface:
     def cancel_run(self, run_id: str, reason: str) -> WorkflowRun:
         """Terminate a running/suspended run (user abort / Goal cancelled, RFC-0003 §6/§7.1).
 
-        Transitions ``running``/``suspended``→``cancelled`` (terminal). Only the Workflow
-        Authority may cancel; Execution may *request* cancellation via ``report_task_outcome``
-        (terminal failure) but the state transition is the Authority's (§7.1).
+        Transitions ``running``/``suspended``→``cancelled`` (terminal). ``cancelled`` is an
+        *external* termination — the work was called off, not attempted and lost. A Task-level
+        failure is a different verdict and takes a different route: the F-04 judgment terminates
+        the run as ``failed`` (D4). Only the Workflow Authority may cancel, and Execution — whose
+        only entry point is ``report_task_outcome`` — never reaches this operation (§7.1).
         """
         run = self._transition(
             self._require(run_id),

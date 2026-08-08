@@ -669,20 +669,16 @@ def test_terminal_states_have_no_outgoing_transition():
 
 
 def test_report_task_outcome_records_state_without_status_change():
-    # Execution reports; the run status is NOT changed by the report (F-04 transition is D4).
+    # Execution reports; a report is not itself a transition. With work still outstanding the
+    # run stays RUNNING — the F-04 verdict (D4) is the Authority's, derived from the whole set.
     wf = WorkflowInterface()
-    # single-Task Plan: D3 seeds one pending TaskState, so a report replaces it (no growth).
-    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
-    run = wf.start_run(_active_plan_for_run(plan_id="plan#x", tasks=single))
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#x"))  # 2-task Plan: t1, t2
     reported = wf.report_task_outcome(run.id, "t1", TaskState(task_id="t1", status=TaskRunStatus.DONE))
-    assert reported.status == RunStatus.RUNNING  # unchanged
-    assert len(reported.task_states) == 1
-    assert reported.task_states[0].task_id == "t1"
+    assert reported.status == RunStatus.RUNNING  # unchanged: t2 is still pending
+    # the seeded slot is replaced in place — the task set neither grows nor is reordered
+    assert [s.task_id for s in reported.task_states] == ["t1", "t2"]
     assert reported.task_states[0].status == TaskRunStatus.DONE
-    # a second report for the same task replaces (does not duplicate)
-    wf.report_task_outcome(run.id, "t1", TaskState(task_id="t1", status=TaskRunStatus.FAILED, error="boom"))
-    assert len(wf.read_run(run.id).task_states) == 1
-    assert wf.read_run(run.id).task_states[0].status == TaskRunStatus.FAILED
+    assert reported.task_states[1].status == TaskRunStatus.PENDING
 
 
 def test_read_run_and_list_runs_are_read_only():
@@ -876,6 +872,314 @@ def test_workflow_never_writes_plan_lifecycle_state():
     # and the Workflow Interface still carries no Plan-lifecycle surface at all
     for forbidden in ("activate_plan", "invalidate_plan", "revise_plan", "request_plan"):
         assert not hasattr(WorkflowInterface, forbidden)
+
+
+# --------------------------------------------------------------------------
+# Phase D4 — Execution outcome boundary + F-04 completion semantics (RFC-0003 §6/§7)
+# --------------------------------------------------------------------------
+def _executable_source(path) -> str:
+    """A module's *code*, with all prose (docstrings and comments) removed.
+
+    Boundary guards must assert about what a module DOES, not about what its documentation
+    mentions: a docstring that names a forbidden call in order to forbid it, or to record it as
+    deliberately deferred, is not a violation. Comments vanish for free — they never enter the AST.
+    """
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            if ast.get_docstring(node) is not None:
+                node.body = node.body[1:]
+    return ast.unparse(tree)
+
+
+def _running_run(wf: WorkflowInterface, plan_id="plan#x", tasks=None):
+    """A RUNNING run over the default 2-task Plan (t1, t2), via the real D3 consumption path."""
+    return wf.start_run(_active_plan_for_run(plan_id=plan_id, tasks=tasks))
+
+
+def _outcome(task_id, status, *, attempts=1, result=None, error=""):
+    return TaskState(
+        task_id=task_id,
+        status=status,
+        attempts=attempts,
+        result={} if result is None else result,
+        error=error,
+    )
+
+
+def test_report_task_outcome_updates_the_run_local_task_state():
+    """(1) The report lands in the run's own slot, whole: status, attempts, result, error."""
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    wf.report_task_outcome(
+        run.id, "t1", _outcome("t1", TaskRunStatus.DONE, attempts=2, result={"read": "X"})
+    )
+
+    recorded = wf.read_run(run.id).task_states[0]
+    assert recorded.task_id == "t1"
+    assert recorded.status == TaskRunStatus.DONE
+    assert recorded.attempts == 2
+    assert recorded.result == {"read": "X"}
+    assert recorded.error == ""
+    # the slot is replaced in place: no growth, no reordering of the consumed task_graph order
+    assert [s.task_id for s in wf.read_run(run.id).task_states] == ["t1", "t2"]
+
+
+def test_report_task_outcome_does_not_complete_the_run_by_itself():
+    """(2) A single report never concludes a run — the Authority judges the whole task set.
+
+    Mechanically: ``report_task_outcome`` does not call ``_transition`` at all; it delegates the
+    verdict, so the report path can never become the lifecycle transition owner.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    after = wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+    assert after.status == RunStatus.RUNNING  # t2 outstanding
+    assert after.completed_at == ""           # not concluded, so not stamped
+
+    body = ast.unparse(
+        ast.parse(textwrap.dedent(inspect.getsource(WorkflowInterface.report_task_outcome)))
+    )
+    assert "_transition(" not in body, "report_task_outcome must not own the transition"
+    assert "_judge_run_completion(" in body, "the verdict must be delegated to the Authority"
+
+
+def test_run_completes_when_every_task_is_done_or_skipped():
+    """(3) F-04 clause 2: every TaskState in {done, skipped} -> running -> completed."""
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+    concluded = wf.report_task_outcome(run.id, "t2", _outcome("t2", TaskRunStatus.SKIPPED))
+
+    assert concluded.status == RunStatus.COMPLETED  # a skipped Task is a resolved Task
+    assert concluded.completed_at != ""             # terminal timestamp stamped by the Authority
+
+
+def test_run_fails_when_a_task_reports_failure_with_no_recovery_path():
+    """(4) F-04 clause 1: a failed Task with no branching/rollback/retry path -> failed.
+
+    The run fails immediately even though t2 never reported: this slice implements the criterion,
+    and ``_recovery_path_exists`` is False by construction (no engines here).
+    """
+    from anima.constitution.workflow import _recovery_path_exists
+
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    concluded = wf.report_task_outcome(
+        run.id, "t1", _outcome("t1", TaskRunStatus.FAILED, error="boom")
+    )
+
+    assert concluded.status == RunStatus.FAILED
+    assert concluded.completed_at != ""
+    assert concluded.task_states[1].status == TaskRunStatus.PENDING  # t2 never reported
+    assert _recovery_path_exists(concluded, concluded.task_states[0]) is False
+    # retry_policy stays metadata — the interface exposes no retry/dispatch surface
+    assert concluded.retry_policy == {}
+    for forbidden in ("retry", "retry_task", "dispatch", "execute", "run_task"):
+        assert not hasattr(WorkflowInterface, forbidden)
+
+
+def test_f04_verdict_is_derived_from_run_state_not_from_the_report():
+    """(5) The Authority's judgment is handed the run and nothing else.
+
+    If the verdict could read the reported payload, Execution would be naming run outcomes. The
+    signature is the boundary: ``_judge_run_completion(self, run)`` — no outcome, no task_id.
+    """
+    import inspect
+
+    params = list(inspect.signature(WorkflowInterface._judge_run_completion).parameters)
+    assert params == ["self", "run"]
+
+    # and a report claiming success cannot conclude a run whose other work is outstanding
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    wf.report_task_outcome(
+        run.id, "t1", _outcome("t1", TaskRunStatus.DONE, result={"claim": "all done"})
+    )
+    assert wf.read_run(run.id).status == RunStatus.RUNNING
+
+
+def test_report_task_outcome_rejects_an_unknown_task_id():
+    """(6) A run's task set is fixed at start_run — an unknown task_id is refused, not inserted."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    with pytest.raises(ConstitutionViolation):
+        wf.report_task_outcome(run.id, "t99", _outcome("t99", TaskRunStatus.DONE))
+
+    # refusal, not repair: nothing recorded, nothing transitioned
+    assert [s.task_id for s in wf.read_run(run.id).task_states] == ["t1", "t2"]
+    assert all(s.status == TaskRunStatus.PENDING for s in wf.read_run(run.id).task_states)
+    assert wf.read_run(run.id).status == RunStatus.RUNNING
+
+
+def test_report_task_outcome_rejects_overwriting_a_resolved_task():
+    """(7) A resolved Task's outcome is final — a duplicate report cannot rewrite history."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE, result={"v": 1}))
+
+    with pytest.raises(ConstitutionViolation):
+        wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.FAILED, error="boom"))
+
+    recorded = wf.read_run(run.id).task_states[0]
+    assert recorded.status == TaskRunStatus.DONE and recorded.result == {"v": 1}
+    assert wf.read_run(run.id).status == RunStatus.RUNNING  # and no lifecycle side effect
+
+    # a still-open Task, by contrast, may be updated (pending -> running -> done)
+    wf.report_task_outcome(run.id, "t2", _outcome("t2", TaskRunStatus.RUNNING))
+    assert wf.read_run(run.id).task_states[1].status == TaskRunStatus.RUNNING
+    assert wf.read_run(run.id).status == RunStatus.RUNNING
+
+
+def test_report_task_outcome_is_refused_by_a_terminal_run():
+    """(8) A concluded run's record is closed: §7.1 gives a terminal run no outgoing transition."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.FAILED, error="boom"))
+    assert run.status == RunStatus.FAILED
+
+    with pytest.raises(ConstitutionViolation):
+        wf.report_task_outcome(run.id, "t2", _outcome("t2", TaskRunStatus.DONE))
+    assert wf.read_run(run.id).task_states[1].status == TaskRunStatus.PENDING
+    assert wf.read_run(run.id).status == RunStatus.FAILED
+
+    # same for an externally cancelled run
+    other = _running_run(wf, plan_id="plan#y")
+    wf.cancel_run(other.id, "user abort")
+    with pytest.raises(ConstitutionViolation):
+        wf.report_task_outcome(other.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+
+
+def test_reported_outcome_object_never_becomes_run_state():
+    """(9) Execution reports values, not handles: it keeps no live reference into the run."""
+    wf = WorkflowInterface()
+    run = _running_run(wf)
+    payload = _outcome("t1", TaskRunStatus.DONE, result={"read": "X"})
+    wf.report_task_outcome(run.id, "t1", payload)
+
+    recorded = wf.read_run(run.id).task_states[0]
+    assert recorded is not payload
+    assert recorded.result is not payload.result
+    # mutating the reported object afterwards must not reach into run-state
+    payload.status = TaskRunStatus.FAILED
+    payload.result["read"] = "tampered"
+    assert recorded.status == TaskRunStatus.DONE
+    assert recorded.result == {"read": "X"}
+
+
+def test_report_on_a_suspended_run_records_without_a_verdict():
+    """A straggler report after suspend_run is recorded, but must not resurrect the lifecycle."""
+    wf = WorkflowInterface()
+    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
+    run = _running_run(wf, tasks=single)
+    wf.suspend_run(run.id, "pause")
+
+    after = wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+    assert after.task_states[0].status == TaskRunStatus.DONE  # recorded
+    assert after.status == RunStatus.SUSPENDED                # but not judged (F-04 is running-only)
+    assert after.completed_at == ""
+
+
+def test_outcome_to_task_state_is_an_explicit_field_mapping():
+    """The Execution -> run-state adapter maps by name only — no implicit unpacking, no aliasing."""
+    import ast
+    import inspect
+    import textwrap
+
+    from anima.constitution.workflow import outcome_to_task_state
+
+    payload = _outcome("reported-id", TaskRunStatus.DONE, attempts=3, result={"k": "v"}, error="")
+    state = outcome_to_task_state("t1", payload)
+
+    assert isinstance(state, TaskState) and state is not payload
+    # the slot identity is the Authority's, never the payload's — a report cannot re-label a Task
+    assert state.task_id == "t1"
+    assert (state.status, state.attempts, state.result, state.error) == (
+        TaskRunStatus.DONE, 3, {"k": "v"}, "",
+    )
+
+    fn = ast.parse(textwrap.dedent(inspect.getsource(outcome_to_task_state))).body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]
+    code = ast.unparse(fn)
+    for forbidden in ("__dict__", "vars(", "**"):
+        assert forbidden not in code, f"adapter must map fields explicitly, found {forbidden!r}"
+
+
+def test_execution_and_workflow_authorities_stay_isolated():
+    """Boundary: Execution cannot drive a run's lifecycle, and Workflow cannot execute a Plan.
+
+    Proven at the source level rather than by convention — D4 adds an inbound *report* boundary,
+    not a runtime wiring: neither module imports or calls the other.
+    """
+    import pathlib
+
+    constitution = pathlib.Path(__file__).resolve().parents[1] / "anima" / "constitution"
+    workflow_src = _executable_source(constitution / "workflow.py")
+    execution_src = _executable_source(constitution / "execution.py")
+
+    # Execution holds no run-lifecycle surface: it cannot start/suspend/resume/cancel/abort a run
+    for call in ("start_run", "suspend_run", "resume_run", "cancel_run", "abort_run",
+                 "WorkflowInterface", "constitution.workflow"):
+        assert call not in execution_src, f"Execution must not reach run-state: {call!r}"
+
+    # and the Workflow never executes: no capability dispatch, no Plan execution, no result import
+    for call in ("execute_plan", "ExecutionResult", "constitution.execution"):
+        assert call not in workflow_src, f"Workflow must not execute: {call!r}"
+
+
+def test_f04_conclusion_leaves_the_consumed_plan_untouched():
+    """Concluding a run is a run-state event only: the Plan's lifecycle stays Planning-owned."""
+    import copy
+
+    from anima.constitution.planning_interface import PlanningInterface
+
+    planning = PlanningInterface()
+    plan = planning.request_plan(
+        "goal#understand-X",
+        goal=_goal_for_plan(),
+        drive=_drive_for_plan(),
+        context=_ctx_for_plan(),
+    )
+    planning.activate_plan(plan.id)
+    before = copy.deepcopy(plan)
+
+    wf = WorkflowInterface()
+    run = wf.start_run(plan)
+    for task in plan.task_graph:
+        wf.report_task_outcome(run.id, task.id, _outcome(task.id, TaskRunStatus.DONE))
+
+    assert run.status == RunStatus.COMPLETED
+    assert plan == before                     # whole-object equality across the full run
+    assert plan.status is PlanStatus.ACTIVE   # a completed run does not retire its Plan
+    assert planning.read_plan(plan.id).status is PlanStatus.ACTIVE
+
+
+def test_legacy_core_workflow_module_is_not_wired_to_the_constitution():
+    """No runtime wiring in this slice: the legacy engine and the Authority stay disconnected."""
+    import pathlib
+
+    legacy = pathlib.Path(__file__).resolve().parents[1] / "anima" / "core" / "workflows.py"
+    if not legacy.exists():  # pragma: no cover - layout guard
+        return
+    source = _executable_source(legacy)
+    for call in ("constitution.workflow", "WorkflowInterface", "report_task_outcome"):
+        assert call not in source, f"legacy workflow engine must stay unwired: {call!r}"
 
 
 # --------------------------------------------------------------------------
