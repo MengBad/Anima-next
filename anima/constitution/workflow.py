@@ -14,8 +14,9 @@ Authority boundary (RFC-0003 §4.1 / §6):
 - It does NOT execute capabilities, does NOT write Memory (RFC-0004 territory), does NOT persist
   (persistence / recovery is a later slice, RFC-0003 §8 G4 — the registry here is in-process).
 
-Slice scope (D2 + D3 + D4). D2 established the authority *skeleton*; D3 opened the Plan
-boundary; D4 closes the Execution boundary and the run's completion semantics:
+Slice scope (D2 + D3 + D4 + D5). D2 established the authority *skeleton*; D3 opened the Plan
+boundary; D4 closed the Execution boundary and the run's completion semantics; D5 closes the
+lifecycle itself:
 - The run registry (in-process dict) + the §7.1 run-state transition table (``_LEGAL_TRANSITIONS``)
   + the single private ``_transition`` funnel (the only write site for run status).
 - All eight RFC-0003 §6 operations implemented against the canonical state vocabulary from D1.
@@ -41,14 +42,27 @@ boundary; D4 closes the Execution boundary and the run's completion semantics:
   else, so a report can never name a run outcome. ``report_task_outcome`` itself never calls
   ``_transition``: an Execution consumer holding only that entry point cannot start, suspend,
   resume, cancel or abort a run.
+- **D5 — lifecycle closure.** F-04 is stated over ``running``, so outcomes reported while a run
+  is ``suspended`` are recorded but not judged (D4, deliberate). That left the machine open:
+  after ``resume_run`` nobody re-asked the question, so a run whose last Task finished during the
+  pause returned to ``running`` with no event left that could ever conclude it. ``resume_run``
+  now re-asks the same ``_judge_run_completion`` once the run is judgeable again. No transition
+  and no authority is added — the run moves ``suspended``→``running`` (this operation's own §7.1
+  edge) and only then, if the verdict says so, ``running``→``completed``/``failed`` (F-04's own
+  edge). It never jumps from ``suspended`` to a terminal state; ``_LEGAL_TRANSITIONS`` is
+  unchanged, the verdict still lives in exactly one function, and ``_transition`` is still the
+  one write site.
 
 Deferred (cross-boundary, deliberately NOT decided here):
 - The retry / branching / rollback engines behind F-04's second clause — this slice implements
   the *criterion* only (see ``_recovery_path_exists``), never a dispatcher.
 - ExecutionResult hand-back to the Planning Authority, and Execution runtime wiring (nothing here
   calls, or is called by, ``execution.py``) — a later slice.
-- Re-deriving the F-04 verdict on ``resume_run`` (a Task that reports while the run is
-  ``suspended`` is recorded but not judged, §7) — a known gap, deliberately not widened here.
+- Plan *canonicality* invariants at the consumption boundary — notably that ``Task.id`` is unique
+  within a ``task_graph``. A duplicate id yields two ``TaskState`` slots the second of which is
+  unreachable (lookup resolves to the first), so the run can never satisfy F-04. That is a
+  Planning→Workflow contract question, not a lifecycle one, and is left to a later slice;
+  ``start_run``'s gate here still checks only eligibility (``active``, non-empty), not canonicality.
 - run-state persistence / recovery (§8 G4) — a later slice; the registry here is in-process only.
 - The Checkpoint primitive itself (§8 GQ4) is deferred to the Execution layer; ``suspend_run`` only
   records the resume anchor (``current_task_id``) as the opaque ``checkpoint_ref``.
@@ -196,6 +210,12 @@ def outcome_to_task_state(task_id: str, outcome: TaskState) -> TaskState:
     )
 
 
+#: Audit label for the terminal transition an F-04 verdict produces (D5). Names the *judgment*,
+#: not whichever occasion asked for it — since D5 both ``report_task_outcome`` and ``resume_run``
+#: ask, and one verdict reached two ways is still one verdict.
+_F04_JUDGMENT = "F-04 judgment (RFC-0003 §7)"
+
+
 def _recovery_path_exists(run: WorkflowRun, task_state: TaskState) -> bool:
     """F-04's second clause: does a failed Task still have a way forward? (RFC-0003 §7)
 
@@ -336,6 +356,13 @@ class WorkflowInterface:
         lifecycle behind the Authority's back. Terminal runs never reach here — a report into one
         is refused upstream. ``start_run`` guarantees a non-empty task set, so the "every Task"
         test is never vacuously true.
+
+        Because the judgment is skipped while ``suspended``, it must be re-run when the run
+        becomes judgeable again — otherwise a run whose last outcome arrived during the pause is
+        never judged at all (the D5 closure gap). Hence two occasions call this: a Task reporting
+        (D4) and ``resume_run`` (D5). Both hand over the same thing — the run — and get the same
+        verdict function; there is no second judgment, only a second moment at which the one
+        judgment is asked.
         """
         if run.status is not RunStatus.RUNNING:
             return run
@@ -343,22 +370,37 @@ class WorkflowInterface:
             state.status is TaskRunStatus.FAILED and not _recovery_path_exists(run, state)
             for state in run.task_states
         ):
-            return self._conclude(run, RunStatus.FAILED)
+            return self._conclude(run, RunStatus.FAILED, operation=_F04_JUDGMENT)
         if all(state.status in _SATISFACTORILY_RESOLVED for state in run.task_states):
-            return self._conclude(run, RunStatus.COMPLETED)
+            return self._conclude(run, RunStatus.COMPLETED, operation=_F04_JUDGMENT)
         return run
 
-    def _conclude(self, run: WorkflowRun, verdict: RunStatus) -> WorkflowRun:
+    def _conclude(
+        self, run: WorkflowRun, verdict: RunStatus, *, operation: str
+    ) -> WorkflowRun:
         """Carry an F-04 verdict out: the terminal transition plus its timestamp (D4).
 
         The verdict is *decided* in ``_judge_run_completion`` and *written* by ``_transition`` —
         this only carries it across, so both terminal exits (``completed`` / ``failed``) stamp
         ``completed_at`` the same way ``cancel_run`` / ``abort_run`` do.
+
+        ``operation`` is the audit label ``_transition`` puts in its refusal message, supplied by
+        the caller rather than hard-coded here (D5). It is a label, never a second decision: the
+        verdict is always the judgment's, and ``permitted_from`` stays pinned to ``running``
+        whatever the caller passes — this remains a pass-through to the single write funnel.
+
+        The label is deliberately occasion-*neutral*. Since D5 the judgment has two occasions —
+        a Task reporting (D4) and a run resuming (D5) — but it is one verdict, over one task set,
+        by one Authority; ``"report_task_outcome (F-04)"`` was accurate only while the first
+        occasion was the only one. Naming the *judgment* rather than its trigger keeps the trail
+        true for both without threading a caller identity through
+        ``_judge_run_completion(self, run)``, whose signature is itself the D4 boundary (the
+        judgment is handed the run and nothing else).
         """
         self._transition(
             run,
             verdict,
-            operation="report_task_outcome (F-04)",
+            operation=operation,
             permitted_from=(RunStatus.RUNNING,),
         )
         run.completed_at = _now_iso()
@@ -496,13 +538,31 @@ class WorkflowInterface:
         """Continue a suspended run from its checkpoint / current_task_id (RFC-0003 §6/§7.1).
 
         Transitions ``suspended``→``running``. Only the Workflow Authority may resume.
+
+        **Then it re-asks the F-04 judgment (D5 — lifecycle closure).** Outcomes reported while
+        the run was ``suspended`` are recorded but deliberately not judged (F-04 is stated over
+        ``running``, and a straggler must not move the lifecycle behind the Authority's back).
+        Resuming is the moment that backlog becomes judgeable — and the only such moment, because
+        the *other* occasion, a Task reporting, is unreachable for work that already resolved
+        during the pause. Without this the state machine does not close: a run whose last Task
+        finished while suspended would return to ``running`` with nothing left that could ever
+        conclude it, and sit there permanently — semantically over, structurally unfinished.
+
+        This adds no transition and no authority. ``suspended``→``running`` is this operation's
+        own §7.1 edge; any terminal move that follows is ``running``→``completed``/``failed``,
+        F-04's own edge, decided by the same ``_judge_run_completion`` and written by the same
+        ``_transition``. The run passes *through* ``running``; it never jumps from ``suspended``
+        to a terminal state, so ``_LEGAL_TRANSITIONS`` and ``_conclude``'s
+        ``permitted_from=(RUNNING,)`` are untouched. If work is still outstanding the judgment
+        returns the run unchanged and it simply resumes.
         """
-        return self._transition(
+        run = self._transition(
             self._require(run_id),
             RunStatus.RUNNING,
             operation="resume_run",
             permitted_from=(RunStatus.SUSPENDED,),
         )
+        return self._judge_run_completion(run)
 
     def cancel_run(self, run_id: str, reason: str) -> WorkflowRun:
         """Terminate a running/suspended run (user abort / Goal cancelled, RFC-0003 §6/§7.1).

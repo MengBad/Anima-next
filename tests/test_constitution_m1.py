@@ -1183,6 +1183,214 @@ def test_legacy_core_workflow_module_is_not_wired_to_the_constitution():
 
 
 # --------------------------------------------------------------------------
+# Phase D5 — Workflow lifecycle closure (RFC-0003 §6/§7, F-04 re-judged on resume)
+#
+# F-04 is stated over ``running``, so an outcome reported while a run is ``suspended`` is
+# recorded but not judged (D4, deliberate). That left the machine open: nobody re-asked the
+# question on resume, so a run whose last Task finished during the pause came back to
+# ``running`` with no event left that could ever conclude it. ``resume_run`` now re-asks the
+# same judgment — adding no transition, no second verdict, and no second writer.
+# --------------------------------------------------------------------------
+def _constitution_dir():
+    import pathlib
+
+    return pathlib.Path(__file__).resolve().parents[1] / "anima" / "constitution"
+
+
+def _suspended_run(wf: WorkflowInterface, tasks=None):
+    """A run paused mid-flight — the state in which straggler outcomes are recorded unjudged."""
+    run = _running_run(wf, tasks=tasks)
+    wf.suspend_run(run.id, "pause")
+    return run
+
+
+def test_resume_concludes_a_run_whose_last_task_finished_while_suspended():
+    """(1) The closure case: suspended -> DONE -> resume -> completed (was a stuck run).
+
+    Before D5 this returned to ``running`` and stayed there forever: the only Task was already
+    resolved, so no further report could be accepted and nothing could ever conclude it.
+    """
+    wf = WorkflowInterface()
+    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
+    run = _suspended_run(wf, tasks=single)
+
+    recorded = wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+    assert recorded.status == RunStatus.SUSPENDED   # D4 semantics intact: recorded, not judged
+    assert recorded.completed_at == ""
+
+    resumed = wf.resume_run(run.id)
+    assert resumed.status == RunStatus.COMPLETED    # D5: judged the moment it became judgeable
+    assert resumed.completed_at != ""               # terminal stamped by the Authority, as ever
+
+
+def test_resume_concludes_a_run_that_failed_while_suspended():
+    """(2) The failure half of the same closure: suspended -> FAILED -> resume -> failed."""
+    wf = WorkflowInterface()
+    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
+    run = _suspended_run(wf, tasks=single)
+
+    recorded = wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.FAILED, error="boom"))
+    assert recorded.status == RunStatus.SUSPENDED
+
+    resumed = wf.resume_run(run.id)
+    assert resumed.status == RunStatus.FAILED
+    assert resumed.completed_at != ""
+
+
+def test_resume_run_delegates_to_the_same_authority_judgment():
+    """(3) Resume re-asks the ONE verdict function — it does not carry a verdict of its own.
+
+    Mechanically: ``resume_run`` calls ``_judge_run_completion`` and names no ``RunStatus``
+    terminal itself, so there is no second place where "is this run over?" is decided.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    body = ast.unparse(
+        ast.parse(textwrap.dedent(inspect.getsource(WorkflowInterface.resume_run)))
+    )
+    assert "_judge_run_completion(" in body, "resume must re-ask the Authority's verdict"
+    for terminal in ("RunStatus.COMPLETED", "RunStatus.FAILED", "RunStatus.CANCELLED"):
+        assert terminal not in body, f"resume_run must not name a terminal itself: {terminal}"
+
+    # and the judgment's signature is still the D4 boundary: the run, and nothing else
+    assert list(inspect.signature(WorkflowInterface._judge_run_completion).parameters) == [
+        "self",
+        "run",
+    ]
+
+
+def test_resume_leaves_an_unfinished_run_running():
+    """(3b) The verdict is driven by the task set, not by the act of resuming.
+
+    Resume must not force a conclusion — with work outstanding the judgment returns the run
+    untouched and it simply carries on.
+    """
+    wf = WorkflowInterface()
+    run = _suspended_run(wf)  # default 2-task Plan (t1, t2)
+    wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+
+    resumed = wf.resume_run(run.id)
+    assert resumed.status == RunStatus.RUNNING
+    assert resumed.completed_at == ""
+    # ...and the ordinary D4 path still concludes it
+    assert wf.report_task_outcome(
+        run.id, "t2", _outcome("t2", TaskRunStatus.DONE)
+    ).status == RunStatus.COMPLETED
+
+
+def test_resume_closure_adds_no_transition_and_no_shortcut():
+    """(4a) Closure is composed from two existing edges — no new one, and no suspended->terminal.
+
+    The run passes *through* ``running``: ``suspended``→``running`` is resume's own §7.1 edge,
+    and any terminal move after it is F-04's ``running``→``completed``/``failed``. So the §7.1
+    table is unchanged and the verdict's ``permitted_from`` stays pinned to ``running`` — a
+    suspended run can still never jump straight to a terminal state.
+    """
+    import inspect
+
+    import pytest
+
+    from anima.constitution.errors import ConstitutionViolation
+    from anima.constitution.workflow import _LEGAL_TRANSITIONS
+
+    assert _LEGAL_TRANSITIONS[RunStatus.SUSPENDED] == {
+        RunStatus.RUNNING,
+        RunStatus.FAILED,
+        RunStatus.CANCELLED,
+    }
+    assert RunStatus.COMPLETED not in _LEGAL_TRANSITIONS[RunStatus.SUSPENDED]
+
+    conclude = inspect.getsource(WorkflowInterface._conclude)
+    assert "permitted_from=(RunStatus.RUNNING,)" in conclude, (
+        "the verdict must remain reachable only from running"
+    )
+
+    # a suspended run is refused a direct terminal write, whatever the caller wants
+    wf = WorkflowInterface()
+    run = _suspended_run(wf)
+    with pytest.raises(ConstitutionViolation):
+        wf._transition(
+            run,
+            RunStatus.COMPLETED,
+            operation="probe",
+            permitted_from=(RunStatus.SUSPENDED,),
+        )
+    assert run.status == RunStatus.SUSPENDED  # refused transitions leave the run untouched
+
+
+def test_resume_closure_keeps_the_single_run_lifecycle_writer():
+    """(4b) One write site, still. Resume triggers a verdict; it does not write one."""
+    workflow_src = _executable_source(_constitution_dir() / "workflow.py")
+
+    assert workflow_src.count(".status = ") == 1, (
+        "run status must have exactly one write site in the Workflow Authority"
+    )
+    assert "run.status = target" in workflow_src, "and that site must be inside _transition"
+
+    import ast
+    import inspect
+    import textwrap
+
+    resume = ast.unparse(
+        ast.parse(textwrap.dedent(inspect.getsource(WorkflowInterface.resume_run)))
+    )
+    assert ".status = " not in resume, "resume_run must not write run status directly"
+
+
+def test_report_task_outcome_still_owns_no_lifecycle_transition():
+    """(5) D5 did not move the boundary: a report is still a recording, never a transition.
+
+    Execution's only entry point must remain unable to move the lifecycle — the verdict is
+    delegated, and ``_transition`` is never reached from here.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    body = ast.unparse(
+        ast.parse(textwrap.dedent(inspect.getsource(WorkflowInterface.report_task_outcome)))
+    )
+    assert "_transition(" not in body, "report_task_outcome must not own the transition"
+    assert "_judge_run_completion(" in body, "the verdict must be delegated to the Authority"
+
+    # Execution still holds no run-lifecycle surface at all, resume included
+    execution_src = _executable_source(_constitution_dir() / "execution.py")
+    for call in ("resume_run", "_judge_run_completion", "WorkflowInterface"):
+        assert call not in execution_src, f"Execution must not reach run-state: {call!r}"
+
+
+def test_legacy_workflow_ledger_is_unchanged_by_the_closure():
+    """(6) No runtime wiring: the legacy engine still knows nothing of the Authority."""
+    legacy = _constitution_dir().parent / "core" / "workflows.py"
+    if not legacy.exists():  # pragma: no cover - layout guard
+        return
+    source = _executable_source(legacy)
+    for call in ("constitution.workflow", "WorkflowInterface", "report_task_outcome",
+                 "resume_run", "_judge_run_completion"):
+        assert call not in source, f"legacy workflow engine must stay unwired: {call!r}"
+
+
+def test_terminal_run_still_refuses_resume():
+    """(7) Closure did not open a back door: a concluded run has no outgoing transition (§7.1)."""
+    import pytest
+
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
+    run = _suspended_run(wf, tasks=single)
+    wf.report_task_outcome(run.id, "t1", _outcome("t1", TaskRunStatus.DONE))
+    concluded = wf.resume_run(run.id)
+    assert concluded.status == RunStatus.COMPLETED
+
+    with pytest.raises(ConstitutionViolation):
+        wf.resume_run(run.id)
+    assert wf.read_run(run.id).status == RunStatus.COMPLETED
+
+
+# --------------------------------------------------------------------------
 # M1.8 — Memory Ingestion Interface (RFC-0108)
 # --------------------------------------------------------------------------
 def _reflection_result_for_ingest() -> ReflectionResult:
