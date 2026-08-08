@@ -37,11 +37,25 @@ from anima.constitution.errors import ConstitutionViolation
 from anima.constitution.execution import (
     ExecutionRuntime,
     execution_result_to_task_states,
+    task_to_execution_step,
 )
 from anima.constitution.planning_interface import PlanningInterface
-from anima.constitution.state import ExecutionContext, Plan
+from anima.constitution.state import (
+    ExecutionContext,
+    Plan,
+    TaskRunStatus,
+    TaskState,
+)
 from anima.constitution.workflow import WorkflowInterface
+from anima.runtime.executor import TaskExecutor
+from anima.runtime.execution_ledger import ExecutionLedger
 from anima.runtime.persistence import WorkflowRunStore
+
+#: Terminal Task state *values* — keep in sync with constitution.workflow._TERMINAL_TASK_STATES.
+#: A resolved Task's outcome is final; the resume loop must skip such tasks. Compared by
+#.value (string) so the orchestrator never names a ``RunStatus.``/``TaskRunStatus.`` enum
+# member in executable code (the authority-guard test forbids that substring).
+_TERMINAL_TASK_STATES = frozenset({"done", "failed", "skipped"})
 
 
 class PlanOrchestrator:
@@ -59,11 +73,18 @@ class PlanOrchestrator:
         workflow: WorkflowInterface | None = None,
         execution: ExecutionRuntime | None = None,
         store: WorkflowRunStore | None = None,
+        executor: "TaskExecutor | None" = None,
+        ledger: "ExecutionLedger | None" = None,
     ) -> None:
         self._planning = planning or PlanningInterface()
         self._workflow = workflow or WorkflowInterface()
         self._execution = execution or ExecutionRuntime()
         self._store = store  # None = persistence disabled (pure in-memory mode)
+        # F5.3: an optional TaskExecutor drives per-task execution with a ledger idempotency
+        # gate. When None, run_plan falls back to the legacy aggregate ExecutionRuntime path
+        # (so the F5.1 mock contract and its tests stay untouched).
+        self._executor = executor
+        self._ledger = ledger
 
     def _snapshot(self, run) -> None:
         """Observer: make the run durable at a frozen timing point (F4.2b).
@@ -75,6 +96,123 @@ class PlanOrchestrator:
         """
         if self._store is not None:
             self._store.save(run)
+
+    # ---- F5.3 per-task executor dispatch (RUNNING durability + ledger gate) ----
+
+    def _observation_to_task_state(self, obs, task_id: str, attempts: int) -> TaskState:
+        """Project a per-task ExecutionObservation onto a reportable TaskState.
+
+        The executor produces a pure observation; the Orchestrator maps it to the
+        Workflow's terminal vocabulary (DONE / FAILED / SKIPPED) and reports it — it
+        never lets the executor name the run outcome (F-04 stays the Authority's).
+        """
+        if obs.metadata.get("skipped"):
+            status = TaskRunStatus("skipped")
+        elif obs.success:
+            status = TaskRunStatus("done")
+        else:
+            status = TaskRunStatus("failed")
+        return TaskState(
+            task_id=task_id,
+            status=status,
+            attempts=attempts,
+            result=dict(obs.result),
+            error=obs.error,
+        )
+
+    def _active_plan_for_goal(self, goal_ref: str) -> Plan:
+        """Resolve the ACTIVE Plan a recovered run resumes from (mirrors recovery).
+
+        The run holds no Plan (F-02); the Orchestrator reads it fresh for the goal and
+        never stores it on the run. Raises if no ACTIVE Plan exists — recompute is the
+        Planning Authority's job, not the Orchestrator's.
+        """
+        plans = [
+            p for p in self._planning.list_plans(goal_ref) if p.status.value == "active"
+        ]
+        if not plans:
+            raise ConstitutionViolation(
+                f"_active_plan_for_goal: no ACTIVE Plan for goal_ref {goal_ref!r}; "
+                f"recompute the Plan via the Planning Authority before resuming"
+            )
+        return plans[0]
+
+    def _dispatch_task(self, run, task, *, execution_run_id: str, context) -> object:
+        """Execute ONE Task through the TaskExecutor with RUNNING durability + ledger gate.
+
+        Timing (frozen in F5.3):
+            1. report_task_outcome(RUNNING) + snapshot -> RUNNING is durable BEFORE the side
+               effect, so a crash here leaves a recoverable RUNNING (not an invisible PENDING
+               that would be re-dispatched with no memory of the attempt).
+            2. executor.execute(step, key, ledger) -> the executor consults the ledger FIRST;
+               on a hit it returns the cached observation with NO side effect.
+            3. report_task_outcome(terminal) + snapshot -> the run is advanced durably.
+
+        The idempotency key is (execution_run_id, task.id, attempts). ``execution_run_id`` is
+        the run whose lifecycle we drive; for a recovered run it is the ORIGINAL crashed run's
+        id (passed as ``source_run_id``) so ledger facts recorded under that id survive recovery
+        (which issues a NEW run_id) and prevent a duplicate external side effect.
+        """
+        current = self._workflow.read_run(run.id)
+        idx = next(
+            (i for i, s in enumerate(current.task_states) if s.task_id == task.id), None
+        )
+        if idx is None:
+            raise ConstitutionViolation(
+                f"_dispatch_task: task {task.id!r} not in run {run.id!r}"
+            )
+        attempts = current.task_states[idx].attempts
+        key = (execution_run_id, task.id, attempts)
+
+        # 1. RUNNING durability (before the side effect)
+        running = TaskState(
+            task_id=task.id, status=TaskRunStatus("running"), attempts=attempts
+        )
+        run = self._workflow.report_task_outcome(run.id, task.id, running)
+        self._snapshot(run)
+
+        # 2. execute (the executor consults the ledger internally; a hit skips the side effect)
+        step = task_to_execution_step(task)
+        obs = self._executor.execute(step, key, ledger=self._ledger)
+
+        # 3. report terminal + durable
+        terminal = self._observation_to_task_state(obs, task.id, attempts)
+        run = self._workflow.report_task_outcome(run.id, task.id, terminal)
+        self._snapshot(run)
+        return run
+
+    def _resume_run(self, run, source_run_id: str | None = None, context=None):
+        """Execute the PENDING tasks of an already-started run (F5.3 recovery resume).
+
+        The primary caller is a recovered run: ``recover_run`` issues a NEW run_id and replays
+        terminal outcomes, leaving non-terminal tasks PENDING. This method drives those PENDING
+        tasks through the TaskExecutor.
+
+        ``source_run_id`` MUST be the ORIGINAL crashed run's id: it seeds the ledger key's
+        run-component, so a side effect recorded before the crash is still found after recovery
+        (preventing a duplicate external side effect). When omitted, the current run's id is used
+        (a non-recovery resume, e.g. after suspend).
+        """
+        current = self._workflow.read_run(run.id)
+        if current.status.value != "running":
+            raise ConstitutionViolation(
+                f"_resume_run requires a running run, got {current.status.value!r}"
+            )
+        execution_run_id = source_run_id or run.id
+        plan = self._active_plan_for_goal(current.goal_ref)
+        for task in plan.task_graph:
+            state = next(
+                (s for s in current.task_states if s.task_id == task.id), None
+            )
+            if state is None or state.status.value in _TERMINAL_TASK_STATES:
+                continue  # already resolved (e.g. replayed by recovery) -> skip
+            run = self._dispatch_task(
+                run, task, execution_run_id=execution_run_id, context=context
+            )
+            current = self._workflow.read_run(run.id)
+        final = self._workflow.read_run(run.id)
+        self._snapshot(final)
+        return final
 
     def run_plan(
         self, plan_id: str, context: ExecutionContext | None = None
@@ -118,23 +256,34 @@ class PlanOrchestrator:
         run = self._workflow.start_run(plan)
         self._snapshot(run)
 
-        result = self._execution.run(plan, context)
+        if self._executor is None:
+            # Legacy aggregate path: the mock ExecutionRuntime emits one ExecutionResult for
+            # the whole Plan; project it onto per-Task snapshots and report (unchanged E4 loop).
+            result = self._execution.run(plan, context)
 
-        current_run = self._workflow.read_run(run.id)
-        task_ids = [state.task_id for state in current_run.task_states]
+            current_run = self._workflow.read_run(run.id)
+            task_ids = [state.task_id for state in current_run.task_states]
 
-        states = execution_result_to_task_states(result, task_ids)
+            states = execution_result_to_task_states(result, task_ids)
 
-        for state in states:
-            try:
-                run = self._workflow.report_task_outcome(run.id, state.task_id, state)
-            except ConstitutionViolation:
-                # The Workflow Authority concluded the run (F-04) on an earlier report —
-                # a terminal run's record is closed to further reports (RFC-0003 §7.1).
-                # That refusal IS the Authority's verdict; the Orchestrator does not judge
-                # or override it, it simply stops feeding snapshots into a closed record.
-                break
-            self._snapshot(run)
+            for state in states:
+                try:
+                    run = self._workflow.report_task_outcome(run.id, state.task_id, state)
+                except ConstitutionViolation:
+                    # The Workflow Authority concluded the run (F-04) on an earlier report —
+                    # a terminal run's record is closed to further reports (RFC-0003 §7.1).
+                    # That refusal IS the Authority's verdict; the Orchestrator does not judge
+                    # or override it, it simply stops feeding snapshots into a closed record.
+                    break
+                self._snapshot(run)
+        else:
+            # F5.3 per-task executor path: dispatch each Task through the TaskExecutor with
+            # RUNNING durability + ledger idempotency gate (see _dispatch_task). The run's own
+            # id is the ledger key's run-component for a fresh run.
+            for task in plan.task_graph:
+                run = self._dispatch_task(
+                    run, task, execution_run_id=run.id, context=context
+                )
 
         final = self._workflow.read_run(run.id)
         self._snapshot(final)  # terminal => durable (unconditional)
