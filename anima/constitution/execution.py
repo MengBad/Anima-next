@@ -31,6 +31,8 @@ from anima.constitution.state import (
     ExecutionStatus,
     Plan,
     Task,
+    TaskRunStatus,
+    TaskState,
 )
 
 
@@ -102,6 +104,73 @@ def execute_plan(plan: Plan, context: ExecutionContext) -> ExecutionResult:
         outcome=f"executed plan for '{plan.goal_target}'",
         lessons=lessons,
     )
+
+
+# ---------------------------------------------------------------------------
+# E1 — the ExecutionResult -> TaskState projection (RFC-0003 §5 bridge, GAP E-A)
+# ---------------------------------------------------------------------------
+#: Execution statuses the adapter MAY project onto per-Task TaskStates (E1 ruling).
+#: SUCCESS and FAILED are run-level verdicts that project uniformly; every other status
+#: is non-determinate at the Task level — PARTIAL cannot say *which* Tasks succeeded, and
+#: PENDING / RUNNING are not verdicts at all. The adapter refuses rather than guesses.
+_PROJECTABLE_RESULT_STATUSES: frozenset[ExecutionStatus] = frozenset(
+    {ExecutionStatus.SUCCESS, ExecutionStatus.FAILED}
+)
+
+
+def execution_result_to_task_states(
+    result: ExecutionResult, task_ids: list[str]
+) -> list[TaskState]:
+    """Project an aggregate ``ExecutionResult`` onto one ``TaskState`` per ``task_id`` (E1).
+
+    The bridge RFC-0003 §5 expects: it turns the Execution Runtime's *run-level* verdict into
+    the *per-Task* snapshots ``report_task_outcome`` consumes. It is a **projection**, not a
+    bijection — an aggregate result carries no per-Task truth (GAP E-A), so every Task in
+    ``task_ids`` receives the same verdict, and fields the aggregate cannot know (``attempts``,
+    ``result``, ``error``) are left at their initial values.
+
+    Projection rules (fixed in the E1 ruling, RFC-0107 / RFC-0003 boundary):
+    - ``SUCCESS`` -> every ``task_id`` gets a ``TaskState`` with ``status=DONE``.
+    - ``FAILED``  -> every ``task_id`` gets a ``TaskState`` with ``status=FAILED``.
+    - ``PARTIAL`` / ``PENDING`` / ``RUNNING`` -> refused with ``ConstitutionViolation``:
+      an aggregate PARTIAL cannot name which Tasks succeeded, and PENDING/RUNNING are not
+      verdicts; projecting a guess would fabricate run-state, so the adapter refuses.
+    - empty ``task_ids`` -> ``[]`` (nothing to project; the verdict is still validated).
+
+    Boundary guarantees (same discipline as D3–D5b, carried into the Execution side):
+    - **Takes ``task_ids``, never a ``Plan``.** ``start_run`` consumed the Plan once and
+      dropped it (F-02) — nobody in the run domain holds the Plan, and the adapter must not
+      force a caller back into the Planning registry. ``task_ids`` come naturally from the
+      run's own ``task_states[*].task_id`` (the set ``_require_task_state`` already trusts).
+    - **Reads, never writes.** A fresh ``TaskState`` is constructed per id; nothing is mutated:
+      no ``result``/``run`` attribute assignment, no Plan touch, no lifecycle call. This is a
+      pure ``Execution -> state`` mapping — it grants Execution no run-state writer, and it is
+      one-way (only here does Execution name ``TaskState``; Workflow never imports this).
+    - **No lifecycle authority.** It never calls ``report_task_outcome`` / ``_transition`` or
+      any Workflow operation; wiring who *reports* these snapshots is a later slice (E2+).
+    """
+    if result.status not in _PROJECTABLE_RESULT_STATUSES:
+        allowed = "/".join(sorted(s.value.upper() for s in _PROJECTABLE_RESULT_STATUSES))
+        raise ConstitutionViolation(
+            f"execution_result_to_task_states: cannot project {result.status.value!r} "
+            f"ExecutionResult onto TaskStates; the aggregate carries no per-Task truth "
+            f"(projectable: {allowed})"
+        )
+    target = (
+        TaskRunStatus.DONE
+        if result.status is ExecutionStatus.SUCCESS
+        else TaskRunStatus.FAILED
+    )
+    return [
+        TaskState(
+            task_id=task_id,
+            status=target,
+            attempts=0,   # aggregate carries no retry count
+            result={},    # aggregate carries no per-Task payload
+            error="",     # aggregate carries no per-Task failure reason
+        )
+        for task_id in task_ids
+    ]
 
 
 class ExecutionRuntime:

@@ -1560,6 +1560,145 @@ def test_legacy_workflow_ledger_is_unchanged_by_d5b():
 
 
 # --------------------------------------------------------------------------
+# Phase E1 — ExecutionResult -> TaskState projection adapter (RFC-0003 §5 bridge)
+#
+# E0 located the runtime bridge's first risk: execution.py's ExecutionResult is an
+# AGGREGATE run-level report (RFC-0107), while RFC-0003 §5 wants per-Task snapshots
+# (`task_results: list[TaskState]`). E1 adds the explicit projection so `report_task_outcome`
+# gains a legitimate producer — WITHOUT wiring Execution into Workflow (a later slice).
+# The adapter takes `task_ids` (never a Plan: F-02 dropped it; nobody in the run domain
+# holds it), reads nothing, writes nothing, and calls no Workflow lifecycle API.
+# --------------------------------------------------------------------------
+def test_execution_result_success_projects_all_tasks_done():
+    """E1: SUCCESS -> every task_id becomes a TaskState with status=DONE."""
+    from anima.constitution.execution import execution_result_to_task_states
+
+    result = ExecutionResult(
+        plan_ref="plan#understand-X#run-1",
+        status=ExecutionStatus.SUCCESS,
+        outcome="executed plan for 'understand X'",
+        lessons=["carried 2 task(s) toward 'understand X'"],
+    )
+    states = execution_result_to_task_states(result, ["t1", "t2"])
+    assert [s.task_id for s in states] == ["t1", "t2"]
+    assert all(s.status is TaskRunStatus.DONE for s in states)
+    # aggregate carries no per-Task truth: attempts/result/error stay at initial values
+    assert all(s.attempts == 0 and s.result == {} and s.error == "" for s in states)
+    # the projected snapshots are consumable by the run's intake boundary unchanged
+    wf = WorkflowInterface()
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#understand-X"))
+    for s in states:
+        wf.report_task_outcome(run.id, s.task_id, s)
+    assert wf.read_run(run.id).status is RunStatus.COMPLETED  # F-04 fires on all-done
+
+
+def test_execution_result_failed_projects_all_tasks_failed():
+    """E1: FAILED -> every task_id becomes a TaskState with status=FAILED."""
+    from anima.constitution.execution import execution_result_to_task_states
+
+    result = ExecutionResult(
+        plan_ref="plan#understand-X#run-2",
+        status=ExecutionStatus.FAILED,
+        outcome="boom",
+        lessons=["failed"],
+    )
+    states = execution_result_to_task_states(result, ["t1", "t2"])
+    assert all(s.status is TaskRunStatus.FAILED for s in states)
+    wf = WorkflowInterface()
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#understand-X"))
+    # F-04 fires on ANY failed Task with no recovery path: the first report concludes the
+    # run (running -> failed); the second report is refused because the run is now terminal.
+    wf.report_task_outcome(run.id, states[0].task_id, states[0])
+    assert wf.read_run(run.id).status is RunStatus.FAILED
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+    with pytest.raises(ConstitutionViolation):
+        wf.report_task_outcome(run.id, states[1].task_id, states[1])  # terminal: closed record
+
+
+def test_execution_result_non_determinate_status_is_refused():
+    """E1: PARTIAL/PENDING/RUNNING cannot be projected — the aggregate carries no per-Task truth."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+    from anima.constitution.execution import execution_result_to_task_states
+
+    for status in (ExecutionStatus.PARTIAL, ExecutionStatus.PENDING, ExecutionStatus.RUNNING):
+        result = ExecutionResult(plan_ref="plan#x", status=status, outcome="?")
+        with pytest.raises(ConstitutionViolation):
+            execution_result_to_task_states(result, ["t1", "t2"])
+
+
+def test_execution_result_adapter_empty_task_ids_returns_empty():
+    """E1: empty task_ids -> [] — nothing to project; the verdict is still validated first."""
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+    from anima.constitution.execution import execution_result_to_task_states
+
+    ok = ExecutionResult(plan_ref="plan#x", status=ExecutionStatus.SUCCESS)
+    assert execution_result_to_task_states(ok, []) == []
+    # a non-determinate verdict is refused even with nothing to project
+    bad = ExecutionResult(plan_ref="plan#x", status=ExecutionStatus.PARTIAL)
+    with pytest.raises(ConstitutionViolation):
+        execution_result_to_task_states(bad, [])
+
+
+def test_execution_result_adapter_takes_task_ids_never_a_plan():
+    """E1: the adapter's input boundary is task_ids, NOT the Plan (F-02: nobody in the run
+    domain holds the Plan; accepting one would force a caller back into the Planning registry)."""
+    import inspect
+
+    from anima.constitution.execution import execution_result_to_task_states
+
+    params = list(inspect.signature(execution_result_to_task_states).parameters)
+    assert params == ["result", "task_ids"]
+    # the adapter is a pure ids->snapshots mapping: no Plan surface read anywhere
+    source = inspect.getsource(execution_result_to_task_states)
+    for token in ("plan.task_graph", "plan.goal_target", "plan.context_ref",
+                  "planning_interface", "PlanningInterface", "read_plan", "derive_plan"):
+        assert token not in source, f"adapter must not reach into Planning: {token!r}"
+
+
+def test_execution_result_adapter_writes_nothing_and_owns_no_lifecycle():
+    """E1: the adapter constructs fresh TaskStates — it assigns no attributes, calls no
+    Workflow lifecycle API, and introduces no run-state writer (mechanical AST guard)."""
+    import ast
+    import inspect
+    import textwrap
+
+    from anima.constitution.execution import execution_result_to_task_states
+
+    fn = ast.parse(
+        textwrap.dedent(inspect.getsource(execution_result_to_task_states))
+    ).body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]  # strip the docstring so "result." in prose cannot false-positive
+
+    # no attribute assignment (no `x.status =`, no `result.x =`, no `run.x =`)
+    for node in ast.walk(fn):
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                assert not (
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                ), f"adapter must not assign an attribute: {ast.unparse(target)}"
+        assert not (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in {"wf", "workflow", "run", "self"}
+        ), f"adapter must not reach a lifecycle object: {ast.unparse(node)}"
+
+    # no call into any Workflow §6 operation (it would be a wiring act, not a mapping)
+    calls = [
+        node.func.attr
+        for node in ast.walk(fn)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    ]
+    forbidden = {"report_task_outcome", "_transition", "start_run", "suspend_run",
+                 "resume_run", "cancel_run", "abort_run", "read_run"}
+    assert not (set(calls) & forbidden), f"adapter must not call Workflow lifecycle: {set(calls) & forbidden}"
+
+
+# --------------------------------------------------------------------------
 # M1.8 — Memory Ingestion Interface (RFC-0108)
 # --------------------------------------------------------------------------
 def _reflection_result_for_ingest() -> ReflectionResult:
