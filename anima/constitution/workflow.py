@@ -95,6 +95,7 @@ from anima.constitution.state import (
     RunStatus,
     TaskRunStatus,
     TaskState,
+    WorkflowExecutionResult,
     WorkflowRun,
     WORKFLOWRUN_CONTRACT_VERSION,
 )
@@ -222,6 +223,50 @@ def outcome_to_task_state(task_id: str, outcome: TaskState) -> TaskState:
         attempts=outcome.attempts,
         result=dict(outcome.result),
         error=outcome.error,
+    )
+
+
+def build_workflow_execution_result(run: WorkflowRun) -> WorkflowExecutionResult:
+    """The run-terminal ledger (RFC-0003 §5): a snapshot of ``run.task_states`` (F2).
+
+    Produced from a terminal ``WorkflowRun`` by the Workflow Authority (RFC-0003 §5: the
+    Workflow reports its run's terminal output to the Planning Authority / audit). It is the
+    **ledger** counterpart to Execution's ``ExecutionResult`` envelope (RFC-0107): two
+    authorities, two producers, two consumers — this one is the Workflow's lifecycle truth.
+
+    Deliberately a pure function of the run, NOT a second state machine:
+
+    - **Snapshot, not handle.** Each ``TaskState`` is copied by name (``result`` into a fresh
+      dict), so the ledger holds no live reference into ``run.task_states`` — mutating the
+      ledger cannot rewrite run-state, and mutating the run after the fact cannot rewrite the
+      ledger. Mirrors ``outcome_to_task_state`` / ``plan_to_run_tasks`` snapshot discipline.
+    - **Reads terminal run-state only.** It does not transition anything: the run is already
+      terminal when this is called; construction adds no lifecycle event and no status write
+      (the single ``_transition`` write site is untouched).
+    - **No authority grant.** It builds a report; it does not decide the verdict — ``status``
+      is read from the run's own terminal state, ``summary``/``completed_at`` are echoed, and
+      the F-04 judgment that concluded the run stays the Workflow's alone.
+
+    ``plan_ref`` is the opaque ``PlanRef`` snapshot (F-02) rendered as a string, so the ledger
+    carries no Plan handle and no path back into the Planning registry.
+    """
+    return WorkflowExecutionResult(
+        run_id=run.id,
+        plan_ref=f"{run.plan_ref.plan_id}@{run.plan_ref.contract_version}",
+        goal_ref=run.goal_ref,
+        status=run.status,
+        task_results=[
+            TaskState(
+                task_id=state.task_id,
+                status=state.status,
+                attempts=state.attempts,
+                result=dict(state.result),
+                error=state.error,
+            )
+            for state in run.task_states
+        ],
+        summary=f"{run.status.value} after {len(run.task_states)} task(s)",
+        completed_at=run.completed_at,
     )
 
 

@@ -1125,9 +1125,13 @@ def test_execution_and_workflow_authorities_stay_isolated():
     """Boundary: Execution cannot drive a run's lifecycle, and Workflow cannot execute a Plan.
 
     Proven at the source level rather than by convention — D4 adds an inbound *report* boundary,
-    not a runtime wiring: neither module imports or calls the other.
+    not a runtime wiring: neither module imports or calls the other. F2 (Workflow Ledger
+    Alignment) adds ``WorkflowExecutionResult`` — the Workflow's OWN run-terminal ledger
+    (RFC-0003 §5), named here with a word-boundary check so the Execution envelope
+    (``ExecutionResult``, RFC-0107) stays forbidden while the ledger name is allowed.
     """
     import pathlib
+    import re
 
     constitution = pathlib.Path(__file__).resolve().parents[1] / "anima" / "constitution"
     workflow_src = _executable_source(constitution / "workflow.py")
@@ -1138,9 +1142,15 @@ def test_execution_and_workflow_authorities_stay_isolated():
                  "WorkflowInterface", "constitution.workflow"):
         assert call not in execution_src, f"Execution must not reach run-state: {call!r}"
 
-    # and the Workflow never executes: no capability dispatch, no Plan execution, no result import
-    for call in ("execute_plan", "ExecutionResult", "constitution.execution"):
+    # and the Workflow never executes: no capability dispatch, no Plan execution, no envelope import
+    for call in ("execute_plan", "constitution.execution"):
         assert call not in workflow_src, f"Workflow must not execute: {call!r}"
+    # ExecutionResult (the Execution's observation envelope) stays forbidden in the Workflow;
+    # WorkflowExecutionResult (the Workflow's own ledger, F2) is allowed — the word boundary
+    # distinguishes the two names.
+    assert not re.search(r"\bExecutionResult\b", workflow_src), (
+        "Workflow must not import the Execution envelope (ExecutionResult)"
+    )
 
 
 def test_f04_conclusion_leaves_the_consumed_plan_untouched():

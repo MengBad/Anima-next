@@ -486,3 +486,34 @@ class WorkflowRun:
     created_at: str = ""                               # construction timestamp (assigned at construction); empty = not yet constructed
     completed_at: str = ""                             # terminal timestamp (assigned by Workflow Interface at D2); empty = still running
 
+
+# --------------------------------------------------------------------------
+# WorkflowExecutionResult — the Workflow's run-terminal ledger (RFC-0003 §5, F2)
+# --------------------------------------------------------------------------
+@dataclass
+class WorkflowExecutionResult:
+    """The run's terminal execution ledger (RFC-0003 §5), reported by the Workflow Authority.
+
+    **Transient** — the run-completion ledger: a snapshot of ``WorkflowRun.task_states`` taken
+    at a terminal transition, handed to the Planning Authority / audit (RFC-0003 §5: the Workflow
+    reports its run's terminal output; it does **not** write Memory). Deliberately distinct from
+    ``ExecutionResult`` (RFC-0107): that is Execution's *observation envelope* for Reflection
+    (``status``/``outcome``/``lessons``), whereas this is the Workflow's *lifecycle ledger*
+    (``task_results``). Two authorities, two producers, two consumers — one shared name would
+    have conflated them (F1 reconciliation, C-scheme).
+
+    ``task_results`` are **snapshots**, never live references back into a ``WorkflowRun``: the
+    run's own ``task_states`` may mutate no further after a terminal transition, but the ledger
+    must not hold a mutable handle into run-state (mirrors the ``TaskState`` snapshot discipline
+    of ``outcome_to_task_state`` / ``plan_to_run_tasks``). No setter, no storage authority; the
+    Workflow Authority owns its construction (F2).
+    """
+
+    run_id: str = ""                                   # the WorkflowRun this ledger concludes
+    plan_ref: str = ""                                 # opaque Plan ref of the concluded run (F-02)
+    goal_ref: str = ""                                 # ref to the Goal the run served (read-only)
+    status: RunStatus = RunStatus.PENDING              # terminal verdict of the concluded run
+    task_results: list = field(default_factory=list)   # list[TaskState] — per-Task snapshot (copy)
+    summary: str = ""                                  # short human-readable conclusion
+    completed_at: str = ""                             # terminal timestamp (echo of run.completed_at)
+
