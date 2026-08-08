@@ -55,6 +55,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, NamedTuple
 
+from anima.runtime.recovery_marker_store import MarkerPhase, RecoveryMarkerStore
 from anima.runtime.resume_coordinator import ResumeCoordinator
 
 
@@ -96,7 +97,7 @@ class StartupRecoveryCoordinator:
             ids.append(p.name.removesuffix(cls._RUN_SUFFIX))
         return ids
 
-    def recover_interrupted_runs(self, store, planning, coordinator) -> List[RunRecoveryResult]:
+    def recover_interrupted_runs(self, store, planning, coordinator, marker_store=None) -> List[RunRecoveryResult]:
         """Find every persisted RUNNING run and recover_and_resume it.
 
         Returns one :class:`RunRecoveryResult` per discovered interrupted run. Failures are
@@ -117,8 +118,20 @@ class StartupRecoveryCoordinator:
             # or otherwise concluded and is not ours to resume.
             if getattr(run.status, "value", None) != "running":
                 continue
+            # F7.3b skip-when-RECOVERED: a fully-recovered run need not be re-enumerated.
+            # The original RUNNING snapshot is left on disk by the frozen store (no
+            # status-writer), so without a marker it would be re-enumerated every boot.
+            # Skipping is safe: the ledger (I3) remains the authoritative idempotency guard;
+            # RECOVERING / FAILED markers force a RETRY instead.
+            if marker_store is not None:
+                marker = marker_store.get(run_id)
+                if marker is not None and marker.phase is MarkerPhase.RECOVERED:
+                    results.append(RunRecoveryResult(
+                        original_run_id=run_id, status="skipped", final_status="recovered",
+                    ))
+                    continue
             try:
-                final = coordinator.recover_and_resume(store, planning, run_id)
+                final = coordinator.recover_and_resume(store, planning, run_id, marker_store=marker_store)
                 results.append(RunRecoveryResult(
                     original_run_id=run_id,
                     status="recovered",
@@ -131,13 +144,19 @@ class StartupRecoveryCoordinator:
         return results
 
 
-def recover_interrupted_runs(store, planning, orchestrator) -> List[RunRecoveryResult]:
+def recover_interrupted_runs(store, planning, orchestrator, marker_store=None) -> List[RunRecoveryResult]:
     """Bootstrap convenience entry point: build the F5.5 ResumeCoordinator from a
     fully-wired orchestrator (executor + ledger) and recover every interrupted run.
 
     Raises :class:`ResumeError` if the orchestrator is not wired with BOTH executor and
     ledger (recovery has nothing to dispatch a PENDING task through) — surfaced as a
     startup configuration error rather than a silent no-op.
+
+    A ``RecoveryMarkerStore`` is built on the same ``PersistenceProvider`` the run store
+    uses (F7.3b) unless one is injected; markers record the recovery lifecycle so a
+    completed recovery is not re-enumerated on the next boot.
     """
     coordinator = ResumeCoordinator(orchestrator)
-    return StartupRecoveryCoordinator().recover_interrupted_runs(store, planning, coordinator)
+    if marker_store is None:
+        marker_store = RecoveryMarkerStore(store.persistence)
+    return StartupRecoveryCoordinator().recover_interrupted_runs(store, planning, coordinator, marker_store=marker_store)

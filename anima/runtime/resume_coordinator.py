@@ -77,7 +77,11 @@ class ResumeCoordinator:
         return self._orchestrator._resume_run(run, source_run_id=source_run_id)
 
     def recover_and_resume(
-        self, store: "WorkflowRunStore", planning: "PlanningInterface", original_run_id: str
+        self,
+        store: "WorkflowRunStore",
+        planning: "PlanningInterface",
+        original_run_id: str,
+        marker_store=None,
     ):
         """Full startup chain for ONE crashed run: recover_run -> resume.
 
@@ -88,9 +92,28 @@ class ResumeCoordinator:
 
         Callers enumerate which crashed run ids to recover (e.g. from the store at
         startup); this method handles exactly one.
+
+        If ``marker_store`` (a ``RecoveryMarkerStore``) is provided, the recovery lifecycle
+        is recorded as a SIDE RECORD (F7.3b): RECOVERING before recovery, RECOVERED on
+        success, FAILED on any exception. The marker is NEVER run-state and is never written
+        through the Workflow Authority. The ledger (I3) remains the authoritative idempotency
+        guard; the marker is forensic + an optimization signal for startup re-enumeration.
         """
-        persisted = store.load(original_run_id)
-        restored = recover_run(
-            store, self._orchestrator._workflow, planning, persisted
-        )
-        return self._orchestrator._resume_run(restored, source_run_id=original_run_id)
+        if marker_store is not None:
+            # RECOVERING written up-front (new_run_id unknown until recover_run returns);
+            # mark_recovered below fills it. If recovery itself fails, the marker stays
+            # RECOVERING/FAILED and a later boot retries (ledger still兜底).
+            marker_store.write_recovering(original_run_id, "", original_run_id)
+        try:
+            persisted = store.load(original_run_id)
+            restored = recover_run(
+                store, self._orchestrator._workflow, planning, persisted
+            )
+            result = self._orchestrator._resume_run(restored, source_run_id=original_run_id)
+            if marker_store is not None:
+                marker_store.mark_recovered(original_run_id, restored.id, original_run_id)
+            return result
+        except Exception as exc:
+            if marker_store is not None:
+                marker_store.mark_failed(original_run_id, exc)
+            raise

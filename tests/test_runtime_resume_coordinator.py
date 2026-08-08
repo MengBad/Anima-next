@@ -59,6 +59,7 @@ from anima.runtime.execution_ledger import ExecutionLedger
 from anima.runtime.orchestrator import PlanOrchestrator
 from anima.runtime.persistence import WorkflowRunStore
 from anima.runtime.recovery import recover_run
+from anima.runtime.recovery_marker_store import MarkerPhase, RecoveryMarkerStore
 from anima.runtime.resume_coordinator import ResumeCoordinator, ResumeError
 
 
@@ -477,3 +478,80 @@ def test_resume_coordinator_does_not_couple_to_recovery_module_source():
     assert not defines_recover_run, "coordinator must not redefine recover_run (F4 frozen)"
     # It must actually call it (import + call site present).
     assert "recover_run" in src
+
+
+# --------------------------------------------------------------------------- #
+# F7.3b — Recovery Marker Lifecycle (recover_and_resume records the side record)
+# --------------------------------------------------------------------------- #
+def test_recover_and_resume_writes_recovering_then_recovered_marker():
+    """F7.3b — recover_and_resume records the recovery lifecycle as a SIDE RECORD:
+    RECOVERING before recovery, RECOVERED on success (with the NEW run id). The marker
+    is never run-state and never written through the Workflow Authority."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        workflow = WorkflowInterface()
+
+        original_run_id, executed_first, crash_exec = _crash_after_side_effect(
+            planning, workflow, store, ledger
+        )
+        ms = RecoveryMarkerStore(pp)
+
+        executed_resume = []
+        resume_exec = FakeTaskExecutor(script={}, on_execute=lambda: executed_resume.append(1))
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=workflow, store=store,
+            executor=resume_exec, ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+
+        final = coord.recover_and_resume(store, planning, original_run_id, marker_store=ms)
+
+        assert final.status is RunStatus.COMPLETED
+        m = ms.get(original_run_id)
+        assert m is not None
+        assert m.phase is MarkerPhase.RECOVERED
+        assert m.original_run_id == original_run_id
+        assert m.source_run_id == original_run_id  # I3 conservation
+        assert m.new_run_id == final.id            # the NEW run_id recover_run issued
+        # ledger still did the idempotency work (no duplicate t3 side effect)
+        assert executed_resume == []
+
+
+def test_recover_and_resume_writes_failed_marker_on_exception(monkeypatch):
+    """F7.3b — when resume raises, the marker is FAILED (error captured) and the exception
+    still propagates, so a later boot will retry (RECOVERING/FAILED never silently skip)."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        workflow = WorkflowInterface()
+
+        original_run_id, executed_first, crash_exec = _crash_after_side_effect(
+            planning, workflow, store, ledger
+        )
+        ms = RecoveryMarkerStore(pp)
+
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=workflow, store=store,
+            executor=FakeTaskExecutor({}), ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+
+        def _boom(run, source_run_id=None):
+            raise RuntimeError("boom during resume")
+
+        monkeypatch.setattr(coord._orchestrator, "_resume_run", _boom)
+
+        with pytest.raises(RuntimeError):
+            coord.recover_and_resume(store, planning, original_run_id, marker_store=ms)
+
+        m = ms.get(original_run_id)
+        assert m is not None
+        assert m.phase is MarkerPhase.FAILED
+        assert "boom" in (m.error or "")
+        assert m.original_run_id == original_run_id
+        assert m.source_run_id == original_run_id

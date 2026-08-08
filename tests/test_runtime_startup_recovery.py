@@ -57,6 +57,7 @@ from anima.runtime.execution_ledger import ExecutionLedger
 from anima.runtime.orchestrator import PlanOrchestrator
 from anima.runtime.persistence import WorkflowRunStore
 from anima.runtime.recovery import recover_run
+from anima.runtime.recovery_marker_store import MarkerPhase, RecoveryMarkerStore
 from anima.runtime.resume_coordinator import ResumeCoordinator, ResumeError
 from anima.runtime.startup_recovery import (
     RunRecoveryResult,
@@ -320,7 +321,7 @@ def test_one_failing_run_does_not_block_others():
                     "F", (), {"status": type("S", (), {"value": "completed"})()}
                 )()
 
-            def recover_and_resume(self, store, planning, run_id):
+            def recover_and_resume(self, store, planning, run_id, marker_store=None):
                 if run_id == self._fail_id:
                     raise RuntimeError("boom")
                 return self._fake_final
@@ -384,3 +385,157 @@ def test_startup_coordinator_does_not_couple_to_recovery_source():
     # (which reads the in-memory registry that is empty at a fresh boot)
     assert "workflow_runs" in src  # glob discovery convention
     assert "list_runs" not in src  # we do NOT enumerate via the in-memory workflow registry
+
+
+# --------------------------------------------------------------------------- #
+# F7.3b — Recovery Marker Lifecycle (skip-when-RECOVERED / retry-when-RECOVERING|FAILED)
+# --------------------------------------------------------------------------- #
+def test_recover_interrupted_runs_skips_when_marker_recovered():
+    """A run whose recovery marker is RECOVERED is SKIPPED on the next boot (no
+    re-enumeration), even though its original RUNNING snapshot is still on disk (the
+    frozen store has no status-writer). The ledger (I3) remains the authoritative
+    idempotency guard; skipping is purely an optimization + forensic clarity."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        workflow = WorkflowInterface()
+
+        original_run_id, executed_first, crash_exec = _crash_after_side_effect(
+            planning, workflow, store, ledger
+        )
+        ms = RecoveryMarkerStore(pp)
+
+        executed_resume = []
+        resume_exec = FakeTaskExecutor(script={}, on_execute=lambda: executed_resume.append(1))
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=workflow,
+            store=store, executor=resume_exec, ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+        src = StartupRecoveryCoordinator()
+
+        # First boot: recovers; writes a RECOVERED marker.
+        results1 = src.recover_interrupted_runs(store, planning, coord, marker_store=ms)
+        assert len(results1) == 1
+        assert results1[0].status == "recovered"
+        assert ms.get(original_run_id).phase is MarkerPhase.RECOVERED
+
+        # Second boot: the original RUNNING artifact is still on disk, but its marker is
+        # RECOVERED -> must be SKIPPED (recover_and_resume must NOT be called again).
+        class _SpyCoordinator:
+            def __init__(self):
+                self.calls = []
+
+            def recover_and_resume(self, store, planning, run_id, marker_store=None):
+                self.calls.append(run_id)
+                raise AssertionError("recover_and_resume must NOT fire when marker is RECOVERED")
+
+        spy = _SpyCoordinator()
+        results2 = src.recover_interrupted_runs(store, planning, spy, marker_store=ms)
+        assert len(results2) == 1
+        assert results2[0].original_run_id == original_run_id
+        assert results2[0].status == "skipped"
+        assert results2[0].final_status == "recovered"
+        assert spy.calls == []  # PROOF of skip
+
+
+def test_recover_interrupted_runs_retries_when_marker_recovering():
+    """A run whose marker is RECOVERING (crash during a prior resume) is RETRIED, not
+    skipped. The ledger dedup still guarantees no duplicate side effect."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        workflow = WorkflowInterface()
+
+        original_run_id, executed_first, crash_exec = _crash_after_side_effect(
+            planning, workflow, store, ledger
+        )
+        ms = RecoveryMarkerStore(pp)
+        # Simulate a previous boot that started recovery but crashed mid-resume.
+        ms.write_recovering(original_run_id, "", original_run_id)
+        assert ms.get(original_run_id).phase is MarkerPhase.RECOVERING
+
+        executed_resume = []
+        resume_exec = FakeTaskExecutor(script={}, on_execute=lambda: executed_resume.append(1))
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=workflow,
+            store=store, executor=resume_exec, ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+
+        results = StartupRecoveryCoordinator().recover_interrupted_runs(
+            store, planning, coord, marker_store=ms
+        )
+        assert len(results) == 1
+        assert results[0].status == "recovered"
+        # CRITICAL: t3's ledger HIT still skipped its side effect despite the retry.
+        assert executed_resume == []
+        assert "t3" in executed_first and "t3" not in executed_resume
+        # And the marker is now RECOVERED (retry completed).
+        assert ms.get(original_run_id).phase is MarkerPhase.RECOVERED
+
+
+def test_recover_interrupted_runs_retries_when_marker_failed():
+    """A run whose marker is FAILED is RETRIED (never silently skipped)."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        workflow = WorkflowInterface()
+
+        original_run_id, executed_first, crash_exec = _crash_after_side_effect(
+            planning, workflow, store, ledger
+        )
+        ms = RecoveryMarkerStore(pp)
+        ms.mark_failed(original_run_id, RuntimeError("prev boot boom"))
+
+        executed_resume = []
+        resume_exec = FakeTaskExecutor(script={}, on_execute=lambda: executed_resume.append(1))
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=workflow,
+            store=store, executor=resume_exec, ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+
+        results = StartupRecoveryCoordinator().recover_interrupted_runs(
+            store, planning, coord, marker_store=ms
+        )
+        assert len(results) == 1
+        assert results[0].status == "recovered"
+        assert executed_resume == []
+        assert ms.get(original_run_id).phase is MarkerPhase.RECOVERED
+
+
+def test_recover_interrupted_runs_no_marker_is_current_behavior():
+    """Without a marker_store, behavior is unchanged from before F7.3b: the RUNNING run
+    is recovered every boot (no skip). This is the upgrade-safe default for existing
+    deployments that have no recovery_markers/ directory yet."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        workflow = WorkflowInterface()
+
+        original_run_id, executed_first, crash_exec = _crash_after_side_effect(
+            planning, workflow, store, ledger
+        )
+        executed_resume = []
+        resume_exec = FakeTaskExecutor(script={}, on_execute=lambda: executed_resume.append(1))
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=workflow,
+            store=store, executor=resume_exec, ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+
+        # Two boots, no marker store -> recovered both times (no skip optimization).
+        r1 = StartupRecoveryCoordinator().recover_interrupted_runs(store, planning, coord)
+        r2 = StartupRecoveryCoordinator().recover_interrupted_runs(store, planning, coord)
+        assert r1[0].status == "recovered"
+        assert r2[0].status == "recovered"
+        assert executed_resume == []  # ledger HIT both times -> still idempotent
