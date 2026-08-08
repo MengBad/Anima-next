@@ -305,6 +305,28 @@ def start(config_path, once):
     else:
         click.echo("QQ 渠道已禁用：以隔离 staging 模式运行")
 
+    # Runtime recovery wiring (F4.7b): register a Module whose restore() runs the
+    # runtime recovery bootstrap during core.start()'s restore loop. The store /
+    # workflow / planning handles are runtime dependencies, constructed here and
+    # injected; core stays the host (no core -> runtime dependency).
+    try:
+        from anima.core.persistence import PersistenceProvider
+        from anima.constitution.planning_interface import PlanningInterface
+        from anima.constitution.workflow import WorkflowInterface
+        from anima.runtime.persistence import WorkflowRunStore
+        from anima.runtime.recovery_module import RecoveryModule
+
+        core.register(RecoveryModule(
+            store=WorkflowRunStore(PersistenceProvider(cfg.persistence.data_dir)),
+            workflow=WorkflowInterface(),
+            planning=PlanningInterface(),
+        ))
+    except Exception:
+        # Recovery wiring must never block startup (degradation, AGENTS.md):
+        # a failure to construct the runtime recovery module is logged and skipped.
+        import logging
+        logging.getLogger("anima.cli").exception("runtime recovery wiring failed, continuing")
+
     # LLM 客户端
     provider_cfg = cfg.llm.provider_config()
     provider_key_value = provider_cfg.get("api_key", cfg.llm.api_key)
