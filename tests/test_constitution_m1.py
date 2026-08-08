@@ -534,6 +534,28 @@ def _workflow_run_for_test(status=RunStatus.PENDING, run_id="run-1") -> Workflow
     return WorkflowRun(id=run_id, plan_ref=PlanRef(plan_id="plan#x"), status=status)
 
 
+def _active_plan_for_run(
+    plan_id="plan#understand-X",
+    goal_ref="goal#understand-X",
+    status=PlanStatus.ACTIVE,
+    tasks=None,
+) -> Plan:
+    # An ACTIVE canonical Plan as the Workflow receives it at the consumption boundary (D3).
+    # Built directly (not via PlanningInterface) so a specific plan_id / status can be pinned;
+    # the real cross-authority path is exercised separately in the D3 block.
+    return Plan(
+        id=plan_id,
+        goal_ref=goal_ref,
+        goal_target="understand X",
+        status=status,
+        context_ref="ctx#understand-X",
+        task_graph=[
+            Task(id="t1", title="Read", intent="understand X", depends_on=[]),
+            Task(id="t2", title="Synthesize", intent="can explain X", depends_on=["t1"]),
+        ] if tasks is None else tasks,
+    )
+
+
 def test_workflow_interface_is_the_only_run_lifecycle_writer():
     """Single-writer rule (O1) enforced mechanically over the source tree (mirrors the
     Plan-lifecycle guard). No module other than ``workflow`` may assign a run runtime state,
@@ -589,7 +611,7 @@ def test_start_run_creates_and_activates_run():
     # start_run is the run-activator: a fresh run goes pending -> running and holds only a
     # PlanRef opaque handle (F-02) — never the Plan object.
     wf = WorkflowInterface()
-    run = wf.start_run("plan#understand-X")
+    run = wf.start_run(_active_plan_for_run())
     assert isinstance(run, WorkflowRun)
     assert run.status == RunStatus.RUNNING
     assert isinstance(run.plan_ref, PlanRef) and run.plan_ref.plan_id == "plan#understand-X"
@@ -600,7 +622,7 @@ def test_start_run_creates_and_activates_run():
 
 def test_suspend_resume_lifecycle():
     wf = WorkflowInterface()
-    run = wf.start_run("plan#x")
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#x"))
     suspended = wf.suspend_run(run.id, "pause")
     assert suspended.status == RunStatus.SUSPENDED
     resumed = wf.resume_run(run.id)
@@ -609,11 +631,11 @@ def test_suspend_resume_lifecycle():
 
 def test_cancel_run_from_running_or_suspended():
     wf = WorkflowInterface()
-    run = wf.start_run("plan#x")
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#x"))
     cancelled_from_running = wf.cancel_run(run.id, "user abort")
     assert cancelled_from_running.status == RunStatus.CANCELLED
 
-    run2 = wf.start_run("plan#y")
+    run2 = wf.start_run(_active_plan_for_run(plan_id="plan#y"))
     wf.suspend_run(run2.id, "pause")
     cancelled_from_suspended = wf.cancel_run(run2.id, "user abort")
     assert cancelled_from_suspended.status == RunStatus.CANCELLED
@@ -649,7 +671,9 @@ def test_terminal_states_have_no_outgoing_transition():
 def test_report_task_outcome_records_state_without_status_change():
     # Execution reports; the run status is NOT changed by the report (F-04 transition is D4).
     wf = WorkflowInterface()
-    run = wf.start_run("plan#x")
+    # single-Task Plan: D3 seeds one pending TaskState, so a report replaces it (no growth).
+    single = [Task(id="t1", title="Read", intent="understand X", depends_on=[])]
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#x", tasks=single))
     reported = wf.report_task_outcome(run.id, "t1", TaskState(task_id="t1", status=TaskRunStatus.DONE))
     assert reported.status == RunStatus.RUNNING  # unchanged
     assert len(reported.task_states) == 1
@@ -663,12 +687,12 @@ def test_report_task_outcome_records_state_without_status_change():
 
 def test_read_run_and_list_runs_are_read_only():
     wf = WorkflowInterface()
-    run = wf.start_run("plan#x")
+    run = wf.start_run(_active_plan_for_run(plan_id="plan#x", goal_ref="goal#x"))
     before = run.status
     _ = wf.read_run(run.id)
     assert run.status == before
-    # list_runs is a read-only filter over the live registry (goal_ref is "" for D2 runs)
-    listed = wf.list_runs("")
+    # list_runs is a read-only filter over the live registry (goal_ref comes from the Plan, D3)
+    listed = wf.list_runs("goal#x")
     assert len(listed) == 1 and listed[0].id == run.id
     assert run.status == before  # listing did not transition
 
@@ -679,6 +703,179 @@ def test_workflow_run_registry_is_in_process_only():
     assert isinstance(wf._registry, dict)
     for forbidden in ("save", "persist", "restore", "store", "load"):
         assert not hasattr(wf, forbidden)
+
+
+# --------------------------------------------------------------------------
+# Phase D3 — Plan -> WorkflowRun consumption boundary (RFC-0003 §6 start_run, F-01/F-02)
+# --------------------------------------------------------------------------
+def test_start_run_consumes_an_active_plan_from_the_planning_authority():
+    """The real cross-authority path: the Planning Authority produces + activates the Plan,
+    the Workflow Authority consumes it. Two authorities, one read-only handoff."""
+    from anima.constitution.planning_interface import PlanningInterface
+
+    planning = PlanningInterface()
+    plan = planning.request_plan(
+        "goal#understand-X",
+        goal=_goal_for_plan(),
+        drive=_drive_for_plan(),
+        context=_ctx_for_plan(),
+    )
+    planning.activate_plan(plan.id)
+    # The caller dereferences the handle; the Workflow is handed the resolved Plan, read-only.
+    resolved = planning.read_plan(plan.id)
+
+    wf = WorkflowInterface()
+    run = wf.start_run(resolved)
+
+    assert run.status == RunStatus.RUNNING          # sole run-activator (GQ9)
+    assert run.plan_ref.plan_id == plan.id          # opaque snapshot handle (F-02)
+    assert run.plan_ref.contract_version == plan.contract_version
+    assert run.goal_ref == "goal#understand-X"      # F-01 reference population
+    assert run.context_ref == resolved.context_ref  # F-01 reference population
+    # one derived TaskState per Plan Task, in Plan order
+    assert [s.task_id for s in run.task_states] == [t.id for t in resolved.task_graph]
+    assert all(s.status == TaskRunStatus.PENDING for s in run.task_states)
+    # consumption is NOT a Plan transition (RFC-0002 §7.1 `consume`)
+    assert planning.read_plan(plan.id).status is PlanStatus.ACTIVE
+
+
+def test_start_run_rejects_a_draft_plan():
+    # A draft Plan is uncommitted; the Workflow never self-activates (that is activate_plan).
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    draft = _active_plan_for_run(status=PlanStatus.DRAFT)
+    with pytest.raises(ConstitutionViolation):
+        wf.start_run(draft)
+    assert draft.status is PlanStatus.DRAFT   # refusal, not repair
+    assert wf._registry == {}                 # no half-created run left behind
+
+
+def test_start_run_rejects_discarded_plans():
+    # superseded / deprecated Plans are discarded and never revived (RFC-0106 V5).
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    for discarded in (PlanStatus.SUPERSEDED, PlanStatus.DEPRECATED):
+        wf = WorkflowInterface()
+        plan = _active_plan_for_run(status=discarded)
+        with pytest.raises(ConstitutionViolation):
+            wf.start_run(plan)
+        assert plan.status is discarded
+        assert wf._registry == {}
+
+
+def test_start_run_rejects_an_empty_task_graph():
+    # A run with no tasks can never reach a terminal state — refuse at the boundary.
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    empty = _active_plan_for_run(tasks=[])
+    with pytest.raises(ConstitutionViolation):
+        wf.start_run(empty)
+    assert empty.task_graph == []
+    assert wf._registry == {}
+
+
+def test_plan_to_run_tasks_is_an_explicit_field_mapping():
+    """The Task -> TaskState adapter maps by name only — no implicit unpacking, no aliasing."""
+    import inspect
+    from anima.constitution.workflow import plan_to_run_tasks
+
+    plan = _active_plan_for_run()
+    states = plan_to_run_tasks(plan)
+
+    assert [s.task_id for s in states] == [t.id for t in plan.task_graph]  # order preserved
+    for state in states:
+        assert isinstance(state, TaskState)
+        assert state.status == TaskRunStatus.PENDING
+        assert state.attempts == 0
+        assert state.result == {} and state.error == ""
+    # snapshots, never the Plan's Task nodes (F-02): no shared identity, no Task leaked through
+    assert all(not isinstance(s, Task) for s in states)
+    assert all(s is not t for s, t in zip(states, plan.task_graph))
+    # mutating a snapshot must not reach back into the Plan
+    states[0].attempts = 7
+    assert not hasattr(plan.task_graph[0], "attempts")
+
+    # mechanical: the adapter *code* contains no implicit-unpacking escape hatch. The docstring
+    # is stripped via the AST first — it names the forbidden forms in order to forbid them.
+    import ast
+    import textwrap
+
+    fn = ast.parse(textwrap.dedent(inspect.getsource(plan_to_run_tasks))).body[0]
+    if ast.get_docstring(fn) is not None:
+        fn.body = fn.body[1:]
+    code = ast.unparse(fn)
+    for forbidden in ("__dict__", "vars(", "**"):
+        assert forbidden not in code, f"adapter must map fields explicitly, found {forbidden!r}"
+
+
+def test_run_holds_no_plan_after_start_run():
+    """F-02: the Plan does not survive into the run — only the opaque handle does."""
+    wf = WorkflowInterface()
+    plan = _active_plan_for_run()
+    run = wf.start_run(plan)
+
+    assert run.plan_ref.plan_id == plan.id
+    assert run.plan_ref.contract_version == plan.contract_version
+    assert not hasattr(run, "plan")        # no live Plan handle
+    assert not hasattr(run, "task_graph")  # no embedded task_graph
+    # no attribute anywhere on the run is (or contains) the Plan / a Task node
+    values = list(vars(run).values())
+    assert not any(isinstance(v, Plan) for v in values)
+    assert not any(isinstance(v, Task) for v in values)
+    assert all(not isinstance(s, Task) for s in run.task_states)
+    assert plan not in values
+    # the interface captured no standing pathway back to Planning either — just the run registry
+    assert set(vars(wf)) == {"_registry"}
+
+
+def test_start_run_leaves_the_plan_unchanged():
+    """Read-only consumption, proven by value: the Plan before == the Plan after."""
+    import copy
+
+    wf = WorkflowInterface()
+    plan = _active_plan_for_run()
+    before = copy.deepcopy(plan)
+    task_identities = [id(t) for t in plan.task_graph]
+
+    wf.start_run(plan)
+
+    assert plan == before                       # whole-object equality (all §5 fields)
+    assert plan.status is PlanStatus.ACTIVE     # lifecycle untouched
+    assert plan.task_graph == before.task_graph
+    assert [id(t) for t in plan.task_graph] == task_identities  # no Task replaced in place
+
+
+def test_workflow_never_writes_plan_lifecycle_state():
+    """D3 reads a Plan across the authority boundary; it must not acquire a Plan writer.
+
+    Complements the tree-wide guard in test_planning_interface.py (which proves no module
+    outside PlanningInterface assigns a Plan runtime state) by pinning the specific module
+    that now imports PlanStatus."""
+    import pathlib
+    import re
+
+    source = (
+        pathlib.Path(__file__).resolve().parents[1]
+        / "anima" / "constitution" / "workflow.py"
+    ).read_text(encoding="utf-8")
+
+    # it reads the Plan's runtime state, but never assigns it
+    assert "PlanStatus" in source
+    assert re.search(r"\.status\s*=\s*PlanStatus\.", source) is None
+    # it invokes no Plan lifecycle operation, and holds no Planning Interface dependency:
+    # the Plan arrives as an argument, so the Workflow has no way to reach the Plan registry
+    for call in (".activate_plan(", ".invalidate_plan(", ".revise_plan(", ".request_plan("):
+        assert call not in source
+    assert "planning_interface" not in source
+    assert "PlanningInterface" not in source
+    # and the Workflow Interface still carries no Plan-lifecycle surface at all
+    for forbidden in ("activate_plan", "invalidate_plan", "revise_plan", "request_plan"):
+        assert not hasattr(WorkflowInterface, forbidden)
 
 
 # --------------------------------------------------------------------------
