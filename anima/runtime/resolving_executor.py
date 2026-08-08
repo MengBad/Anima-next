@@ -18,13 +18,15 @@ Frozen invariants enforced here:
   redefines it. It also gates execution on the ledger BEFORE acting (mirrors
   ``FakeTaskExecutor``): on a hit the cached observation is returned with NO provider call.
 
-Side-effect recording policy (F5.4a):
+Side-effect recording policy (F5.4a, corrected by F5.7 C4):
 - read-only / deterministic providers (``side_effect=False``): the executor records the
   fact in the ledger AFTER the provider returns (a crash before ``put`` only loses a
   read-only fact → safe retry).
-- side-effecting providers (``side_effect=True``) are out of scope for F5.4b; their
-  ledger interaction belongs to the Provider (which would consult the ledger BEFORE the
-  external call). The executor's HIT gate still prevents a blind re-invoke on resume.
+- side-effecting providers (``side_effect=True``): the LEDGER GATE belongs to the
+  EXECUTOR (this class), NOT the Provider — I2 forbids the Provider from touching the
+  ledger. The executor's HIT gate (``ledger.get`` before resolve) prevents a blind
+  re-invoke; the provider only PROPAGATES the execution_key as the external idempotency
+  token, and the external system performs the authoritative dedupe (F5.7 C2 / C4).
 """
 from __future__ import annotations
 

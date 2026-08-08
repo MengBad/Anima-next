@@ -13,7 +13,9 @@ Frozen invariants this module encodes:
   carrier back into the Workflow.
 - **I3 (execution identity unchanged):** the ``execution_key`` tuple
   ``(run_id, task_id, attempt)`` is passed through verbatim; the Provider only *consumes*
-  it (e.g. as an external idempotency token). It must never redefine or extend the key.
+  it as the external idempotency token (for a side-effecting provider this is MANDATORY —
+  F5.7 C2: F5 identity == external mutation identity). It must never redefine or extend
+  the key.
 - **Error normalization:** a Provider signals retryable vs logical failure with the two
   exceptions below; any other failure is expressed as a ``ProviderResult(success=False)``
   (no raw exception escapes into the Resolver's control flow).
@@ -112,8 +114,9 @@ class Provider(abc.ABC):
         """Execute the capability once under ``execution_key``; return pure data.
 
         ``execution_key`` = (run_id, task_id, attempt) — consumed verbatim (I3); a
-        side-effecting provider SHOULD offer it to the external system as an idempotency
-        token. May raise :class:`TransientError` (retryable) or :class:`LogicalError`
+        side-effecting provider MUST offer it to the external system as the idempotency
+        token (F5.7 C2) so a commit-then-crash window cannot double-apply. May raise
+        :class:`TransientError` (retryable) or :class:`LogicalError`
         (non-retryable, skip to next candidate); all other failures MUST be returned as
         ``ProviderResult(success=False, error=...)`` rather than raised.
         """
