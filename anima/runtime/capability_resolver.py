@@ -70,6 +70,24 @@ class CapabilityUnavailable(ResolutionError):
     """All candidate providers failed (transient exhausted / logical / soft-fail)."""
 
 
+class RegistrationIntegrityError(Exception):
+    """Registration refused: a capability contract and its provider disagree on the
+    side-effect / idempotency profile (F7.1 guard).
+
+    ``CapabilityContract`` is the capability *policy* (declaration layer); the
+    ``Provider`` is the runtime *truth* (implementation layer). The two MUST agree:
+    a policy that declares ``side_effect=False`` while the provider actually mutates
+    external state is a silent safety hole — the executor would skip its ledger
+    side-effect gate (C2 / C4). We refuse registration rather than let the
+    inconsistency stand.
+
+    Deliberately NOT a ``ResolutionError`` (this is a configuration-time guard, not a
+    resolution-time failure), and deliberately NOT contract-as-sole-truth: the provider
+    is the real executor, so a "declares safe but mutates" implementation cannot hide
+    behind a policy it satisfies on paper.
+    """
+
+
 # ---------------------------------------------------------------------------
 # CapabilityNeed + Contract + Registry
 # ---------------------------------------------------------------------------
@@ -142,6 +160,27 @@ class CapabilityRegistry:
     ) -> None:
         if not providers:
             raise ValueError("register requires at least one provider")
+        # F7.1 Registration Integrity: contract (policy / declaration layer) and
+        # provider (runtime truth / implementation layer) must agree on the
+        # side-effect / idempotency profile. A mismatch lets a "declares safe but
+        # actually mutates" provider slip past the executor's ledger side-effect
+        # gate (C2 / C4). Validate BEFORE mutating so a reject leaves the registry
+        # unchanged (atomic).
+        for provider in providers:
+            if (
+                provider.side_effect != contract.side_effect
+                or provider.idempotent != contract.idempotent
+            ):
+                raise RegistrationIntegrityError(
+                    f"register: capability {contract.capability_id!r} contract "
+                    f"(policy) contradicts provider {provider.capability_id!r} "
+                    f"(runtime truth) on side-effect/idempotency. "
+                    f"contract=(side_effect={contract.side_effect}, "
+                    f"idempotent={contract.idempotent}) "
+                    f"provider=(side_effect={provider.side_effect}, "
+                    f"idempotent={provider.idempotent}). "
+                    f"Declared policy must match runtime truth."
+                )
         self._contracts[contract.capability_id] = contract
         self._providers.setdefault(contract.capability_id, []).extend(providers)
 
