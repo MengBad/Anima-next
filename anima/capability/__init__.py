@@ -10,12 +10,26 @@
 """
 from __future__ import annotations
 
+from .canonical import (
+    DEFAULT_PERMISSION_TOKEN,
+    DEFAULT_RUNTIME_TIMEOUT,
+    CanonicalCapabilityContract,
+    ContractSource,
+)
 from .contract import CapabilityContract
 from .index import CapabilityIndex, ProviderRef, schema_name_for
 from .resolver import CapabilityResolution, CapabilityResolver
 from .scopes import NO_SCOPES, SCOPE_NAMES, PermissionScopes, exec_permitted, map_scopes_to_sandbox
 
+# ``adapters`` 刻意不在这里 re-export：``to_runtime_contract`` 会惰性拉入
+# ``anima.runtime`` / ``anima.constitution``，不应让 ``import anima.capability``
+# 平白背上这份依赖。需要投影的调用方显式 ``from anima.capability.adapters import ...``。
+
 __all__ = [
+    "CanonicalCapabilityContract",
+    "ContractSource",
+    "DEFAULT_PERMISSION_TOKEN",
+    "DEFAULT_RUNTIME_TIMEOUT",
     "CapabilityContract",
     "CapabilityIndex",
     "CapabilityResolution",
