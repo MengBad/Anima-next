@@ -45,9 +45,12 @@ from anima.constitution.state import (
     Goal,
     GoalLifecycle,
     OrientationAxis,
+    PlanRef,
     PlannerContext,
     RunStatus,
     TaskRunStatus,
+    TaskState,
+    WorkflowRun,
 )
 from anima.constitution.workflow import WorkflowInterface
 from anima.core.persistence import PersistenceProvider
@@ -298,6 +301,99 @@ def test_resume_skips_already_terminal_and_hits_ledger():
         # (no re-execution). So resume executed NOTHING.
         assert executed_resume == []
         assert "t1" in executed_first and "t1" not in executed_resume
+
+
+class _GatedRecordingExecutor(TaskExecutor):
+    """Faithful stand-in for ResolvingTaskExecutor: consults the ledger BEFORE acting and
+    returns the cached observation on a HIT (no provider call). Records the task id ONLY
+    when it actually executes (post-gate) — so a HIT is provably a no-op for the provider.
+    """
+
+    def __init__(self, observation, executed_ids):
+        self._observation = observation
+        self._executed_ids = executed_ids
+
+    def execute(self, task, execution_key, ledger=None):
+        if ledger is not None:
+            cached = ledger.get(execution_key)
+            if cached is not None:
+                return cached
+        self._executed_ids.append(task.id)
+        if ledger is not None:
+            ledger.put(execution_key, self._observation)
+        return self._observation
+
+
+# --------------------------------------------------------------------------- #
+# F7.2 — Recovery Identity Preservation (migration test)
+# --------------------------------------------------------------------------- #
+def test_recover_and_resume_preserves_attempts_identity_no_duplicate():
+    """F7.2 migration — Recovery Identity Preservation.
+
+    A PENDING task that had ``attempts = N > 0`` at crash (the future in-run retry case
+    the F7 C1 audit flagged) must keep its attempts across recovery, so the resume
+    re-dispatches with the SAME idempotency key ``(source_run_id, task_id, N)`` and HITs
+    the pre-crash ledger fact — instead of being reset to ``attempt = 0`` (key desync)
+    and re-invoking a non-idempotent provider's side effect.
+
+    The ledger key shape ``(run_id, task_id, attempt)`` is UNCHANGED by F7.2, so the
+    pre-existing fact (seeded here at that exact shape) is consulted as-is: no on-disk
+    ledger migration is required (ledger compatibility strategy)."""
+    with tempfile.TemporaryDirectory() as td:
+        pp = PersistenceProvider(td)
+        store = WorkflowRunStore(pp)
+        ledger = ExecutionLedger(pp)
+        planning = PlanningInterface()
+        _active_plan(planning)
+        plan = planning.list_plans("goal#understand-X")[0]
+        task_ids = [t.id for t in plan.task_graph]
+
+        original_run_id = "run#old-crashed"
+        old = WorkflowRun(
+            id=original_run_id,
+            contract_version="1.0.0",
+            plan_ref=PlanRef(plan_id=plan.id, contract_version=plan.contract_version),
+            goal_ref="goal#understand-X",
+            status=RunStatus.RUNNING,
+            task_states=[
+                TaskState(task_id=task_ids[0], status=TaskRunStatus.DONE, attempts=1,
+                          result={"read": "X"}, error=""),
+                TaskState(task_id=task_ids[1], status=TaskRunStatus.PENDING, attempts=1,
+                          result={}, error=""),
+                TaskState(task_id=task_ids[2], status=TaskRunStatus.PENDING, attempts=0,
+                          result={}, error=""),
+            ],
+            current_task_id=task_ids[1],
+            checkpoint_ref=task_ids[0],
+            retry_policy={},
+            schedule_ref="",
+            budget_ref="",
+            context_ref="ctx#understand-X",
+            created_at="2026-08-08T00:00:00+00:00",
+            completed_at="",
+        )
+        store.save(old)
+        # Pre-crash side effect already recorded for t2 at attempt=1 — legacy key shape,
+        # preserved unchanged by F7.2 (no ledger on-disk migration needed).
+        ledger.put((original_run_id, task_ids[1], 1), _obs(task_id=task_ids[1]))
+
+        executed_resume = []
+        resume_exec = _GatedRecordingExecutor(_obs(), executed_resume)
+        orch2 = PlanOrchestrator(
+            planning=planning, workflow=WorkflowInterface(),
+            store=store, executor=resume_exec, ledger=ledger,
+        )
+        coord = ResumeCoordinator(orch2)
+
+        final = coord.recover_and_resume(store, planning, original_run_id)
+
+        assert final.status is RunStatus.COMPLETED
+        # CRITICAL: t2's pre-crash fact (attempt=1) was found on resume -> NOT re-executed.
+        assert task_ids[1] not in executed_resume
+        # t3 (attempt=0) had no fact -> executed exactly once on resume.
+        assert task_ids[2] in executed_resume
+        # ledger key shape is backward-compatible across the migration.
+        assert ledger.get((original_run_id, task_ids[1], 1)) is not None
 
 
 # --------------------------------------------------------------------------- #

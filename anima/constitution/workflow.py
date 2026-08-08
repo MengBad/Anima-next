@@ -491,7 +491,12 @@ class WorkflowInterface:
         return run
 
     # ---- §6 operations ----
-    def start_run(self, plan: Plan) -> WorkflowRun:
+    def start_run(
+        self,
+        plan: Plan,
+        *,
+        carry_attempts: "dict[str, int] | None" = None,
+    ) -> WorkflowRun:
         """Create AND activate a run for an ACTIVE Plan (RFC-0003 §6/§7.1, F-01/F-02).
 
         The Plan crosses the authority boundary here exactly once, **read-only**. The caller
@@ -517,10 +522,26 @@ class WorkflowInterface:
         ``abort_run``-ed before any task dispatches (F-03 entry-state exit) — the abort
         path is exercised against a ``pending`` run held in the registry.
 
+        ``carry_attempts`` (optional, recovery-only) — a ``{task_id: attempts}`` map letting a
+        recovered run preserve each task's pre-crash attempt count (F7.2 Recovery Identity
+        Preservation). Omit it for a normal start; the canonical zero-attempts begin applies.
+
         Raises ``ConstitutionViolation`` if the Plan is not consumable (see
         ``_validate_consumable_plan``); in that case no run is created.
         """
         self._validate_consumable_plan(plan)
+        task_states = plan_to_run_tasks(plan)
+        # F7.2 — attempt persistence: a recovery caller may carry each task's original
+        # attempts into the new run so the execution identity (run_id, task_id, attempts)
+        # survives a crash boundary. Without this, a PENDING task that had attempts > 0 at
+        # crash would be reset to 0, desyncing the idempotency key on resume and risking a
+        # duplicate external side effect. Default None preserves the canonical zero-attempts
+        # start (every freshly started run begins each task at attempt 0).
+        if carry_attempts:
+            for ts in task_states:
+                carried = carry_attempts.get(ts.task_id)
+                if carried is not None:
+                    ts.attempts = carried
         run = WorkflowRun(
             id=uuid.uuid4().hex,
             contract_version=WORKFLOWRUN_CONTRACT_VERSION,
@@ -528,7 +549,7 @@ class WorkflowInterface:
             plan_ref=PlanRef(plan_id=plan.id, contract_version=plan.contract_version),
             goal_ref=plan.goal_ref,        # F-01 reference population (opaque ref, read-only)
             status=RunStatus.PENDING,
-            task_states=plan_to_run_tasks(plan),  # derived snapshots, never the live task_graph
+            task_states=task_states,  # derived snapshots (optionally attempt-carried), never live task_graph
             context_ref=plan.context_ref,  # F-01 reference population (opaque ref, read-only)
             created_at=_now_iso(),
         )

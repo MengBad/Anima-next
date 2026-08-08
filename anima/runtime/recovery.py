@@ -100,7 +100,17 @@ def recover_run(
     """
     plan = _resolve_active_plan(planning, persisted_run.goal_ref)
 
-    new_run = workflow.start_run(plan)
+    # F7.2 — Recovery Identity Preservation: carry each task's ORIGINAL attempts into the
+    # new run so the execution identity (source_run_id, task_id, attempts) survives the
+    # crash boundary. The run_id component is seeded by the caller as ``source_run_id``
+    # (resume_coordinator / orchestrator); the attempts component is carried here. Together
+    # they let ``_resume_run`` rebuild the IDENTICAL idempotency key and HIT the pre-crash
+    # ledger fact instead of desyncing to a fresh attempt=0 and duplicating a non-idempotent
+    # provider's side effect (F7 C1). The ledger key shape is unchanged, so no on-disk
+    # migration is required (ledger compatibility strategy).
+    carry_attempts = {s.task_id: s.attempts for s in persisted_run.task_states}
+
+    new_run = workflow.start_run(plan, carry_attempts=carry_attempts)
 
     for old_state in persisted_run.task_states:
         if old_state.status in (

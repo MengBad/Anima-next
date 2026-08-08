@@ -171,6 +171,34 @@ def test_pending_tasks_are_kept_not_fabricated():
 
 
 # ---------------------------------------------------------------------------
+# Test 3b — F7.2 attempt-persistence contract
+# ---------------------------------------------------------------------------
+def test_recover_run_carries_pending_attempts_into_new_run():
+    """F7.2 attempt-persistence contract: recovery must preserve each task's ORIGINAL
+    attempts into the new run — including a PENDING task that had attempts > 0 at crash
+    (the future in-run retry case). The new run must NOT reset PENDING attempts to 0,
+    or the resume would reconstruct a desynced idempotency key and could duplicate a
+    non-idempotent provider's side effect (F7 C1)."""
+    with tempfile.TemporaryDirectory() as td:
+        planning = PlanningInterface()
+        _active_plan_id(planning)
+        store = _fresh_store(td)
+        old = _persisted_run(task_states=[
+            TaskState(task_id="t1", status=TaskRunStatus.DONE, attempts=3,
+                      result={"read": "X"}, error=""),
+            TaskState(task_id="t2", status=TaskRunStatus.PENDING, attempts=2,
+                      result={}, error=""),
+        ])
+        store.save(old)
+
+        recovered = recover_run(store, WorkflowInterface(), planning, old)
+
+    # terminal replay preserves attempts=3; PENDING carry preserves attempts=2 (NOT reset to 0)
+    assert recovered.task_states[0].attempts == 3
+    assert recovered.task_states[1].attempts == 2
+
+
+# ---------------------------------------------------------------------------
 # Test 4 — PlanRef rebinding
 # ---------------------------------------------------------------------------
 def test_plan_ref_is_rebound_to_new_plan():
