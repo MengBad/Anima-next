@@ -1,0 +1,250 @@
+"""CapabilityResolver Contract (F5.4b) — capability selection layer (RFC-0001 / RFC-0001A).
+
+This module owns the SELECTION logic that the Executor must NOT own (I1 —
+Executor ≠ Capability Selector). It answers:
+
+    CapabilityNeed -> candidates -> score -> pick -> ProviderResult
+
+and nothing about *when* tasks run, *what* the Workflow thinks, or *how* observations
+become run state. That separation is what keeps the executor a pure executioner and the
+Provider boundary clean (I2).
+
+Frozen invariants:
+
+- **I1 (Executor ≠ Capability Selector):** selection lives HERE. The Executor builds a
+  ``CapabilityNeed`` from the task and calls ``resolve``; the Resolver chooses the
+  provider. The Executor never holds a provider list and never names a provider.
+- **I2 (Provider ≠ Workflow Authority):** the Resolver only calls ``provider.invoke`` and
+  returns its ``ProviderResult``. It never writes run/task state.
+- **I3 (execution identity unchanged):** the ``execution_key`` tuple
+  ``(run_id, task_id, attempt)`` is passed through to ``provider.invoke`` verbatim.
+  Neither the Resolver nor the Provider may redefine or extend it.
+
+Resolution algorithm (mirrors RFC-0001 Candidate→Score→Pick):
+
+1. **Contract lookup** — capability must be registered (else ``CapabilityNotFound``).
+2. **Candidate discovery** — providers for that capability that are ``healthy`` AND whose
+   ``granted_scopes`` is a SUPERSET of the contract's required ``permission``.
+   No candidate -> ``PermissionDenied`` (scope gap) or ``NoProvider`` (none registered).
+3. **Scoring** — a pluggable Scorer ranks candidates (default: 0.4*Success + 0.3*Health
+   + 0.2*Latency(inverted) + 0.1*Cost(inverted), dimensions from RFC-0001A metadata).
+4. **Pick / degradation** — try candidates in score order. ``TransientError`` is retried
+   up to ``contract.retry`` times within the same provider; ``LogicalError`` or a
+   ``success=False`` result skips to the next candidate. All candidates exhausted ->
+   ``CapabilityUnavailable`` (last error surfaced in the message, diagnostics only).
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Callable
+
+from anima.constitution.execution import ExecutionStep
+from anima.runtime.providers.base import (
+    LogicalError,
+    Provider,
+    ProviderResult,
+    TransientError,
+)
+
+
+# ---------------------------------------------------------------------------
+# Error taxonomy (RFC-0001 resolution errors)
+# ---------------------------------------------------------------------------
+class ResolutionError(Exception):
+    """Base class for capability-resolution failures."""
+
+
+class CapabilityNotFound(ResolutionError):
+    """The requested ``capability_id`` is not registered at all."""
+
+
+class NoProvider(ResolutionError):
+    """A contract exists but no provider is registered for the capability."""
+
+
+class PermissionDenied(ResolutionError):
+    """No registered provider holds the scope required by the capability contract."""
+
+
+class CapabilityUnavailable(ResolutionError):
+    """All candidate providers failed (transient exhausted / logical / soft-fail)."""
+
+
+# ---------------------------------------------------------------------------
+# CapabilityNeed + Contract + Registry
+# ---------------------------------------------------------------------------
+@dataclass
+class CapabilityNeed:
+    """What the Executor asks the Resolver to fulfill (F5.4b).
+
+    Built from a task's ``capability_need`` dict by :meth:`from_step`. ``context`` carries
+    optional scoring preferences (latency/cost bias) — the resolver reads them but they
+    never override the permission/safety gates.
+    """
+
+    capability_id: str
+    args: dict = field(default_factory=dict)
+    context: dict = field(default_factory=dict)
+
+    @classmethod
+    def from_step(cls, step: ExecutionStep) -> "CapabilityNeed":
+        """Project an ``ExecutionStep``'s ``capability_need`` dict into a ``CapabilityNeed``.
+
+        The shape is ``{"capability": <id>, "args": {...}, "context": {...}}``. A missing
+        ``"capability"`` is a contract misuse by the caller (the task declared no need),
+        surfaced as ``CapabilityNotFound`` rather than silently inventing one.
+        """
+        cn = step.capability_need or {}
+        capability_id = cn.get("capability")
+        if not capability_id:
+            raise CapabilityNotFound(
+                f"CapabilityNeed.from_step: ExecutionStep {step.id!r} declares no "
+                f"'capability' in capability_need (executor must not invent one)"
+            )
+        return cls(
+            capability_id=capability_id,
+            args=dict(cn.get("args", {})),
+            context=dict(cn.get("context", {})),
+        )
+
+
+@dataclass
+class CapabilityContract:
+    """Frozen metadata for a capability (RFC-0001A), owned by the registry.
+
+    Carries the safety/selection parameters the Resolver enforces: the required
+    ``permission`` scope, the side-effect/idempotency profile, the timeout, and the
+    per-provider ``retry`` budget for transient failures.
+    """
+
+    capability_id: str
+    permission: str = "capability:invoke"   # required granted scope (superset gate)
+    side_effect: bool = False
+    idempotent: bool = True
+    timeout: float = 30.0
+    retry: int = 0                           # transient-retry budget per provider
+
+
+class CapabilityRegistry:
+    """Config-driven capability → [providers] routing table (F5-native, RFC-0001).
+
+    Distinct from the V1 ``anima/tools`` ToolRegistry: this is the F5 runtime's resolver
+    substrate. Registration is explicit and ordered (the order seeds candidate priority
+    before scoring re-ranks).
+    """
+
+    def __init__(self) -> None:
+        self._contracts: dict[str, CapabilityContract] = {}
+        self._providers: dict[str, list[Provider]] = {}
+
+    def register(
+        self, contract: CapabilityContract, *providers: Provider
+    ) -> None:
+        if not providers:
+            raise ValueError("register requires at least one provider")
+        self._contracts[contract.capability_id] = contract
+        self._providers.setdefault(contract.capability_id, []).extend(providers)
+
+    def has(self, capability_id: str) -> bool:
+        return capability_id in self._contracts
+
+    def contract_for(self, capability_id: str) -> CapabilityContract:
+        return self._contracts[capability_id]
+
+    def providers_for(self, capability_id: str) -> list[Provider]:
+        return list(self._providers.get(capability_id, []))
+
+
+# ---------------------------------------------------------------------------
+# Scoring (RFC-0001A metadata → ranking)
+# ---------------------------------------------------------------------------
+def default_scorer(provider: Provider, contract: CapabilityContract) -> float:
+    """Default candidate ranking (RFC-0001 weights).
+
+    0.4*Success + 0.3*Health + 0.2*Latency(inverted) + 0.1*Cost(inverted).
+
+    Latency and cost are normalized to [0,1] (lower is better), so their inverted forms
+    reward speed/cheapness. Success/Health are already [0,1].
+    """
+    success = max(0.0, min(1.0, provider.success_rate))
+    health = max(0.0, min(1.0, provider.health))
+    latency = 1.0 - max(0.0, min(1.0, provider.latency_ms / 1000.0))
+    cost = 1.0 - max(0.0, min(1.0, provider.cost / 1.0))
+    return 0.4 * success + 0.3 * health + 0.2 * latency + 0.1 * cost
+
+
+# ---------------------------------------------------------------------------
+# Resolver
+# ---------------------------------------------------------------------------
+class CapabilityResolver:
+    """The selection authority (F5.4b). Resolves a ``CapabilityNeed`` to a ``ProviderResult``.
+
+    See module docstring for the frozen resolution algorithm. The resolver owns NO
+    execution act and NO workflow state — it is pure routing + degradation.
+    """
+
+    def __init__(
+        self,
+        registry: CapabilityRegistry,
+        scorer: Callable[[Provider, CapabilityContract], float] | None = None,
+    ) -> None:
+        self._registry = registry
+        self._scorer = scorer or default_scorer
+
+    def resolve(
+        self, need: CapabilityNeed, execution_key: tuple
+    ) -> ProviderResult:
+        """Select a provider and invoke it; degrade across candidates on failure.
+
+        ``execution_key`` = (run_id, task_id, attempt) — passed verbatim to the chosen
+        provider (I3). Raises a ``ResolutionError`` subclass if no provider can serve the
+        need (see module docstring for each case).
+        """
+        if not self._registry.has(need.capability_id):
+            raise CapabilityNotFound(
+                f"resolve: capability {need.capability_id!r} is not registered"
+            )
+        contract = self._registry.contract_for(need.capability_id)
+        candidates = [
+            p
+            for p in self._registry.providers_for(need.capability_id)
+            if p.healthy and contract.permission in p.granted_scopes
+        ]
+        if not candidates:
+            # distinguish a scope gap from a total absence for clearer diagnostics
+            if self._registry.providers_for(need.capability_id):
+                raise PermissionDenied(
+                    f"resolve: no provider for {need.capability_id!r} holds the "
+                    f"required scope {contract.permission!r}"
+                )
+            raise NoProvider(
+                f"resolve: no provider registered for {need.capability_id!r}"
+            )
+
+        ordered = sorted(
+            candidates, key=lambda p: self._scorer(p, contract), reverse=True
+        )
+
+        last_error: str | None = None
+        for provider in ordered:
+            # per-provider transient-retry budget (LogicalError / soft-fail skip immediately)
+            attempts = 1 + max(0, contract.retry)
+            for attempt in range(attempts):
+                try:
+                    result = provider.invoke(
+                        need.capability_id, need.args, execution_key
+                    )
+                except TransientError as exc:
+                    last_error = f"transient: {exc}"
+                    continue  # retry within budget
+                except LogicalError as exc:
+                    last_error = f"logical: {exc}"
+                    break  # non-retryable -> next candidate
+                if result.success:
+                    return result
+                last_error = result.error or "unknown failure"
+                break  # soft failure -> next candidate
+        raise CapabilityUnavailable(
+            f"resolve: capability {need.capability_id!r} unavailable "
+            f"(all candidates failed; last error: {last_error})"
+        )
