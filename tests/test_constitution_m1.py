@@ -17,6 +17,7 @@ from anima.constitution.execution import (
     execute_plan,
     task_to_execution_step,
 )
+from anima.constitution.workflow import WorkflowInterface
 from anima.constitution.memory_authority import MemoryAuthority, ingest
 from anima.constitution.reflection import Reflector, reflect
 from anima.constitution.persona import PersonaProjector, derive_persona
@@ -522,6 +523,162 @@ def test_workflow_run_rfc0003_field_coverage():
     ts = TaskState(task_id="t1", status=TaskRunStatus.DONE, attempts=2, result={"ok": True}, error="")
     assert ts.task_id == "t1" and ts.status == TaskRunStatus.DONE and ts.attempts == 2
     assert ts.result == {"ok": True} and ts.error == ""
+
+
+# --------------------------------------------------------------------------
+# Phase D2 — Workflow Interface skeleton + run-state single-writer lifecycle (RFC-0003 §6/§7)
+# --------------------------------------------------------------------------
+def _workflow_run_for_test(status=RunStatus.PENDING, run_id="run-1") -> WorkflowRun:
+    # Direct construction helper — mirrors how PlanningInterface tests build Plans. Used to
+    # set up a specific run-state (e.g. a PENDING run for abort_run) without the public API.
+    return WorkflowRun(id=run_id, plan_ref=PlanRef(plan_id="plan#x"), status=status)
+
+
+def test_workflow_interface_is_the_only_run_lifecycle_writer():
+    """Single-writer rule (O1) enforced mechanically over the source tree (mirrors the
+    Plan-lifecycle guard). No module other than ``workflow`` may assign a run runtime state,
+    and inside it every write must go through the single ``_transition`` method."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "anima"
+    owner = root / "constitution" / "workflow.py"
+    external_writer = re.compile(r"\.status\s*=\s*RunStatus\.")
+
+    offenders = [
+        str(path.relative_to(root))
+        for path in root.rglob("*.py")
+        if path != owner and external_writer.search(path.read_text(encoding="utf-8"))
+    ]
+    assert offenders == [], f"run lifecycle written outside the Workflow Interface: {offenders}"
+
+    # Inside the owner, exactly ONE state-assignment site exists: the `_transition` funnel.
+    source = owner.read_text(encoding="utf-8")
+    assert len(re.findall(r"\.status\s*=(?!=)", source)) == 1
+    assert "run.status = target" in source
+
+
+def test_workflow_interface_public_surface_is_exactly_the_rfc_operations():
+    """D2 fixes the §6 interface — it must not grow beyond the eight RFC-0003 operations."""
+    public = {
+        name
+        for name in vars(WorkflowInterface)
+        if not name.startswith("_") and callable(getattr(WorkflowInterface, name))
+    }
+    assert public == {
+        "start_run",
+        "read_run",
+        "list_runs",
+        "suspend_run",
+        "resume_run",
+        "cancel_run",
+        "abort_run",
+        "report_task_outcome",
+    }
+
+
+def test_workflow_interface_has_no_extra_lifecycle_mutation_api():
+    # The interface exposes exactly the eight §6 ops; no hidden status/transition surface
+    # (no second writer, no Plan-lifecycle method, no storage authority on the run).
+    for forbidden in ("set_status", "transition", "activate_plan", "invalidate_plan",
+                      "modify_run", "save", "persist", "restore"):
+        assert not hasattr(WorkflowInterface, forbidden)
+
+
+def test_start_run_creates_and_activates_run():
+    # start_run is the run-activator: a fresh run goes pending -> running and holds only a
+    # PlanRef opaque handle (F-02) — never the Plan object.
+    wf = WorkflowInterface()
+    run = wf.start_run("plan#understand-X")
+    assert isinstance(run, WorkflowRun)
+    assert run.status == RunStatus.RUNNING
+    assert isinstance(run.plan_ref, PlanRef) and run.plan_ref.plan_id == "plan#understand-X"
+    assert run.id
+    # run is registered and readable
+    assert wf.read_run(run.id) is run
+
+
+def test_suspend_resume_lifecycle():
+    wf = WorkflowInterface()
+    run = wf.start_run("plan#x")
+    suspended = wf.suspend_run(run.id, "pause")
+    assert suspended.status == RunStatus.SUSPENDED
+    resumed = wf.resume_run(run.id)
+    assert resumed.status == RunStatus.RUNNING
+
+
+def test_cancel_run_from_running_or_suspended():
+    wf = WorkflowInterface()
+    run = wf.start_run("plan#x")
+    cancelled_from_running = wf.cancel_run(run.id, "user abort")
+    assert cancelled_from_running.status == RunStatus.CANCELLED
+
+    run2 = wf.start_run("plan#y")
+    wf.suspend_run(run2.id, "pause")
+    cancelled_from_suspended = wf.cancel_run(run2.id, "user abort")
+    assert cancelled_from_suspended.status == RunStatus.CANCELLED
+
+
+def test_abort_run_from_pending():
+    # A PENDING run (e.g. crash before dispatch) may be aborted -> cancelled (resolves F-03).
+    wf = WorkflowInterface()
+    pending = _workflow_run_for_test(status=RunStatus.PENDING, run_id="run-pending")
+    wf._registry["run-pending"] = pending
+    aborted = wf.abort_run("run-pending", "crash before dispatch")
+    assert aborted.status == RunStatus.CANCELLED
+
+
+def test_terminal_states_have_no_outgoing_transition():
+    import pytest
+    from anima.constitution.errors import ConstitutionViolation
+
+    wf = WorkflowInterface()
+    for terminal in (RunStatus.COMPLETED, RunStatus.FAILED, RunStatus.CANCELLED):
+        run = _workflow_run_for_test(status=terminal, run_id=f"run-{terminal.value}")
+        wf._registry[f"run-{terminal.value}"] = run
+        # No operation may re-transition a terminal run; transitions are rejected by the table.
+        for op in (
+            lambda: wf.resume_run(f"run-{terminal.value}"),
+            lambda: wf.cancel_run(f"run-{terminal.value}", "x"),
+            lambda: wf.suspend_run(f"run-{terminal.value}", "x"),
+        ):
+            with pytest.raises(ConstitutionViolation):
+                op()
+
+
+def test_report_task_outcome_records_state_without_status_change():
+    # Execution reports; the run status is NOT changed by the report (F-04 transition is D4).
+    wf = WorkflowInterface()
+    run = wf.start_run("plan#x")
+    reported = wf.report_task_outcome(run.id, "t1", TaskState(task_id="t1", status=TaskRunStatus.DONE))
+    assert reported.status == RunStatus.RUNNING  # unchanged
+    assert len(reported.task_states) == 1
+    assert reported.task_states[0].task_id == "t1"
+    assert reported.task_states[0].status == TaskRunStatus.DONE
+    # a second report for the same task replaces (does not duplicate)
+    wf.report_task_outcome(run.id, "t1", TaskState(task_id="t1", status=TaskRunStatus.FAILED, error="boom"))
+    assert len(wf.read_run(run.id).task_states) == 1
+    assert wf.read_run(run.id).task_states[0].status == TaskRunStatus.FAILED
+
+
+def test_read_run_and_list_runs_are_read_only():
+    wf = WorkflowInterface()
+    run = wf.start_run("plan#x")
+    before = run.status
+    _ = wf.read_run(run.id)
+    assert run.status == before
+    # list_runs is a read-only filter over the live registry (goal_ref is "" for D2 runs)
+    listed = wf.list_runs("")
+    assert len(listed) == 1 and listed[0].id == run.id
+    assert run.status == before  # listing did not transition
+
+
+def test_workflow_run_registry_is_in_process_only():
+    # The run registry is an in-process dict; the interface exposes no persistence surface.
+    wf = WorkflowInterface()
+    assert isinstance(wf._registry, dict)
+    for forbidden in ("save", "persist", "restore", "store", "load"):
+        assert not hasattr(wf, forbidden)
 
 
 # --------------------------------------------------------------------------
