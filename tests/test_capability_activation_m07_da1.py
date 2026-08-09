@@ -177,9 +177,11 @@ def test_da1_create_default_registry_accepts_activation_params():
     # F8.6：加性扩展（capability_gateway_mode / governance_audit_sink）——受治理 pilot
     # 路径的 feature gate 与 audit sink 接线。既有三参数的顺序与默认值不变；
     # 新参数一律默认 None（未显式提供 → 从 config / core 读取，缺省 OFF + 无 sink）。
+    # F8.10.1 C1：再加性扩展 health_evidence_sink（默认 None = 不发射 evidence，
+    # 行为零变化）。
     assert list(sig.parameters) == [
         "core", "capability_mode", "pilot_capability_allowlist",
-        "capability_gateway_mode", "governance_audit_sink",
+        "capability_gateway_mode", "governance_audit_sink", "health_evidence_sink",
     ]
     # D-A2：默认 None 表示「未显式提供 → 从 core.config.capability_layer 读取」；
     # 显式传入的值优先（replay 用 False 强制 OFF fallback）。
@@ -187,6 +189,7 @@ def test_da1_create_default_registry_accepts_activation_params():
     assert sig.parameters["pilot_capability_allowlist"].default is None
     assert sig.parameters["capability_gateway_mode"].default is None
     assert sig.parameters["governance_audit_sink"].default is None
+    assert sig.parameters["health_evidence_sink"].default is None
     reg = create_default_registry(None, capability_mode=True,
                                   pilot_capability_allowlist=[ALICE])
     assert reg.capability_mode is True

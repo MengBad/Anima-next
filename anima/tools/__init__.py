@@ -191,7 +191,8 @@ class ToolRegistry:
     def __init__(self, core=None, capability_mode: bool = False,
                  pilot_capability_allowlist=None,
                  capability_gateway_mode: bool = False,
-                 governance_audit_sink=None):
+                 governance_audit_sink=None,
+                 health_evidence_sink=None):
         self.tools: dict[str, Tool] = {}
         self.core = core
         # --- M0.3 (RFC-0001) Capability Adapter ---
@@ -209,6 +210,12 @@ class ToolRegistry:
         self.capability_gateway_mode = bool(capability_gateway_mode)
         self._governance_audit_sink = governance_audit_sink
         self._capability_gateway = None
+        # F8.10.1：health evidence 发射（C1 默认关）。无 sink → 零开销（不建 evidence、
+        # 不影响 latency / 返回值）；有 sink 时 route 经 EvidenceAdapter 投影，且
+        # evidence 永不作 execution blocker（fail-open）。adapter 惰性构造（避免默认
+        # 路径引入 anima.capability.health import 成本）。
+        self._health_evidence_sink = health_evidence_sink
+        self._health_evidence_adapter = None
 
     # ---------------- M0.4.7 D-A1：capability 路由治理 ----------------
 
@@ -466,9 +473,45 @@ class ToolRegistry:
             logger.exception("受治理 capability 路由异常，回退安全失败 caller=%s", caller)
             return _SAFE_TOOL_FAILURE
 
+        # F8.10.1：唯一 health evidence 发射点（Q1 owner = 本 route）。
+        # Q3：handle 返回后成功/失败分支各恰好 1 条；基础设施异常分支已提前返回 → 0 条
+        # （fail-open：evidence 永不作 execution blocker）。sink 为 None（C1 默认关）时
+        # 本调用零开销直接返回。
+        self._emit_health_evidence(cap_id, execution_key, presult)
+
         if not getattr(presult, "success", False):
             return getattr(presult, "error", None) or _SAFE_TOOL_FAILURE
         return str(presult.data)
+
+    def _emit_health_evidence(self, cap_id: str, execution_key: tuple, presult) -> None:
+        """把 governed 执行事实投影为 HealthEvidence（F8.10.1，唯一发射点）。
+
+        C1 默认关：无 sink → 零开销直接返回（不建 evidence、不影响 latency / 返回值）。
+
+        Q5 边界诚实：只记 ``selected / executed / success=presult.success``——**不做
+        metadata preview**（避免逐渐变成隐式 schema）。handler 把失败吞成成功字符串时，
+        治理层看到的就是 ``success=True``（当前系统事实；未来另开 Execution Outcome
+        Normalization RFC）。
+
+        fail-open（双保险）：adapter.record 内部已对 sink 失败计数不抛；此处再包一层
+        try/except —— evidence 发射失败**绝不阻断** governed 执行。
+        """
+        if self._health_evidence_sink is None:
+            return
+        try:
+            if self._health_evidence_adapter is None:
+                from anima.capability.health.adapter import EvidenceAdapter
+
+                self._health_evidence_adapter = EvidenceAdapter(sink=self._health_evidence_sink)
+            self._health_evidence_adapter.record(
+                presult,  # ProviderResult 即鸭子类型 observation（success/error/metadata）
+                capability_id=cap_id,
+                provider_id=None,  # Q1：route 不可见 provider_id（Lifecycle 决策 capability 级）
+                execution_key=execution_key,
+                selected=True,  # 拿到 presult 即代表 selection 已发生
+            )
+        except Exception:  # noqa: BLE001 - fail-open：evidence 失败绝不阻断执行
+            logger.debug("health evidence 发射失败（fail-open）: cap=%s", cap_id)
 
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -779,7 +822,8 @@ class ToolRegistry:
 def create_default_registry(core=None, capability_mode=None,
                             pilot_capability_allowlist=None,
                             capability_gateway_mode=None,
-                            governance_audit_sink=None) -> ToolRegistry:
+                            governance_audit_sink=None,
+                            health_evidence_sink=None) -> ToolRegistry:
     """创建并注册全部内置工具，返回 ToolRegistry。
 
     M0.4.7 D-A2 —— config 接线（registry wiring）：
@@ -821,7 +865,8 @@ def create_default_registry(core=None, capability_mode=None,
     registry = ToolRegistry(core, capability_mode=capability_mode,
                             pilot_capability_allowlist=pilot_capability_allowlist,
                             capability_gateway_mode=capability_gateway_mode,
-                            governance_audit_sink=governance_audit_sink)
+                            governance_audit_sink=governance_audit_sink,
+                            health_evidence_sink=health_evidence_sink)
     register_all_builtin(registry, core)
     return registry
 
