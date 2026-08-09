@@ -66,6 +66,11 @@ from .provenance import (
     governed_field_names,
     provenance_of,
 )
+from .gateway import (
+    CapabilityGateway,
+    CodeExecuteProvider,
+    bootstrap_code_execute,
+)
 from .surface import (
     CapabilityGovernanceSnapshot,
     CapabilityGovernanceView,
@@ -133,6 +138,10 @@ __all__ = [
     "ValidationReport",
     "Validator",
     "validate_contract",
+    # gateway (F8.5)
+    "CapabilityGateway",
+    "CodeExecuteProvider",
+    "bootstrap_code_execute",
     # surface (F8.4)
     "CapabilityGovernanceSnapshot",
     "CapabilityGovernanceView",
