@@ -36,7 +36,7 @@ _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
 # 仅此清单内的 capability 在 ``capability_gateway_mode=ON`` 时走 Line B Gateway；
 # 其余（含其余 mixed-mode capability）仍走 Line A。扩展新成员须显式追加并走独立 slice，
 # 禁止改为「全部 capability 默认走 Gateway」或自动迁移 mixed-mode。
-_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read", "filesystem.write"})
+_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read", "filesystem.write", "search.web"})
 
 
 def _run_in_thread(coro_factory: "Callable[[], Any]") -> "Any":
@@ -304,15 +304,18 @@ class ToolRegistry:
         from anima.runtime.capability_resolver import CapabilityRegistry
         # F8.9.1：filesystem.read 的 bootstrap 位于 tools 层（anima.tools.capability_fs），
         # 不改动 governance/gateway.py（Q3 裁定）。F8.9.2：filesystem.write 同构追加。
+        # F8.9.3：search.web 位于 anima.tools.capability_web（C1/C2 约束见该文件）。
         from anima.tools.capability_fs import (
             bootstrap_filesystem_read,
             bootstrap_filesystem_write,
         )
+        from anima.tools.capability_web import bootstrap_search_web
 
         registry = CapabilityRegistry()
         bootstrap_code_execute(registry, executor=self._make_code_executor())
         bootstrap_filesystem_read(registry, executor=self._make_filesystem_executor())
         bootstrap_filesystem_write(registry, executor=self._make_filesystem_write_executor())
+        bootstrap_search_web(registry, executor=self._make_search_web_executor())
         return CapabilityGateway(registry, audit_sink=self._governance_audit_sink)
 
     def _make_code_executor(self):
@@ -396,6 +399,41 @@ class ToolRegistry:
                 return await registry_self.call(
                     "write_file",
                     {"filename": filename, "content": content},
+                    permission_level=trusted_level,
+                )
+
+            return _run_in_thread(_run)
+
+        return executor
+
+    def _make_search_web_executor(self):
+        """构造 search.web 的 executor（F8.9.3，第四条治理路径）。
+
+        C2 async bridge：``tool_web_search`` 是 **async** handler（``asyncio.to_thread``
+        内部网络），与 ``_make_code_executor`` 同构——经 ``_run_in_thread`` 桥接
+        ``self.call``（携带完整 contextvars）。**不 async 化** resolver / provider
+        contract / gateway（治理层保持 sync，桥接体只位于本 adapter）。
+
+        委托姿势与 legacy ``web_search`` 调用逐字节一致——只信可信 ctx 的
+        permission_level，绝不读调用方 args（不创造第二套 authorization）；真正的网络
+        搜索 / 超时（handler 内硬编码 12s/15s）/ 失败吞异常语义仍由 ``_invoke`` 在
+        ``tool_web_search`` 上行使，治理不是新的执行权限来源。
+
+        Q2 失败 parity：handler 把网络异常吞为 ``搜索时出错了：<ExceptionType>``
+        （web.py:202-204，非 _SAFE_TOOL_FAILURE）——本 executor 原样透传该字符串，
+        不改 handler / exception model / SAFE 语义（F8.9.x 不变量：governed execution
+        == legacy execution semantics）。
+        """
+        registry_self = self
+
+        def executor(query: str, num_results: int, execution_key: tuple) -> str:
+            ctx = get_call_context() or {}
+            trusted_level = int(ctx.get("permission_level", LEVEL_USER))
+
+            async def _run():
+                return await registry_self.call(
+                    "web_search",
+                    {"query": query, "num_results": num_results},
                     permission_level=trusted_level,
                 )
 
