@@ -32,6 +32,12 @@ _TOOL_INTERNAL_MARKERS = (
 )
 _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
 
+# F8.9.1：受治理 Gateway pilot 集合（精确豁免，非泛化机制）。
+# 仅此清单内的 capability 在 ``capability_gateway_mode=ON`` 时走 Line B Gateway；
+# 其余（含其余 mixed-mode capability）仍走 Line A。扩展新成员须显式追加并走独立 slice，
+# 禁止改为「全部 capability 默认走 Gateway」或自动迁移 mixed-mode。
+_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read"})
+
 
 def _run_in_thread(coro_factory: "Callable[[], Any]") -> "Any":
     """在独立线程 + 新 event loop 中运行协程，规避「事件循环已在运行」的嵌套错误。
@@ -296,9 +302,13 @@ class ToolRegistry:
             bootstrap_code_execute,
         )
         from anima.runtime.capability_resolver import CapabilityRegistry
+        # F8.9.1：filesystem.read 的 bootstrap 位于 tools 层（anima.tools.capability_fs），
+        # 不改动 governance/gateway.py（Q3 裁定）。
+        from anima.tools.capability_fs import bootstrap_filesystem_read
 
         registry = CapabilityRegistry()
         bootstrap_code_execute(registry, executor=self._make_code_executor())
+        bootstrap_filesystem_read(registry, executor=self._make_filesystem_executor())
         return CapabilityGateway(registry, audit_sink=self._governance_audit_sink)
 
     def _make_code_executor(self):
@@ -319,6 +329,37 @@ class ToolRegistry:
             async def _run():
                 return await registry_self.call(
                     "run_python", {"code": code}, permission_level=trusted_level
+                )
+
+            return _run_in_thread(_run)
+
+        return executor
+
+    def _make_filesystem_executor(self):
+        """构造 filesystem.read 的 executor（F8.9.1，第二条治理路径）。
+
+        与 ``_make_code_executor`` 同构：read_file 经 ``self.call``（async）执行，桥接体
+        只位于本 adapter 层（``_run_in_thread``，携带完整 contextvars）。委托姿势与 legacy
+        ``read_file`` 调用逐字节一致——只信可信 ctx 的 permission_level，绝不读调用方 args；
+        真正的文件读取 / 沙箱边界 / 路径穿越拦截仍由 ``_invoke`` 在 ``read_file`` 上行使，
+        治理不是新的执行权限来源。
+
+        「sync provider」的差异价值：filesystem.read 的 handler 本身是 **sync**
+        （无 async I/O、无沙箱 event loop），桥接体内部 ``self.call`` 跑的是纯同步
+        handler，不存在 code.execute 那种「嵌套 event loop 跑 run_python」的复杂度——
+        这正是 F8.9.1 要证明的「Gateway 不是为某一种特殊（async）provider 定制」。
+        ``ToolRegistry.call`` 的 async 是框架不变量，桥接仅用于把它从治理的 sync
+        ``resolve`` 上下文里安全唤起。
+        """
+        registry_self = self
+
+        def executor(filename: str, execution_key: tuple) -> str:
+            ctx = get_call_context() or {}
+            trusted_level = int(ctx.get("permission_level", LEVEL_USER))
+
+            async def _run():
+                return await registry_self.call(
+                    "read_file", {"filename": filename}, permission_level=trusted_level
                 )
 
             return _run_in_thread(_run)
@@ -439,10 +480,11 @@ class ToolRegistry:
         if (getattr(resolution.provider.tool, "capability_only", False)
                 and not self.pilot_capability_permitted(caller)):
             return self._deny_capability_route(cap_id, self._pilot_denial_reason(caller))
-        # F8.6：受治理 pilot 路径（gateway_mode 仅作用于 code.execute；其余走 Line A）。
+        # F8.6 / F8.9.1：受治理 pilot 路径（仅 ``_GATEWAY_PILOT_CAPABILITIES`` 清单内
+        # 的 capability 在 gateway_mode=ON 时走 Line B Gateway；其余走 Line A）。
         # principal gate（pilot allowlist）已先于此执行——R1 安全不变量：gateway 不会
         # 绕过 principal authorization。
-        if self.capability_gateway_mode and cap_id == "code.execute":
+        if self.capability_gateway_mode and cap_id in _GATEWAY_PILOT_CAPABILITIES:
             return await self._governed_capability_route(cap_id, args, caller)
         # M0.4.7 D-A4（telemetry）：治理门通过即记录 allowed + routed；Provider 执行
         # 失败（tool_result_ok 判定）记 failed。仅发指标、不改执行语义；指标进入进程级
