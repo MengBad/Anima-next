@@ -36,7 +36,7 @@ Resolution algorithm (mirrors RFC-0001 Candidate→Score→Pick):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
 
 from anima.constitution.execution import ExecutionStep
 from anima.runtime.providers.base import (
@@ -45,6 +45,10 @@ from anima.runtime.providers.base import (
     ProviderResult,
     TransientError,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - typing only, no runtime import edge
+    from anima.capability.governance.enforcement import EnforcementLevel
+    from anima.capability.governance.validation import ValidationReport
 
 
 # ---------------------------------------------------------------------------
@@ -149,11 +153,33 @@ class CapabilityRegistry:
     Distinct from the V1 ``anima/tools`` ToolRegistry: this is the F5 runtime's resolver
     substrate. Registration is explicit and ordered (the order seeds candidate priority
     before scoring re-ranks).
+
+    Registration passes two independent gates, in this order:
+
+    1. **F7.1 registration integrity** — contract (policy) vs provider (runtime truth)
+       must agree on the side-effect / idempotency profile. This is a *safety* gate and
+       therefore runs first: a mismatch here is a silent correctness hole, not a
+       documentation problem.
+    2. **F8.2b metadata integrity** — the contract is projected into the canonical
+       governance model and refused if its metadata *contradicts itself* (see
+       ``anima.capability.governance.enforcement``). Structural gaps — fields a given
+       contract face cannot express at all — are recorded as warnings, not refusals.
+
+    Both gates validate BEFORE any mutation, so a rejected registration leaves the
+    registry byte-for-byte unchanged.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, metadata_enforcement: "EnforcementLevel | None" = None) -> None:
+        # Imported lazily: the governance package must not become a load-time
+        # dependency of the runtime, and registry construction is config-time anyway.
+        from anima.capability.governance.enforcement import DEFAULT_ENFORCEMENT_LEVEL
+
         self._contracts: dict[str, CapabilityContract] = {}
         self._providers: dict[str, list[Provider]] = {}
+        self._metadata_reports: dict[str, "ValidationReport"] = {}
+        self._metadata_enforcement = (
+            DEFAULT_ENFORCEMENT_LEVEL if metadata_enforcement is None else metadata_enforcement
+        )
 
     def register(
         self, contract: CapabilityContract, *providers: Provider
@@ -181,8 +207,18 @@ class CapabilityRegistry:
                     f"idempotent={provider.idempotent}). "
                     f"Declared policy must match runtime truth."
                 )
+
+        # F8.2b Metadata Integrity: refuse metadata that contradicts itself (cacheable
+        # but non-deterministic, non-positive timeout...). Runs AFTER the F7.1 safety
+        # gate — when both are unhappy the safety violation is the one worth reporting.
+        # Config-time only: resolve() never pays for this. Raises before any mutation.
+        from anima.capability.governance.enforcement import enforce_runtime_contract
+
+        report = enforce_runtime_contract(contract, level=self._metadata_enforcement)
+
         self._contracts[contract.capability_id] = contract
         self._providers.setdefault(contract.capability_id, []).extend(providers)
+        self._metadata_reports[contract.capability_id] = report
 
     def has(self, capability_id: str) -> bool:
         return capability_id in self._contracts
@@ -192,6 +228,16 @@ class CapabilityRegistry:
 
     def providers_for(self, capability_id: str) -> list[Provider]:
         return list(self._providers.get(capability_id, []))
+
+    def metadata_report_for(self, capability_id: str) -> "ValidationReport | None":
+        """The governance report captured when this capability was registered.
+
+        Non-blocking findings (every structural gap, plus warnings like "retries a
+        non-idempotent capability") would otherwise evaporate the moment registration
+        succeeds. Keeping them reachable is what separates an enforcement gate from
+        governance theatre.
+        """
+        return self._metadata_reports.get(capability_id)
 
 
 # ---------------------------------------------------------------------------
