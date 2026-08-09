@@ -11,6 +11,7 @@
 from __future__ import annotations
 import asyncio
 import contextvars
+import threading
 import json
 import re
 import time
@@ -30,6 +31,43 @@ _TOOL_INTERNAL_MARKERS = (
     "[stderr]", "Traceback", "Operation not permitted", "Permission denied", "unshare failed",
 )
 _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
+
+
+def _run_in_thread(coro_factory: "Callable[[], Any]") -> "Any":
+    """在独立线程 + 新 event loop 中运行协程，规避「事件循环已在运行」的嵌套错误。
+
+    F8.6 R2：Line B ``Provider.invoke`` / ``Resolver.resolve`` 是 **sync** 契约
+    （F5.4b I2/I3，冻结不可改），而 ``run_python`` 是 **async**。治理路径复用
+    ``run_python`` 必须经此桥接；桥接体只位于 ``anima.tools`` adapter 层——
+    governance 包保持纯 sync、零改动、加载期零 runtime import 边。
+
+    R3（context fidelity）：worker 线程默认看不到调用方 contextvars，而
+    ``_invoke`` 对 run_python 会**无条件用可信 ctx 覆盖** ``permission_level``
+    （M0.4.3-R1 反特权注入），审计等级同样取自 ctx。若不传播，受治理路径的
+    sandbox tier 与 execution 审计会被静默降级为 USER，与 legacy 语义分叉。
+    故此处 ``copy_context()`` 后用 ``ctx.run(loop.run_until_complete, ...)``：
+    Task 创建发生在 ctx 内，协程全程看到与主线程逐字节一致的调用上下文。
+    """
+    ctx = contextvars.copy_context()
+    box: dict[str, Any] = {}
+    exc: list[BaseException] = []
+
+    def _worker() -> None:
+        loop = asyncio.new_event_loop()
+        try:
+            box["value"] = ctx.run(loop.run_until_complete, coro_factory())
+        except BaseException as e:  # noqa: BLE001 - 原样上抛给主线程
+            exc.append(e)
+        finally:
+            loop.close()
+
+    t = threading.Thread(target=_worker, name="anima-governed-bridge", daemon=True)
+    t.start()
+    t.join()
+    if exc:
+        raise exc[0]
+    return box.get("value")
+
 
 # M0.4.3 S4：代码执行审计。
 # 这些工具会在宿主上运行任意 payload，必须留下可追责的结构化轨迹：
@@ -145,7 +183,9 @@ class ToolRegistry:
     """工具注册中心。"""
 
     def __init__(self, core=None, capability_mode: bool = False,
-                 pilot_capability_allowlist=None):
+                 pilot_capability_allowlist=None,
+                 capability_gateway_mode: bool = False,
+                 governance_audit_sink=None):
         self.tools: dict[str, Tool] = {}
         self.core = core
         # --- M0.3 (RFC-0001) Capability Adapter ---
@@ -157,6 +197,12 @@ class ToolRegistry:
         # 注入由 D-A2 负责（本阶段构造参数默认值保持现状，CLI / replay 行为不变）。
         self._pilot_allowlist: tuple[str, ...] = _normalize_principals(pilot_capability_allowlist)
         self._capability_resolver = None
+        # F8.6：受治理 pilot 路径（默认 OFF，零开销）。gateway_mode 是 capability_mode
+        # 的**子闸门**，仅作用于 code.execute；governance_audit_sink 默认 None（R4：
+        # 无 sink 时治理解析零开销，不分配 trace、不改执行路径）。
+        self.capability_gateway_mode = bool(capability_gateway_mode)
+        self._governance_audit_sink = governance_audit_sink
+        self._capability_gateway = None
 
     # ---------------- M0.4.7 D-A1：capability 路由治理 ----------------
 
@@ -231,6 +277,82 @@ class ToolRegistry:
             from anima.capability.resolver import CapabilityResolver
             self._capability_resolver = CapabilityResolver(self.capability_index)
         return self._capability_resolver
+
+    # ---------------- F8.6：Governed Pilot Path (Capability Gateway) ----------------
+    @property
+    def capability_gateway(self):
+        """惰性构造的受治理 Gateway（仅 ``code.execute`` 已 bootstrap）。
+
+        仅当 ``capability_gateway_mode`` 开启且请求命中 code.execute 时才构造，
+        否则永不实例化——默认 OFF 路径零成本（R4）。
+        """
+        if self._capability_gateway is None:
+            self._capability_gateway = self._build_capability_gateway()
+        return self._capability_gateway
+
+    def _build_capability_gateway(self):
+        from anima.capability.governance.gateway import (
+            CapabilityGateway,
+            bootstrap_code_execute,
+        )
+        from anima.runtime.capability_resolver import CapabilityRegistry
+
+        registry = CapabilityRegistry()
+        bootstrap_code_execute(registry, executor=self._make_code_executor())
+        return CapabilityGateway(registry, audit_sink=self._governance_audit_sink)
+
+    def _make_code_executor(self):
+        """构造 code.execute 的 **sync** executor（F8.6 R2 桥接体）。
+
+        桥接体只位于本 adapter 层：把 async ``run_python`` 经独立线程新 event loop
+        跑完（``_run_in_thread``，携带完整 contextvars）。委托姿势与 legacy
+        ``code_exec_handler`` 逐字节一致（R3）——只信可信 ctx 的 permission_level，
+        绝不读调用方 args；真正的 exec gate / sandbox tier / 执行审计仍由
+        ``_invoke`` 在 run_python 上行使，治理不是新的执行权限来源。
+        """
+        registry_self = self
+
+        def executor(code: str, execution_key: tuple) -> str:
+            ctx = get_call_context() or {}
+            trusted_level = int(ctx.get("permission_level", LEVEL_USER))
+
+            async def _run():
+                return await registry_self.call(
+                    "run_python", {"code": code}, permission_level=trusted_level
+                )
+
+            return _run_in_thread(_run)
+
+        return executor
+
+    def _next_governed_request_id(self) -> str:
+        """为每次受治理请求生成稳定 request_id（R5：adapter 拥有 correlation 责任）。"""
+        import uuid
+
+        return uuid.uuid4().hex
+
+    async def _governed_capability_route(self, cap_id: str, args: dict, caller) -> str:
+        """把请求经 Gateway 走完整治理闭环，并把 ``ProviderResult`` 翻译回 ``str``。
+
+        委托顺序严格满足 F8.6 Security 门：principal authorization（pilot allowlist）
+        已由 ``call_capability`` 在调用本方法**之前**完成（R1）；此处只做 capability
+        级治理（contract/provider/selection/audit），不重新判定 who-can-invoke。
+        """
+        from anima.runtime.capability_resolver import CapabilityNeed
+
+        need = CapabilityNeed(capability_id=cap_id, args=args, context={})
+        # R5：每次受治理请求恰好一个 execution_key，逐字节传入并原样记进 ResolutionEvent。
+        request_id = self._next_governed_request_id()
+        execution_key = (request_id, cap_id, 0)
+        try:
+            presult = self.capability_gateway.handle(need, execution_key)
+        except Exception:  # noqa: BLE001 - fail-open：治理异常不阻断业务
+            logger.exception("受治理 capability 路由异常，回退安全失败 caller=%s", caller)
+            return _SAFE_TOOL_FAILURE
+
+        if not getattr(presult, "success", False):
+            return getattr(presult, "error", None) or _SAFE_TOOL_FAILURE
+        return str(presult.data)
 
     def register(self, tool: Tool) -> None:
         self.tools[tool.name] = tool
@@ -317,6 +439,11 @@ class ToolRegistry:
         if (getattr(resolution.provider.tool, "capability_only", False)
                 and not self.pilot_capability_permitted(caller)):
             return self._deny_capability_route(cap_id, self._pilot_denial_reason(caller))
+        # F8.6：受治理 pilot 路径（gateway_mode 仅作用于 code.execute；其余走 Line A）。
+        # principal gate（pilot allowlist）已先于此执行——R1 安全不变量：gateway 不会
+        # 绕过 principal authorization。
+        if self.capability_gateway_mode and cap_id == "code.execute":
+            return await self._governed_capability_route(cap_id, args, caller)
         # M0.4.7 D-A4（telemetry）：治理门通过即记录 allowed + routed；Provider 执行
         # 失败（tool_result_ok 判定）记 failed。仅发指标、不改执行语义；指标进入进程级
         # MetricsCollector（WebUI /api/metrics 可见），与既有 ``capability_route_denied``
@@ -533,7 +660,9 @@ class ToolRegistry:
 # ---------------------------------------------------------------------------
 
 def create_default_registry(core=None, capability_mode=None,
-                            pilot_capability_allowlist=None) -> ToolRegistry:
+                            pilot_capability_allowlist=None,
+                            capability_gateway_mode=None,
+                            governance_audit_sink=None) -> ToolRegistry:
     """创建并注册全部内置工具，返回 ToolRegistry。
 
     M0.4.7 D-A2 —— config 接线（registry wiring）：
@@ -542,6 +671,10 @@ def create_default_registry(core=None, capability_mode=None,
     回退默认 OFF / 空 allowlist（行为逐字节兼容 D-A1 之前的无 config 状态）。
     显式传入的值优先（replay 用 ``capability_mode=False`` 强制 OFF fallback，
     使其不受生产配置影响而保持确定性）。
+
+    F8.6：``capability_gateway_mode`` / ``governance_audit_sink`` 同理——前者从
+    config 读（默认 OFF），后者从 ``core.governance_audit_sink`` 取（缺省 None，
+    R4 零开销）；二者均可显式传入以覆盖。
 
     kill switch 语义（R4）：本函数只在新构造 registry 时**读取一次** config；
     运行期变更须受控重启生效——``ConfigService._sync_runtime`` 不热更 registry，
@@ -560,9 +693,18 @@ def create_default_registry(core=None, capability_mode=None,
             list(getattr(cfg_layer, "pilot_capability_allowlist", []) or [])
             if cfg_layer is not None else []
         )
+    if capability_gateway_mode is None:
+        capability_gateway_mode = (
+            bool(getattr(cfg_layer, "capability_gateway_mode", False))
+            if cfg_layer is not None else False
+        )
+    if governance_audit_sink is None and core is not None:
+        governance_audit_sink = getattr(core, "governance_audit_sink", None)
     from anima.tools.builtin import register_all_builtin
     registry = ToolRegistry(core, capability_mode=capability_mode,
-                            pilot_capability_allowlist=pilot_capability_allowlist)
+                            pilot_capability_allowlist=pilot_capability_allowlist,
+                            capability_gateway_mode=capability_gateway_mode,
+                            governance_audit_sink=governance_audit_sink)
     register_all_builtin(registry, core)
     return registry
 
