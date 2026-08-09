@@ -36,7 +36,7 @@ _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
 # 仅此清单内的 capability 在 ``capability_gateway_mode=ON`` 时走 Line B Gateway；
 # 其余（含其余 mixed-mode capability）仍走 Line A。扩展新成员须显式追加并走独立 slice，
 # 禁止改为「全部 capability 默认走 Gateway」或自动迁移 mixed-mode。
-_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read"})
+_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read", "filesystem.write"})
 
 
 def _run_in_thread(coro_factory: "Callable[[], Any]") -> "Any":
@@ -303,12 +303,16 @@ class ToolRegistry:
         )
         from anima.runtime.capability_resolver import CapabilityRegistry
         # F8.9.1：filesystem.read 的 bootstrap 位于 tools 层（anima.tools.capability_fs），
-        # 不改动 governance/gateway.py（Q3 裁定）。
-        from anima.tools.capability_fs import bootstrap_filesystem_read
+        # 不改动 governance/gateway.py（Q3 裁定）。F8.9.2：filesystem.write 同构追加。
+        from anima.tools.capability_fs import (
+            bootstrap_filesystem_read,
+            bootstrap_filesystem_write,
+        )
 
         registry = CapabilityRegistry()
         bootstrap_code_execute(registry, executor=self._make_code_executor())
         bootstrap_filesystem_read(registry, executor=self._make_filesystem_executor())
+        bootstrap_filesystem_write(registry, executor=self._make_filesystem_write_executor())
         return CapabilityGateway(registry, audit_sink=self._governance_audit_sink)
 
     def _make_code_executor(self):
@@ -360,6 +364,39 @@ class ToolRegistry:
             async def _run():
                 return await registry_self.call(
                     "read_file", {"filename": filename}, permission_level=trusted_level
+                )
+
+            return _run_in_thread(_run)
+
+        return executor
+
+    def _make_filesystem_write_executor(self):
+        """构造 filesystem.write 的 executor（F8.9.2，第三条治理路径）。
+
+        与 ``_make_filesystem_executor`` 同构（F8.9.1）：write_file 经 ``self.call``
+        （async）执行，桥接体只位于本 adapter 层（``_run_in_thread``，携带完整
+        contextvars）。委托姿势与 legacy ``write_file`` 调用逐字节一致——只信可信 ctx 的
+        permission_level，绝不读调用方 args（C2：permission 链单向，不创造第二套
+        authorization）；真正的写盘 / 沙箱边界 / 目录穿越拦截仍由 ``_invoke`` 在
+        ``write_file`` 上行使，治理不是新的执行权限来源。
+
+        C1 约束（与 provider metadata pinning 呼应）：本 executor 不声明任何元语义——
+        ``side_effect=True / idempotent=False`` 的诚实声明只存在于
+        ``bootstrap_filesystem_write`` 的治理契约与 provider 上；executor 只负责把调用
+        原样委托给 ``write_file``，不改变 handler 行为（Q3/Q4：legacy write == governed
+        write，handler 不升级 filesystem API）。
+        """
+        registry_self = self
+
+        def executor(filename: str, content: str, execution_key: tuple) -> str:
+            ctx = get_call_context() or {}
+            trusted_level = int(ctx.get("permission_level", LEVEL_USER))
+
+            async def _run():
+                return await registry_self.call(
+                    "write_file",
+                    {"filename": filename, "content": content},
+                    permission_level=trusted_level,
                 )
 
             return _run_in_thread(_run)
