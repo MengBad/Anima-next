@@ -488,10 +488,15 @@ class ToolRegistry:
 
         C1 默认关：无 sink → 零开销直接返回（不建 evidence、不影响 latency / 返回值）。
 
-        Q5 边界诚实：只记 ``selected / executed / success=presult.success``——**不做
-        metadata preview**（避免逐渐变成隐式 schema）。handler 把失败吞成成功字符串时，
-        治理层看到的就是 ``success=True``（当前系统事实；未来另开 Execution Outcome
-        Normalization RFC）。
+        F8.11（本方法唯一新增职责）：把执行表面事实归一化为 governance 语义——
+        ``normalized_outcome``（SUCCESS / FAILURE / UNKNOWN）+ 可选 ``error_class``
+        投影进 evidence.metadata（Q5：只记归一化结果，**不存 result_fragment** 原始
+        文本）。``success=presult.success`` 仍是 transport 边界事实（Q1：ProviderResult
+        .success 降级为 surface 字段，Recovery 未来只消费 normalized_outcome）。
+
+        R2：归一化是纯投影（OutcomeNormalizer 纯函数）——绝不反向影响 presult /
+        gateway return / tool output（方向只能 execution → classification → evidence）。
+        R3：未知形态保留 UNKNOWN，不强行归失败。
 
         fail-open（双保险）：adapter.record 内部已对 sink 失败计数不抛；此处再包一层
         try/except —— evidence 发射失败**绝不阻断** governed 执行。
@@ -503,12 +508,24 @@ class ToolRegistry:
                 from anima.capability.health.adapter import EvidenceAdapter
 
                 self._health_evidence_adapter = EvidenceAdapter(sink=self._health_evidence_sink)
+            # F8.11：归一化（纯函数，零副作用）；失败不影响 record 本身。
+            extra_metadata = None
+            try:
+                from anima.capability.health.normalizer import OutcomeNormalizer
+
+                outcome, error_class = OutcomeNormalizer.normalize(presult)
+                extra_metadata = {"normalized_outcome": outcome.value}
+                if error_class:
+                    extra_metadata["error_class"] = error_class
+            except Exception:  # noqa: BLE001 - 归一化失败不阻断 evidence 发射（fail-open）
+                logger.debug("outcome 归一化失败（fail-open）: cap=%s", cap_id)
             self._health_evidence_adapter.record(
                 presult,  # ProviderResult 即鸭子类型 observation（success/error/metadata）
                 capability_id=cap_id,
                 provider_id=None,  # Q1：route 不可见 provider_id（Lifecycle 决策 capability 级）
                 execution_key=execution_key,
                 selected=True,  # 拿到 presult 即代表 selection 已发生
+                extra_metadata=extra_metadata,  # F8.11：normalized_outcome / error_class
             )
         except Exception:  # noqa: BLE001 - fail-open：evidence 失败绝不阻断执行
             logger.debug("health evidence 发射失败（fail-open）: cap=%s", cap_id)

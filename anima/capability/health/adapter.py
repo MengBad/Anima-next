@@ -69,11 +69,14 @@ class EvidenceAdapter:
         execution_key: tuple,
         selected: bool,
         duration_ms: float | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> HealthEvidence:
         """投影一次执行事实（不写 sink）。
 
         :param observation: 执行结果（鸭子类型：``success`` / ``error`` /
             ``metadata`` / ``task_id``）；``None`` = 执行未尝试（selected=False 形态）。
+        :param extra_metadata: 显式注入的附加事实（F8.11：``normalized_outcome`` /
+            ``error_class``），覆盖 observation 同名 key。默认 None = 行为不变。
         """
         executed = observation is not None
         success = bool(getattr(observation, "success", False)) if executed else False
@@ -86,6 +89,8 @@ class EvidenceAdapter:
             task_id = getattr(observation, "task_id", "")
             if task_id:
                 meta.setdefault("task_id", str(task_id))
+        if extra_metadata:
+            meta.update(extra_metadata)
         if duration_ms is None:
             duration_ms = float(meta.get("duration_ms", 0.0) or 0.0)
         return HealthEvidence(
@@ -111,6 +116,7 @@ class EvidenceAdapter:
         execution_key: tuple,
         selected: bool,
         duration_ms: float | None = None,
+        extra_metadata: dict[str, Any] | None = None,
     ) -> HealthEvidence:
         """project + push（fail-open）。返回证据；sink 失败不抛，仅计数。"""
         evidence = self.project(
@@ -120,6 +126,7 @@ class EvidenceAdapter:
             execution_key=execution_key,
             selected=selected,
             duration_ms=duration_ms,
+            extra_metadata=extra_metadata,
         )
         try:
             self._sink.append(evidence)
