@@ -240,6 +240,24 @@ class CapabilityLayerConfig(BaseModel):
     # 条目为调用主体标识，形如 "user:123456"；刻意不支持任何通配符（通配符即后门）。
     pilot_capability_allowlist: list[str] = Field(default_factory=list)
 
+    # --- F9.2 Operational Activation：观测面开关（全部默认 OFF）---------------
+    # 这些开关**只控制"是否记录"**，不参与任何 provider 选择 / 策略判定 /
+    # lifecycle 迁移——观测永不改变执行（S5 Activation Proof）。
+    #
+    # capability_gateway_mode 此前只在构造参数里存在、未声明为 config 字段，
+    # 导致 pydantic（extra=ignore）静默丢弃 config.yaml 的写入（F9.1 G-01）。
+    # 这里补齐声明，使"配置写了就生效"成立。
+    capability_gateway_mode: bool = False
+    # 三条正交证据链各自独立开关（互不连带）：
+    #   resolution → PersistentAuditSink（为什么选这个 provider）
+    governance_audit_enabled: bool = False
+    #   health     → HealthEvidenceStore（执行之后发生了什么）
+    health_evidence_enabled: bool = False
+    #   recovery   → TransitionStore（lifecycle 迁移记录；本阶段仅接线不驱动）
+    transition_audit_enabled: bool = False
+    # 治理证据落盘目录（相对 persistence.data_dir；绝对路径按原样使用）。
+    governance_data_dir: str = "governance"
+
 
 class NotesCompactConfig(BaseModel):
     """自我笔记压缩（兑现 learning.py docstring 承诺，止住 self_notes.md 无限膨胀）。"""

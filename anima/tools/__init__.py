@@ -38,6 +38,12 @@ _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
 # 禁止改为「全部 capability 默认走 Gateway」或自动迁移 mixed-mode。
 _GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read", "filesystem.write", "search.web"})
 
+# F9.2 Operational Activation：三条正交治理证据链的落盘文件名（固定，非配置项——
+# 目录可配、文件名不可配，避免运维把三条链写进同一个文件而丢失链间边界）。
+GOVERNANCE_AUDIT_FILENAME = "resolution_events.jsonl"       # 为什么选（Resolution）
+GOVERNANCE_HEALTH_FILENAME = "health_evidence.jsonl"        # 执行后发生了什么（Health）
+GOVERNANCE_TRANSITION_FILENAME = "lifecycle_transitions.jsonl"  # 状态迁移（Recovery）
+
 
 def _run_in_thread(coro_factory: "Callable[[], Any]") -> "Any":
     """在独立线程 + 新 event loop 中运行协程，规避「事件循环已在运行」的嵌套错误。
@@ -192,7 +198,9 @@ class ToolRegistry:
                  pilot_capability_allowlist=None,
                  capability_gateway_mode: bool = False,
                  governance_audit_sink=None,
-                 health_evidence_sink=None):
+                 health_evidence_sink=None,
+                 health_observer=None,
+                 transition_store=None):
         self.tools: dict[str, Tool] = {}
         self.core = core
         # --- M0.3 (RFC-0001) Capability Adapter ---
@@ -216,6 +224,11 @@ class ToolRegistry:
         # 路径引入 anima.capability.health import 成本）。
         self._health_evidence_sink = health_evidence_sink
         self._health_evidence_adapter = None
+        # F9.2：recovery 链的接线缝（默认 None = 休眠）。registry **不驱动**它——
+        # 正常执行路径永远不调用 observer；它只是让 recovery 通道在被显式授权激活时
+        # 有一个已接好的落点（本 slice 不实现任何自动 quarantine / recover 策略）。
+        self.health_observer = health_observer
+        self.transition_store = transition_store
 
     # ---------------- M0.4.7 D-A1：capability 路由治理 ----------------
 
@@ -836,6 +849,75 @@ class ToolRegistry:
 # create_default_registry — 委托 builtin 子包
 # ---------------------------------------------------------------------------
 
+def _governance_evidence_dir(core, cfg_layer):
+    """治理证据落盘目录 = ``persistence.data_dir`` / ``capability_layer.governance_data_dir``。
+
+    F9.2：证据不另立数据根——沿用 bot 既有 data_dir，运维只需管一个目录树。
+    ``governance_data_dir`` 给绝对路径时按原样使用（``Path.__truediv__`` 语义）。
+    """
+    from pathlib import Path
+
+    persistence = getattr(getattr(core, "config", None), "persistence", None)
+    data_dir = getattr(persistence, "data_dir", None) or "data"
+    sub = getattr(cfg_layer, "governance_data_dir", None) or "governance"
+    return Path(data_dir) / sub
+
+
+def _wire_governance_sinks(core, cfg_layer, governance_audit_sink, health_evidence_sink):
+    """F9.2 Operational Activation —— 按 config 开关构造三条证据链的持久化出口。
+
+    S1 边界（本函数的全部职责）：**只构造 + 只注入**。
+    绝不：改变 resolver / 参与 provider 选择 / 影响 policy decision / 驱动 lifecycle
+    迁移。sink 是单向下游终点，没有任何回边指向执行路径。
+
+    S2 默认 OFF：三个开关全关（默认）时本函数返回原样入参 + 两个 ``None``，
+    既不建目录也不建文件（零足迹、零开销）。
+
+    显式传入的 sink 优先于 config（既有调用式行为不变；replay / 测试可强制覆盖）。
+
+    :returns: ``(governance_audit_sink, health_evidence_sink, health_observer,
+        transition_store)``
+    """
+    health_observer = None
+    transition_store = None
+    if cfg_layer is None:
+        return governance_audit_sink, health_evidence_sink, health_observer, transition_store
+
+    audit_on = bool(getattr(cfg_layer, "governance_audit_enabled", False))
+    health_on = bool(getattr(cfg_layer, "health_evidence_enabled", False))
+    transition_on = bool(getattr(cfg_layer, "transition_audit_enabled", False))
+    if not (audit_on or health_on or transition_on):
+        return governance_audit_sink, health_evidence_sink, health_observer, transition_store
+
+    gov_dir = _governance_evidence_dir(core, cfg_layer)
+
+    if audit_on and governance_audit_sink is None:
+        from anima.capability.audit.persistent_sink import PersistentAuditSink
+
+        governance_audit_sink = PersistentAuditSink(str(gov_dir / GOVERNANCE_AUDIT_FILENAME))
+
+    if health_on and health_evidence_sink is None:
+        from anima.capability.health.store import HealthEvidenceStore
+
+        health_evidence_sink = HealthEvidenceStore(str(gov_dir / GOVERNANCE_HEALTH_FILENAME))
+
+    if transition_on:
+        from anima.capability.governance.lifecycle import CapabilityLifecycle
+        from anima.capability.ops.observer import HealthObserver
+        from anima.capability.ops.transition_store import TransitionStore
+
+        transition_store = TransitionStore(str(gov_dir / GOVERNANCE_TRANSITION_FILENAME))
+        # dormant seam：recovery 通道本 slice **不激活**，registry 永不调用 observer。
+        # accessor 先用轻量工厂——它足以让被显式触发的迁移留下审计记录，但**不是**
+        # 权威 lifecycle 归属（那要求 resolver 持有 per-capability lifecycle；骨架
+        # resolver 尚无 lifecycle_for）。权威 accessor 留待 recovery 激活 slice。
+        health_observer = HealthObserver(
+            lambda cid: CapabilityLifecycle(cid), transition_store
+        )
+
+    return governance_audit_sink, health_evidence_sink, health_observer, transition_store
+
+
 def create_default_registry(core=None, capability_mode=None,
                             pilot_capability_allowlist=None,
                             capability_gateway_mode=None,
@@ -853,6 +935,11 @@ def create_default_registry(core=None, capability_mode=None,
     F8.6：``capability_gateway_mode`` / ``governance_audit_sink`` 同理——前者从
     config 读（默认 OFF），后者从 ``core.governance_audit_sink`` 取（缺省 None，
     R4 零开销）；二者均可显式传入以覆盖。
+
+    F9.2 Operational Activation：三条治理证据链（resolution / health / recovery）
+    的持久化出口改为 config 驱动构造（见 ``_wire_governance_sinks``）。开关默认全
+    OFF —— 未启用时行为与 F9.2 之前逐字节一致（无 sink、无目录、无文件）。函数
+    **签名不变**：观测面从 ``core.config.capability_layer`` 读，不新增参数。
 
     kill switch 语义（R4）：本函数只在新构造 registry 时**读取一次** config；
     运行期变更须受控重启生效——``ConfigService._sync_runtime`` 不热更 registry，
@@ -878,12 +965,19 @@ def create_default_registry(core=None, capability_mode=None,
         )
     if governance_audit_sink is None and core is not None:
         governance_audit_sink = getattr(core, "governance_audit_sink", None)
+    # F9.2：config 驱动的证据链接线（默认全 OFF → 全 None、零文件足迹）。
+    (governance_audit_sink, health_evidence_sink,
+     health_observer, transition_store) = _wire_governance_sinks(
+        core, cfg_layer, governance_audit_sink, health_evidence_sink
+    )
     from anima.tools.builtin import register_all_builtin
     registry = ToolRegistry(core, capability_mode=capability_mode,
                             pilot_capability_allowlist=pilot_capability_allowlist,
                             capability_gateway_mode=capability_gateway_mode,
                             governance_audit_sink=governance_audit_sink,
-                            health_evidence_sink=health_evidence_sink)
+                            health_evidence_sink=health_evidence_sink,
+                            health_observer=health_observer,
+                            transition_store=transition_store)
     register_all_builtin(registry, core)
     return registry
 
