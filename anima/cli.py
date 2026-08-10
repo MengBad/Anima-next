@@ -274,10 +274,11 @@ def start(config_path, once, identity_attestation):
 
     # Phase 5.1 prototype: explicit, offline-only pre-start verification.
     # The default path remains unchanged because the option defaults to None.
+    identity_context = None
     if identity_attestation:
-        from anima.memory.runtime_identity_attestation import verify_runtime_identity_attestation_file
+        from anima.memory.runtime_identity_attestation import bind_runtime_identity_context_file
 
-        attestation_result = verify_runtime_identity_attestation_file(identity_attestation)
+        identity_context, attestation_result = bind_runtime_identity_context_file(identity_attestation)
         click.echo(json.dumps(attestation_result, ensure_ascii=False, indent=2))
         if attestation_result["stop"]:
             raise click.exceptions.Exit(1)
@@ -297,7 +298,7 @@ def start(config_path, once, identity_attestation):
 
     cfg = load_config(config_path)
 
-    core = AnimaCore(cfg)
+    core = AnimaCore(cfg, identity_context=identity_context)
     core.config_path = str(config_path)
     if recovery_status == "rolled_back":
         marker_change = "自动回滚（启动健康检查失败）"

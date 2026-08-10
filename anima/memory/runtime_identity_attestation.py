@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,7 +24,7 @@ ATTESTATION_SCHEMA_VERSION = 1
 ATTESTATION_FIELDS = frozenset({
     "schema_version", "attestation_id", "instance_id", "identity_reference",
     "continuity_manifest_reference", "source_version", "foundation_state",
-    "verification_timestamp", "verification_result",
+    "source_commit", "verification_timestamp", "verification_result",
 })
 IDENTITY_REFERENCE_FIELDS = frozenset({"identity_id", "lineage_id", "digest"})
 MANIFEST_REFERENCE_FIELDS = frozenset({"manifest_id", "digest"})
@@ -88,6 +89,32 @@ def _stop(errors: list[str], warnings: list[str] | None = None) -> dict[str, Any
     }
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeIdentityContext:
+    """Immutable, observation-only identity context for one running Core."""
+
+    instance_id: str
+    identity_id: str
+    lineage_id: str
+    source_commit: str
+    source_version: str
+    attestation_status: str
+
+    def __post_init__(self) -> None:
+        if self.attestation_status != "PASS":
+            raise ValueError("runtime identity context requires PASS attestation")
+
+    def as_mapping(self) -> dict[str, str]:
+        return {
+            "instance_id": self.instance_id,
+            "identity_id": self.identity_id,
+            "lineage_id": self.lineage_id,
+            "source_commit": self.source_commit,
+            "source_version": self.source_version,
+            "attestation_status": self.attestation_status,
+        }
+
+
 def verify_runtime_identity_attestation(bundle: Mapping[str, Any]) -> dict[str, Any]:
     """Verify one explicit attestation bundle without side effects."""
 
@@ -107,6 +134,7 @@ def verify_runtime_identity_attestation(bundle: Mapping[str, Any]) -> dict[str, 
         _text(attestation["instance_id"], "instance_id")
         _text(attestation["source_version"], "source_version")
         _text(attestation["foundation_state"], "foundation_state")
+        _text(attestation["source_commit"], "source_commit")
         _timestamp(attestation["verification_timestamp"], "verification_timestamp")
         for field in identity_ref:
             _text(identity_ref[field], f"identity_reference.{field}")
@@ -139,8 +167,10 @@ def verify_runtime_identity_attestation(bundle: Mapping[str, Any]) -> dict[str, 
     )
     version_match = (
         isinstance(manifest_project_ref, Mapping)
+        and manifest_project_ref.get("source_commit") == attestation["source_commit"]
         and manifest_project_ref.get("source_version") == attestation["source_version"]
         and isinstance(project_state, Mapping)
+        and project_state.get("source_commit") == attestation["source_commit"]
         and project_state.get("source_version") == attestation["source_version"]
     )
     foundation_compatible = (
@@ -206,4 +236,52 @@ def verify_runtime_identity_attestation_file(path: str | Path) -> dict[str, Any]
     return verify_runtime_identity_attestation(bundle)
 
 
-__all__ = ["verify_runtime_identity_attestation", "verify_runtime_identity_attestation_file"]
+def bind_runtime_identity_context(
+    bundle: Mapping[str, Any],
+    expected_instance_id: str | None = None,
+) -> tuple[RuntimeIdentityContext | None, dict[str, Any]]:
+    """Create context only from a successful, explicit attestation result."""
+
+    result = verify_runtime_identity_attestation(bundle)
+    if result["stop"]:
+        return None, result
+    attestation = bundle["attestation"]
+    if expected_instance_id is not None and attestation["instance_id"] != expected_instance_id:
+        return None, {
+            **result,
+            "errors": ["instance_id_mismatch: attestation differs from runtime instance"],
+            "stop": True,
+        }
+    identity_ref = attestation["identity_reference"]
+    context = RuntimeIdentityContext(
+        instance_id=attestation["instance_id"],
+        identity_id=identity_ref["identity_id"],
+        lineage_id=identity_ref["lineage_id"],
+        source_commit=attestation["source_commit"],
+        source_version=attestation["source_version"],
+        attestation_status="PASS",
+    )
+    return context, result
+
+
+def bind_runtime_identity_context_file(
+    path: str | Path,
+    expected_instance_id: str | None = None,
+) -> tuple[RuntimeIdentityContext | None, dict[str, Any]]:
+    """Read and bind one explicit bundle, without persistence side effects."""
+
+    try:
+        with Path(path).open("r", encoding="utf-8") as handle:
+            bundle = json.load(handle)
+    except (OSError, json.JSONDecodeError) as exc:
+        return None, _stop([f"attestation_input_invalid: {exc}"])
+    return bind_runtime_identity_context(bundle, expected_instance_id=expected_instance_id)
+
+
+__all__ = [
+    "RuntimeIdentityContext",
+    "bind_runtime_identity_context",
+    "bind_runtime_identity_context_file",
+    "verify_runtime_identity_attestation",
+    "verify_runtime_identity_attestation_file",
+]

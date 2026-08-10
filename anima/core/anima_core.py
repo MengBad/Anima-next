@@ -32,11 +32,15 @@ STICKER_POLICY_FIELDS = {
 
 
 class AnimaCore:
-    def __init__(self, config: AnimaConfig):
+    def __init__(self, config: AnimaConfig, identity_context: Any = None):
         self.config = config
         # 由 cli 注入真实 config.yaml 路径；测试/嵌入式调用可保持 None，
         # ConfigService 此时只做内存变更，不会误写当前工作目录。
         self.config_path = None
+        # Optional Phase 5.3 observation context. It is created only after an
+        # explicit attestation passes; Core exposes it read-only and never
+        # consults it for permissions, lifecycle, memory, or recovery.
+        self._runtime_identity_context = identity_context
         self.bus = EventBus()
         self.persistence = PersistenceProvider(config.persistence.data_dir)
         # 服务注册表：统一管理认知模块、工具注册表等命名服务
@@ -100,6 +104,12 @@ class AnimaCore:
         self._auto_start_heartbeat = False
         self._running = False
         self._shutdown_event: Optional[asyncio.Event] = None
+
+    @property
+    def runtime_identity_context(self) -> Any:
+        """Return the immutable attested identity context, if explicitly bound."""
+
+        return self._runtime_identity_context
 
     def _restore_sticker_policy(self) -> None:
         """恢复 WebUI 保存的表情策略，不接触含密钥的主配置文件。"""

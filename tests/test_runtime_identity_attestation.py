@@ -2,6 +2,7 @@ import copy
 import hashlib
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from anima.cli import cli
@@ -10,6 +11,9 @@ from anima.memory.continuity_manifest import verify_continuity_manifest
 from anima.memory.handoff_verification import verify_instance_handoff
 from anima.memory.identity_verification import memory_artifact_digest, verify_identity_continuity
 from anima.memory.runtime_identity_attestation import verify_runtime_identity_attestation
+from anima.memory.runtime_identity_attestation import bind_runtime_identity_context
+from anima.core.anima_core import AnimaCore
+from anima.core.config import AnimaConfig
 
 
 def _memory():
@@ -72,7 +76,7 @@ def _bundle():
         "schema_version": 1, "attestation_id": "attestation-1", "instance_id": "target-instance-1",
         "identity_reference": {"identity_id": "identity-anima-1", "lineage_id": "lineage-1", "digest": identity_digest},
         "continuity_manifest_reference": {"manifest_id": "continuity-1", "digest": hashlib.sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()},
-        "source_version": "0.3.0rc2", "foundation_state": "FROZEN",
+        "source_version": "0.3.0rc2", "source_commit": "62b5240", "foundation_state": "FROZEN",
         "verification_timestamp": "2099-01-01T00:00:00+00:00",
         "verification_result": {"identity_match": True, "manifest_match": True, "version_match": True, "foundation_compatible": True, "memory_continuity_verified": True, "handoff_verified": True, "errors": [], "warnings": [], "stop": False},
     }
@@ -131,3 +135,80 @@ def test_start_attestation_failure_stops_before_runtime(tmp_path):
     result = CliRunner().invoke(cli, ["start", "--identity-attestation", str(path)])
     assert result.exit_code == 1
     assert '"stop": true' in result.output
+
+
+def test_valid_attestation_binds_immutable_core_context(tmp_path):
+    bundle = _bundle()
+    context, result = bind_runtime_identity_context(bundle, expected_instance_id="target-instance-1")
+    assert result["stop"] is False
+    assert context is not None
+    core = AnimaCore(AnimaConfig.model_validate({"persistence": {"data_dir": str(tmp_path)}}), identity_context=context)
+    assert core.runtime_identity_context is context
+    assert context.as_mapping() == {
+        "instance_id": "target-instance-1", "identity_id": "identity-anima-1",
+        "lineage_id": "lineage-1", "source_commit": "62b5240",
+        "source_version": "0.3.0rc2", "attestation_status": "PASS",
+    }
+    with pytest.raises(AttributeError):
+        core.runtime_identity_context = None
+    with pytest.raises(AttributeError):
+        context.instance_id = "other"
+
+
+def test_default_core_has_no_identity_context(tmp_path):
+    core = AnimaCore(AnimaConfig.model_validate({"persistence": {"data_dir": str(tmp_path)}}))
+    assert core.runtime_identity_context is None
+
+
+def test_start_passes_attested_context_to_core(monkeypatch, tmp_path):
+    import anima.core.anima_core as core_module
+    import anima.core.config as config_module
+    import anima.core.config_recovery as recovery_module
+
+    captured = {}
+
+    class StubCore:
+        def __init__(self, config, identity_context=None):
+            captured["context"] = identity_context
+            self.bus = type("Bus", (), {"subscribe": lambda *_args, **_kwargs: None})()
+            self.config_path = None
+
+    config = AnimaConfig.model_validate({
+        "qq": {"enabled": False}, "llm": {"api_key": ""},
+        "persistence": {"data_dir": str(tmp_path / "data")},
+    })
+    monkeypatch.setattr(config_module, "load_config", lambda _path: config)
+    monkeypatch.setattr(recovery_module, "prepare_start", lambda _path: "none")
+    monkeypatch.setattr(core_module, "AnimaCore", StubCore)
+    path = tmp_path / "attestation.json"
+    path.write_text(json.dumps(_bundle()), encoding="utf-8")
+
+    result = CliRunner().invoke(cli, [
+        "start", "--once", "--config", str(tmp_path / "config.yaml"),
+        "--identity-attestation", str(path),
+    ])
+    assert result.exit_code == 0, result.output
+    assert captured["context"].instance_id == "target-instance-1"
+    assert captured["context"].attestation_status == "PASS"
+
+
+@pytest.mark.parametrize("mutation", [
+    lambda bundle: bundle["attestation"]["identity_reference"].__setitem__("identity_id", "other"),
+    lambda bundle: bundle["attestation"]["continuity_manifest_reference"].__setitem__("digest", "0" * 64),
+    lambda bundle: bundle["attestation"].__setitem__("source_version", "other-version"),
+    lambda bundle: bundle["handoff_artifact"]["authorization_record"].__setitem__("status", "rejected"),
+    lambda bundle: bundle["memory_artifact"]["records"][0].__setitem__("content", "corrupted"),
+])
+def test_invalid_attestation_never_creates_context(mutation):
+    bundle = _bundle()
+    mutation(bundle)
+    context, result = bind_runtime_identity_context(bundle)
+    assert context is None
+    assert result["stop"] is True
+
+
+def test_instance_id_mismatch_stops_without_context():
+    context, result = bind_runtime_identity_context(_bundle(), expected_instance_id="other-instance")
+    assert context is None
+    assert result["stop"] is True
+    assert any("instance_id_mismatch" in error for error in result["errors"])

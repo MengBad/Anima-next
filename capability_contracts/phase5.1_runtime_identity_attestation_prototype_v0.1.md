@@ -19,6 +19,9 @@ The explicit bundle supplies all artifacts. No implicit Memory file is loaded.
 The verifier recomputes the results and compares them with the supplied
 attestation result; it does not trust a claimed successful result.
 
+The attestation records both `source_version` and the verified `source_commit`
+so a later observation context can report the exact validated project source.
+
 ## STOP behavior
 
 The prototype emits a structured result and exits before configuration recovery,
