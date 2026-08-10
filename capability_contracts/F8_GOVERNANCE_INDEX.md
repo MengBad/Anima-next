@@ -77,6 +77,15 @@ Recovery 链   : HealthEvidence → HealthPolicyEvaluator → RecoveryDecision �
 - Foundation Evolution trigger **NOT MET** → Foundation **FROZEN**，不进 F1–F4。
 - 重启条件见 `foundation_evolution_readiness_note_v0.1.md`（仅 observed contradiction / invariant violation / scaling pressure / security boundary failure 才合法）。
 
+## Onboarding Entry（运维接管入口）
+
+> 需要「接管 / 继承 / 运行维护」本仓库时，从仓库根的
+> [`ANIMA_NEXT_OPERATOR_CONTEXT.md`](../ANIMA_NEXT_OPERATOR_CONTEXT.md) 一次性加载：
+> 项目状态继承 + 不可变原则 + 禁止清单 + Agent 角色分层 + 启动流程 + 授权协议。
+> 配套工作协议见仓库根 [`AGENT_IDENTITY.md`](../AGENT_IDENTITY.md)
+> （行为原则 + 固定汇报格式 `事实/证据/判断/风险/下一步` + 禁止短语）。
+> 本索引不重复这些约定，只作导航锚点。
+
 ## 引用一致性
 
 - f8.13 显式引用 `F8.1 / F8.3 / F8.7 / F8.8 / F8.10 / F8.10.1 / F8.11 / F8.12`，与本索引编号一致。
