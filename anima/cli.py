@@ -324,7 +324,6 @@ def start(config_path, once):
     except Exception:
         # Recovery wiring must never block startup (degradation, AGENTS.md):
         # a failure to construct the runtime recovery module is logged and skipped.
-        import logging
         logging.getLogger("anima.cli").exception("runtime recovery wiring failed, continuing")
 
     # LLM 客户端
