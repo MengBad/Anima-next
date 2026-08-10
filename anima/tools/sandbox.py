@@ -671,7 +671,11 @@ async def run_python(code: str, timeout: int = DEFAULT_TIMEOUT,
     fs_confined = bool(tier.fs_confined)
     fs_deny = tuple(FS_DENY_MARKERS)
     with tempfile.NamedTemporaryFile(
-        mode="w", suffix=".py", delete=False, prefix="anima_sandbox_"
+        mode="w",
+        encoding="utf-8",
+        suffix=".py",
+        delete=False,
+        prefix="anima_sandbox_",
     ) as f:
         f.write(f"""# Sandbox safety preamble
 import builtins as _builtins

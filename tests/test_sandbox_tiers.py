@@ -82,3 +82,9 @@ async def test_run_python_default_is_user_tier_backward_compat():
     out = await run_python("import subprocess\nprint('DEF_LEAK')")
     assert "DEF_LEAK" not in out
     assert "blocked" in out or "ImportError" in out
+
+
+async def test_run_python_writes_utf8_temporary_source():
+    """Temporary Python source must remain valid on non-UTF-8 host locales."""
+    out = await run_python("print('UTF8_OK', '你好，sandbox')", permission_level=_LEVEL_USER)
+    assert "UTF8_OK" in out
