@@ -263,12 +263,24 @@ def _agent_selfcheck(cfg) -> list:
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml")
 @click.option("--once", is_flag=True, help="启动后立即退出（冒烟测试）")
-def start(config_path, once):
+@click.option("--identity-attestation", default=None, type=click.Path(exists=True, dir_okay=False),
+              help="开发环境显式验证 Runtime Identity Attestation JSON；默认关闭")
+def start(config_path, once, identity_attestation):
     """启动 Anima。"""
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s %(name)s %(levelname)s %(message)s",
     )
+
+    # Phase 5.1 prototype: explicit, offline-only pre-start verification.
+    # The default path remains unchanged because the option defaults to None.
+    if identity_attestation:
+        from anima.memory.runtime_identity_attestation import verify_runtime_identity_attestation_file
+
+        attestation_result = verify_runtime_identity_attestation_file(identity_attestation)
+        click.echo(json.dumps(attestation_result, ensure_ascii=False, indent=2))
+        if attestation_result["stop"]:
+            raise click.exceptions.Exit(1)
 
     # 配置变更重启的第一段启动保护必须发生在 Pydantic 加载之前：
     # 若上一次候选配置在初始化阶段崩溃，本次进程先恢复上一份可用 YAML。
