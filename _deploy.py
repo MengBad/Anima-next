@@ -256,6 +256,7 @@ def _build_exclude(with_config: bool) -> set:
         "*.pem", "*.key", "id_rsa*", "id_ed25519*",
         "_mig_sim_test",  # 本地迁移测试残留，绝不上传
         "_bili_verify.py", "_selfcode_verify.py", "overview_*.md",
+        "_full_diag.py",  # Local diagnostic probe; never ship SSH access.
         "public",  # 对应源码包在临时目录生成并单独上传，禁止递归打包旧产物
     }
     # 默认保护生产配置：不上传本地 config.yaml，避免覆盖线上设置
