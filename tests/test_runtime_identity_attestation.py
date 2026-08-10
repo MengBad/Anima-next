@@ -1,6 +1,7 @@
 import copy
 import hashlib
 import json
+from datetime import datetime, timezone
 
 import pytest
 from click.testing import CliRunner
@@ -77,7 +78,7 @@ def _bundle():
         "identity_reference": {"identity_id": "identity-anima-1", "lineage_id": "lineage-1", "digest": identity_digest},
         "continuity_manifest_reference": {"manifest_id": "continuity-1", "digest": hashlib.sha256(json.dumps(manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode()).hexdigest()},
         "source_version": "0.3.0rc2", "source_commit": "62b5240", "foundation_state": "FROZEN",
-        "verification_timestamp": "2099-01-01T00:00:00+00:00",
+        "verification_timestamp": "2099-01-01T00:00:00+00:00", "expires_at": "2099-01-02T00:00:00+00:00",
         "verification_result": {"identity_match": True, "manifest_match": True, "version_match": True, "foundation_compatible": True, "memory_continuity_verified": True, "handoff_verified": True, "errors": [], "warnings": [], "stop": False},
     }
     return {"attestation": attestation, "identity_manifest": identity, "memory_artifact": memory, "continuity_manifest": manifest, "source_instance": source, "target_instance": target, "handoff_artifact": handoff_artifact, "project_state": project}
@@ -212,3 +213,69 @@ def test_instance_id_mismatch_stops_without_context():
     assert context is None
     assert result["stop"] is True
     assert any("instance_id_mismatch" in error for error in result["errors"])
+
+
+def test_future_expiry_passes_with_explicit_clock():
+    result = verify_runtime_identity_attestation(
+        _bundle(), clock=lambda: datetime(2099, 1, 1, tzinfo=timezone.utc)
+    )
+    assert result["stop"] is False
+
+
+def test_exact_expiry_stops():
+    bundle = _bundle()
+    bundle["attestation"]["expires_at"] = "2099-01-02T00:00:00+00:00"
+    result = verify_runtime_identity_attestation(
+        bundle, clock=lambda: datetime(2099, 1, 2, tzinfo=timezone.utc)
+    )
+    assert result["stop"] is True
+    assert any("expired" in error for error in result["errors"])
+
+
+def test_expired_attestation_stops():
+    bundle = _bundle()
+    bundle["attestation"]["expires_at"] = "2098-12-31T00:00:00+00:00"
+    result = verify_runtime_identity_attestation(
+        bundle, clock=lambda: datetime(2099, 1, 1, tzinfo=timezone.utc)
+    )
+    assert result["stop"] is True
+
+
+def test_missing_expiry_stops():
+    bundle = _bundle()
+    del bundle["attestation"]["expires_at"]
+    result = verify_runtime_identity_attestation(bundle)
+    assert result["stop"] is True
+    assert any("expires_at" in error for error in result["errors"])
+
+
+def test_malformed_expiry_stops():
+    bundle = _bundle()
+    bundle["attestation"]["expires_at"] = "not-a-timestamp"
+    result = verify_runtime_identity_attestation(bundle)
+    assert result["stop"] is True
+
+
+def test_timezone_aware_expiry_passes():
+    bundle = _bundle()
+    bundle["attestation"]["expires_at"] = "2099-01-02T08:00:00+08:00"
+    result = verify_runtime_identity_attestation(
+        bundle, clock=lambda: datetime(2099, 1, 1, tzinfo=timezone.utc)
+    )
+    assert result["stop"] is False
+
+
+def test_naive_expiry_stops():
+    bundle = _bundle()
+    bundle["attestation"]["expires_at"] = "2099-01-02T00:00:00"
+    result = verify_runtime_identity_attestation(bundle)
+    assert result["stop"] is True
+
+
+def test_expiry_verification_does_not_mutate_input():
+    bundle = _bundle()
+    before = copy.deepcopy(bundle)
+    verify_runtime_identity_attestation(
+        bundle, clock=lambda: datetime(2099, 1, 1, tzinfo=timezone.utc)
+    )
+    assert bundle == before

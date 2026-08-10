@@ -10,10 +10,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .continuity_manifest import verify_continuity_manifest
 from .handoff_verification import verify_instance_handoff
@@ -24,7 +24,7 @@ ATTESTATION_SCHEMA_VERSION = 1
 ATTESTATION_FIELDS = frozenset({
     "schema_version", "attestation_id", "instance_id", "identity_reference",
     "continuity_manifest_reference", "source_version", "foundation_state",
-    "source_commit", "verification_timestamp", "verification_result",
+    "source_commit", "verification_timestamp", "expires_at", "verification_result",
 })
 IDENTITY_REFERENCE_FIELDS = frozenset({"identity_id", "lineage_id", "digest"})
 MANIFEST_REFERENCE_FIELDS = frozenset({"manifest_id", "digest"})
@@ -51,7 +51,7 @@ def _digest(value: Any, field: str) -> str:
     return value
 
 
-def _timestamp(value: Any, field: str) -> None:
+def _parse_timestamp(value: Any, field: str) -> datetime:
     value = _text(value, field)
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -59,6 +59,11 @@ def _timestamp(value: Any, field: str) -> None:
         raise ValueError(f"{field} must be an ISO-8601 timestamp") from exc
     if parsed.tzinfo is None:
         raise ValueError(f"{field} must include a timezone")
+    return parsed
+
+
+def _timestamp(value: Any, field: str) -> None:
+    _parse_timestamp(value, field)
 
 
 def _strict(raw: Mapping[str, Any], expected: frozenset[str], label: str) -> None:
@@ -115,7 +120,10 @@ class RuntimeIdentityContext:
         }
 
 
-def verify_runtime_identity_attestation(bundle: Mapping[str, Any]) -> dict[str, Any]:
+def verify_runtime_identity_attestation(
+    bundle: Mapping[str, Any],
+    clock: Callable[[], datetime] | None = None,
+) -> dict[str, Any]:
     """Verify one explicit attestation bundle without side effects."""
 
     try:
@@ -136,6 +144,12 @@ def verify_runtime_identity_attestation(bundle: Mapping[str, Any]) -> dict[str, 
         _text(attestation["foundation_state"], "foundation_state")
         _text(attestation["source_commit"], "source_commit")
         _timestamp(attestation["verification_timestamp"], "verification_timestamp")
+        expiry = _parse_timestamp(attestation["expires_at"], "expires_at")
+        now = (clock or (lambda: datetime.now(timezone.utc)))()
+        if not isinstance(now, datetime) or now.tzinfo is None:
+            raise ValueError("clock must return a timezone-aware datetime")
+        if now >= expiry:
+            raise ValueError("attestation_expired: current time is at or after expires_at")
         for field in identity_ref:
             _text(identity_ref[field], f"identity_reference.{field}")
         _digest(identity_ref["digest"], "identity_reference.digest")
@@ -239,10 +253,11 @@ def verify_runtime_identity_attestation_file(path: str | Path) -> dict[str, Any]
 def bind_runtime_identity_context(
     bundle: Mapping[str, Any],
     expected_instance_id: str | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> tuple[RuntimeIdentityContext | None, dict[str, Any]]:
     """Create context only from a successful, explicit attestation result."""
 
-    result = verify_runtime_identity_attestation(bundle)
+    result = verify_runtime_identity_attestation(bundle, clock=clock)
     if result["stop"]:
         return None, result
     attestation = bundle["attestation"]
@@ -267,6 +282,7 @@ def bind_runtime_identity_context(
 def bind_runtime_identity_context_file(
     path: str | Path,
     expected_instance_id: str | None = None,
+    clock: Callable[[], datetime] | None = None,
 ) -> tuple[RuntimeIdentityContext | None, dict[str, Any]]:
     """Read and bind one explicit bundle, without persistence side effects."""
 
@@ -275,7 +291,9 @@ def bind_runtime_identity_context_file(
             bundle = json.load(handle)
     except (OSError, json.JSONDecodeError) as exc:
         return None, _stop([f"attestation_input_invalid: {exc}"])
-    return bind_runtime_identity_context(bundle, expected_instance_id=expected_instance_id)
+    return bind_runtime_identity_context(
+        bundle, expected_instance_id=expected_instance_id, clock=clock,
+    )
 
 
 __all__ = [
