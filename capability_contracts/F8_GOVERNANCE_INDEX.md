@@ -57,6 +57,26 @@ Recovery 链   : HealthEvidence → HealthPolicyEvaluator → RecoveryDecision �
 - `CapabilityContract` HARD FREEZE；`resolve()` 不读 lifecycle；governance 继续作为旁路记录与决策系统。
 - 不引入 Convergence runtime layer。
 
+## F9 — Operational Validation（运行验证层，COMPLETE）
+
+> F9 不建设、不演化设计；只验证 F8 冻结态在真实运行下是否成立。
+> 全部 slice 纪律：只读 / 默认 OFF / 无代码演化 / 无 Foundation Evolution / 不 commit code（除本收口文档提交）。
+
+| 编号 | 主题 | 文档 | 状态 |
+|---|---|---|---|
+| F9.1 | 只读验证（生产面 0 样本，INCONCLUSIVE BY CONSTRUCTION） | `f9.1_operational_observation_report_v0.1.md` + `f9.1_operational_validation_scope_freeze_v0.1.md` + `f9.1_contradiction_backlog_v0.1.md` | 已闭环 |
+| F9.2 | Operational Activation（激活可观测接缝，默认 OFF，四零 diff，单提交 `61e0ee1`） | `f9.2_operational_activation_scope_freeze_v0.1.md` | 已闭环 |
+| F9.3 | Observation Window（短窗 5 executions，链路存在） | `f9.3_observation_report_v0.1.md` + `f9.3_scope_decision_v0.1.md` | 已闭环 |
+| F9.4 | Longitudinal Observation（长窗 20 executions，稳定性） | `f9.4_observation_report_v0.1.md` + `f9.4_scope_decision_v0.1.md` | 已闭环 |
+| **F9 收口** | **Operational Validation Final Report** | **`f9_operational_validation_final_report_v0.1.md`** | **✅ COMPLETE** |
+
+### 收口裁定（F9）
+
+- F8 架构经 F9 全 slice **运行验证成立**：三链正交、1:1 关联、默认休眠、数据边界、无自动恢复。
+- 累计真实运行样本：Resolution 25 / Health 25 / Recovery 0；**0 observed contradiction**；**0 frozen invariant violation**。
+- Foundation Evolution trigger **NOT MET** → Foundation **FROZEN**，不进 F1–F4。
+- 重启条件见 `foundation_evolution_readiness_note_v0.1.md`（仅 observed contradiction / invariant violation / scaling pressure / security boundary failure 才合法）。
+
 ## 引用一致性
 
 - f8.13 显式引用 `F8.1 / F8.3 / F8.7 / F8.8 / F8.10 / F8.10.1 / F8.11 / F8.12`，与本索引编号一致。
