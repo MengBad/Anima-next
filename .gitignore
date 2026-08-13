@@ -62,3 +62,9 @@ CODE_ASSET_INVENTORY.md
 SELF_PROOF_REPORT.md
 .probe_*.py
 .runtime_scan.py
+
+# Autonomous Evolution Agent 运行时产物（每小时生成，不进提交）
+state/
+P10_HOURLY_REPORT.md
+INCIDENT_REPORT.md
+.r2a_full.xml

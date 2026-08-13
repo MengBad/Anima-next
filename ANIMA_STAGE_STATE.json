@@ -1,0 +1,18 @@
+{
+  "current_stage": "R2",
+  "stage_detail": "R2-A Memory Read Recovery (secret_filtered 已上线)",
+  "observation": {
+    "required_hours": 24,
+    "started_at": "2026-08-13T21:15:42+08:00",
+    "started_by": "R2-A deploy 2026-08-13",
+    "completed": false
+  },
+  "gates": {
+    "check_pass": true,
+    "tests_pass": true,
+    "observation_complete": false,
+    "no_incident": true,
+    "rollback_available": true
+  },
+  "updated_at": "2026-08-13T21:15:42+08:00"
+}
