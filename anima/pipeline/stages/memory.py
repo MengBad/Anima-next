@@ -1,13 +1,60 @@
 """阶段 2: 记忆注入。"""
 
 from __future__ import annotations
+import json as _json
 import logging
+import re
 import time
+from pathlib import Path
 
 from anima.pipeline import StageResult, PipelineContext
 from ._shared import _clean_transport_text, _PROMISE_RE
 
 logger = logging.getLogger("anima.pipeline.stages")
+
+
+# R2-A: credential-like patterns withheld from LLM context (never injected,
+# never logged in plaintext). Conservative by design: prefer over-filtering
+# a rare false positive over leaking a real credential into the context.
+_SECRET_PATTERNS = (
+    re.compile(r"api[_-]?key\s*[:=]\s*['\"]?[A-Za-z0-9_\-]{8,}", re.I),
+    re.compile(r"(?:token|secret|passwd|pwd)\s*[:=]\s*['\"]?[A-Za-z0-9_\-./=]{8,}", re.I),
+    re.compile(r"password\s*[:=]\s*['\"]?[A-Za-z0-9_\-./=]{8,}", re.I),
+    re.compile(r"Bearer\s+[A-Za-z0-9_\-\.]{10,}", re.I),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{12,}", re.I),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{20,}", re.I),
+    re.compile(r"\bghp_[A-Za-z0-9]{20,}", re.I),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9\-]{10,}", re.I),
+    re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----", re.I),
+)
+
+
+def _contains_secret(text: str) -> bool:
+    """True if text carries a credential-like pattern (API key / token / password)."""
+    if not text:
+        return False
+    return any(p.search(text) for p in _SECRET_PATTERNS)
+
+
+def _memory_audit(ctx: PipelineContext, event: str, reason: str = "") -> None:
+    """P10.4-R2-A: memory_read audit sink (subject hash only, never plaintext)."""
+    try:
+        from anima.pilot.conversation_evidence import hash_user_id
+
+        core = ctx.meta.get("core")
+        cfg = getattr(getattr(core, "config", None), "persistence", None)
+        data_dir = getattr(cfg, "data_dir", "data") if cfg else "data"
+        path = Path(data_dir) / "logs" / "memory_read_audit.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(_json.dumps({
+                "ts": time.time(),
+                "event": f"memory_read_{event}",
+                "subject_hash": hash_user_id(str(ctx.user_id)),
+                "reason": reason[:120],
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass  # audit must never break the pipeline
 
 
 async def memory_stage(ctx: PipelineContext) -> StageResult:
@@ -21,6 +68,8 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
         ctx.text = "[用户发送了图片]"
     if not ctx.text and not ctx.inbound_images:
         return StageResult.SKIP_REPLY
+
+    _memory_audit(ctx, "requested")
 
     memory = get_chat_memory()
     chat_id = ctx.group_id if ctx.detail_type == "group" else ctx.user_id
@@ -39,7 +88,13 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
         history = [*group_history, *[m for m in history if (m.get("role"), m.get("content")) not in seen]]
 
     if history:
-        ctx.messages.extend(history)
+        _secret_hits = [m for m in history if _contains_secret(m.get("content", ""))]
+        if _secret_hits:
+            _memory_audit(ctx, "secret_filtered", f"chat_memory:{len(_secret_hits)}")
+            history = [m for m in history if not _contains_secret(m.get("content", ""))]
+        if history:
+            ctx.messages.extend(history)
+    _memory_audit(ctx, "allowed", "chat_memory")
 
     # 向量记忆召回（长期记忆）—— D1: 灵魂记忆深度驱动 top_k
     if core and core.vector_memory:
@@ -55,19 +110,28 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
             if hits:
                 memory_lines = ["## 相关记忆"]
                 _has_old_memory = False  # Q2: 检测是否有久远记忆
+                _secret_filtered_n = 0
                 for h in hits:
-                    memory_lines.append(f"- {h['text'][:600]}")
+                    _h_text = str(h.get("text", ""))
+                    if _contains_secret(_h_text):
+                        _secret_filtered_n += 1
+                        continue
+                    memory_lines.append(f"- {_h_text[:600]}")
                     # Q2: 检查记忆时间戳
                     h_ts = h.get("ts") or h.get("created_at") or 0
                     if h_ts and (time.time() - float(h_ts)) > 7 * 86400:
                         _has_old_memory = True
+                if _secret_filtered_n:
+                    _memory_audit(ctx, "secret_filtered", f"vector_recall:{_secret_filtered_n}")
                 # Q2: 久远记忆追加"想起"口吻提示
                 if _has_old_memory:
                     memory_lines.append(
                         "（这是比较久远的记忆了，提起时可以用'本喵记得之前…'这种回忆口吻）"
                     )
-                ctx.meta["vector_recall"] = "\n".join(memory_lines)
+                if len(memory_lines) > 1:
+                    ctx.meta["vector_recall"] = "\n".join(memory_lines)
         except Exception:
+            _memory_audit(ctx, "blocked", "vector_search_failed")
             logger.exception("向量记忆召回失败")
 
     episodes = getattr(core, "episodes", None) if core else None

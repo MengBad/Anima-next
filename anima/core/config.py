@@ -697,5 +697,10 @@ def load_config(path: str | Path | None = None) -> AnimaConfig:
         data.setdefault("llm", {})["api_key"] = env["ANIMA_LLM_API_KEY"]
     if "ANIMA_LLM_ENDPOINT" in env:
         data.setdefault("llm", {})["endpoint"] = env["ANIMA_LLM_ENDPOINT"]
+    # P10.4-R2-A: embedding / rerank keys externalized (secret never in config)
+    if "ANIMA_EMBEDDING_API_KEY" in env:
+        data.setdefault("vector", {})["embedding_api_key"] = env["ANIMA_EMBEDDING_API_KEY"]
+    if "ANIMA_RERANK_API_KEY" in env:
+        data.setdefault("vector", {})["rerank_api_key"] = env["ANIMA_RERANK_API_KEY"]
 
     return AnimaConfig.model_validate(data)
