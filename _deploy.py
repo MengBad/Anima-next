@@ -223,6 +223,9 @@ StartLimitIntervalSec=60
 Type=simple
 User=anima
 Group=anima
+# R0 外置密钥（LLM/embedding/rerank）——unit 模板必须注入，否则每次部署覆盖
+# 手动加的行会丢 env，导致 LLM echo 模式 + 心跳不启动（2026-08-13 事故）。
+EnvironmentFile=-{remote_root}/.secrets
 WorkingDirectory={remote_root}
 ExecStart={remote_root}/venv/bin/python -m anima start --config {remote_root}/config.yaml
 Restart=on-failure
