@@ -68,6 +68,14 @@ class LivePilotConfig:
         media_mode: str = "off",        # "off" | "observe"  (never "autonomy")
         media_pilot_groups: tuple = (), # groups where media recovery may respond
         sylann_mode: str = "shadow",    # "shadow" | "suggestion" (never "active")
+        # P10.4-R3.5 (G6): config-driven emergency kill switch for ALL
+        # execution capability.  Default OFF (fail-open to current behavior);
+        # when ON, every sandbox.write request is denied fail-closed (see
+        # handle()).  Read-only chat.answer is unaffected.  This is a SEPARATE
+        # breaker from the F5 BridgeKillSwitch (which gates the execution
+        # bridge itself) — no execution-bridge / identity-policy / capability
+        # change is implied here.
+        kill_switch: bool = False,
     ) -> None:
         self.allowed_groups = tuple(allowed_groups)
         self.allowed_users = tuple(allowed_users)
@@ -80,6 +88,7 @@ class LivePilotConfig:
         self.media_mode = "observe" if str(media_mode) == "observe" else "off"
         self.media_pilot_groups = tuple(str(g) for g in (media_pilot_groups or ()))
         self.sylann_mode = "suggestion" if str(sylann_mode) == "suggestion" else "shadow"
+        self.kill_switch = bool(kill_switch)
 
     @classmethod
     def from_dict(cls, d: Optional[dict]) -> "LivePilotConfig":
@@ -96,6 +105,7 @@ class LivePilotConfig:
             media_mode=str(d.get("media_mode", "off")),
             media_pilot_groups=tuple(d.get("media_pilot_groups") or ()),
             sylann_mode=str(d.get("sylann_mode", "shadow")),
+            kill_switch=bool(d.get("kill_switch", False)),
         )
 
 
@@ -281,6 +291,26 @@ class PilotRuntime:
             # capability_levels + user_levels.  A policy that is disabled /
             # undeclared / under-level DENIES.
             subject = grant_subject(decision.user_id)
+
+            # P10.4-R3.5 (G6): config-driven emergency kill switch — fail
+            # closed for ALL execution capability.  Checked BEFORE the grant /
+            # before any provider call, so an engaged switch never reaches the
+            # F5 bridge.  The denial is audited (hashed subject only; never
+            # plaintext qq / secret / content) and chat.answer (ANSWER branch)
+            # is untouched.  This is independent of the F5 BridgeKillSwitch.
+            if self._config.kill_switch:
+                self._record_metric(action="deny", result="DENIED",
+                                    denied_reason="kill_switch", latency_ms=0.0,
+                                    group_id=decision.group_id)
+                self._audit_grant(
+                    event="kill_switch_deny",
+                    subject=subject, capability="sandbox.write",
+                    path="", decision="DENY",
+                    reason="emergency kill switch engaged (config kill_switch=ON)",
+                    denied_reason="kill_switch",
+                )
+                return LivePilotResult(False, denied_reason="kill_switch")
+
             self._audit_grant(
                 event="sandbox_write_requested",
                 subject=subject, capability="sandbox.write",
