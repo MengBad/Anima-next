@@ -265,3 +265,14 @@ class EvidenceSink:
             self._store.append_artifact(artifact)
         except Exception:  # noqa: BLE001
             self.write_failures += 1
+
+    def __call__(self, event: dict) -> None:
+        """把一条证据事件落盘（接受编排器/调用方传入的 flat dict）。fail-open。
+
+        兼容可调用接口（``sink(event)``）：R7 编排器每阶段把证据 dict 投进来，
+        本 sink 以信封 ``{kind:"event", payload:{...}}`` 落盘，供 R6.5 replay 还原。
+        """
+        try:
+            self._store.append("event", dict(event))
+        except Exception:  # noqa: BLE001 - 观测失灵不得让执行不可用（fail-open）
+            self.write_failures += 1
