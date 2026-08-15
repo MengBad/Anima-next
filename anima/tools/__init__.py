@@ -205,9 +205,13 @@ class ToolRegistry:
                  governance_audit_sink=None,
                  health_evidence_sink=None,
                  health_observer=None,
-                 transition_store=None):
+                 transition_store=None,
+                 governance_state=None):
         self.tools: dict[str, Tool] = {}
         self.core = core
+        # R6.2：治理态（能力撤销 / 全局熔断）。为 None 时回退到进程单例，
+        # 由 governance 包统一管理；测试可注入独立实例避免串扰。
+        self.governance_state = governance_state
         # --- M0.3 (RFC-0001) Capability Adapter ---
         # 索引是 Registry 之上的查询视图；Registry 仍是唯一 execution owner。
         self.capability_index = CapabilityIndex()
@@ -397,12 +401,14 @@ class ToolRegistry:
         _pyexec_on = bool(getattr(_pyexec_cfg, "python_exec_enabled", False)) if _pyexec_cfg else False
         if _pyexec_on:
             from anima.runtime.providers.python_exec import PythonExecPolicy
+            from anima.capability.governance.state import get_governance_state
             _pyexec_policy = PythonExecPolicy(
                 kill_switch=False,
                 grant=True,
                 require_audit=bool(getattr(_pyexec_cfg, "python_exec_require_audit", True)),
                 audit_sink_ok=self._governance_audit_sink is not None,
                 permission_level=int(getattr(_pyexec_cfg, "python_exec_permission_level", 2)),
+                governance_state=get_governance_state(),
             )
             bootstrap_python_exec(
                 registry,
@@ -715,6 +721,16 @@ class ToolRegistry:
         拒绝一律经 ``capability_route_denied`` 审计，无静默拒绝。
         """
         cap_id = self.capability_index.capability_for_schema_name(capability_ref) or capability_ref
+
+        # R6.2-02 / R6.2-01：治理态优先于路由（fail-closed 总闸）。
+        # 全局 kill switch 或能力被撤销（REVOKED）→ 任何 capability 调用 DENY，
+        # 不依赖 UI 隐藏，配置篡改无法绕过。
+        from anima.capability.governance.state import get_governance_state
+        _gs = self.governance_state if self.governance_state is not None else get_governance_state()
+        if _gs is not None:
+            if _gs.is_revoked(cap_id):
+                return self._deny_capability_route(cap_id, "capability_revoked")
+
         if not self.capability_mode:
             return self._deny_capability_route(cap_id, "capability_mode_off")
         resolution = self.capability_resolver.resolve(cap_id, permission_level=permission_level)

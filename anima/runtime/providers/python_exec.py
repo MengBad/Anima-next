@@ -45,6 +45,7 @@ class PythonExecPolicy:
     require_audit: bool = True         # 是否要求审计（生产=True）
     audit_sink_ok: bool = True         # 审计下沉是否可用
     permission_level: int = 2          # 委托 run_python 的权限等级（user=2）
+    governance_state: Any = None       # R6.2：注入的治理态（能力撤销 / 全局熔断）
 
     def isolator_available(self) -> bool:
         tool, _ = sandbox._available_isolator()
@@ -60,10 +61,13 @@ class PythonExecProvider(Provider):
         policy: PythonExecPolicy | None = None,
         provider_id: str = "python.exec.local",
         owner_ids: Any = None,
+        governance_state: Any = None,
     ) -> None:
         self._executor = executor
         self._policy = policy or PythonExecPolicy()
         self._provider_id = provider_id
+        # R6.2：治理态（能力撤销 / 全局熔断）。为 None 时退化为本地策略（不查全局态）。
+        self._governance_state = governance_state
         # R6.1 硬边界：owner QQ 集合（来自 config.permissions.owners）。
         # 归一化为 str 集合，便于与 "user:{qq}" principal 比对。
         # 该检查独立于 pilot allowlist，配置篡改无法绕过。
@@ -115,6 +119,24 @@ class PythonExecProvider(Provider):
     ) -> ProviderResult:
         policy = self._policy
         code = arguments.get("code")
+
+        # R6.2-02 / R6.2-01 —— 治理态优先于 owner 授权（fail-closed 总闸）。
+        # 全局 kill switch 开启 → 所有调用 DENY（含 owner）；能力被撤销
+        # （REVOKED）→ 任何调用 DENY（含 owner）。二者皆在 execution boundary
+        # 拒绝，不依赖 UI 隐藏，配置篡改无法绕过。
+        gs = self._governance_state
+        if gs is None and policy is not None:
+            gs = getattr(policy, "governance_state", None)
+        if gs is not None:
+            if gs.is_revoked("python.exec"):
+                return ProviderResult(
+                    success=False,
+                    denied_reason="capability_revoked",
+                    exit_code=None,
+                    error="capability python.exec 已被撤销",
+                    audit={"capability": "python.exec", "revoked": True},
+                    metadata={"provider_id": self._provider_id},
+                )
 
         # R6.1 硬边界（最先）：owner-only principal authorization。
         # 信任来源为 pipeline 设定的 call context（user_id），绝不读取调用方
