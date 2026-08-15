@@ -2,6 +2,37 @@
 
 本项目采用近似语义化版本（MAJOR.MINOR.PATCH）。记录每个版本相对上一版的行为与接口变化。
 
+## [R6] — 2026-08-15（Governance & Execution）
+
+### R6.1 Owner Authorization Boundary — COMPLETE
+- python.exec owner-only 硬边界（`PythonExecProvider._authorize_owner`），fail-closed，D1-D4 短路。
+- 已部署 `8eca02d`，VPS 验收通过（owner ALLOW / 非 owner DENY / 伪造 DENY 全验证）。
+
+### R6.2 Governance Hardening — COMPLETE
+- 并行 agent：capability revoke / kill switch / audit hash chain / runtime attestation（`32d40de→424f434` 部署）。
+- 本 agent：`event_chain.py` 端到端审计事件链（caller/capability/permission/provider/sandbox/result/timestamp）
+  + 通用 JSONL 存储 + fail-open sink + 反伪造（16 测试绿）。
+
+### R6.3 Permission Model v2 — COMPLETE
+- `rbac.py` 企业级 RBAC：Principal→Role→Capability→Scope→Policy→Audit。
+- RBAC / capability scope / temporary permission / inheritance / revoke / 反伪造 / fail-closed（19 测试绿）。
+- 已提交 `ad9feb1`，随 R6.3/4/5 一并部署 VPS。
+
+### R6.4 Execution Isolation — COMPLETE
+- `isolation.py` 工业级隔离：CPU/内存/超时/进程/seccomp 策略档 + 资源记账 + TERM→KILL 终止（17 测试绿）。
+- 已提交 `ad9feb1`，随 R6.3/4/5 一并部署 VPS。
+
+### R6.5 Execution Evidence — COMPLETE
+- `evidence.py` 行为证据：execution trace→artifact→audit→replay，任何行为可事后还原（11 测试绿）。
+- 补充 `EvidenceSink.__call__` 可调用接口（兼容编排器证据投递）。
+- 已提交 `ad9feb1`，随 R6.3/4/5 一并部署 VPS。
+
+### R7 Multi-Agent Architecture — COMPLETE
+- `orchestrator.py` 多 Agent 安全协作编排：Planner/Developer/Tester/Reviewer/Deploy 流水线。
+- 每 Agent 独立身份 + RBAC 能力/scope 独立授权（fail-closed）。
+- 每阶段落 R6.5 Evidence（ALLOW/DENY 都记录，Audit Everything）。
+- 已提交 `ff41e74`，已部署 VPS（version `ff41e740a1b7`），生产实证 54 项测试全绿。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。

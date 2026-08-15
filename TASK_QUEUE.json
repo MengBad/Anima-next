@@ -1,0 +1,90 @@
+{
+  "updated": "2026-08-15",
+  "owner": "Principal Autonomous Engineering Agent",
+  "tasks": [
+    {
+      "id": "R6.1",
+      "title": "Owner Authorization Boundary",
+      "status": "COMPLETE",
+      "detail": "owner-only 硬边界，已部署 8eca02d，VPS 验收通过"
+    },
+    {
+      "id": "R6.2-01",
+      "title": "Capability Revocation",
+      "status": "COMPLETE",
+      "detail": "并行 agent 完成，已部署 32d40de"
+    },
+    {
+      "id": "R6.2-02",
+      "title": "Emergency Kill Switch",
+      "status": "COMPLETE",
+      "detail": "并行 agent 完成，已部署 d4c90df"
+    },
+    {
+      "id": "R6.2-03",
+      "title": "Audit Hash Chain",
+      "status": "COMPLETE",
+      "detail": "并行 agent 完成，已部署 df15c5f"
+    },
+    {
+      "id": "R6.2-04",
+      "title": "Runtime Attestation",
+      "status": "COMPLETE",
+      "detail": "并行 agent 完成，已部署 424f434"
+    },
+    {
+      "id": "R6.2-05",
+      "title": "Event Chain (end-to-end audit)",
+      "status": "COMPLETE",
+      "detail": "event_chain.py + 16 测试绿，已提交 32d40de"
+    },
+    {
+      "id": "R6.3",
+      "title": "Permission Model v2 (RBAC)",
+      "status": "COMPLETE",
+      "detail": "rbac.py + 19 测试绿，已提交 ad9feb1"
+    },
+    {
+      "id": "R6.4",
+      "title": "Execution Isolation",
+      "status": "COMPLETE",
+      "detail": "isolation.py + 17 测试绿，已提交 ad9feb1"
+    },
+    {
+      "id": "R6.5",
+      "title": "Execution Evidence (trace/artifact/audit/replay)",
+      "status": "COMPLETE",
+      "detail": "evidence.py + 11 测试绿，已提交 ad9feb1"
+    },
+    {
+      "id": "R6-COMMIT",
+      "title": "提交 R6.2-05/R6.3/R6.4/R6.5 到分支",
+      "status": "COMPLETE",
+      "detail": "已提交 32d40de（R6.2 event chain）+ ad9feb1（R6.3/4/5），竞态已解除"
+    },
+    {
+      "id": "R6-DEPLOY",
+      "title": "owner 授权部署 R6.3-R6.5 + 生产实证",
+      "status": "PENDING",
+      "detail": "VPS 验证 + 审计落盘实证，需 owner 授权 + VPS 凭证"
+    },
+    {
+      "id": "R7",
+      "title": "Multi Agent Architecture",
+      "status": "PENDING",
+      "detail": "Planner/Developer/Tester/Reviewer/Deploy Agent，独立身份+权限+能力范围"
+    },
+    {
+      "id": "R8",
+      "title": "Autonomous Development Loop",
+      "status": "PENDING",
+      "detail": "发现问题→Issue→规划→改码→测试→Review→部署→验证"
+    },
+    {
+      "id": "R9",
+      "title": "Controlled Self Evolution",
+      "status": "PENDING",
+      "detail": "自我优化但 Self improvement ≠ Self authorization，全程 owner 审批"
+    }
+  ]
+}
