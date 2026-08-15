@@ -128,6 +128,15 @@ class PythonExecProvider(Provider):
         if gs is None and policy is not None:
             gs = getattr(policy, "governance_state", None)
         if gs is not None:
+            if gs.global_kill_switch():
+                return ProviderResult(
+                    success=False,
+                    denied_reason="global_kill_switch_active",
+                    exit_code=None,
+                    error="全局 capability 熔断已启用",
+                    audit={"global_kill_switch": True, "capability": "python.exec"},
+                    metadata={"provider_id": self._provider_id},
+                )
             if gs.is_revoked("python.exec"):
                 return ProviderResult(
                     success=False,

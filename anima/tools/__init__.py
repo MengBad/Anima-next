@@ -728,6 +728,8 @@ class ToolRegistry:
         from anima.capability.governance.state import get_governance_state
         _gs = self.governance_state if self.governance_state is not None else get_governance_state()
         if _gs is not None:
+            if _gs.global_kill_switch():
+                return self._deny_capability_route(cap_id, "global_kill_switch_active")
             if _gs.is_revoked(cap_id):
                 return self._deny_capability_route(cap_id, "capability_revoked")
 
