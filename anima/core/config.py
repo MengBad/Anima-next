@@ -115,6 +115,9 @@ class AutonomyConfig(BaseModel):
     # —— 主动发言（自主心跳 speak）策略 ——
     # 通过全部主动发言门控后的实际开口概率。默认保守，避免群里突然刷屏。
     active_reply_prob: float = 0.08
+    # Candidate B：主动发言接地网关。True=出站前校验回复不可虚构前提/断言群友
+    # 心理状态/离题；未接地一律丢弃。默认开启（fail-closed 行为加固）。
+    proactive_grounding: bool = True
     # 群最近一次人类发言距今 ≥ 该秒数，才考虑主动插话（避免对话正嗨时打断）。
     active_silence_min_sec: int = 300
     # 全局两次主动发言的最小间隔（秒），防止多群同时刷屏。
@@ -257,6 +260,15 @@ class CapabilityLayerConfig(BaseModel):
     transition_audit_enabled: bool = False
     # 治理证据落盘目录（相对 persistence.data_dir；绝对路径按原样使用）。
     governance_data_dir: str = "governance"
+
+    # --- R5 PHASE 13：python.exec 受治理激活主开关（默认 OFF / fail-closed）------
+    # 仅当本开关为 True **且** capability_gateway_mode 为 True 时，python_exec
+    # provider 才会被注册进 CapabilityRegistry；生产两者皆 False → python.exec
+    # 完全不可达（双重 fail-closed）。本 R5 部署保持默认 False，不开放给用户。
+    python_exec_enabled: bool = False
+    # 激活参数（仅在 python_exec_enabled=True 时生效；本 R5 部署不触发）。
+    python_exec_permission_level: int = 2
+    python_exec_require_audit: bool = True
 
 
 class NotesCompactConfig(BaseModel):

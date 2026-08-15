@@ -200,3 +200,43 @@ def bootstrap_code_execute(
         contract,
         CodeExecuteProvider(executor, capability_id=capability_id, granted_scopes={"exec"}),
     )
+
+
+def bootstrap_python_exec(
+    registry: "CapabilityRegistry",
+    *,
+    executor: Callable[[str, int], Any],
+    policy: "PythonExecPolicy | None" = None,
+    capability_id: str = "python.exec",
+    owner_ids: Any = None,
+) -> None:
+    """R5 PHASE 13 bootstrap: register governed ``python.exec`` into a CapabilityRegistry.
+
+    与 ``bootstrap_code_execute`` 同构，但 provider 是 fail-closed 的
+    ``PythonExecProvider``：在 kill_switch / exec grant / 审计下沉 / OS 隔离器 任一
+    不满足时**拒绝执行**，绝不降级无隔离子进程。policy 由调用方按运行态注入
+    （kill_switch / grant / audit_sink_ok / permission_level）；默认 None 时 bootstrap
+    用 ``PythonExecPolicy()``（测试/未来激活用，生产接线须经 python_exec_enabled 门控）。
+
+    注册期经 F8.1 投影 + F8.2b 执法（PERMISSIVE 默认）+ F8.3 生命周期，恒通过；
+    一旦注册即被 F8.4 读面如实计为 GOVERNED。但本 R5 部署中仅在
+    ``capability_layer.python_exec_enabled=True`` 且 ``capability_gateway_mode=True``
+    时才被调用 → 生产默认不注册 → fail-closed。
+    """
+    from anima.runtime.capability_resolver import CapabilityContract
+    from anima.runtime.providers.python_exec import PythonExecProvider, PythonExecPolicy
+
+    contract = CapabilityContract(
+        capability_id=capability_id,
+        permission="exec",
+        side_effect=True,
+        idempotent=False,
+        timeout=30.0,
+        retry=0,
+    )
+    registry.register(
+        contract,
+        PythonExecProvider(
+            executor, policy=policy, provider_id="python.exec", owner_ids=owner_ids
+        ),
+    )

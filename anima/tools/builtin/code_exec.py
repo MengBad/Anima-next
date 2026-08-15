@@ -96,9 +96,65 @@ def make_code_exec_tool(registry, capability_ids: Optional[list] = None,
         # + granted_scopes={"exec": True}）。默认 None → [] / 空集，保持 D2 无绑定语义。
         capability_ids=capability_ids,
         granted_scopes=granted_scopes,
-        # M0.4.7 D-A0：挂载时由 register_all_builtin 注入 True，关闭 legacy 直调面（F0）。
+        # M0.4.7 D-A0：挂载时由 register_all_builtin 注入 True，关闭 legacy 直调面（F0 closure）。
         capability_only=capability_only,
     )
 
 
-__all__ = ["make_code_exec_tool", "CodeExecSchemaViolation"]
+# ---------------------------------------------------------------------------
+# R6.1 —— `python.exec` Provider 适配 Tool（owner-only 执行边界）
+#
+# 纪律（R6.1 anchored 当前 task）：
+# - 本 Tool 仅作为 capability_index 的可解析入口 + gateway 路由触发点；
+#   真实执行权（owner authorization / sandbox / audit）完全由
+#   ``PythonExecProvider``（经 capability gateway 路由）行使。
+# - ``capability_only=True``：关闭 legacy 直调面（F0 closure），仅经 capability
+#   路由可达；即便 legacy 直调被绕过，下方 handler 也**绝不执行代码**。
+# - handler 仅为占位：任何经 legacy 触发的调用都返回明确拒绝，不委托 run_python。
+#   唯一真实的执行路径是 gateway → PythonExecProvider.invoke 的硬 owner 边界。
+# - 不引入新的沙箱 / 权限模型 / 审计管线；完全复用 R5 已硬化的 sandbox.run_python。
+# ---------------------------------------------------------------------------
+
+def make_python_exec_tool(registry, capability_ids: Optional[list] = None,
+                          granted_scopes: Any = None,
+                          capability_only: bool = False) -> Tool:
+    """构造 `python.exec` 的 capability 入口 Tool（owner-only，经 gateway 执行）。
+
+    与 ``make_code_exec_tool`` 同构，但语义更严格：
+    - ``capability_only`` 默认 ``False``（保持无绑定语义）；由 ``register_all_builtin``
+      注入 ``True``，关闭 legacy 直调面。
+    - handler **绝不执行代码**（只占位 + 审计），真实执行须经 gateway → Provider 的
+      硬 owner-only 边界。
+    """
+
+    async def python_exec_handler(code: str, **kw: Any) -> str:
+        # R6.1：python.exec 只经 capability 路由（gateway → PythonExecProvider）执行；
+        # legacy 直调已被 capability_only 拦截。此 handler 仅作占位，绝不执行代码。
+        # 即便 capability_only 被绕过，也不会落到 run_python。
+        registry._audit(
+            "execution_denied",
+            reason="legacy_path_blocked",
+            tool="python_exec",
+            capability="python.exec",
+        )
+        return "[R6.1] python.exec 仅经 capability 路由可达；legacy 直调已禁用。"
+
+    return Tool(
+        name="python_exec",
+        description=(
+            "在受控沙箱中执行主人（owner）授权的 Python 代码（python.exec 能力，owner-only）。"
+            "只能接收 code 字段；禁止任何 sandbox / 文件系统 / 网络参数透传。"
+        ),
+        parameters={
+            "code": {"type": "string", "description": "要执行的 Python 代码"},
+        },
+        handler=python_exec_handler,
+        required=["code"],
+        min_level=LEVEL_USER,
+        capability_ids=capability_ids,
+        granted_scopes=granted_scopes,
+        capability_only=capability_only,
+    )
+
+
+__all__ = ["make_code_exec_tool", "make_python_exec_tool", "CodeExecSchemaViolation"]

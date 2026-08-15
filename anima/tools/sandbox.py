@@ -100,6 +100,15 @@ class SandboxError(Exception):
     pass
 
 
+class SandboxDenied(SandboxError):
+    """执行被拒绝：OS 隔离不可用或运行时失败，拒绝降级为无隔离子进程。
+
+    R5（P10.4-R5）fail-closed 契约：当 bwrap/unshare 隔离器缺失或运行时失败，
+    必须抛此异常并**拒绝执行**，不得回退到无隔离的普通子进程（否则宿主 FS
+    逃逸 T6 / 网络出网 T7 在降级路径上升 CRITICAL）。
+    """
+
+
 class _SandboxIsolationError(RuntimeError):
     """隔离工具执行失败（namespace 创建失败等），应降级重试。"""
 

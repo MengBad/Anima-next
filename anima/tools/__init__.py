@@ -36,7 +36,12 @@ _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
 # 仅此清单内的 capability 在 ``capability_gateway_mode=ON`` 时走 Line B Gateway；
 # 其余（含其余 mixed-mode capability）仍走 Line A。扩展新成员须显式追加并走独立 slice，
 # 禁止改为「全部 capability 默认走 Gateway」或自动迁移 mixed-mode。
-_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read", "filesystem.write", "search.web"})
+# R5 PHASE 13 re-open (owner-authorized 2026-08-15)：追加 python.exec 到受治理 pilot 清单。
+# 该 provider 非 capability_only（无 capability_only 属性），故不经 pilot allowlist 门，
+# 直达 _governed_capability_route；其 fail-closed 四门（D1 kill_switch / D2 grant /
+# D3 audit_sink / D4 isolator）在 gateway.handle 内执行。仅当 config 同时置
+# capability_mode + capability_gateway_mode + python_exec_enabled 为真才被注册并可达。
+_GATEWAY_PILOT_CAPABILITIES = frozenset({"code.execute", "filesystem.read", "filesystem.write", "search.web", "python.exec"})
 
 # F9.2 Operational Activation：三条正交治理证据链的落盘文件名（固定，非配置项——
 # 目录可配、文件名不可配，避免运维把三条链写进同一个文件而丢失链间边界）。
@@ -257,11 +262,59 @@ class ToolRegistry:
         uid = str(uid).strip().lower()
         return f"user:{uid}" if uid else None
 
+    def _owner_ids(self) -> list:
+        """权威 owner QQ 列表（来自 config.permissions.owners）。"""
+        if not self.core:
+            return []
+        cfg = getattr(self.core, "config", None)
+        if cfg is None:
+            return []
+        owners = getattr(getattr(cfg, "permissions", None), "owners", None)
+        if not owners:
+            owners = getattr(cfg, "owners", None)
+        return list(owners or [])
+
+    @property
+    def _python_exec_enabled(self) -> bool:
+        """python.exec 是否在配置中显式启用（fail-closed：默认 False）。"""
+        if not self.core:
+            return False
+        cfg = getattr(self.core, "config", None)
+        if cfg is None:
+            return False
+        layer = getattr(cfg, "capability_layer", None)
+        if layer is None:
+            return False
+        return bool(getattr(layer, "python_exec_enabled", False))
+
+    def _is_owner_principal(self, principal: Optional[str]) -> bool:
+        """owner 主体判定：principal 形如 ``user:{qq}`` 且命中 config.permissions.owners。
+
+        owner 是 python.exec 的授权权威来源（独立于 pilot allowlist）。
+        格式非法 / 类型错误 / 非 user: 前缀 / 无法解析 QQ → 一律非 owner（fail-closed）。
+        """
+        if not principal or not isinstance(principal, str):
+            return False
+        if not principal.startswith("user:"):
+            return False
+        try:
+            qid = int(principal.split(":", 1)[1])
+        except (ValueError, IndexError):
+            return False
+        return qid in self._owner_ids()
+
     def pilot_capability_permitted(self, caller: Optional[str] = None) -> bool:
-        """治理 allowlist 判定（fail-closed）：空 allowlist / 无主体 / 不匹配 → False。"""
+        """治理 allowlist 判定（fail-closed）。
+
+        R6.1 owner-only 策略：owner 恒放行；其余主体须命中 allowlist，空 allowlist
+        拒绝全部（含非 owner）。该判定是**路由级软门控**；真正不可绕过的硬边界在
+        ``PythonExecProvider.invoke`` 内（基于可信 call context 的 owner 检查）。
+        """
+        principal = self._pilot_principal(caller)
+        if self._is_owner_principal(principal):
+            return True
         if not self._pilot_allowlist:
             return False
-        principal = self._pilot_principal(caller)
         if principal is None:
             return False
         return principal in self._pilot_allowlist
@@ -320,6 +373,7 @@ class ToolRegistry:
         from anima.capability.governance.gateway import (
             CapabilityGateway,
             bootstrap_code_execute,
+            bootstrap_python_exec,
         )
         from anima.runtime.capability_resolver import CapabilityRegistry
         # F8.9.1：filesystem.read 的 bootstrap 位于 tools 层（anima.tools.capability_fs），
@@ -336,6 +390,26 @@ class ToolRegistry:
         bootstrap_filesystem_read(registry, executor=self._make_filesystem_executor())
         bootstrap_filesystem_write(registry, executor=self._make_filesystem_write_executor())
         bootstrap_search_web(registry, executor=self._make_search_web_executor())
+        # R5 PHASE 13：python.exec 受治理 provider（默认 OFF / fail-closed）。
+        # 仅当 capability_layer.python_exec_enabled=True 且本网关已构建（capability_gateway_mode=True）
+        # 时才注册；生产两者皆 False → 本 bootstrap 不执行 → python.exec 完全不可达。
+        _pyexec_cfg = getattr(self.core.config, "capability_layer", None) if self.core else None
+        _pyexec_on = bool(getattr(_pyexec_cfg, "python_exec_enabled", False)) if _pyexec_cfg else False
+        if _pyexec_on:
+            from anima.runtime.providers.python_exec import PythonExecPolicy
+            _pyexec_policy = PythonExecPolicy(
+                kill_switch=False,
+                grant=True,
+                require_audit=bool(getattr(_pyexec_cfg, "python_exec_require_audit", True)),
+                audit_sink_ok=self._governance_audit_sink is not None,
+                permission_level=int(getattr(_pyexec_cfg, "python_exec_permission_level", 2)),
+            )
+            bootstrap_python_exec(
+                registry,
+                executor=self._make_python_exec_executor(),
+                policy=_pyexec_policy,
+                owner_ids=self._owner_ids(),
+            )
         return CapabilityGateway(registry, audit_sink=self._governance_audit_sink)
 
     def _make_code_executor(self):
@@ -357,6 +431,25 @@ class ToolRegistry:
                 return await registry_self.call(
                     "run_python", {"code": code}, permission_level=trusted_level
                 )
+
+            return _run_in_thread(_run)
+
+        return executor
+
+    def _make_python_exec_executor(self):
+        """构造 python.exec 的 **sync** executor（R5 PHASE 13，fail-closed 桥接体）。
+
+        与 ``_make_code_executor`` 同构：把 async ``run_python`` 经独立线程新 event loop
+        跑完（``_run_in_thread``，携带完整 contextvars）。委托姿势逐字节一致——只信可信
+        ctx 的 permission_level，绝不读调用方 args；真正的 exec gate / sandbox tier /
+        OS 隔离仍由 ``run_python``（sandbox）行使，治理不是新的执行权限来源。
+        provider 的 invoke 以 ``(code, permission_level)`` 调用本 executor。
+        """
+        def executor(code: str, level: int) -> str:
+            from anima.tools import sandbox
+
+            async def _run():
+                return await sandbox.run_python(code, permission_level=level)
 
             return _run_in_thread(_run)
 
@@ -633,7 +726,15 @@ class ToolRegistry:
         # principal gate（pilot allowlist）已先于此执行——R1 安全不变量：gateway 不会
         # 绕过 principal authorization。
         if self.capability_gateway_mode and cap_id in _GATEWAY_PILOT_CAPABILITIES:
-            return await self._governed_capability_route(cap_id, args, caller)
+            # R6.1 fail-closed：python.exec 仅在 python_exec_enabled=True 时经 gateway
+            # 路由；禁用时退化为 capability_only 直调拒绝（见下方 self.call 的 capability_only 拦截），
+            # 避免走到 fail-open 的 gateway 解析分支。
+            if cap_id == "python.exec" and not self._python_exec_enabled:
+                _governed = False
+            else:
+                _governed = True
+            if _governed:
+                return await self._governed_capability_route(cap_id, args, caller)
         # M0.4.7 D-A4（telemetry）：治理门通过即记录 allowed + routed；Provider 执行
         # 失败（tool_result_ok 判定）记 failed。仅发指标、不改执行语义；指标进入进程级
         # MetricsCollector（WebUI /api/metrics 可见），与既有 ``capability_route_denied``

@@ -129,11 +129,14 @@ def test_da1_capability_layer_is_isolated_from_self_growing_capabilities():
     # 治理 section 不得混入自生长字段，反之亦然
     layer_fields = set(CapabilityLayerConfig.model_fields)
     # F9.2：新增五个观测面开关（默认全 OFF）——仍全部属于治理域，与自生长库无交集。
+    # R5 PHASE 13：python.exec 受治理激活主开关 + 激活参数（默认全 OFF / fail-closed）。
     assert layer_fields == {
         "capability_mode", "pilot_capability_allowlist",
         "capability_gateway_mode", "governance_audit_enabled",
         "health_evidence_enabled", "transition_audit_enabled",
         "governance_data_dir",
+        "python_exec_enabled", "python_exec_permission_level",
+        "python_exec_require_audit",
     }
     growth_fields = set(type(cfg.capabilities).model_fields)
     assert not (layer_fields & growth_fields), "治理层与自生长库字段不得重叠"

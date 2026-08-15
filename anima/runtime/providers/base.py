@@ -45,6 +45,14 @@ class ProviderResult:
     success: bool = False
     error: str = ""                          # failure reason ("" on success)
     metadata: dict = field(default_factory=dict)
+    # R6.1 治理/审计链必需字段（带默认值，向后兼容）：结构化拒绝原因、
+    # 退出码、审计轨迹（capability/principal/owner_authorized）、执行标识与产出度量。
+    denied_reason: str | None = None        # 结构化拒绝原因（governance 可判定）
+    exit_code: int | None = None
+    audit: dict = field(default_factory=dict)
+    execution_id: str | None = None         # 外部幂等/溯源标识
+    bytes: int | None = None                # 标准输出字节数
+    stdout_hash: str | None = None          # 标准输出 sha256 溯源
 
 
 class Provider(abc.ABC):
