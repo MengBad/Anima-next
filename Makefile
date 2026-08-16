@@ -36,15 +36,17 @@ clean:
 
 # R10-00 本地 CI 验证：测试 + 安全护栏 + 证据聚合（不含生产部署/自动批准）
 # 注意：本地不强制 pytest-json-report（CI 侧安装并启用）；evidence 容忍 test-result.json 缺失。
-# 已知预存 broken 测试（与 R6–R9 路线无关，依赖未落地的 anima.pilot / 冻结配置集过期）：
+# 已知预存 broken 测试（与 R6–R9 路线无关，不属 R10-00 范围，CI/本地统一忽略；后续专项修复）：
 #   test_r3_4_audit_completeness / test_r3_5_kill_switch（缺 anima.pilot.identity_policy）
 #   test_f9_2_operational_activation（冻结配置集与 R6.1 python_exec_* 增强冲突）
 #   test_memory_read_r2a（缺 anima.pilot + memory_read 能力未落地）
-# 这些不在 R10-00 验证范围内，CI/本地统一忽略；后续专项修复，不混入本次提交。
+#   test_audit_persistence / test_health_observer（subprocess cwd 硬编码 Windows 路径 G:/Anima-next，Linux CI 不可运行）
 ANIMA_CI_IGNORE = --ignore=tests/test_r3_4_audit_completeness.py \
 	--ignore=tests/test_r3_5_kill_switch.py \
 	--ignore=tests/test_f9_2_operational_activation.py \
-	--ignore=tests/test_memory_read_r2a.py
+	--ignore=tests/test_memory_read_r2a.py \
+	--ignore=tests/test_audit_persistence.py \
+	--ignore=tests/test_health_observer.py
 
 ci:
 	$(PYTHON) -m pytest tests/ $(ANIMA_CI_IGNORE) -q
