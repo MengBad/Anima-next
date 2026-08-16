@@ -208,11 +208,13 @@ class EvolutionLoop:
     """
 
     def __init__(self, dev_loop: Any, *, selfcode_manager: Any = None,
-                 gate: "EvolutionGate | None" = None) -> None:
+                 gate: "EvolutionGate | None" = None, core: Any = None) -> None:
         self._dev = dev_loop
         self._proposer = EvolutionProposer(selfcode_manager)
         # 默认复用进程内单例审批门：WebUI 的 list/decide 与 propose 共享同一状态。
         self._gate = gate if gate is not None else get_evolution_gate()
+        # core 可选：提供时，evolve 部署前后自动采集 Before/After 指标，产出改进证据。
+        self._core = core
 
     async def propose(self, goal: str, *, target_files: tuple[str, ...] = ()) -> dict[str, Any]:
         """生成提案并进入审批队列（默认不落地）。返回门禁决策。"""
@@ -224,6 +226,7 @@ class EvolutionLoop:
         """端到端：提出 → 审查 → 门禁 →（若批准）经 R8 闭环受控部署。
 
         auto_deploy / owner_authorized 必须同时为真才真正部署；否则只产出提案。
+        若持有 core，部署前后自动采集指标并产出 ImprovementEvidence（R10-02 效果评估）。
         """
         proposal = await self._proposer.propose(goal, target_files=target_files)
         decision = self._gate.request_approval(proposal)
@@ -239,6 +242,17 @@ class EvolutionLoop:
 
         # Owner 已显式批准且授权部署 → 经 R8 闭环落地（R8 内部仍受控）
         self._gate.approve(proposal.id)
+
+        # R10-02 效果评估：部署前采集 Before（若可）
+        bench = None
+        if self._core is not None:
+            try:
+                from anima.evolution.evaluator import Benchmark
+                bench = Benchmark()
+                bench.capture_before(self._core)
+            except Exception:  # noqa: BLE001 - 评估失败不影响部署
+                bench = None
+
         from .devloop import DevIssue
         issue = DevIssue(
             title=goal, detail=proposal.diff_summary, source="audit",
@@ -246,13 +260,42 @@ class EvolutionLoop:
             severity="high",
         )
         result = await self._dev.run_issue(issue, owner_authorized=owner_authorized)
+
+        # R10-02 效果评估：部署后采集 After，产出改进证据并落盘
+        improvement_evidence = None
+        if bench is not None:
+            try:
+                report = bench.capture_after(self._core)
+                improvement_evidence = report
+                self._save_evidence(proposal.id, report)
+            except Exception:  # noqa: BLE001
+                improvement_evidence = {"ok": False, "reason": "after_capture_failed"}
+
         return {
             "id": proposal.id,
             "decision": "approved",
             "deployed": result.deploy_ok,
             "deploy_error": result.deploy_error,
             "needs_owner_approval": result.needs_owner_approval,
+            "improvement_evidence": improvement_evidence,
         }
+
+    def _save_evidence(self, proposal_id: str, report: dict[str, Any]) -> None:
+        """把改进证据追加写入 data/evolution_evidence.jsonl（fail-open）。"""
+        if self._core is None:
+            return
+        try:
+            data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+            root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+            from pathlib import Path
+            path = Path(root) / "evolution_evidence.jsonl"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            import json
+            row = {"proposal_id": proposal_id, "report": report}
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+        except Exception:  # noqa: BLE001 - 证据落盘失败不影响主流程
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -283,12 +326,16 @@ def _make_devloop(selfcode_manager: Any) -> "DevLoopOrchestrator":
     )
 
 
-def get_evolution_loop(selfcode_manager: Any = None) -> EvolutionLoop:
-    """构造受控自我进化闭环（接 R8 真实闭环），复用进程内单例审批门。"""
+def get_evolution_loop(selfcode_manager: Any = None, *, core: Any = None) -> EvolutionLoop:
+    """构造受控自我进化闭环（接 R8 真实闭环），复用进程内单例审批门。
+
+    core 可选：提供时 evolve 部署前后自动采集 Before/After 指标（R10-02 效果评估）。
+    """
     return EvolutionLoop(
         _make_devloop(selfcode_manager),
         selfcode_manager=selfcode_manager,
         gate=get_evolution_gate(),
+        core=core,
     )
 
 

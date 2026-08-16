@@ -17,10 +17,11 @@
 - **R9-02 WebUI 受控自我进化通道**：COMPLETE（4 端点 + 工程页面板，已部署 `dfe993d`）。
 - **R10-00 GitHub Actions CI/CD**：COMPLETE（`.github/workflows/anima-ci.yml` + `scripts/anima_guard.py` + `scripts/ci_evidence.py`；测试/前端/安全护栏/证据四 job；禁止自动部署/自动批准 Evolution）。
 - **R10-01 Reality Observation Layer**：COMPLETE（`anima/observation/` 统一观测事件层：审计 DENY 聚合/运行时健康/用户反馈/聚合桥接 R8；9 测试绿）。
+- **R10-02 Evolution Evaluation Engine**：COMPLETE（`anima/evolution/evaluator/`：MetricSample/collect_metrics + Benchmark 前后采集 + ImprovementEvidence 改进/退化判定；12 测试绿；接入 R9 `EvolutionLoop.evolve` 产出并落盘 `evolution_evidence.jsonl`）。
 
 ## 进行中（IN PROGRESS）
 
-- **R10 工程化自治闭环**：R10-00 已完成，R10-01 Observation Layer / R10-02 Evaluation Engine 待实施。
+- **R10 工程化自治闭环**：R10-00 / R10-01 / R10-02 三项均已完成。下一步可选将 Observation → Evaluation 串成单一可观测闭环（低优先级）。
 
 ## 下一阶段（NEXT）
 

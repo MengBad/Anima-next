@@ -77,6 +77,16 @@
 - `tests/test_r10_01_observation.py`：9 测试全绿（审计聚合/窗口过滤/运行时降级/反馈归一/聚合桥接/空输入安全）。
 - `github_source.py`（GitHub Issue 采集）留 TODO：需 API token，不阻塞当前闭环。
 
+### R10-02 Evolution Evaluation Engine — COMPLETE
+- 新增 `anima/evolution/evaluator/`：把「观测 → 评估」闭环的评估半环工程化、可验证化。
+- `metric.py`：`MetricSample` + `collect_metrics(core, context)` 抽取 Before/After 指标（runtime_running / channel_connected / llm_request_count / llm_failure_count / llm_failure_rate / health_samples / automation_pending）。
+- `benchmark.py`：`Benchmark` 编排 `capture_before` / `capture_after` / `set_before_metrics` / `evaluate_pair`，产出 `ImprovementEvidence`。
+- `comparison.py`：`ImprovementEvidence` + `compare_metric` / `compare_samples` / `summarize_verdict`；按指标方向（higher/lower-better）判定 improved / degraded / neutral，聚合出 effective / ineffective / neutral 结论，每条结论带 evidence 明细。
+- 接入 R9 `EvolutionLoop.evolve`：持有 `core` 时，部署前后自动采集指标、产出改进证据，并 fail-open 落盘 `data/evolution_evidence.jsonl`（`_save_evidence`）。
+- `_HIGHER_BETTER` / `_LOWER_BETTER` 方向集合 + `_direction()` 用成员判定（修复此前误用 `.get` 对 set 的 bug）。
+- `tests/test_r10_02_evaluation.py`：12 测试全绿（度量抽取 / 方向判定 / 前后对照 / 聚合结论 / 集成：evolve 经 core 产出 improvement_evidence）。
+- 与 R10-01 Observation 共同构成「观测 → 评估」闭环：Observation 发现问题 → Evaluation 量化验证改进效果，闭环可审计、不自我授权。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
