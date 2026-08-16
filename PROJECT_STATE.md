@@ -69,3 +69,39 @@
 - 前端 `EngineeringView.vue` + `api.ts` + `types.ts`，`npm run build` 类型检查通过。
 - 生产实证：`/api/evolution/proposals` 返回 200；R9+WebUI 端点测试 10 项全绿。
 - 注意：R9 自我进化**永不借 UI 自我授权生产更新**；批准提案后仍需走 R8 受控部署（owner_authorized）才落地。
+
+---
+
+## Post-R15 战略定位（2026-08-17 起）
+
+> **重新定位**：ANIMA 从「具备自治能力的 Agent 系统」升级为 **Owner 长期使用的个人
+> Autonomous Agent Operating System（非商业产品）**。
+>
+> - 终态不是「AI 产品 → 用户 → 商业价值」，而是 **Owner → ANIMA OS →（记忆 / 技能 /
+>   Agent / 知识 / 运行时 / 演化 / 运维）**。
+> - **明确不做**：商业化（P7 商业变现）、Marketplace、SaaS、多租户、企业权限模型扩展、
+>   用户增长系统。
+> - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything ·
+>   Identity Cannot Be Forged · Production Is Sacred；**Self improvement ≠ Self authorization**。
+
+### Post-R15 优先级路线（P0 最高）
+
+| 阶段 | 主题 | 关键交付 |
+|---|---|---|
+| **P0** | Runtime Reliability（长期稳定可证明） | 每日健康证明 / 7·30·90 天稳定记录 |
+| **P1** | 真实环境观察 | GitHub/运行时/Audit 异常→观察→分析→提案 |
+| **P2** | 优化效果评估 | Evolution Impact Score（前后对比可量化） |
+| **P3** | 真实 Agent 协作 | Architect/Security/Research/Coding/Critic/Judge 多视角降错 |
+| **P4** | 长期记忆 | 事件→知识→行为模式三层（Owner 习惯/历史决策/为何这样设计） |
+| **P5** | 自治维护 | 检测过期依赖→分析风险→提议升级→CI 验证→等 Owner 批准→执行 |
+| **P6** | 个人能力生态 | Skill Proposal → Sandbox → Benchmark → Adopt 生命周期 |
+
+### P0-01 Daily Health Proof（已完成）
+
+- `anima/os/reliability.py`：生成每日健康证明，覆盖 **当前版本（commit SHA）/ 文件 hash /
+  配置 hash / 权限状态 / Audit 状态 / Agent 状态 / 运行时漂移（R6.2）**。
+- fail-closed：任一探针缺失/异常 → 该检查 FAIL，整体证明 DEGRADED（绝不假装健康）；
+  证明本身带 sha256 指纹可事后核验。
+- `answer_was_anomaly_yesterday(data_dir)`：直接回答 Owner「昨天有没有异常？」。
+- 落盘 `data/health_proof/YYYY-MM-DD.jsonl`（每日追加，坏行隔离）。
+- 10 单元测试全绿（HEALTHY/DEGRADED/漂移/DENY 计数/落盘问答）。

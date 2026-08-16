@@ -49,6 +49,30 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
 - 默认不做语音模块（用户否决过）。
 - CI 永不自动部署生产、永不自动批准 Evolution、永不自动改代码、永不自动跳过失败。
 
+
+### Post-R15 — 个人 Autonomous Agent OS（非商业产品，2026-08-17 起）
+
+重新定位：ANIMA 是 **Owner 长期使用的个人 Autonomous Agent Operating System**，
+终态 Owner → ANIMA OS →（记忆/技能/Agent/知识/运行时/演化/运维）。
+**明确不做**：商业化、Marketplace、SaaS、多租户、企业权限扩展、用户增长。
+
+- **P0 Runtime Reliability**（进行中）
+  - **P0-01 Daily Health Proof**：`anima/os/reliability.py` —— 每日健康证明（版本/文件hash/
+    配置hash/权限/Audit/Agent/漂移），fail-closed，可答「昨天有没有异常？」。**DONE**。
+  - **P0-02 Long Running Test**：7/30/90 天稳定性记录（uptime / anomaly / recovery /
+    permission-drift / evolution 计数）。
+- **P1 Real-Environment Observation**（规划）：GitHub commits/CI/issue + 运行时 CPU/mem/
+  error/latency + Audit DENY 增长 → Reality → Observation → Analysis → Proposal。
+- **P2 Evolution Impact Score**（规划）：前后对比（test-fail-rate / latency 等）量化优化收益，
+  「我建议 X，因为历史数据证明有益」。
+- **P3 Real Agent Society**（规划）：Architect/Security/Research/Coding/Critic/Judge 多视角
+  降错，升级 R12 `argue_fn` 为真实多 Agent 辩论。
+- **P4 Long-Term Memory**（规划）：事件→知识→行为模式三层长记忆（Owner 习惯 / 历史决策 /
+  为何这样设计）。
+- **P5 Autonomous Maintenance**（规划）：过期依赖检测→风险分析→升级提议→CI 验证→
+  等 Owner 批准→执行（工程准备自动，执行需授权）。
+- **P6 Personal Skill Ecosystem**（规划）：Skill Proposal → Sandbox → Benchmark → Adopt 生命周期。
+
 ## 完成标准（最终判断）
 
 1. 可以安全执行任务

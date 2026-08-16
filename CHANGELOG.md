@@ -2,6 +2,27 @@
 
 本项目采用近似语义化版本（MAJOR.MINOR.PATCH）。记录每个版本相对上一版的行为与接口变化。
 
+## [Post-R15] — 2026-08-17（个人 Autonomous Agent OS 路线启动）
+
+### 战略重新定位
+- ANIMA 从「具备自治能力的 Agent 系统」升级为 **Owner 长期使用的个人 Autonomous Agent
+  Operating System（非商业产品）**。终态：Owner → ANIMA OS →（记忆/技能/Agent/知识/
+  运行时/演化/运维）。
+- 明确不做：商业化、Marketplace、SaaS、多租户、企业权限扩展、用户增长。
+- 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
+  Forged · Production Is Sacred；Self improvement ≠ Self authorization。
+
+### P0-01 Daily Health Proof — COMPLETE
+- 新增 `anima/os/reliability.py`：生成每日「ANIMA Daily Health Proof」，覆盖
+  **当前版本（commit SHA）/ 文件 hash / 配置 hash / 权限状态 / Audit 状态 / Agent 状态 /
+  运行时漂移（R6.2 attest_runtime）**。
+- fail-closed：任一探针缺失/异常 → 该检查 FAIL，整体证明 DEGRADED（绝不假装健康）。
+  证明本身带 sha256 指纹可事后核验是否被篡改。
+- `answer_was_anomaly_yesterday(data_dir)`：直接回答 Owner「昨天有没有异常？」。
+- 落盘 `data/health_proof/YYYY-MM-DD.jsonl`（每日追加，坏行隔离）。
+- 测试 `tests/test_p0_01_daily_health_proof.py`（10 项全绿）：HEALTHY/DEGRADED/漂移/
+  Audit DENY 计数/落盘问答。
+
 ## [R6] — 2026-08-15（Governance & Execution）
 
 ### R6.1 Owner Authorization Boundary — COMPLETE
