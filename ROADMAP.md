@@ -61,8 +61,8 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
     配置hash/权限/Audit/Agent/漂移），fail-closed，可答「昨天有没有异常？」。**DONE**。
   - **P0-02 Long Running Test**：7/30/90 天稳定性记录（uptime / anomaly / recovery /
     permission-drift / evolution 计数）。**DONE**。
-- **P1 Real-Environment Observation**（规划）：GitHub commits/CI/issue + 运行时 CPU/mem/
-  error/latency + Audit DENY 增长 → Reality → Observation → Analysis → Proposal。
+- **P1 Real-Environment Observation**（规划→**DONE**）：GitHub commits/CI/issue + 运行时 CPU/mem/
+  error/latency + Audit DENY 增长 → Reality → Observation → Analysis → Proposal（`anima/observation/environment.py`）。
 - **P2 Evolution Impact Score**（规划）：前后对比（test-fail-rate / latency 等）量化优化收益，
   「我建议 X，因为历史数据证明有益」。
 - **P3 Real Agent Society**（规划）：Architect/Security/Research/Coding/Critic/Judge 多视角

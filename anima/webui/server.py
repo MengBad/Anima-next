@@ -2165,9 +2165,19 @@ class WebUIServer:
             }
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             stability = {}
+        # P1：真实环境观测报告（只读，GitHub/性能/Audit DENY 增长趋势）
+        environment = {}
+        try:
+            environment = surf.environment_report()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
+            environment = {}
         if self.core.audit:
             self.core.audit.emit("webui_os_overview", reviewer=owner_id)
-        return web.json_response({"overview": ov.to_dict(), "stability": stability})
+        return web.json_response({
+            "overview": ov.to_dict(),
+            "stability": stability,
+            "environment": environment,
+        })
 
     async def os_command(self, request: web.Request) -> web.Response:
         """解析 Owner 的受限自然语言指令（白名单 + 确定性规则）。
@@ -2203,6 +2213,13 @@ class WebUIServer:
                 }
             except Exception:  # noqa: BLE001
                 payload = {"command": cmd.to_dict(), "stability": {}}
+        elif cmd.intent == "observe":
+            try:
+                report = surf.environment_report()
+            except Exception:  # noqa: BLE001
+                report = {}
+            cmd.preview = cmd.preview or "当前真实环境观测报告"
+            payload = {"command": cmd.to_dict(), "environment": report}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()

@@ -107,6 +107,19 @@
   恢复 / 演化计数），fail-closed 诚实，落盘 `data/stability/`。
 - WebUI `/api/os/overview` 聚合 7/30/90d 稳定性；`/api/os/command` 新增 `stability` 只读意图。
 
+### P1 Real-Environment Observation（已完成）
+
+- `anima/observation/environment.py`：真实环境观察闭合 Reality → Observation → Analysis →
+  Proposal；GitHub 信号 + 性能阈值 + Audit DENY 增长趋势 → ObservationReport → R8 DevIssue
+  （只生成提案、不部署）。WebUI `/api/os/overview` 聚合 `environment`；`/api/os/command`
+  新增 `observe` 只读意图。
+
+
+
+- `anima/os/long_running.py`：7/30/90 天稳定性记录（uptime / anomaly / degraded / 权限漂移 /
+  恢复 / 演化计数），fail-closed 诚实，落盘 `data/stability/`。
+- WebUI `/api/os/overview` 聚合 7/30/90d 稳定性；`/api/os/command` 新增 `stability` 只读意图。
+
 
 
 - `anima/os/reliability.py`：生成每日健康证明，覆盖 **当前版本（commit SHA）/ 文件 hash /

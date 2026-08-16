@@ -110,3 +110,16 @@ def test_stability_summary_no_core():
     # 无 core 注入 → 诚实返回不可用，不崩溃
     out = s.stability_summary(7)
     assert out.get("available") is False
+
+
+def test_parse_observe_readonly():
+    s = _surface()
+    c = s.parse_command("观察一下最近环境异常和趋势")
+    assert c.intent == "observe"
+    assert c.needs_confirmation is False
+
+
+def test_environment_report_no_core():
+    s = _surface()
+    out = s.environment_report()
+    assert out.get("available") is False

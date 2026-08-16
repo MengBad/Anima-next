@@ -136,6 +136,26 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "stability 聚合异常"}
 
+    def environment_report(self, *, github: Any = None, performance: bool = True,
+                           window_sec: int = 86400) -> dict[str, Any]:
+        """只读聚合真实环境观测报告（P1）。
+
+        复用 R10-01/本模块 ``analyze_environment``：GitHub 信号 + 性能阈值 +
+        Audit DENY 增长趋势。只观测、只提议，不执行。
+        fail-closed：任一源缺失 → report.incomplete=True，如实反映。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        try:
+            from ..observation.environment import analyze_environment
+            report = analyze_environment(
+                self._core, github=github, performance=performance,
+                window_sec=window_sec,
+            )
+            return report.to_dict()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
+            return {"available": False, "reason": "environment 聚合异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -193,6 +213,13 @@ class HumanAIControlSurface:
             return ParsedCommand(
                 intent="stability", needs_confirmation=False,
                 preview="返回近 7/30/90 天稳定性记录（uptime / 异常 / 权限漂移 / 演化计数）",
+            )
+
+        # 真实环境观察查询（只读）—— P1：观察 / 观测 / 异常 / 趋势 / 环境
+        if re.search(r"(观察|观测|环境|异常|趋势|observe|observation)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="observe", needs_confirmation=False,
+                preview="返回真实环境观测报告（GitHub/性能/Audit DENY 增长趋势）",
             )
 
         return ParsedCommand(intent="unknown", preview=f"未识别指令：{t[:40]}")

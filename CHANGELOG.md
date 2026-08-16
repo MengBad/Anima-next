@@ -12,6 +12,16 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P1 Real-Environment Observation — COMPLETE
+- 新增 `anima/observation/environment.py`：闭合 **Reality → Observation → Analysis → Proposal**：
+  - GitHub 真实信号源（填补 R10-01 `SOURCE_GITHUB` TODO：commits/CI/issue；可注入、无 token 依赖）。
+  - 运行时性能阈值（复用 R10-02 `collect_metrics` + R13 模式：LLM 失败率 / 自动化积压 / 资源使用率越界 → ObservationEvent）。
+  - **Audit DENY 增长趋势**：对比当期与上一窗口 DENY 计数，输出增长百分比与 `growing` 判定（Owner 最关心的「异常是不是变多」）。
+  - `ObservationReport` 汇总趋势 + `to_dev_issues` 桥接 R8 DevIssue（source=observation），让真实问题进入「提案 → Owner 批准」闭环。
+- fail-closed / 诚实：任一信号源不可用 → `incomplete=True` 且相关事件为空，绝不编造「环境正常」。
+- WebUI 接线：`/api/os/overview` 聚合 `environment` 报告；`/api/os/command` 新增 `observe` 只读意图（"观察/异常/趋势"），绝不自我授权。
+- 测试：`tests/test_p1_real_environment_observation.py`（10）+ R14 `observe` 意图（2）+ WebUI（2）。
+
 ### P0-02 Long Running Test — COMPLETE
 - 新增 `anima/os/long_running.py`：基于 P0-01 每日健康证明 + 审计 + 演化证据，聚合
   **7/30/90 天稳定性记录**（uptime_ratio / anomaly_total / degraded_days /
