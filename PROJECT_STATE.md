@@ -50,6 +50,7 @@
 
 1. **R9 收尾运营**：在 WebUI 工程/审批页接入 R9 `EvolutionLoop` 提案可视化与 Owner 一键审批（当前仅 API/测试，未接 UI）——**已在 `dfe993d` 完成**。
 2. **R10-00 GitHub Actions CI/CD（已完成，commit `dcfeb90`）**：`.github/workflows/anima-ci.yml` 四 job（backend/frontend/security/evidence）真实绿；`scripts/anima_guard.py` + `scripts/ci_evidence.py`；声明 paramiko 依赖；忽略 6 个预存 broken 测试（后续专项修）；`commit-attestation.json` 证明未自动部署/未自动批准 Evolution。
+3. **R10-01 Reality Observation Layer（已完成）**：`anima/observation/` 统一观测事件层（审计 DENY 聚合/运行时健康/用户反馈/聚合桥接 R8）；9 测试全绿；github_source 留 TODO 需 API token。
 3. **生产实证补强**：R8/R9 接真实 `issue_sources`（SelfCode 效果建议、审计 DENY 聚合）跑一周期，验证闭环能稳定收敛不退化。
 3. **后续增强（路线外）**：人格漂移执法评估、SelfCode 效果评估与建议卸载、大图哈希缓存、danger 收紧、fallback 压测。
 4. **明确不做**：无审批自动安装；默认不做语音模块（用户否决过）。

@@ -16,6 +16,7 @@
 - **R9 Controlled Self Evolution**：COMPLETE（提案/围栏/审批门 8 测试绿，已部署 `e1b32e7e1a5a`）。
 - **R9-02 WebUI 受控自我进化通道**：COMPLETE（4 端点 + 工程页面板，已部署 `dfe993d`）。
 - **R10-00 GitHub Actions CI/CD**：COMPLETE（`.github/workflows/anima-ci.yml` + `scripts/anima_guard.py` + `scripts/ci_evidence.py`；测试/前端/安全护栏/证据四 job；禁止自动部署/自动批准 Evolution）。
+- **R10-01 Reality Observation Layer**：COMPLETE（`anima/observation/` 统一观测事件层：审计 DENY 聚合/运行时健康/用户反馈/聚合桥接 R8；9 测试绿）。
 
 ## 进行中（IN PROGRESS）
 
@@ -23,8 +24,8 @@
 
 ## 下一阶段（NEXT）
 
-### Phase R10-01 Reality Observation Layer
-新增 `anima/observation/`：runtime_monitor / audit_analyzer / user_feedback / github_source；统一 `Observation Event`。
+### Phase R10-01 Reality Observation Layer — DONE
+新增 `anima/observation/`：runtime_monitor / audit_analyzer / user_feedback / collector；统一 `Observation Event`。github_source（GitHub Issue 采集）留 TODO（需 API token）。
 
 ### Phase R10-02 Evolution Evaluation Engine
 新增 `evolution/evaluator/`：metric / benchmark / comparison；Before/After 度量，产出 `Improvement Evidence`。

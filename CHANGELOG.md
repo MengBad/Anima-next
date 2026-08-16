@@ -66,6 +66,17 @@
 - CI 安装全可选依赖组 `[qq,vector,dev,docs,sylann]`；忽略 6 个已知预存 broken 测试（`anima.pilot` 缺失 / 冻结配置集过期 / subprocess 硬编码 Windows 路径 `G:/Anima-next`），聚焦 R6–R9+R10 核心。
 - **GitHub Actions 真实验证通过**（run 31935652741）：Backend 2113 passed / Frontend build / Security guard / Evidence 四 job 全绿；`commit-attestation.json` 声明未自动部署、未自动批准 Evolution、未自动改代码。
 
+### R10-01 Reality Observation Layer — COMPLETE
+- 新增 `anima/observation/`：统一观测事件层。
+- `event.py`：`ObservationEvent` + 严重度模型（`to_dict`/`severity_rank`），统一 `{type, source, severity, title, detail, evidence, target, ts, id}`。
+- `audit_analyzer.py`：扫描审计链，高频 DENY（同 target ≥ min_denials 次）→ high 级 `audit_deny`；显式异常 → `runtime_error`。
+- `runtime_monitor.py`：读 `health_history`/`evaluation`，进程未运行/渠道未连接 → high；评估注意力 → normal。
+- `user_feedback.py`：归一化反馈队列，命中 bug/报错关键词 → high。
+- `collector.py`：`collect_all` 聚合全部源；`to_dev_issues` 桥接 R8 `DevIssue`（进入自主开发闭环）。
+- 设计纪律：观测层只归集、不自我授权、不触发自愈（自愈属 R13）；每条带 evidence（R6.5 Audit Everything）。
+- `tests/test_r10_01_observation.py`：9 测试全绿（审计聚合/窗口过滤/运行时降级/反馈归一/聚合桥接/空输入安全）。
+- `github_source.py`（GitHub Issue 采集）留 TODO：需 API token，不阻塞当前闭环。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
