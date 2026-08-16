@@ -62,7 +62,9 @@
 - `scripts/ci_evidence.py`：汇总 `ci-report.json` + `commit-attestation.json`（声明未自动部署/未自动批准 Evolution/未自动改代码）。
 - **禁止项（架构保证）**：CI 不含 deploy 步骤、不含 auto-approve Evolution、不含 auto-modify code、不含 auto-skip-failure。
 - `Makefile` 加 `ci`/`security-guard`/`ci-evidence` 本地复跑目标；`reports/2026-08-16_r10_engineering_autonomy.md` 计划书。
-- 测试范围：因 2 个历史 broken R3 测试（`anima.pilot` 缺失，与 R6–R9 路线无关）会致 `tests/` 全量 collection error，CI/本地 `make ci` 用 `--ignore` 排除，聚焦 R6–R9+R10 已验证核心。
+- 依赖补全：`pyproject.toml`/`requirements.txt` 声明 `paramiko>=3.0`（`_deploy.py` SSH 发布依赖，修复 CI 中 test_deploy/test_release_baseline 收集失败）。
+- CI 安装全可选依赖组 `[qq,vector,dev,docs,sylann]`；忽略 6 个已知预存 broken 测试（`anima.pilot` 缺失 / 冻结配置集过期 / subprocess 硬编码 Windows 路径 `G:/Anima-next`），聚焦 R6–R9+R10 核心。
+- **GitHub Actions 真实验证通过**（run 31935652741）：Backend 2113 passed / Frontend build / Security guard / Evidence 四 job 全绿；`commit-attestation.json` 声明未自动部署、未自动批准 Evolution、未自动改代码。
 
 ## [0.3.0-rc2] — 2026-07-16
 
