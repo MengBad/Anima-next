@@ -48,6 +48,14 @@
 - **受控原则**：self-improvement ≠ self-authorization——即便 Owner 批准，R8 受控部署仍需 owner_authorized=True 才调 deploy_fn。
 - 已提交 `e1b32e7`，已部署 VPS（version `e1b32e7e1a5a`），生产实证 R9 测试 8 项全绿；R6+R7+R8+R9 全量 121 测试无回归。
 
+### R9-02 WebUI 受控自我进化通道 — COMPLETE
+- `self_evolution.py`：提案 `to_dict` 增 `touches_core`/`decision` 透传；新增 `get_evolution_loop`/`get_evolution_gate`（进程内单例）/ `propose_evolution`/`list_evolution_proposals`/`decide_evolution`；`EvolutionLoop` 复用单例 gate（propose/approve/reject 状态跨请求一致）。
+- 后端 `server.py` + `routes/__init__.py`：4 个 `/api/evolution` 端点（proposals / propose / {id}/approve / {id}/reject），批准仅放行**提案**不部署，全部审计落盘。
+- 前端 `EngineeringView.vue` + `api.ts` + `types.ts`：工程页新增「受控自我进化」面板（发起提案 / 触核心红标 / 批准·驳回），`npm run build` 类型检查通过。
+- `tests/test_webui_r9_evolution.py`：2 端点测试（propose→approve→reject + 触核心被围栏 reject）。
+- 安全纪律：UI 批准 = `gate.approve` 仅放行提案；绝不借 WebUI 自我授权生产更新；`CORE_PROTECTED` 提案在 propose 阶段即被围栏拒绝。
+- 已提交 `dfe993d`，已部署 VPS（version `dfe993d7439a`），生产实证 `/api/evolution/proposals` 返回 200、R9+WebUI 端点测试 10 项全绿；全量 **123 测试**无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。

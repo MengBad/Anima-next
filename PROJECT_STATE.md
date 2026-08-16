@@ -52,3 +52,11 @@
 2. **生产实证补强**：R8/R9 接真实 `issue_sources`（SelfCode 效果建议、审计 DENY 聚合）跑一周期，验证闭环能稳定收敛不退化。
 3. **后续增强（路线外）**：人格漂移执法评估、SelfCode 效果评估与建议卸载、大图哈希缓存、danger 收紧、fallback 压测。
 4. **明确不做**：无审批自动安装；默认不做语音模块（用户否决过）。
+
+## R9 UI 接入（已完成，commit `dfe993d`）
+
+- WebUI 工程页新增「受控自我进化」面板：发起提案 / 触核心红标 / Owner 批准·驳回。
+- 后端 4 个 `/api/evolution` 端点（proposals/propose/{id}/approve|reject），批准仅放行**提案**不部署，审计落盘。
+- 前端 `EngineeringView.vue` + `api.ts` + `types.ts`，`npm run build` 类型检查通过。
+- 生产实证：`/api/evolution/proposals` 返回 200；R9+WebUI 端点测试 10 项全绿。
+- 注意：R9 自我进化**永不借 UI 自我授权生产更新**；批准提案后仍需走 R8 受控部署（owner_authorized）才落地。

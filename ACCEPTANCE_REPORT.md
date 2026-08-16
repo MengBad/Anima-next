@@ -38,6 +38,13 @@
 
 ### 合计
 - 单测 **121 passed**（R6 94 + R7 7 + R8 12 + R9 8），无回归。
+- R9-02 WebUI 端点测试 **2 passed**，全量 **123 passed**。
+
+### R9-02 受控自我进化 WebUI 通道（8 passed + 2 passed）
+| 阶段 | 测试 | 结果 |
+|---|---|---|
+| R9 | `test_r9_self_evolution.py` | 8 passed（提案/围栏拒核心/审批门 fail-closed/已批准+部署） |
+| R9-02 | `test_webui_r9_evolution.py` | 2 passed（propose→approve→reject 闭环 + 触核心被围栏 reject） |
 
 ## 完成标准对照（最终判断 7 条）
 
@@ -55,6 +62,7 @@
 2. R7 部署（`ff41e74`），生产实证 7 测试绿。
 3. R8 部署（`f939049`），生产实证 R8 测试 12 项全绿。
 4. R9 部署（`e1b32e7e1a5a`），生产实证 R9 测试 8 项全绿；`systemctl show anima` ActiveState=active、ActiveEnterTimestamp 刷新；`version.json` commit=`e1b32e7e1a5a`、dirty=false。
+5. R9-02 WebUI 通道部署（`dfe993d7439a`），生产实证 `GET /api/evolution/proposals` 返回 200（鉴权生效、单例 gate 初始空）；R9+WebUI 端点测试 10 项全绿；`version.json` commit=`dfe993d7439a`、dirty=false、ActiveEnterTimestamp 刷新。
 
 ## 安全纪律保持
 
