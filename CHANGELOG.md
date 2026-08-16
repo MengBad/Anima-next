@@ -114,6 +114,13 @@
 - `tests/test_r12_multi_agent_society.py`：7 测试全绿（发言权能力约束 / 无裁判权 fail-closed / for 胜→support / against 胜→reject / 法定人数 / 建议性裁决）。
 - R9 + R10-01 + R10-02 + 闭环 + R11 + R12 组合 47 测试无回归。
 
+### R13 Autonomous Operation（Health & Recovery）— COMPLETE
+- 新增 `anima/agent/autonomous_operation.py`：运行时健康与受控恢复控制器。复用 R10-02 `collect_metrics` 只读采集健康快照，确定性产出 `RecoveryPlan`（restart_runtime / reconnect_channel / review_llm / throttle_automation）。
+- **fail-closed 自律**：涉及运行时/渠道/配置的动作一律 `requires_owner=True`（绝不自我重启/重部署/改配置）；信号缺失/不可读 → 判 critical 且需 Owner（绝不默认「健康」静默）。仅 throttle_automation 为咨询类（不触生产）。
+- `AutonomousOperationController.evaluate` 探测→规划→`to_dev_issues` 桥接 R8（source=recovery，受控门禁保证不自动部署）。
+- `tests/test_r13_autonomous_operation.py`：9 测试全绿（健康无计划 / 运行时宕→critical需Owner / 渠道断→high / 高失败率 / 积压节流 / 信号缺失fail-closed / 确定性 / 桥接 / 序列化）。
+- R9 + R10-01 + R10-02 + 闭环 + R11 + R12 + R13 组合 56 测试无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
