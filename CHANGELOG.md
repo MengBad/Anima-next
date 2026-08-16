@@ -33,6 +33,14 @@
 - 每阶段落 R6.5 Evidence（ALLOW/DENY 都记录，Audit Everything）。
 - 已提交 `ff41e74`，已部署 VPS（version `ff41e740a1b7`），生产实证 54 项测试全绿。
 
+### R8 Autonomous Development Loop — COMPLETE
+- `devloop.py` 自主开发闭环：DevIssue → Plan→Develop→Test→Review→Deploy 端到端编排。
+- `orchestrator.run` 加性支持 `stage_capabilities`（各 Agent 按各自能力授权）。
+- `issue_sources.py`：自监控（SelfCode 效果建议/审计高频 DENY）+ Owner 指令 → DevIssue；严重度过滤，只读采集。
+- 受控门禁（fail-closed）：部署需 Owner 显式授权，默认不调 deploy_fn；Developer 复用 SelfCode 双 Agent 仅生成候选、不自动安装（self-improvement ≠ self-authorization）。
+- 真实接线：`make_r8_selfcode_developer`（接 SelfCodeManager）/ `make_r8_deploy_fn`（接 `_deploy.py`）/ `_run_pytest`（TEST 阶段）。
+- 已提交 `f939049`，已部署 VPS（version `f939049b1716`），生产实证 R8 测试 12 项全绿；R6+R7+R8 全量 113 测试无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
