@@ -94,6 +94,13 @@
 - `tests/test_r10_observation_evolution_loop.py`：2 测试全绿（dry_run 不部署 / owner 授权部署产出改进证据）。
 - R9 + R10-01 + R10-02 + 闭环 组合 31 测试无回归。R10 工程化自治闭环（CI / 观测 / 评估 / 闭环）全部收口。
 
+### R11 Agent Intelligence（起步）— R11-01 Memory Evolution Engine COMPLETE
+- 新增 `anima/agent/memory_evolution.py`：Memory Evolution Engine，从自身行为结果流（成功/失败/反馈）**确定性**挖掘记忆/技能优化点，产出 `OptimizationProposal`（skill_deprecate / skill_promote / memory_prune / note_suggest）。
+- **受控纪律**：引擎只提案、绝不自动改记忆、不复写 persona、不自动装/卸技能；落地需经 R8 闭环 + Owner 授权（self-improvement ≠ self-authorization）。阈值驱动、无 LLM 调用、可复现可审计。
+- `propose_optimizations` 按 target 聚合统计（失败率≥0.5→降级 / 成功率≥0.8 且正向反馈≥3→晋升 / 反复失败+负反馈≥3→纠正笔记 / 稳定正向模式→强化记忆）；`to_dev_issues` 桥接 R8 DevIssue（source=evolution）。
+- `tests/test_r11_01_memory_evolution.py`：6 测试全绿（高失败率/高成功率/低样本/中性/桥接/序列化）。
+- R9 + R10-01 + R10-02 + 闭环 + R11-01 组合 37 测试无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
