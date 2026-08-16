@@ -115,6 +115,27 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001
             return []
 
+    def stability_summary(self, window_days: int = 7) -> dict[str, Any]:
+        """只读聚合某窗口（默认 7 天）的稳定性记录（P0-02）。
+
+        优先返回已落盘的最新记录（latest_stability）；若无则即时聚合。
+        fail-closed：任一数据源不可用 → data_complete=False，如实反映。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+        root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+        try:
+            from .long_running import collect_stability, latest_stability
+            cached = latest_stability(root, window_days)
+            if cached is not None:
+                return cached.to_dict()
+            audit = getattr(self._core, "audit", None)
+            rec = collect_stability(root, window_days=window_days, audit=audit)
+            return rec.to_dict()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
+            return {"available": False, "reason": "stability 聚合异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -165,6 +186,13 @@ class HumanAIControlSurface:
             return ParsedCommand(
                 intent="list_proposals", needs_confirmation=False,
                 preview="返回待审批的自我进化提案列表",
+            )
+
+        # 长期稳定运行查询（只读）—— P0-02：稳定性 / uptime / 运行时长 / 稳定吗
+        if re.search(r"(稳定|stability|uptime|运行时长|长期运行|稳不稳|稳吗)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="stability", needs_confirmation=False,
+                preview="返回近 7/30/90 天稳定性记录（uptime / 异常 / 权限漂移 / 演化计数）",
             )
 
         return ParsedCommand(intent="unknown", preview=f"未识别指令：{t[:40]}")

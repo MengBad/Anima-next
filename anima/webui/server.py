@@ -2155,9 +2155,19 @@ class WebUIServer:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断
             obs_count = 0
         ov = surf.overview(observation_events=obs_count)
+        # P0-02：长期运行稳定性记录（只读，7/30/90 天聚合）
+        stability = {}
+        try:
+            stability = {
+                "7d": surf.stability_summary(7),
+                "30d": surf.stability_summary(30),
+                "90d": surf.stability_summary(90),
+            }
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
+            stability = {}
         if self.core.audit:
             self.core.audit.emit("webui_os_overview", reviewer=owner_id)
-        return web.json_response({"overview": ov.to_dict()})
+        return web.json_response({"overview": ov.to_dict(), "stability": stability})
 
     async def os_command(self, request: web.Request) -> web.Response:
         """解析 Owner 的受限自然语言指令（白名单 + 确定性规则）。
@@ -2181,6 +2191,18 @@ class WebUIServer:
             ov = surf.overview()
             cmd.preview = cmd.preview or "当前 Autonomous OS 全景"
             payload = {"command": cmd.to_dict(), "overview": ov.to_dict()}
+        elif cmd.intent == "stability":
+            try:
+                payload = {
+                    "command": cmd.to_dict(),
+                    "stability": {
+                        "7d": surf.stability_summary(7),
+                        "30d": surf.stability_summary(30),
+                        "90d": surf.stability_summary(90),
+                    },
+                }
+            except Exception:  # noqa: BLE001
+                payload = {"command": cmd.to_dict(), "stability": {}}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()

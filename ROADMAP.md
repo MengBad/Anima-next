@@ -60,7 +60,7 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
   - **P0-01 Daily Health Proof**：`anima/os/reliability.py` —— 每日健康证明（版本/文件hash/
     配置hash/权限/Audit/Agent/漂移），fail-closed，可答「昨天有没有异常？」。**DONE**。
   - **P0-02 Long Running Test**：7/30/90 天稳定性记录（uptime / anomaly / recovery /
-    permission-drift / evolution 计数）。
+    permission-drift / evolution 计数）。**DONE**。
 - **P1 Real-Environment Observation**（规划）：GitHub commits/CI/issue + 运行时 CPU/mem/
   error/latency + Audit DENY 增长 → Reality → Observation → Analysis → Proposal。
 - **P2 Evolution Impact Score**（规划）：前后对比（test-fail-rate / latency 等）量化优化收益，

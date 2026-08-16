@@ -96,3 +96,17 @@ def test_parsed_command_serializable():
     d = c.to_dict()
     assert set(d) == {"intent", "args", "needs_confirmation",
                       "confirmation_endpoint", "preview"}
+
+
+def test_parse_stability_readonly():
+    s = _surface()
+    c = s.parse_command("近 30 天稳定性怎么样？稳不稳？")
+    assert c.intent == "stability"
+    assert c.needs_confirmation is False
+
+
+def test_stability_summary_no_core():
+    s = _surface()
+    # 无 core 注入 → 诚实返回不可用，不崩溃
+    out = s.stability_summary(7)
+    assert out.get("available") is False

@@ -12,6 +12,18 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P0-02 Long Running Test — COMPLETE
+- 新增 `anima/os/long_running.py`：基于 P0-01 每日健康证明 + 审计 + 演化证据，聚合
+  **7/30/90 天稳定性记录**（uptime_ratio / anomaly_total / degraded_days /
+  permission_drift_count / recovery_count / evolution_count）。
+- fail-closed / 诚实：审计源缺失 → `data_complete=False` 且相关计数记 0，绝不编造稳定数字。
+- `stable` 判定：数据完整 + 无降级天 + 无权限漂移 + 有证明覆盖。
+- 落盘 `data/stability/{window}d.jsonl`（带 sha256 指纹）；`latest_stability` 读取最近一条。
+- WebUI 接线：`/api/os/overview` 聚合 7/30/90d 稳定性；`/api/os/command` 新增 `stability`
+  只读意图（"稳定吗/uptime/运行时长"），绝不自我授权。
+- 测试：`tests/test_p0_02_long_running_test.py`（8 项）+ `tests/test_p0_02_webui_stability.py`
+  （2 项）+ R14 控制面 `stability` 意图（2 项）。
+
 ### P0-01 Daily Health Proof — COMPLETE
 - 新增 `anima/os/reliability.py`：生成每日「ANIMA Daily Health Proof」，覆盖
   **当前版本（commit SHA）/ 文件 hash / 配置 hash / 权限状态 / Audit 状态 / Agent 状态 /

@@ -98,6 +98,17 @@
 
 ### P0-01 Daily Health Proof（已完成）
 
+- `anima/os/reliability.py`：每日健康证明（版本/文件hash/配置hash/权限/Audit/Agent/漂移），
+  fail-closed，可答「昨天有没有异常？」。
+
+### P0-02 Long Running Test（已完成）
+
+- `anima/os/long_running.py`：7/30/90 天稳定性记录（uptime / anomaly / degraded / 权限漂移 /
+  恢复 / 演化计数），fail-closed 诚实，落盘 `data/stability/`。
+- WebUI `/api/os/overview` 聚合 7/30/90d 稳定性；`/api/os/command` 新增 `stability` 只读意图。
+
+
+
 - `anima/os/reliability.py`：生成每日健康证明，覆盖 **当前版本（commit SHA）/ 文件 hash /
   配置 hash / 权限状态 / Audit 状态 / Agent 状态 / 运行时漂移（R6.2）**。
 - fail-closed：任一探针缺失/异常 → 该检查 FAIL，整体证明 DEGRADED（绝不假装健康）；
