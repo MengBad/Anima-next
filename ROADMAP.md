@@ -14,25 +14,28 @@
 - **R7 Multi-Agent Architecture**：COMPLETE（编排器 7 测试绿，已部署 `ff41e74`）。
 - **R8 Autonomous Development Loop**：COMPLETE（issue 采集+闭环 8 测试绿，已部署 `f939049`）。
 - **R9 Controlled Self Evolution**：COMPLETE（提案/围栏/审批门 8 测试绿，已部署 `e1b32e7e1a5a`）。
+- **R9-02 WebUI 受控自我进化通道**：COMPLETE（4 端点 + 工程页面板，已部署 `dfe993d`）。
+- **R10-00 GitHub Actions CI/CD**：COMPLETE（`.github/workflows/anima-ci.yml` + `scripts/anima_guard.py` + `scripts/ci_evidence.py`；测试/前端/安全护栏/证据四 job；禁止自动部署/自动批准 Evolution）。
 
 ## 进行中（IN PROGRESS）
 
-- 无（R6–R9 主线全部完成并部署生产）。
+- **R10 工程化自治闭环**：R10-00 已完成，R10-01 Observation Layer / R10-02 Evaluation Engine 待实施。
 
 ## 下一阶段（NEXT）
 
-### Phase 收尾运营（R9 UI 接入）
-在 WebUI 工程/审批页接入 R9 `EvolutionLoop` 提案可视化与 Owner 一键审批（当前仅 API/测试，未接 UI）。
+### Phase R10-01 Reality Observation Layer
+新增 `anima/observation/`：runtime_monitor / audit_analyzer / user_feedback / github_source；统一 `Observation Event`。
 
-### Phase 生产实证补强
-R8/R9 接真实 `issue_sources`（SelfCode 效果建议、审计 DENY 聚合）跑一周期，验证闭环能稳定收敛不退化。
+### Phase R10-02 Evolution Evaluation Engine
+新增 `evolution/evaluator/`：metric / benchmark / comparison；Before/After 度量，产出 `Improvement Evidence`。
 
-### Phase 路线外增强
-人格漂移执法评估、SelfCode 效果评估与建议卸载、大图哈希缓存、danger 收紧、fallback 压测。
+### Phase R11–R15（总路线）
+R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society（Multi Plan / Debate / Judge）→ R13 Autonomous Operation（Health / Recovery）→ R14 Human-AI OS（Dashboard / NL Management）→ R15 ANIMA OS Final。
 
 ### 明确不做
 - 无审批自动安装。
 - 默认不做语音模块（用户否决过）。
+- CI 永不自动部署生产、永不自动批准 Evolution、永不自动改代码、永不自动跳过失败。
 
 ## 完成标准（最终判断）
 

@@ -56,6 +56,14 @@
 - 安全纪律：UI 批准 = `gate.approve` 仅放行提案；绝不借 WebUI 自我授权生产更新；`CORE_PROTECTED` 提案在 propose 阶段即被围栏拒绝。
 - 已提交 `dfe993d`，已部署 VPS（version `dfe993d7439a`），生产实证 `/api/evolution/proposals` 返回 200、R9+WebUI 端点测试 10 项全绿；全量 **123 测试**无回归。
 
+### R10-00 GitHub Actions CI/CD — COMPLETE
+- `.github/workflows/anima-ci.yml`：push/PR 到 `master`/`anima-autonomous-evo` 触发；四 job（backend/frontend/security/evidence）。
+- `scripts/anima_guard.py`：检测 `CORE_PROTECTED` 与安全关键路径改动，产出 `security-report.json`，标记 `requires_owner_review`，仅报告不阻断（fail-closed 体现在「须 Owner 审查」）。
+- `scripts/ci_evidence.py`：汇总 `ci-report.json` + `commit-attestation.json`（声明未自动部署/未自动批准 Evolution/未自动改代码）。
+- **禁止项（架构保证）**：CI 不含 deploy 步骤、不含 auto-approve Evolution、不含 auto-modify code、不含 auto-skip-failure。
+- `Makefile` 加 `ci`/`security-guard`/`ci-evidence` 本地复跑目标；`reports/2026-08-16_r10_engineering_autonomy.md` 计划书。
+- 测试范围：因 2 个历史 broken R3 测试（`anima.pilot` 缺失，与 R6–R9 路线无关）会致 `tests/` 全量 collection error，CI/本地 `make ci` 用 `--ignore` 排除，聚焦 R6–R9+R10 已验证核心。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。

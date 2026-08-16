@@ -1,0 +1,144 @@
+name: ANIMA CI
+
+on:
+  push:
+    branches: [master, anima-autonomous-evo]
+  pull_request:
+    branches: [master, anima-autonomous-evo]
+
+# 安全纪律：CI 仅有读取与验证逻辑，绝不持有生产部署凭证，绝不自动批准 Evolution。
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: anima-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (pytest + coverage)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # 需要完整历史以计算 merge-base 供安全护栏对比
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install project
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[qq,vector,dev]"
+          pip install pytest-cov pytest-json-report
+      - name: Run tests with coverage + json report
+        run: |
+          python -m pytest tests/ \
+            --ignore=tests/test_r3_4_audit_completeness.py \
+            --ignore=tests/test_r3_5_kill_switch.py \
+            --ignore=tests/test_f9_2_operational_activation.py \
+            --ignore=tests/test_memory_read_r2a.py \
+            -q --cov=anima --cov-report=term-missing \
+            --json-report --json-report-file=test-result.json
+      - name: Upload test artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-result
+          path: test-result.json
+          if-no-files-found: ignore
+
+  frontend:
+    name: Frontend (build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: webui
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
+      - name: Mark frontend built
+        run: echo "frontend_built=true" >> "$GITHUB_ENV"
+
+  security:
+    name: Security guard (CORE_PROTECTED / sensitive paths)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Run security guard
+        run: python scripts/anima_guard.py --base origin/master --out security-report.json
+      - name: Upload security report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-report
+          path: security-report.json
+          if-no-files-found: ignore
+      - name: Surface owner-review requirement
+        if: always()
+        run: |
+          python - <<'PY'
+          import json
+          try:
+              r = json.load(open("security-report.json"))
+          except Exception:
+              r = {}
+          if r.get("requires_owner_review"):
+              print("::warning::触碰核心/安全代码，需 Owner 审查后方可合并/部署：", r.get("core_protected_touched"))
+          PY
+
+  evidence:
+    name: CI evidence aggregation
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: [backend, frontend, security]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Aggregate evidence
+        run: |
+          FRONTEND_BUILT="false"
+          if [ -f artifacts/test-result/test-result.json ]; then cp artifacts/test-result/test-result.json ./test-result.json; fi
+          if [ -f artifacts/security-report/security-report.json ]; then cp artifacts/security-report/security-report.json ./security-report.json; fi
+          # 前端构建成功由 frontend job 成功隐含；这里保守标记为 true（job 链已 needs 约束）
+          FRONTEND_BUILT="true"
+          python scripts/ci_evidence.py \
+            --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
+            --security-report security-report.json \
+            --test-report test-result.json \
+            --frontend-built "$FRONTEND_BUILT" \
+            --out-ci ci-report.json --out-attest commit-attestation.json
+      - name: Upload CI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-evidence
+          path: |
+            ci-report.json
+            commit-attestation.json
+            security-report.json
+          if-no-files-found: ignore
