@@ -203,6 +203,9 @@ def _register_engineering(app: web.Application, s: "WebUIServer") -> None:
         web.post("/api/evolution/propose", s.evolution_propose),
         web.post("/api/evolution/{proposal_id}/approve", s.evolution_approve),
         web.post("/api/evolution/{proposal_id}/reject", s.evolution_reject),
+        # R14 Human-AI OS 控制面（只读聚合 + 受限指令解析，绝不自我授权）
+        web.get("/api/os/overview", s.os_overview),
+        web.post("/api/os/command", s.os_command),
     ])
 
 

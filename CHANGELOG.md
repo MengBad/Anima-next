@@ -121,6 +121,13 @@
 - `tests/test_r13_autonomous_operation.py`：9 测试全绿（健康无计划 / 运行时宕→critical需Owner / 渠道断→high / 高失败率 / 积压节流 / 信号缺失fail-closed / 确定性 / 桥接 / 序列化）。
 - R9 + R10-01 + R10-02 + 闭环 + R11 + R12 + R13 组合 56 测试无回归。
 
+### R14 Human-AI OS（Control Surface）— COMPLETE
+- 新增 `anima/os/control_surface.py`：面向 Owner 的人机协同操作系统控制面。`HumanAIControlSurface` 聚合 Autonomous OS 全景（健康 / 受控恢复计划 / 演化提案 / 观测事件），并用**白名单 + 确定性规则**解析受限自然语言指令（无 LLM、可复现、可审计）。
+- **不持有新权限 / 绝不自我授权**：只读意图（查看健康 / 列出提案 / 恢复评估）直接返回数据；特权意图（批准 / 拒绝提案）只产出「待确认动作」并指向既有 Owner 授权端点（POST /api/evolution/{id}/approve|reject），由 Owner 在既有通道确认；未识别指令一律 unknown。
+- WebUI：`/api/os/overview`（只读聚合）、`/api/os/command`（解析受限指令，只读意图附实时预览，特权仅描述端点）。
+- `tests/test_r14_human_ai_os.py`：9 测试全绿（聚合 / 健康只读 / 列提案只读 / 批准需确认 / 拒绝需确认 / 恢复只读 / 未知 / 序列化）。
+- R9 + R10-01 + R10-02 + 闭环 + R11 + R12 + R13 + R14 组合 65 测试无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。

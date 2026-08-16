@@ -2139,6 +2139,61 @@ class WebUIServer:
             )
         return web.json_response(result)
 
+    # ----------------------------------------------------------------------
+    # R14 Human-AI OS 控制面（只读聚合 + 受限指令解析；绝不自我授权）
+    # ----------------------------------------------------------------------
+    async def os_overview(self, request: web.Request) -> web.Response:
+        """聚合 Autonomous OS 全景（健康 / 恢复计划 / 演化提案 / 观测事件）。只读。"""
+        owner_id = self._owner_id()
+        from anima.os.control_surface import HumanAIControlSurface
+        surf = HumanAIControlSurface(self.core)
+        # 观测事件计数（只读、轻量）
+        obs_count = 0
+        try:
+            from anima.observation import collect_all
+            obs_count = len(collect_all(self.core))
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断
+            obs_count = 0
+        ov = surf.overview(observation_events=obs_count)
+        if self.core.audit:
+            self.core.audit.emit("webui_os_overview", reviewer=owner_id)
+        return web.json_response({"overview": ov.to_dict()})
+
+    async def os_command(self, request: web.Request) -> web.Response:
+        """解析 Owner 的受限自然语言指令（白名单 + 确定性规则）。
+
+        只读意图直接返回预览数据；特权意图只返回「待确认动作」并指向既有 Owner 授权端点，
+        **绝不在此自我授权任何执行**（self-improvement ≠ self-authorization）。
+        """
+        owner_id = self._owner_id()
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        text = str((body or {}).get("command") or "").strip()
+        if not text:
+            raise web.HTTPBadRequest(text="缺少 command 字段")
+        from anima.os.control_surface import HumanAIControlSurface
+        surf = HumanAIControlSurface(self.core)
+        cmd = surf.parse_command(text)
+        # 只读意图：附加实时预览数据（不改任何状态）
+        if cmd.intent in ("health", "recover"):
+            ov = surf.overview()
+            cmd.preview = cmd.preview or "当前 Autonomous OS 全景"
+            payload = {"command": cmd.to_dict(), "overview": ov.to_dict()}
+        elif cmd.intent == "list_proposals":
+            from anima.agent.self_evolution import list_evolution_proposals
+            items = list_evolution_proposals()
+            payload = {"command": cmd.to_dict(), "proposals": items}
+        else:
+            payload = {"command": cmd.to_dict()}
+        if self.core.audit:
+            self.core.audit.emit(
+                "webui_os_command_parsed", reviewer=owner_id,
+                intent=cmd.intent, needs_confirmation=cmd.needs_confirmation,
+            )
+        return web.json_response(payload)
+
     async def dashboard(self, request: web.Request) -> web.Response:
         """返回唯一的 Vue 生命控制台入口；子路径由 History API 接管。"""
         index = self._static_root() / "index.html"
