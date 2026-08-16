@@ -22,10 +22,16 @@
 ## 进行中（IN PROGRESS）
 
 - **R10 工程化自治闭环**：R10-00 / R10-01 / R10-02 三项均已完成；并新增 `anima/evolution/orchestrator.py` 将 Observation → Evolution → Evaluation 串成单一可观测闭环（默认 dry_run 不部署，fail-closed；2 测试绿）。
+- **R11 Agent Intelligence**：R11-01 Memory Evolution + R11-02 Skill Evolution（受控）均已完成。
+- **R12 Multi-Agent Society**：R12 Debate & Judge 已完成。
+- **R13 Autonomous Operation**：R13 Health & Recovery 已完成。
+- **R14 Human-AI OS**：R14 Control Surface 已完成。
+- **R15 ANIMA OS Final**：系统级端到端验收完成（R10→R14 全链路闭环 + fail-closed 验证；4 测试绿）。
 - **R11 Agent Intelligence**：R11-01 Memory Evolution Engine + R11-02 Skill Evolution（受控）均已完成（`anima/agent/memory_evolution.py`，确定性挖掘行为结果→受控优化提案→桥接 R8 DevIssue / 转 SelfCode 候选；9 测试绿；候选仅生成、绝不自动安装，落地需 Owner 审批）。
 - **R12 Multi-Agent Society**：R12 Debate & Judge 已完成（`anima/agent/multi_agent_society.py`，复用 R7 独立身份/RBAC；多 Agent 辩论 + 裁判裁决，结论建议性、fail-closed；7 测试绿）。
 - **R13 Autonomous Operation**：R13 Health & Recovery 已完成（`anima/agent/autonomous_operation.py`，复用 R10-02 健康采集；故障检测 + 受控恢复计划，涉及运行时/渠道/配置的动作一律需 Owner 授权，绝不自我重启/重部署；9 测试绿）。
 - **R14 Human-AI OS（Control Surface）**：R14 控制面聚合已完成（`anima/os/control_surface.py` + `/api/os/overview` `/api/os/command`；聚合健康/恢复/提案/观测全景，受限 NL 指令解析，特权动作仅指向既有 Owner 授权端点、绝不自我授权；9 测试绿）。
+- **R15 ANIMA OS Final**：系统级端到端验收完成（`tests/test_r15_os_final_acceptance.py`，把 R10→R14 串成可验证闭环：观测→受控进化提案→改进证据→控制面聚合；全链路 fail-closed、绝不自我授权；4 测试绿）。**R6–R15 全程目标达成。**
 
 ## 下一阶段（NEXT）
 

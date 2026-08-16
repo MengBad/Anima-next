@@ -128,6 +128,13 @@
 - `tests/test_r14_human_ai_os.py`：9 测试全绿（聚合 / 健康只读 / 列提案只读 / 批准需确认 / 拒绝需确认 / 恢复只读 / 未知 / 序列化）。
 - R9 + R10-01 + R10-02 + 闭环 + R11 + R12 + R13 + R14 组合 65 测试无回归。
 
+### R15 ANIMA OS Final（系统级端到端验收）— COMPLETE
+- 新增 `tests/test_r15_os_final_acceptance.py`：系统级验收，把 R10→R14 串成一条**可验证的端到端闭环**，断言 ANIMA 已成为 Autonomous Agent Operating System：长期运行（R13）/ 自我验证（R10-00+R10-02）/ 自我评估（R10-01+R10-02）/ 自我优化（R9+R11）/ 人机协同（R14）。
+- 验收覆盖：观测反馈→受控进化提案（默认不部署）→ 改进证据落盘；失败部署后 R10-02 仍产出证据、R13 检测降级并给需 Owner 的恢复计划；R12 裁判建议性且 fail-closed（无裁判权 → inconclusive）；R14 控制面聚合全景、特权指令只指向既有 Owner 授权端点。
+- 全程 fail-closed、纯确定性、无 LLM；验证「全链路不自我授权任何生产动作」（self-improvement ≠ self-authorization）。
+- R9 + R10-01 + R10-02 + 闭环 + R11 + R12 + R13 + R14 + R15 组合 69 测试无回归（含 webui 验收 71 通过）。
+- **R6–R15 全程目标达成**：ANIMA 从「具备自治能力的 Agent 系统」升级为「长期运行、自我验证、自我评估、自我优化的 Autonomous Agent Operating System」。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。

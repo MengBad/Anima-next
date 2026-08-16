@@ -57,6 +57,7 @@
 3. **R12 Multi-Agent Society（R12 Debate & Judge 已完成）**：`anima/agent/multi_agent_society.py` （多 Agent 辩论 + 裁判裁决，复用 R7 独立身份/RBAC；结论建议性、fail-closed、不授权任何动作；7 测试全绿）。
 3. **R13 Autonomous Operation（R13 Health & Recovery 已完成）**：`anima/agent/autonomous_operation.py` （运行时健康探测 + 受控恢复计划；信号缺失 fail-closed 判 critical，恢复动作需 Owner 授权、绝不自我重启/重部署；9 测试全绿）。
 3. **R14 Human-AI OS（R14 Control Surface 已完成）**：`anima/os/control_surface.py` + WebUI `/api/os/overview` `/api/os/command`（聚合健康/恢复/提案/观测全景；受限 NL 指令解析，特权动作只指向既有 Owner 授权端点、绝不自我授权；9 测试全绿）。
+3. **R15 ANIMA OS Final（已完成）**：`tests/test_r15_os_final_acceptance.py` 系统级端到端验收（R10→R14 全链路闭环 + fail-closed 验证；4 测试全绿）。**R6–R15 全程目标达成。**
 3. **生产实证补强**：R8/R9 接真实 `issue_sources`（SelfCode 效果建议、审计 DENY 聚合）跑一周期，验证闭环能稳定收敛不退化。
 3. **后续增强（路线外）**：人格漂移执法评估、SelfCode 效果评估与建议卸载、大图哈希缓存、danger 收紧、fallback 压测。
 4. **明确不做**：无审批自动安装；默认不做语音模块（用户否决过）。
