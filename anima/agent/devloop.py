@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from .orchestrator import (
@@ -102,6 +103,10 @@ class DevLoopResult:
 # 部署函数签名：``async def deploy_fn(issue: DevIssue, pipeline: PipelineResult) -> str``
 DeployFn = Callable[[DevIssue, PipelineResult], Awaitable[str]]
 
+# 开发函数签名：``async def developer_fn(issue: DevIssue) -> str``
+# 由调用方注入真实实现（如驱动 SelfCodeManager 生成候选）；测试可 mock。
+DeveloperFn = Callable[[DevIssue], Awaitable[str]]
+
 
 class DevLoopOrchestrator:
     """R8 自主开发闭环编排器。
@@ -109,8 +114,8 @@ class DevLoopOrchestrator:
     包装 R7 ``AgentOrchestrator``，把一次 ``DevIssue`` 跑成完整开发流水线，并在
     Deploy 阶段施加**受控门禁**（默认 DENY，需 Owner 显式授权才部署）。
 
-    阶段 handler 在构造时注入（便于测试 mock；生产环境由 ``make_r8_handlers`` 装配
-    SelfCodeManager / pytest / 部署脚本）。
+    阶段 handler 在构造时注入（便于测试 mock）；真实接线通过 ``developer_fn``
+    （接 SelfCode 生成候选）与 ``deploy_fn``（接 _deploy.py 部署）注入。
     """
 
     def __init__(
@@ -119,9 +124,12 @@ class DevLoopOrchestrator:
         handlers: dict[str, Callable[..., Awaitable[str]]],
         *,
         evidence_sink: Any = None,
+        developer_fn: DeveloperFn | None = None,
         deploy_fn: DeployFn | None = None,
         pipeline: tuple[str, ...] = DEFAULT_PIPELINE,
     ) -> None:
+        self._base_handlers = dict(handlers)
+        self._developer_fn = developer_fn
         self._deploy_fn = deploy_fn
         self._orchestrator = AgentOrchestrator(
             registry, handlers=handlers, evidence_sink=evidence_sink, pipeline=pipeline
@@ -143,6 +151,21 @@ class DevLoopOrchestrator:
         """
         task_id = f"devloop-{int(time.time()*1000)}"
         request = f"[R8] {issue.title}\n{issue.detail}".strip()
+
+        # 动态构造本闭环的 handler 集：若注入了 developer_fn，则 develop 阶段
+        # 由它驱动（如 SelfCodeManager 生成候选），闭包捕获当前 issue。
+        handlers = dict(self._base_handlers)
+        if self._developer_fn is not None:
+            dev_fn = self._developer_fn
+
+            async def _develop(task_id: str, request: str, identity: Any) -> str:
+                return await dev_fn(issue)
+
+            handlers[STAGE_DEVELOP] = _develop
+
+        # 用本闭环的动态 handler 集覆盖 orchestrator 持有的 handlers（develop 阶段
+        # 可能已被 developer_fn 闭包替换），确保 run 调用的是注入的真实实现。
+        self._orchestrator._handlers = handlers
 
         # 各阶段独立能力授权（R7 的 stage_capabilities 加性特性）。
         stage_capabilities = {
@@ -220,3 +243,71 @@ def make_r8_identity_registry() -> AgentRegistry:
         description="Owner 授权后部署到生产",
     ))
     return reg
+
+
+# ---------------------------------------------------------------------------
+# 真实接线工厂（生产环境装配 SelfCode / pytest / 部署脚本）
+# ---------------------------------------------------------------------------
+async def _run_pytest() -> tuple[bool, str]:
+    """在仓库根跑 pytest 验证候选不破坏现有功能（TEST 阶段真实实现）。"""
+    import asyncio
+    import sys
+    root = Path(__file__).resolve().parent.parent.parent  # anima/agent -> repo root
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            sys.executable, "-m", "pytest", "tests/", "-q",
+            cwd=str(root),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+        )
+        out, err = await asyncio.wait_for(proc.communicate(), timeout=300)
+        text = (out or b"").decode("utf-8", "replace")
+        if proc.returncode == 0:
+            return True, "pytest 通过\n" + text.strip()[-400:]
+        return False, "pytest 失败\n" + (text + (err or b"").decode("utf-8", "replace")).strip()[-800:]
+    except Exception as exc:  # noqa: BLE001
+        return False, f"pytest 执行异常：{exc!r}"
+
+
+def make_r8_selfcode_developer(selfcode_manager: Any) -> DeveloperFn:
+    """Developer 阶段真实实现：驱动 SelfCodeManager 双 Agent 生成受限候选。
+
+    按 SelfCode 纪律**只生成待审批提案、不安装**；返回提案摘要供 Review 阶段收集。
+    """
+
+    async def _develop(issue: DevIssue) -> str:
+        goal = f"{issue.title}\n{issue.detail}".strip()
+        try:
+            task = await selfcode_manager.create_engineering_task(goal, creator=0)
+            tid = getattr(task, "id", None)
+            return f"SelfCode 候选已生成（待 Owner 审批，不自动安装）：task={tid}"
+        except Exception as exc:  # noqa: BLE001
+            return f"SelfCode 候选生成失败：{type(exc).__name__}: {exc}"
+
+    return _develop
+
+
+def make_r8_deploy_fn(project_root: str | None = None) -> DeployFn:
+    """Deploy 阶段真实实现：Owner 授权后调用 _deploy.py 部署到生产并实证。
+
+    受控：仅在 R8 闭环判定 owner_authorized=True 时才被调用（fail-closed 由调用方保证）。
+    """
+
+    async def _deploy_fn(issue: DevIssue, pipeline: PipelineResult) -> str:
+        import asyncio
+        import sys
+        root = Path(project_root) if project_root else (Path(__file__).resolve().parent.parent.parent)
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                sys.executable, "_deploy.py",
+                cwd=str(root),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            )
+            out, err = await asyncio.wait_for(proc.communicate(), timeout=600)
+            text = (out or b"").decode("utf-8", "replace")
+            if proc.returncode == 0:
+                return "部署成功\n" + text.strip()[-400:]
+            return f"部署返回非零：{proc.returncode}\n" + (text + (err or b"").decode("utf-8", "replace")).strip()[-800:]
+        except Exception as exc:  # noqa: BLE001
+            return f"部署执行异常：{type(exc).__name__}: {exc}"
+
+    return _deploy_fn

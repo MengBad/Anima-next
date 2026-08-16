@@ -10,7 +10,9 @@ from anima.agent.devloop import (
     DevIssue,
     DevLoopOrchestrator,
     DevLoopResult,
+    make_r8_deploy_fn,
     make_r8_identity_registry,
+    make_r8_selfcode_developer,
 )
 from anima.agent.orchestrator import STAGE_DEPLOY
 
@@ -129,3 +131,39 @@ async def test_r8_evidence_records_every_stage():
     for entry in trail:
         assert entry["evidence"]  # 每阶段都有证据（含被拒的 deploy）
         assert entry["evidence"]["outcome"] in ("completed", "denied", "allowed")
+
+
+async def test_r8_injects_developer_fn():
+    """真实接线：注入 developer_fn 后，develop 阶段调用它（无需 SelfCodeManager 实例）。"""
+    called = {}
+
+    async def _my_dev(issue: DevIssue) -> str:
+        called["title"] = issue.title
+        return "候选已生成"
+
+    reg = make_r8_identity_registry()
+    orch = DevLoopOrchestrator(reg, _make_handlers({}), developer_fn=_my_dev)
+    issue = DevIssue(title="实现一个天气工具", capability="deploy.release",
+                     required_scopes=frozenset({"write"}))
+    res = await orch.run_issue(issue, owner_authorized=True)
+    assert called.get("title") == "实现一个天气工具"
+    # developer 阶段的产出应来自注入的 developer_fn
+    dev_stage = next(s for s in res.pipeline.stages if s.stage == "developer")
+    assert dev_stage.result == "候选已生成"
+
+
+async def test_r8_selfcode_developer_factory_returns_callable():
+    """make_r8_selfcode_developer 工厂返回可调用的 DeveloperFn（不依赖真实 core）。"""
+    # 用一个最小 mock 对象模拟 SelfCodeManager（只需 create_engineering_task 协程方法）。
+    class _FakeSC:
+        async def create_engineering_task(self, goal, creator):
+            return type("T", (), {"id": "task-mock"})()
+
+    fn = make_r8_selfcode_developer(_FakeSC())
+    assert callable(fn)
+
+
+async def test_r8_deploy_factory_returns_callable():
+    """make_r8_deploy_fn 工厂返回可调用的 DeployFn。"""
+    fn = make_r8_deploy_fn()
+    assert callable(fn)
