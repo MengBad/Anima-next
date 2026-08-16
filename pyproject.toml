@@ -18,6 +18,7 @@ dependencies = [
     "click>=8.1",
     "structlog>=24.1",
     "bilibili-api",
+    "paramiko>=3.0",  # _deploy.py SSH 发布依赖（核心部署能力）
 ]
 
 [project.optional-dependencies]
