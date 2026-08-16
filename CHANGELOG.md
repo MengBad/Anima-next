@@ -101,6 +101,12 @@
 - `tests/test_r11_01_memory_evolution.py`：6 测试全绿（高失败率/高成功率/低样本/中性/桥接/序列化）。
 - R9 + R10-01 + R10-02 + 闭环 + R11-01 组合 37 测试无回归。
 
+### R11-02 Skill Evolution（受控落地）— COMPLETE
+- `MemoryEvolutionEngine.spawn_selfcode_candidates`：把技能类优化提案（skill_deprecate / skill_promote）转为 SelfCode 工程候选，复用既有 `SelfCodeManager.create_engineering_task`。
+- **受控纪律**：该路径只生成候选、写入任务队列、**绝不安装**能力（需 Owner 在 WebUI 显式审批）；记忆类提案（memory_prune / note_suggest）经 to_dev_issues 走 R8，不触发 SelfCode。单条失败 fail-open 记录。
+- `tests/test_r11_01_memory_evolution.py` 扩至 9 测试（新增技能候选生成 / 无管理器 / 记忆类跳过）。
+- R9 + R10-01 + R10-02 + 闭环 + R11 组合 40 测试无回归。R11 Agent Intelligence（Memory + Skill Evolution）闭环就绪。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。

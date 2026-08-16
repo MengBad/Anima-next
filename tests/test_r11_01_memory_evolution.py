@@ -88,3 +88,52 @@ def test_proposal_to_dict_serializable():
     assert d["kind"] == "skill_promote"
     assert d["confidence"] == 0.5
     assert d["evidence"]["a"] == 1
+
+
+class _FakeSelfCode:
+    def __init__(self):
+        self.calls = []
+
+    async def create_engineering_task(self, goal, creator):
+        self.calls.append((goal, creator))
+        return type("T", (), {"id": f"task-{len(self.calls)}"})()
+
+
+@pytest.mark.asyncio
+async def test_spawn_selfcode_candidates_for_skills():
+    eng = MemoryEvolutionEngine()
+    # 高失败率 → skill_deprecate 候选
+    props = eng.propose_optimizations(_outcomes(target="flaky_tool", n=10, fail=7, neg=3))
+    sc = _FakeSelfCode()
+    results = await eng.spawn_selfcode_candidates(props, sc, creator=0)
+    kinds = [r["kind"] for r in results]
+    assert "skill_deprecate" in kinds
+    assert len(sc.calls) >= 1
+    for r in results:
+        if r["kind"] == "skill_deprecate":
+            assert r["task_id"] == "task-1"
+            assert r["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_spawn_selfcode_candidates_no_manager_recorded():
+    eng = MemoryEvolutionEngine()
+    props = eng.propose_optimizations(_outcomes(target="flaky_tool", n=10, fail=7, neg=3))
+    results = await eng.spawn_selfcode_candidates(props, None, creator=0)
+    assert all(r["task_id"] is None and r["error"] == "no_selfcode_manager" for r in results)
+    assert any(r["kind"] == "skill_deprecate" for r in results)
+
+
+@pytest.mark.asyncio
+async def test_spawn_selfcode_ignores_memory_proposals():
+    eng = MemoryEvolutionEngine()
+    # 正向但成功率不足 0.8 → 仅产 note_suggest（记忆类），不应触发 SelfCode
+    # success_rate=0.6 < 0.8 → 不触发 skill_promote；success>=5 且 pos_fb>=3 → note_suggest
+    props = eng.propose_optimizations(_outcomes(target="good_pattern", n=10, success=6, pos=4))
+    assert any(p.kind == "note_suggest" for p in props)
+    assert not any(p.kind in ("skill_deprecate", "skill_promote") for p in props)
+    sc = _FakeSelfCode()
+    results = await eng.spawn_selfcode_candidates(props, sc, creator=0)
+    # 记忆类提案不触发 SelfCode（无候选生成）
+    assert sc.calls == []
+    assert all(r["task_id"] is None for r in results)

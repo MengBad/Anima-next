@@ -152,3 +152,48 @@ class MemoryEvolutionEngine:
                 severity="normal",
             ))
         return issues
+
+    # ------------------------------------------------------------------
+    # R11-02 技能演化：把技能类提案转为 SelfCode 工程候选（受控，绝不自动安装）
+    # ------------------------------------------------------------------
+    async def spawn_selfcode_candidates(self, proposals: list[OptimizationProposal],
+                                        selfcode_manager: Any, *, creator: int = 0) -> list[dict[str, Any]]:
+        """把技能类优化提案（skill_deprecate / skill_promote）转为 SelfCode 工程候选。
+
+        复用 SelfCodeManager.create_engineering_task —— 该路径只生成候选、写入任务队列、
+        **绝不安装**能力（需 Owner 在 WebUI 显式审批）。本方法是 R11「Skill Evolution」的
+        受控落地：记忆/技能演化提案 → 真实工程候选，但安装仍须经 Owner 授权。
+
+        - 仅处理 kind ∈ {skill_deprecate, skill_promote}（记忆类提案经 to_dev_issues 走 R8）。
+        - 单条失败 fail-open 记录，不阻断其余候选（Audit Everything）。
+        - 返回每条候选的生成结果（task_id / error）。
+        """
+        results: list[dict[str, Any]] = []
+        for p in proposals:
+            if p.kind not in ("skill_deprecate", "skill_promote"):
+                continue
+            if not (selfcode_manager is not None and hasattr(selfcode_manager, "create_engineering_task")):
+                results.append({"kind": p.kind, "target": p.target,
+                                "task_id": None, "error": "no_selfcode_manager"})
+                continue
+            if p.kind == "skill_deprecate":
+                goal = (
+                    f"为技能/工具「{p.target}」生成改进候选：当前失败率过高"
+                    f"（{p.evidence.get('fail')}/{p.evidence.get('samples')}），"
+                    f"目标是在隔离工作区产出更稳健的实现，待 Owner 审批后替换。"
+                )
+            else:  # skill_promote
+                goal = (
+                    f"为技能/工具「{p.target}」生成强化候选：当前效果好"
+                    f"（成功率 {p.evidence.get('success_rate')}），"
+                    f"目标是在隔离工作区提炼为更稳健/可复用的实现，待 Owner 审批后采纳。"
+                )
+            try:
+                task = await selfcode_manager.create_engineering_task(goal, creator)
+                task_id = getattr(task, "id", None)
+                results.append({"kind": p.kind, "target": p.target,
+                                "task_id": task_id, "error": None})
+            except Exception as exc:  # noqa: BLE001 - 候选生成失败不影响其余提案
+                results.append({"kind": p.kind, "target": p.target,
+                                "task_id": None, "error": f"{type(exc).__name__}: {exc}"})
+        return results

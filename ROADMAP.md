@@ -22,7 +22,7 @@
 ## 进行中（IN PROGRESS）
 
 - **R10 工程化自治闭环**：R10-00 / R10-01 / R10-02 三项均已完成；并新增 `anima/evolution/orchestrator.py` 将 Observation → Evolution → Evaluation 串成单一可观测闭环（默认 dry_run 不部署，fail-closed；2 测试绿）。
-- **R11 Agent Intelligence（起步）**：R11-01 Memory Evolution Engine 已完成（`anima/agent/memory_evolution.py`，确定性规则挖掘行为结果→受控优化提案，桥接 R8 DevIssue；6 测试绿）。
+- **R11 Agent Intelligence**：R11-01 Memory Evolution Engine + R11-02 Skill Evolution（受控）均已完成（`anima/agent/memory_evolution.py`，确定性挖掘行为结果→受控优化提案→桥接 R8 DevIssue / 转 SelfCode 候选；9 测试绿；候选仅生成、绝不自动安装，落地需 Owner 审批）。
 
 ## 下一阶段（NEXT）
 
