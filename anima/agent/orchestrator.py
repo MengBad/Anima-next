@@ -184,22 +184,27 @@ class AgentOrchestrator:
 
     async def run(self, task_id: str, request: str, *,
                   required_capability: str,
-                  required_scopes: frozenset[str] = frozenset()) -> PipelineResult:
+                  required_scopes: frozenset[str] = frozenset(),
+                  stage_capabilities: dict[str, tuple[str, frozenset[str]]] | None = None) -> PipelineResult:
         """沿流水线运行：每阶段按能力+scope 授权对应 Agent，授权通过才执行+取证。
 
         审计纪律（R6.5 "Audit Everything"）：**每个阶段无论 ALLOW/DENY 都记录证据**，
         拒绝是最高价值的审计事件，绝不因"该阶段未执行"就无证据可查。
+
+        stage_capabilities：可选的「每阶段能力映射」``{stage: (capability, scopes)}``。
+        提供时按阶段各自的能力授权（R8 多角色流水线：planner/developer/tester/reviewer
+        各管一种能力，deploy 才需 deploy.release）；否则回退到全局 required_capability。
         """
         result = PipelineResult(task_id=task_id)
 
-        def _evidence(stage_res: PipelineStageResult, identity: AgentIdentity | None) -> dict:
+        def _evidence(stage_res: PipelineStageResult, identity: AgentIdentity | None, cap: str, scs: frozenset) -> dict:
             return {
                 "task_id": task_id,
                 "stage": stage_res.stage,
                 "agent": stage_res.agent_id,
                 "role": identity.role if identity is not None else None,
-                "capability": required_capability,
-                "scopes": tuple(required_scopes),
+                "capability": cap,
+                "scopes": tuple(scs),
                 "outcome": stage_res.outcome,
                 "result": stage_res.result,
                 "error": stage_res.error,
@@ -210,13 +215,19 @@ class AgentOrchestrator:
             agent_id = f"agent-{stage}"
             identity = self._registry.get(agent_id)
 
+            # 按阶段（优先）或全局确定该阶段需要的能力+scope。
+            if stage_capabilities and stage in stage_capabilities:
+                cap, scs = stage_capabilities[stage]
+            else:
+                cap, scs = required_capability, required_scopes
+
             # fail-closed 授权：Agent 不存在或无权限 → 阶段 DENY（仍记录证据）
-            if identity is None or not self.authorize_stage(agent_id, required_capability, required_scopes):
+            if identity is None or not self.authorize_stage(agent_id, cap, scs):
                 stage_res = PipelineStageResult(
                     stage=stage, agent_id=agent_id, outcome="denied",
-                    error=f"agent {agent_id} 无权限执行 {required_capability}",
+                    error=f"agent {agent_id} 无权限执行 {cap}",
                 )
-                stage_res.evidence = _evidence(stage_res, identity)
+                stage_res.evidence = _evidence(stage_res, identity, cap, scs)
                 self._record_evidence(stage_res.evidence)
                 result.stages.append(stage_res)
                 continue
@@ -227,7 +238,7 @@ class AgentOrchestrator:
                     stage=stage, agent_id=agent_id, outcome="denied",
                     error=f"no handler for stage {stage}",
                 )
-                stage_res.evidence = _evidence(stage_res, identity)
+                stage_res.evidence = _evidence(stage_res, identity, cap, scs)
                 self._record_evidence(stage_res.evidence)
                 result.stages.append(stage_res)
                 continue
@@ -246,7 +257,7 @@ class AgentOrchestrator:
                 result.error = result.error or stage_res.error
 
             # R6.5 证据：该阶段行为可事后还原（谁/什么/结果/何时）
-            stage_res.evidence = _evidence(stage_res, identity)
+            stage_res.evidence = _evidence(stage_res, identity, cap, scs)
             self._record_evidence(stage_res.evidence)
             result.stages.append(stage_res)
 
