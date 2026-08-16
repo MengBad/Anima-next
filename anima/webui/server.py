@@ -2063,6 +2063,82 @@ class WebUIServer:
                                  loaded=result.get("loaded"), reviewer=owner_id)
         return web.json_response(result)
 
+    # ---------------------------------------------------------------------------
+    # R9 受控自我进化：提案可视化 + Owner 审批通道
+    # 安全纪律：批准仅放行「提案」，绝不在此通道触发生产部署（self-improvement ≠
+    # self-authorization）。触 CORE_PROTECTED 的提案在 propose 阶段即被围栏拒绝。
+    # ---------------------------------------------------------------------------
+    async def evolution_proposals(self, request: web.Request) -> web.Response:
+        """列出审批门中所有 R9 自我进化提案（含状态 / 是否触核心 / 摘要）。"""
+        owner_id = self._owner_id()
+        from anima.agent.self_evolution import list_evolution_proposals
+        items = list_evolution_proposals()
+        items.sort(key=lambda p: p.get("created_at", 0), reverse=True)
+        if self.core.audit:
+            self.core.audit.emit("webui_evolution_listed", reviewer=owner_id, count=len(items))
+        return web.json_response({"items": items})
+
+    async def evolution_propose(self, request: web.Request) -> web.Response:
+        """发起一次自我进化提案（仅提案，不落地生产）。"""
+        owner_id = self._owner_id()
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        goal = str((body or {}).get("goal") or "").strip()
+        if not goal:
+            raise web.HTTPBadRequest(text="缺少优化目标 goal")
+        raw_files = (body or {}).get("target_files") or []
+        target_files = tuple(str(f).strip() for f in raw_files if str(f).strip())
+        from anima.agent.self_evolution import propose_evolution
+        from anima.cognitive.selfcode import get_selfcode_manager
+        scm = None
+        try:
+            scm = get_selfcode_manager(self.core)
+        except Exception:  # noqa: BLE001 - SelfCode 未启用时退化为纯提案
+            scm = None
+        result = await propose_evolution(goal, target_files=target_files, selfcode_manager=scm)
+        if self.core.audit:
+            self.core.audit.emit(
+                "webui_evolution_proposed",
+                reviewer=owner_id,
+                proposal_id=result["decision"].get("id"),
+                decision=result["decision"].get("decision"),
+                touches_core=bool((result.get("proposal") or {}).get("touches_core")),
+            )
+        return web.json_response(result, status=201)
+
+    async def evolution_approve(self, request: web.Request) -> web.Response:
+        """Owner 显式批准提案（fail-closed：仅此路径放行，且只放行提案不部署）。"""
+        owner_id = self._owner_id()
+        proposal_id = request.match_info["proposal_id"]
+        from anima.agent.self_evolution import decide_evolution
+        result = decide_evolution(proposal_id, approve=True)
+        if self.core.audit:
+            self.core.audit.emit(
+                "webui_evolution_approved", reviewer=owner_id, proposal_id=proposal_id,
+                decision=result.get("decision"),
+            )
+        return web.json_response(result)
+
+    async def evolution_reject(self, request: web.Request) -> web.Response:
+        """Owner 驳回提案（或安全围栏已拒绝的核心文件提案）。"""
+        owner_id = self._owner_id()
+        proposal_id = request.match_info["proposal_id"]
+        try:
+            body = await request.json() if request.can_read_body else {}
+        except (ValueError, TypeError, json.JSONDecodeError) as exc:
+            raise web.HTTPBadRequest(text=str(exc)) from exc
+        reason = str((body or {}).get("reason") or "")
+        from anima.agent.self_evolution import decide_evolution
+        result = decide_evolution(proposal_id, approve=False, reason=reason)
+        if self.core.audit:
+            self.core.audit.emit(
+                "webui_evolution_rejected", reviewer=owner_id, proposal_id=proposal_id,
+                reason=reason[:200], decision=result.get("decision"),
+            )
+        return web.json_response(result)
+
     async def dashboard(self, request: web.Request) -> web.Response:
         """返回唯一的 Vue 生命控制台入口；子路径由 History API 接管。"""
         index = self._static_root() / "index.html"

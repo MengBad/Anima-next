@@ -104,3 +104,18 @@ export interface ToastMessage {
   title: string;
   detail?: string;
 }
+
+export interface EvolutionProposal {
+  id: string;
+  title: string;
+  rationale: string;
+  target_files: string[];
+  diff_summary: string;
+  risk: string;
+  rollback: string;
+  evidence: string;
+  status: string;
+  decision: string;
+  touches_core: boolean;
+  created_at: number;
+}

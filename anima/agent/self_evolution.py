@@ -22,6 +22,9 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any
 
+# 进程内单例 gate：跨请求持久化提案状态（WebUI 审批通道复用）。
+_GATE_SINGLETON: "EvolutionGate | None" = None
+
 # 受保护的核心文件：R9 闭环**绝不自动修改**（触碰即提案被拒，需 Owner 人工 PR）。
 # 这些是权限/安全/部署的命根子，违反「Production Is Sacred」与「No Hidden Authority」。
 CORE_PROTECTED = frozenset({
@@ -49,6 +52,7 @@ class EvolutionProposal:
     rollback: str = ""                  # 回滚方案
     evidence: str = ""                  # 沙箱测试 / 验证证据
     status: str = "proposed"            # proposed | approved | rejected | applied
+    decision: str = ""                  # 门禁决策：pending_owner | approved | rejected（UI 展示用）
     created_at: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +66,8 @@ class EvolutionProposal:
             "rollback": self.rollback,
             "evidence": self.evidence,
             "status": self.status,
+            "decision": self.decision,
+            "touches_core": self.touches_core(),
             "created_at": self.created_at,
         }
 
@@ -201,10 +207,12 @@ class EvolutionLoop:
     所以 R9 **永远无法自我授权生产更新**。
     """
 
-    def __init__(self, dev_loop: Any, *, selfcode_manager: Any = None) -> None:
+    def __init__(self, dev_loop: Any, *, selfcode_manager: Any = None,
+                 gate: "EvolutionGate | None" = None) -> None:
         self._dev = dev_loop
         self._proposer = EvolutionProposer(selfcode_manager)
-        self._gate = EvolutionGate()
+        # 默认复用进程内单例审批门：WebUI 的 list/decide 与 propose 共享同一状态。
+        self._gate = gate if gate is not None else get_evolution_gate()
 
     async def propose(self, goal: str, *, target_files: tuple[str, ...] = ()) -> dict[str, Any]:
         """生成提案并进入审批队列（默认不落地）。返回门禁决策。"""
@@ -245,3 +253,87 @@ class EvolutionLoop:
             "deploy_error": result.deploy_error,
             "needs_owner_approval": result.needs_owner_approval,
         }
+
+
+# ---------------------------------------------------------------------------
+# WebUI / 运维装配入口（受控自我进化可视化 + Owner 审批通道）
+# ---------------------------------------------------------------------------
+
+def _make_devloop(selfcode_manager: Any) -> "DevLoopOrchestrator":
+    """构造 R8 闭环（真实接线 SelfCode 双 Agent + pytest + _deploy.py）。
+
+    与 R9 单测保持一致的 5 阶段 handler 形态；develop 接 SelfCode、
+    deploy 接 ``make_r8_deploy_fn``（Owner 授权后才真部署）。
+    """
+    from .devloop import (
+        DevLoopOrchestrator,
+        make_r8_deploy_fn,
+        make_r8_identity_registry,
+        make_r8_selfcode_developer,
+    )
+
+    reg = make_r8_identity_registry()
+    developer_fn = make_r8_selfcode_developer(selfcode_manager) if selfcode_manager is not None else None
+    deploy_fn = make_r8_deploy_fn()
+    return DevLoopOrchestrator(
+        reg,
+        {},  # handler 在 run_issue 时按 developer_fn 动态构造（沿用 R8 设计）
+        developer_fn=developer_fn,
+        deploy_fn=deploy_fn,
+    )
+
+
+def get_evolution_loop(selfcode_manager: Any = None) -> EvolutionLoop:
+    """构造受控自我进化闭环（接 R8 真实闭环），复用进程内单例审批门。"""
+    return EvolutionLoop(
+        _make_devloop(selfcode_manager),
+        selfcode_manager=selfcode_manager,
+        gate=get_evolution_gate(),
+    )
+
+
+def get_evolution_gate() -> "EvolutionGate":
+    """进程内单例审批门：跨 WebUI 请求持久化提案状态。"""
+    global _GATE_SINGLETON
+    if _GATE_SINGLETON is None:
+        _GATE_SINGLETON = EvolutionGate()
+    return _GATE_SINGLETON
+
+
+async def propose_evolution(goal: str, *, target_files: tuple[str, ...] = (),
+                            selfcode_manager: Any = None) -> dict[str, Any]:
+    """生成一条自我进化提案并进入审批队列，返回门禁决策 + 提案详情。
+
+    触 ``CORE_PROTECTED`` 的提案会被安全围栏直接判 ``rejected``（UI 红标）。
+    """
+    loop = get_evolution_loop(selfcode_manager)
+    decision = await loop.propose(goal, target_files=target_files)
+    # 同步决策状态到 gate 中登记的提案，便于 UI 展示。
+    pid = decision.get("id")
+    proposal = get_evolution_gate().get(pid) if pid else None
+    if proposal is not None:
+        proposal.decision = decision.get("decision", "")
+    return {
+        "proposal": proposal.to_dict() if proposal is not None else None,
+        "decision": decision,
+    }
+
+
+def list_evolution_proposals() -> list[dict[str, Any]]:
+    """列出审批门中所有提案（含状态 / 是否触核心 / 摘要）。"""
+    gate = get_evolution_gate()
+    return [p.to_dict() for p in gate._proposals.values()]  # noqa: SLF001 - 同模块内部访问
+
+
+def decide_evolution(proposal_id: str, *, approve: bool, reason: str = "") -> dict[str, Any]:
+    """Owner 对提案做最终决策（fail-closed：仅显式 approve 放行）。
+
+    注意：即便 approve，也只是「放行提案」；真正的生产更新仍需走 R8 受控部署
+    （owner_authorized=True），R9 绝不借 UI 自我授权生产更新。
+    """
+    gate = get_evolution_gate()
+    result = gate.approve(proposal_id) if approve else gate.reject(proposal_id)
+    proposal = gate.get(proposal_id)
+    if proposal is not None:
+        proposal.decision = result.get("decision", "")
+    return result

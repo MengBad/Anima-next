@@ -1,3 +1,5 @@
+import type { EvolutionProposal } from "./types";
+
 export class ApiError extends Error {
   status: number;
 
@@ -62,6 +64,32 @@ export function formatTime(value: unknown): string {
   const number = Number(value || 0);
   if (!number) return "暂无";
   return new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(number * 1000));
+}
+
+export interface EvolutionDecision {
+  id: string;
+  decision: string;
+  issues?: string[];
+  message?: string;
+}
+
+export async function getEvolutionProposals(): Promise<{ items: EvolutionProposal[] }> {
+  return api<{ items: EvolutionProposal[] }>("/api/evolution/proposals");
+}
+
+export async function proposeEvolution(goal: string, targetFiles: string[] = []): Promise<{ proposal: EvolutionProposal | null; decision: EvolutionDecision }> {
+  return api<{ proposal: EvolutionProposal | null; decision: EvolutionDecision }>(
+    "/api/evolution/propose",
+    json("POST", { goal, target_files: targetFiles }),
+  );
+}
+
+export async function approveEvolution(proposalId: string): Promise<EvolutionDecision> {
+  return api<EvolutionDecision>(`/api/evolution/${encodeURIComponent(proposalId)}/approve`, json("POST", {}));
+}
+
+export async function rejectEvolution(proposalId: string, reason = ""): Promise<EvolutionDecision> {
+  return api<EvolutionDecision>(`/api/evolution/${encodeURIComponent(proposalId)}/reject`, json("POST", { reason }));
 }
 
 export function timeAgo(value: unknown): string {

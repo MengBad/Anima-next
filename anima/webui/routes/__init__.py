@@ -198,6 +198,11 @@ def _register_engineering(app: web.Application, s: "WebUIServer") -> None:
         web.get("/api/approvals", s.approvals),
         web.post("/api/approvals/{approval_id}/approve", s.approve_approval),
         web.post("/api/approvals/{approval_id}/reject", s.reject_approval),
+        # R9 受控自我进化：提案可视化 + Owner 审批通道（仅放行提案，绝不自动部署）
+        web.get("/api/evolution/proposals", s.evolution_proposals),
+        web.post("/api/evolution/propose", s.evolution_propose),
+        web.post("/api/evolution/{proposal_id}/approve", s.evolution_approve),
+        web.post("/api/evolution/{proposal_id}/reject", s.evolution_reject),
     ])
 
 
