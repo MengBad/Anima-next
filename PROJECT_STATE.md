@@ -54,6 +54,7 @@
 3. **R10-02 Evolution Evaluation Engine（已完成）**：`anima/evolution/evaluator/` （metric / benchmark / comparison + ImprovementEvidence）；接入 R9 `EvolutionLoop.evolve`，部署前后自动采集 Before/After 指标并产出改进证据、fail-open 落盘 `data/evolution_evidence.jsonl`；12 测试全绿。与 R10-01 共同构成「观测 → 评估」闭环（可审计、不自我授权）。
 3. **R10-03 可观测自治闭环收口（已完成）**：`anima/evolution/orchestrator.py` （`ObservationOptimizationLoop` 串 Observation → Evolution → Evaluation；默认 dry_run 不部署，fail-closed；2 测试全绿）。R10（CI / 观测 / 评估 / 闭环）工程化自治闭环全部收口。
 3. **R11 Agent Intelligence（R11-01 + R11-02 已完成）**：`anima/agent/memory_evolution.py` （Memory Evolution Engine 确定性挖掘行为结果→受控优化提案；R11-02 技能类提案转 SelfCode 候选，仅生成不安装，落地需 Owner 审批；9 测试全绿）。
+3. **R12 Multi-Agent Society（R12 Debate & Judge 已完成）**：`anima/agent/multi_agent_society.py` （多 Agent 辩论 + 裁判裁决，复用 R7 独立身份/RBAC；结论建议性、fail-closed、不授权任何动作；7 测试全绿）。
 3. **生产实证补强**：R8/R9 接真实 `issue_sources`（SelfCode 效果建议、审计 DENY 聚合）跑一周期，验证闭环能稳定收敛不退化。
 3. **后续增强（路线外）**：人格漂移执法评估、SelfCode 效果评估与建议卸载、大图哈希缓存、danger 收紧、fallback 压测。
 4. **明确不做**：无审批自动安装；默认不做语音模块（用户否决过）。

@@ -107,6 +107,13 @@
 - `tests/test_r11_01_memory_evolution.py` 扩至 9 测试（新增技能候选生成 / 无管理器 / 记忆类跳过）。
 - R9 + R10-01 + R10-02 + 闭环 + R11 组合 40 测试无回归。R11 Agent Intelligence（Memory + Skill Evolution）闭环就绪。
 
+### R12 Multi-Agent Society（Debate & Judge）— COMPLETE
+- 新增 `anima/agent/multi_agent_society.py`：多 Agent 辩论与裁判框架，复用 R7 的 `AgentIdentity` / `AgentRegistry` 独立身份与 RBAC 能力边界（debate.argue / debate.judge）。
+- `Debater`（独立身份 + 立场 + 可注入 argue_fn）、`Judge`（须持 debate.judge 能力才裁决，否则 fail-closed 出 inconclusive）、`DebateForum.run_debate` → `DebateRecord` → `arbitrate` → `Verdict`。
+- **受控纪律**：裁判结论是**建议性**的（Verdict 不含任何 approve/deploy 字段），不批准部署、不改代码，仅供 R9 审批门 / Owner 参考；无裁判权或缺法定人数 → inconclusive。共识度按 for/against 计数映射 [-1,1]。
+- `tests/test_r12_multi_agent_society.py`：7 测试全绿（发言权能力约束 / 无裁判权 fail-closed / for 胜→support / against 胜→reject / 法定人数 / 建议性裁决）。
+- R9 + R10-01 + R10-02 + 闭环 + R11 + R12 组合 47 测试无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
