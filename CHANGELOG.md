@@ -41,6 +41,13 @@
 - 真实接线：`make_r8_selfcode_developer`（接 SelfCodeManager）/ `make_r8_deploy_fn`（接 `_deploy.py`）/ `_run_pytest`（TEST 阶段）。
 - 已提交 `f939049`，已部署 VPS（version `f939049b1716`），生产实证 R8 测试 12 项全绿；R6+R7+R8 全量 113 测试无回归。
 
+### R9 Controlled Self Evolution — CODE_READY
+- `self_evolution.py`：ANIMA 可提出自身优化，但**绝不自我授权**生产更新。
+- `EvolutionProposal` / `EvolutionProposer`（复用 SelfCode 双 Agent 生成候选，仅提案不安装）/ `EvolutionReviewer`（安全围栏）/ `EvolutionGate`（fail-closed 审批门，默认 DENY）/ `EvolutionLoop`（接入 R8 闭环）。
+- **安全围栏**：`CORE_PROTECTED` 黑名单禁止 R9 自动改核心权限/安全/部署代码（rbac.py/orchestrator.py/security.py/evidence.py/_deploy.py 等），触及即 reject，需 Owner 人工 PR。
+- **受控原则**：self-improvement ≠ self-authorization——即便 Owner 批准，R8 受控部署仍需 owner_authorized=True 才调 deploy_fn。
+- 8 R9 单测全绿；R6+R7+R8+R9 全量 121 测试无回归。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
