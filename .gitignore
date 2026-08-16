@@ -68,3 +68,17 @@ state/
 P10_HOURLY_REPORT.md
 INCIDENT_REPORT.md
 .r2a_full.xml
+
+# 本地 VPS 凭证 / 部署探针 / 临时诊断（含密码等敏感信息，禁止上传）
+deploy/vps.local.env
+_vps_*.py
+_vps_step0.py
+_step0_*.txt
+_deploy_out.txt
+_r6_backup_arch_*/
+R6_*_ACCEPTANCE_REPORT.md
+_vps_accept*.py
+_vps_verify.py
+_prod_accept.py
+_ssh_test.py
+_*.local.env
