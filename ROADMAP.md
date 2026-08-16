@@ -21,7 +21,7 @@
 
 ## 进行中（IN PROGRESS）
 
-- **R10 工程化自治闭环**：R10-00 / R10-01 / R10-02 三项均已完成。下一步可选将 Observation → Evaluation 串成单一可观测闭环（低优先级）。
+- **R10 工程化自治闭环**：R10-00 / R10-01 / R10-02 三项均已完成；并新增 `anima/evolution/orchestrator.py` 将 Observation → Evolution → Evaluation 串成单一可观测闭环（默认 dry_run 不部署，fail-closed；2 测试绿）。
 
 ## 下一阶段（NEXT）
 

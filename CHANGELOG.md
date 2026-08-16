@@ -87,6 +87,13 @@
 - `tests/test_r10_02_evaluation.py`：12 测试全绿（度量抽取 / 方向判定 / 前后对照 / 聚合结论 / 集成：evolve 经 core 产出 improvement_evidence）。
 - 与 R10-01 Observation 共同构成「观测 → 评估」闭环：Observation 发现问题 → Evaluation 量化验证改进效果，闭环可审计、不自我授权。
 
+### R10-03 可观测自治闭环收口（Observation→Evolution→Evaluation）— COMPLETE
+- 新增 `anima/evolution/orchestrator.py`：`ObservationOptimizationLoop` 把 R10-01 观测 → R8/R9 受控自我进化 → R10-02 Before/After 改进证据串成单一可观测闭环（ObservableCycleReport）。
+- 设计纪律：默认 `dry_run`（只观测 + 提案 + 量化评估，不部署）；`dry_run=False` 仍需 `owner_authorized=True` 才真部署（受控门禁不变）。闭环只产出提案与证据，绝不自我授权生产更新；观测/评估层只归集量化、不决策不自愈。
+- `observe()` 复用 `collect_all` + `to_dev_issues`；`run_cycle()` 逐 Issue 经 `EvolutionLoop.evolve` 提案，聚合 `_aggregate_evidence` 给出 effective/harmful/ineffective 整体结论。
+- `tests/test_r10_observation_evolution_loop.py`：2 测试全绿（dry_run 不部署 / owner 授权部署产出改进证据）。
+- R9 + R10-01 + R10-02 + 闭环 组合 31 测试无回归。R10 工程化自治闭环（CI / 观测 / 评估 / 闭环）全部收口。
+
 ## [0.3.0-rc2] — 2026-07-16
 
 - WebUI 收敛为 Vue 3 + TypeScript + Vite 单一生命控制台，移除遗留的多套 HTML 页面覆盖。
