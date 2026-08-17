@@ -1110,9 +1110,13 @@ class LLMHandler:
                     "text": f"已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。"}})
                 await self.core.gateway.send(OutboundMsg(detail_type, target_id, segments))
             else:
-                task = await self.core.agent.submit(text, int(user_id), auto_run=True)
+                # 审计 B0-asym：私聊与群聊收敛为同一策略——只建草稿、需
+                # 「!anima agent approve <id>」才执行。严禁无确认 auto_run
+                # 高危工具（agent_exec/agent_browser/run_python 等）。
+                task = self.core.agent.store.create(text, int(user_id))
                 await self.core.gateway.send(OutboundMsg(
-                    "private", int(user_id), f"已创建 Agent 任务 {task.id}，开始执行（进度将推送）。",
+                    "private", int(user_id),
+                    f"已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。",
                 ))
             return
 
