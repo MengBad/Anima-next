@@ -30,7 +30,106 @@
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+
+  /* ===== ANIMA Design System Tokens (WebUI rebuild) ===== */
+  --font-display: Georgia, "Songti SC", serif;
+  --font-mono: ui-monospace, "Cascadia Code", Consolas, monospace;
+  /* Type scale — readable floor enforced at 11px (--fs-xs) */
+  --fs-display: clamp(30px, 4.2vw, 40px);
+  --fs-h1: clamp(25px, 3.4vw, 32px);
+  --fs-h2: clamp(18px, 2.2vw, 22px);
+  --fs-title: clamp(15px, 1.6vw, 17px);
+  --fs-body: clamp(13px, 1.3vw, 14px);
+  --fs-sm: 12px;
+  --fs-xs: 11px;
+  --fs-mono: 11px;
+  /* Radius */
+  --radius-card: 14px;
+  --radius-md: 11px;
+  --radius-sm: 8px;
+  --radius-pill: 999px;
+  /* Motion */
+  --dur-fast: 140ms;
+  --dur: 240ms;
+  --dur-slow: 480ms;
+  /* Surfaces (cards) — derived from existing palette */
+  --card-bg: var(--panel);
+  --card-border: var(--line);
+  --card-hover-border: rgba(196, 246, 110, .34);
+  --card-shadow: var(--shadow-sm);
+  /* Density (toggled via [data-density]) */
+  --space-card: 18px;
+  --space-grid: 14px;
+  --card-min: 240px;
 }
+
+[data-density="compact"] {
+  --space-card: 13px;
+  --space-grid: 10px;
+  --card-min: 210px;
+}
+
+/* ===== Themed variants ===== */
+[data-theme="light"] {
+  color-scheme: light;
+  --ink: #1a1622;
+  --ink-soft: #3a3344;
+  --muted: #6c6376;
+  --night: #f3f1f7;
+  --night-raised: #e9e5f1;
+  --panel: rgba(255, 255, 255, .92);
+  --panel-solid: #ffffff;
+  --panel-soft: #f6f3fb;
+  --line: rgba(26, 22, 34, .12);
+  --line-strong: rgba(26, 22, 34, .22);
+  --shadow-sm: 0 8px 22px rgba(40, 30, 60, .12);
+  --shadow-md: 0 18px 50px rgba(40, 30, 60, .18);
+  --card-bg: rgba(255, 255, 255, .92);
+  --card-border: rgba(26, 22, 34, .12);
+  --card-hover-border: rgba(130, 175, 51, .5);
+}
+[data-theme="contrast"] {
+  --muted: #bcb1c5;
+  --line: rgba(232, 217, 241, .3);
+  --line-strong: rgba(232, 217, 241, .46);
+  --card-border: rgba(232, 217, 241, .34);
+  --card-hover-border: var(--lime);
+}
+
+/* ===== Unified card system ===== */
+.card { border: 1px solid var(--card-border); background: var(--card-bg); border-radius: var(--radius-card); box-shadow: var(--card-shadow); transition: transform var(--dur) var(--ease-out), border-color var(--dur), box-shadow var(--dur); }
+.card.interactive { cursor: pointer; }
+.card.interactive:hover { transform: translateY(-2px); border-color: var(--card-hover-border); box-shadow: var(--shadow-md); }
+.card-pad { padding: var(--space-card); }
+.card-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 15px var(--space-card); border-bottom: 1px solid var(--card-border); }
+.card-head strong { font-size: var(--fs-title); }
+.card-head span { color: var(--muted); font-size: var(--fs-xs); }
+.card-body { padding: var(--space-card); }
+
+/* Stat / metric primitive */
+.stat { display: flex; flex-direction: column; gap: 4px; }
+.stat-label { color: var(--muted); font-size: var(--fs-xs); letter-spacing: .3px; }
+.stat-value { font: 720 var(--fs-h2) var(--font-display); line-height: 1.05; }
+.stat-value.lime { color: var(--lime); }
+.stat-value.pink { color: var(--pink); }
+.stat-value.cyan { color: var(--cyan); }
+.stat-value.amber { color: var(--amber); }
+.stat-value.purple { color: var(--purple); }
+.stat-sub { color: var(--muted); font-size: var(--fs-xs); }
+
+/* Section header primitive (matches legacy .section-title) */
+.section-head { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 34px 0 15px; }
+.section-head h2 { margin: 0; font: 740 var(--fs-h2)/1.2 var(--font-display); }
+.section-head p { margin: 4px 0 0; color: var(--muted); font-size: var(--fs-sm); }
+
+/* Responsive grids */
+.app-grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: var(--space-grid); }
+.card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr)); gap: var(--space-grid); }
+
+/* Entrance choreography (staggered via --enter-i) */
+@property --enter-i { syntax: "<integer>"; initial-value: 0; inherits: false; }
+.enter { animation: card-in var(--dur-slow) var(--ease-out) both; animation-delay: calc(var(--enter-i, 0) * 38ms); }
+@keyframes card-in { from { opacity: 0; transform: translateY(12px); } }
 
 * { box-sizing: border-box; }
 html { background: var(--night); scroll-behavior: smooth; overflow-x: hidden; }

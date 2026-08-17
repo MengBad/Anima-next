@@ -6,6 +6,7 @@ import {
 } from "@lucide/vue";
 import { activeAbilityTab, activeView, navigate, type AbilityTab, type ViewId } from "../navigation";
 import CommandPalette, { type CommandItem } from "./CommandPalette.vue";
+import ThemeToggle from "./ThemeToggle.vue";
 
 defineProps<{ connected: boolean; refreshing: boolean }>();
 const emit = defineEmits<{ refresh: [] }>();
@@ -37,6 +38,17 @@ const items: NavItem[] = [
 ];
 
 const mobileItems = computed(() => items.filter((item) => item.mobile !== false));
+
+const gotoMap: Record<string, () => void> = {
+  o: () => navigate("overview"),
+  m: () => navigate("memory"),
+  c: () => navigate("cognition"),
+  a: () => navigate("abilities", "skills"),
+  e: () => navigate("engineering"),
+  s: () => navigate("settings"),
+  p: () => navigate("os"),
+};
+let gPending = false;
 
 const commands: CommandItem[] = [
   { id: "overview", label: "生命总览", hint: "健康、待办与最近活动", keywords: "dashboard health 状态" },
@@ -87,9 +99,19 @@ function selectCommand(item: CommandItem): void {
 }
 
 function onGlobalKeydown(event: KeyboardEvent): void {
+  const target = event.target as HTMLElement | null;
+  const typing = target && (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable);
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
     commandOpen.value = !commandOpen.value;
+    return;
+  }
+  if (typing || event.metaKey || event.ctrlKey || event.altKey) return;
+  if (event.key.toLowerCase() === "g") { gPending = true; window.setTimeout(() => (gPending = false), 900); return; }
+  if (gPending && gotoMap[event.key.toLowerCase()]) {
+    gPending = false;
+    event.preventDefault();
+    gotoMap[event.key.toLowerCase()]();
   }
 }
 onMounted(() => window.addEventListener("keydown", onGlobalKeydown));
@@ -138,6 +160,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
         </div>
         <div class="topbar-actions">
           <span class="connection-state" :class="{ offline: !connected }"><i />{{ connected ? "实时同步" : "连接中断" }}</span>
+          <ThemeToggle />
           <button class="command-trigger" title="快速命令 (Ctrl/⌘ K)" @click="commandOpen=true"><Command :size="15"/><span>命令</span><kbd>⌘K</kbd></button>
           <button class="action-button subtle" :disabled="refreshing" @click="emit('refresh')"><RefreshCw :size="16" :class="{ spin: refreshing }" />刷新</button>
         </div>
