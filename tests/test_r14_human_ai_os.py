@@ -123,3 +123,16 @@ def test_environment_report_no_core():
     s = _surface()
     out = s.environment_report()
     assert out.get("available") is False
+
+
+def test_parse_impact_readonly():
+    s = _surface()
+    c = s.parse_command("演化影响评分怎么样？效果值不值？")
+    assert c.intent == "impact"
+    assert c.needs_confirmation is False
+
+
+def test_evolution_impact_no_core():
+    s = _surface()
+    out = s.evolution_impact()
+    assert out.get("available") is False

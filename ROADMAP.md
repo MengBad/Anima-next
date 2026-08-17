@@ -63,8 +63,8 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
     permission-drift / evolution 计数）。**DONE**。
 - **P1 Real-Environment Observation**（规划→**DONE**）：GitHub commits/CI/issue + 运行时 CPU/mem/
   error/latency + Audit DENY 增长 → Reality → Observation → Analysis → Proposal（`anima/observation/environment.py`）。
-- **P2 Evolution Impact Score**（规划）：前后对比（test-fail-rate / latency 等）量化优化收益，
-  「我建议 X，因为历史数据证明有益」。
+- **P2 Evolution Impact Score**（规划→**DONE**）：前后对比（test-fail-rate / latency 等）量化优化收益，
+  「我建议 X，因为历史数据证明有益」（`anima/evolution/impact.py`）。
 - **P3 Real Agent Society**（规划）：Architect/Security/Research/Coding/Critic/Judge 多视角
   降错，升级 R12 `argue_fn` 为真实多 Agent 辩论。
 - **P4 Long-Term Memory**（规划）：事件→知识→行为模式三层长记忆（Owner 习惯 / 历史决策 /

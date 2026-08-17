@@ -2171,12 +2171,19 @@ class WebUIServer:
             environment = surf.environment_report()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             environment = {}
+        # P2：演化影响评分（只读，历史 Before/After 证据聚合）
+        impact = {}
+        try:
+            impact = surf.evolution_impact()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
+            impact = {}
         if self.core.audit:
             self.core.audit.emit("webui_os_overview", reviewer=owner_id)
         return web.json_response({
             "overview": ov.to_dict(),
             "stability": stability,
             "environment": environment,
+            "impact": impact,
         })
 
     async def os_command(self, request: web.Request) -> web.Response:
@@ -2220,6 +2227,13 @@ class WebUIServer:
                 report = {}
             cmd.preview = cmd.preview or "当前真实环境观测报告"
             payload = {"command": cmd.to_dict(), "environment": report}
+        elif cmd.intent == "impact":
+            try:
+                report = surf.evolution_impact()
+            except Exception:  # noqa: BLE001
+                report = {}
+            cmd.preview = cmd.preview or "当前演化影响评分"
+            payload = {"command": cmd.to_dict(), "impact": report}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()

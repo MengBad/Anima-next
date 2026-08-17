@@ -114,6 +114,19 @@
   （只生成提案、不部署）。WebUI `/api/os/overview` 聚合 `environment`；`/api/os/command`
   新增 `observe` 只读意图。
 
+### P2 Evolution Impact Score（已完成）
+
+- `anima/evolution/impact.py`：演化影响评分——聚合历史 Before/After 证据语料为语料级评分 +
+  数据驱动建议（`score_for_proposal` 让提案有历史支撑：我建议 X，因为历史证明有益）。
+  WebUI `/api/os/overview` 聚合 `impact`；`/api/os/command` 新增 `impact` 只读意图。
+
+
+
+- `anima/observation/environment.py`：真实环境观察闭合 Reality → Observation → Analysis →
+  Proposal；GitHub 信号 + 性能阈值 + Audit DENY 增长趋势 → ObservationReport → R8 DevIssue
+  （只生成提案、不部署）。WebUI `/api/os/overview` 聚合 `environment`；`/api/os/command`
+  新增 `observe` 只读意图。
+
 
 
 - `anima/os/long_running.py`：7/30/90 天稳定性记录（uptime / anomaly / degraded / 权限漂移 /

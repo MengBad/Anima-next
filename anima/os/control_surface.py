@@ -156,6 +156,22 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "environment 聚合异常"}
 
+    def evolution_impact(self) -> dict[str, Any]:
+        """只读聚合演化影响评分（P2）：基于历史 Before/After 证据语料。
+
+        复用 ``anima.evolution.impact``：把 R9/R10-02 落盘的 evolution_evidence.jsonl
+        聚合为语料级评分 + 数据驱动建议。fail-closed：无证据 → has_data=False，诚实。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+        root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+        try:
+            from ..evolution.impact import build_impact_report
+            return build_impact_report(root).to_dict()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
+            return {"available": False, "reason": "evolution_impact 聚合异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -199,6 +215,14 @@ class HumanAIControlSurface:
             return ParsedCommand(
                 intent="health", needs_confirmation=False,
                 preview="返回当前运行时健康与受控恢复计划",
+            )
+
+        # 演化影响评分查询（只读）—— P2：影响 / 评分 / 收益 / impact / 效果
+        # 须在 list_proposals 之前判定，避免「演化」一词被列表分支抢匹配。
+        if re.search(r"(影响评分|收益|效果评估|impact|evolution_score|值不值|评分如何)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="impact", needs_confirmation=False,
+                preview="返回演化影响评分（历史 Before/After 证据聚合 + 数据驱动建议）",
             )
 
         # 列出演化提案（只读）

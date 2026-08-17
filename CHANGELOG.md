@@ -12,6 +12,21 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P2 Evolution Impact Score — COMPLETE
+- 新增 `anima/evolution/impact.py`：把 R9/R10-02 已落盘的 `evolution_evidence.jsonl`
+  聚合为**语料级演化影响评分**。
+  - 按 `metric_key` 累计 effective/harmful/ineffective 与平均 Δ + 相对改善百分比（按
+    higher/lower better 归一方向）。
+  - `overall_score`（0..1，有效占比 − 0.5×有害占比，clamp）。
+  - `suggestions` 数据驱动建议：「历史显示优化 X 在 N 次中有效 k 次（成功率 %，平均
+    改善 +Δ%），可优先纳入提案」；曾有害的指标给出警惕。
+  - `score_for_proposal(metrics)`：给定候选提案关注的指标，返回历史成功率/平均改善作为
+    支撑证据——即「我建议 X，因为历史数据证明有益」。
+- fail-closed / 诚实：证据语料空/缺失 → `has_data=False`，评分记 0，绝不编造「历史有益」。
+- WebUI 接线：`/api/os/overview` 聚合 `impact` 评分；`/api/os/command` 新增 `impact` 只读
+  意图（"影响/评分/收益/效果"），绝不自我授权。
+- 测试：`tests/test_p2_evolution_impact_score.py`（8）+ R14 `impact` 意图（2）+ WebUI（2）。
+
 ### P1 Real-Environment Observation — COMPLETE
 - 新增 `anima/observation/environment.py`：闭合 **Reality → Observation → Analysis → Proposal**：
   - GitHub 真实信号源（填补 R10-01 `SOURCE_GITHUB` TODO：commits/CI/issue；可注入、无 token 依赖）。
