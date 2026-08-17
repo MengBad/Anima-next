@@ -241,8 +241,9 @@ a { color: inherit; }
 .section-title h2 { margin: 0; font: 740 17px/1.2 Georgia, "Songti SC", serif; }
 .section-title p { margin: 4px 0 0; color: var(--muted); font-size: 11px; }
 
-.panel { border: 1px solid var(--line); background: var(--panel); box-shadow: var(--shadow-sm); }
-.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 19px; border-bottom: 1px solid var(--line); }
+.panel { border: 1px solid var(--card-border); background: var(--card-bg); border-radius: var(--radius-card); box-shadow: var(--card-shadow); animation: card-in var(--dur-slow) var(--ease-out) both; transition: border-color var(--dur) var(--ease-out), box-shadow var(--dur) var(--ease-out); }
+.panel:hover { box-shadow: var(--shadow-md); }
+.panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 17px 19px; border-bottom: 1px solid var(--card-border); }
 .panel-head strong { font-size: 13px; }
 .panel-head span { color: var(--muted); font-size: 10px; }
 .panel-body { padding: 19px; }
