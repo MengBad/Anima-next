@@ -95,3 +95,17 @@ async def test_os_overview_includes_impact(client):
         assert r.status == 200
         body = await r.json()
         assert "impact" in body
+
+
+@pytest.mark.asyncio
+async def test_os_command_society_readonly(client):
+    session, base, headers = client
+    async with session.post(f"{base}/api/os/command", headers=headers,
+                            json={"command": "Agent 社会辩论：要不要自动升级依赖？"}) as r:
+        assert r.status == 200
+        body = await r.json()
+        cmd = body["command"]
+        assert cmd["intent"] == "society"
+        assert cmd["needs_confirmation"] is False
+        assert "society" in body
+        assert body["society"]["verdict"]["judge_id"] == "judge"

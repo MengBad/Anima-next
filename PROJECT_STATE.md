@@ -117,6 +117,18 @@
 ### P2 Evolution Impact Score（已完成）
 
 - `anima/evolution/impact.py`：演化影响评分——聚合历史 Before/After 证据语料为语料级评分 +
+  数据驱动建议（`score_for_proposal` 让提案有历史支撑）。WebUI `/api/os/overview` 聚合
+  `impact`；`/api/os/command` 新增 `impact` 只读意图。
+
+### P3 Real Agent Society（已完成）
+
+- `anima/agent/agent_society.py`：真实多 Agent 协作——角色专精多视角辩论（架构/安全/研究/
+  编码/批判/裁判）+ 多视角加权裁决（降错优先）+ `run_society_debate` 便捷端到端；结论建议性、
+  不授权执行。WebUI `/api/os/command` 新增 `society` 只读意图。
+
+
+
+- `anima/evolution/impact.py`：演化影响评分——聚合历史 Before/After 证据语料为语料级评分 +
   数据驱动建议（`score_for_proposal` 让提案有历史支撑：我建议 X，因为历史证明有益）。
   WebUI `/api/os/overview` 聚合 `impact`；`/api/os/command` 新增 `impact` 只读意图。
 

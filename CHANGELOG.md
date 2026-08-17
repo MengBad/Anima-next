@@ -12,6 +12,21 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P3 Real Agent Society — COMPLETE
+- 新增 `anima/agent/agent_society.py`：在 R12 辩论框架之上把「桩 argue_fn」升级为
+  **角色专精多视角发言**——Architect/Security/Research/Coding/Critic/Judge 六类 Agent
+  各自从专业立场评估同一议题，多角度暴露不同错误模式（设计/安全/证据/实现/审查盲点）。
+  - `build_default_society()`：构建正确 RBAC 能力的默认阵容（debater 持 `debate.argue`、
+    Judge 持 `debate.judge`）。
+  - `weighted_arbitrate()`：**多视角加权裁决**，安全/架构/批判等强约束视角 `against`
+    权重更高（降错优先），避免多数暴政放行风险提案；无裁判权/未达法定人数 → inconclusive。
+  - `run_society_debate()`：便捷端到端（辩论 + 加权裁决），结论建议性、不授权执行。
+- 纪律：复用 R12/R6.3 能力边界；结论仅供 R9 审批门 / Owner 参考，self-improvement ≠
+  self-authorization。
+- WebUI 接线：`/api/os/command` 新增 `society` 只读意图（"社会/辩论/多视角/大家怎么看"），
+  触发默认 Agent 社会辩论并返回建议性裁决。
+- 测试：`tests/test_p3_agent_society.py`（7）+ R14 `society` 意图（2）+ WebUI（1）。
+
 ### P2 Evolution Impact Score — COMPLETE
 - 新增 `anima/evolution/impact.py`：把 R9/R10-02 已落盘的 `evolution_evidence.jsonl`
   聚合为**语料级演化影响评分**。

@@ -136,3 +136,19 @@ def test_evolution_impact_no_core():
     s = _surface()
     out = s.evolution_impact()
     assert out.get("available") is False
+
+
+def test_parse_society_readonly():
+    s = _surface()
+    c = s.parse_command("让 Agent 社会辩论一下：要不要自动升级依赖？")
+    assert c.intent == "society"
+    assert c.needs_confirmation is False
+
+
+def test_society_debate_returns_verdict():
+    s = _surface()
+    out = s.society_debate("是否引入自动依赖升级")
+    assert out.get("available") is not False
+    assert "verdict" in out
+    assert out["verdict"]["judge_id"] == "judge"
+    assert out["verdict"]["decision"] in ("support", "reject", "inconclusive")

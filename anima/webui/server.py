@@ -2234,6 +2234,16 @@ class WebUIServer:
                 report = {}
             cmd.preview = cmd.preview or "当前演化影响评分"
             payload = {"command": cmd.to_dict(), "impact": report}
+        elif cmd.intent == "society":
+            try:
+                from anima.agent.agent_society import run_society_debate
+                record, verdict = await run_society_debate(text, "")
+                report = {"question": text, "verdict": verdict.to_dict(),
+                          "debate": record.to_dict()}
+            except Exception:  # noqa: BLE001
+                report = {"available": False, "reason": "society 辩论异常"}
+            cmd.preview = cmd.preview or "Agent 社会多视角辩论结果"
+            payload = {"command": cmd.to_dict(), "society": report}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()

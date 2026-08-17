@@ -65,8 +65,8 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
   error/latency + Audit DENY 增长 → Reality → Observation → Analysis → Proposal（`anima/observation/environment.py`）。
 - **P2 Evolution Impact Score**（规划→**DONE**）：前后对比（test-fail-rate / latency 等）量化优化收益，
   「我建议 X，因为历史数据证明有益」（`anima/evolution/impact.py`）。
-- **P3 Real Agent Society**（规划）：Architect/Security/Research/Coding/Critic/Judge 多视角
-  降错，升级 R12 `argue_fn` 为真实多 Agent 辩论。
+- **P3 Real Agent Society**（规划→**DONE**）：Architect/Security/Research/Coding/Critic/Judge 多视角
+  降错，升级 R12 `argue_fn` 为真实多 Agent 辩论（`anima/agent/agent_society.py`）。
 - **P4 Long-Term Memory**（规划）：事件→知识→行为模式三层长记忆（Owner 习惯 / 历史决策 /
   为何这样设计）。
 - **P5 Autonomous Maintenance**（规划）：过期依赖检测→风险分析→升级提议→CI 验证→

@@ -172,6 +172,35 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "evolution_impact 聚合异常"}
 
+    def society_debate(self, question: str, context: str = "") -> dict[str, Any]:
+        """只读触发默认 Agent 社会辩论 + 加权裁决（P3），返回建议性结论。
+
+        **不授权任何执行**：仅聚合多视角意见供 Owner 参考。失败降级为不可用的诚实返回。
+        """
+        if not question:
+            return {"available": False, "reason": "缺少议题"}
+        try:
+            import asyncio
+            from ..agent.agent_society import run_society_debate
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                # 已有运行 loop（如 WebUI aiohttp）→ 等待协程完成
+                fut = asyncio.ensure_future(run_society_debate(question, context))
+                record, verdict = loop.run_until_complete(fut)
+            else:
+                record, verdict = asyncio.run(run_society_debate(question, context))
+            return {
+                "question": question,
+                "verdict": verdict.to_dict(),
+                "debate": record.to_dict(),
+            }
+        except Exception:  # noqa: BLE001 - 辩论失败不阻断控制面
+            return {"available": False, "reason": "society 辩论异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -244,6 +273,13 @@ class HumanAIControlSurface:
             return ParsedCommand(
                 intent="observe", needs_confirmation=False,
                 preview="返回真实环境观测报告（GitHub/性能/Audit DENY 增长趋势）",
+            )
+
+        # 多 Agent 社会辩论查询（只读）—— P3：社会 / 辩论 / 多视角 / society / 协作看法
+        if re.search(r"(社会|辩论|多视角|agent 社会|society|大家怎么看|协作)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="society", needs_confirmation=False,
+                preview="触发默认 Agent 社会（架构/安全/研究/编码/批判/裁判）多视角辩论，返回建议性裁决",
             )
 
         return ParsedCommand(intent="unknown", preview=f"未识别指令：{t[:40]}")
