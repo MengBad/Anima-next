@@ -69,8 +69,8 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
   降错，升级 R12 `argue_fn` 为真实多 Agent 辩论（`anima/agent/agent_society.py`）。
 - **P4 Long-Term Memory**（规划→**DONE**）：事件→知识→行为模式三层长记忆（Owner 习惯 / 历史决策 /
   为何这样设计）（`anima/memory/long_term.py`）。
-- **P5 Autonomous Maintenance**（规划）：过期依赖检测→风险分析→升级提议→CI 验证→
-  等 Owner 批准→执行（工程准备自动，执行需授权）。
+- **P5 Autonomous Maintenance**（规划→**DONE**）：过期依赖检测→风险分析→升级提议→CI 验证→
+  等 Owner 批准→执行（工程准备自动，执行需授权）（`anima/agent/autonomous_maintenance.py`）。
 - **P6 Personal Skill Ecosystem**（规划）：Skill Proposal → Sandbox → Benchmark → Adopt 生命周期。
 
 ## 完成标准（最终判断）

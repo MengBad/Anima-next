@@ -51,7 +51,7 @@ def test_extract_decision_and_why(tmp_path):
 def test_why_designed_query(tmp_path):
     m = _mem(tmp_path)
     m.record_why("rbac.py", "权限边界核心，禁止自动改")
-    m.extract_and_store(m.events()[0])
+    # record_why 已自动抽取到知识层，why_designed 立即可查
     whys = m.why_designed("rbac.py")
     assert len(whys) == 1
     assert "rbac.py" in whys[0].statement

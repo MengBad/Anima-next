@@ -12,6 +12,20 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P5 Autonomous Maintenance — COMPLETE
+- 新增 `anima/agent/autonomous_maintenance.py`：自治维护闭环（**工程准备自动、执行等待 Owner**）。
+  - 流程：检测过期依赖 → 风险分析（复用 P4 记忆护栏 / 参考 P2 影响评分）→ 生成 R9 风格
+    **待审提案**（经 SelfCode 生成候选，不安装）→ 可选 CI 预检 → 注册进 R9 审批门 pending_owner。
+  - **P4 记忆护栏**：若长期记忆存在该依赖「why-described（禁止自动改 / 有意为之的护栏）」→
+    跳过其升级提议，避免误改有意为之的护栏。
+  - **核心文件保护**：依赖属 `CORE_PROTECTED` → 跳过（需 Owner 人工 PR，R9 拒绝自动落地）。
+  - **降错优先**：CI 预检失败 → risk=high 而非放行；检测器/CI 可注入，离线可测、零联网。
+  - fail-closed：检测异常/未配置检测器 → 空结果 + 诚实说明，绝不伪造「已通过」。
+- 纪律：绝不自我安装/自我授权；所有落地复用 R9 Owner 批准路径（默认 DENY）。
+- WebUI 接线：`/api/os/overview` 聚合 `maintenance` 摘要；`/api/os/command` 新增 `maintenance`
+  只读意图（"依赖自检/过期依赖/维护"）。
+- 测试：`tests/test_p5_autonomous_maintenance.py`（8）+ R14 `maintenance` 意图（1）+ WebUI（1）。
+
 ### P4 Long-Term Memory — COMPLETE
 - 新增 `anima/memory/long_term.py`：三层长期记忆（事件 → 知识 → 行为模式），对应 Owner 想要的
   「经验积累」。

@@ -221,10 +221,15 @@ class LongTermMemory:
         return ev
 
     def record_why(self, key: str, reason: str, *, ts: float | None = None) -> MemoryEvent:
-        """记录「某模块/决策为何这样设计」（服务 P5 自治维护的核心上下文）。"""
-        return self.record_event(
+        """记录「某模块/决策为何这样设计」（服务 P5 自治维护的核心上下文）。
+
+        自动抽取到知识层，使 ``why_designed()`` 立即可查（无需额外调用 extract_and_store）。
+        """
+        ev = self.record_event(
             EVENT_WHY_DESIGNED, f"{key}：{reason}", tags=["why_designed", key], ts=ts,
         )
+        self.extract_and_store(ev)
+        return ev
 
     def events(self) -> list[MemoryEvent]:
         return [MemoryEvent.from_dict(d) for d in _read_jsonl(self._events_path)]

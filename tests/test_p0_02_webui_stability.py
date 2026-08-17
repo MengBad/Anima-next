@@ -101,7 +101,7 @@ async def test_os_overview_includes_impact(client):
 async def test_os_command_society_readonly(client):
     session, base, headers = client
     async with session.post(f"{base}/api/os/command", headers=headers,
-                            json={"command": "Agent 社会辩论：要不要自动升级依赖？"}) as r:
+                            json={"command": "Agent 社会辩论：这个架构改动合不合理？"}) as r:
         assert r.status == 200
         body = await r.json()
         cmd = body["command"]
@@ -122,6 +122,19 @@ async def test_os_command_memory_readonly(client):
         assert cmd["intent"] == "memory"
         assert cmd["needs_confirmation"] is False
         assert "memory" in body
+
+
+@pytest.mark.asyncio
+async def test_os_command_maintenance_readonly(client):
+    session, base, headers = client
+    async with session.post(f"{base}/api/os/command", headers=headers,
+                            json={"command": "做一次依赖自检，看看有没有过期依赖"}) as r:
+        assert r.status == 200
+        body = await r.json()
+        cmd = body["command"]
+        assert cmd["intent"] == "maintenance"
+        assert cmd["needs_confirmation"] is False
+        assert "maintenance" in body
 
 
 @pytest.mark.asyncio

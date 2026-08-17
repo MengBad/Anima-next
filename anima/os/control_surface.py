@@ -230,6 +230,48 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "long_term_memory 聚合异常"}
 
+    def autonomous_maintenance(self) -> dict[str, Any]:
+        """只读触发一次自治维护扫描（P5）：检测→风险分析→生成待审提案（不执行）。
+
+        **工程准备自动、执行等待 Owner**：所有提案进入 R9 审批门 pending_owner，
+        绝不自我授权安装。CI 预检默认未启用（诚实跳过，不伪造通过）。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+        root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+        try:
+            import asyncio
+            from ..agent.autonomous_maintenance import (
+                MaintenanceAgent, requirements_detector,
+            )
+            from ..agent.self_evolution import EvolutionGate, EvolutionProposer
+            from ..memory.long_term import LongTermMemory
+
+            mem = LongTermMemory(root)
+            detect = requirements_detector("requirements.txt")
+            agent = MaintenanceAgent(
+                proposer=EvolutionProposer(), gate=EvolutionGate(),
+                memory=mem, detect_fn=detect,
+            )
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+            if loop is not None:
+                fut = asyncio.ensure_future(agent.run_maintenance())
+                scan = loop.run_until_complete(fut)
+            else:
+                scan = asyncio.run(agent.run_maintenance())
+            out = scan.to_dict()
+            out["available"] = True
+            out["note"] = out.get("note") or (
+                "提案均 pending_owner，需 Owner 在 R9 审批门显式批准后才可落地（fail-closed）。"
+            )
+            return out
+        except Exception:  # noqa: BLE001 - 扫描失败不阻断控制面
+            return {"available": False, "reason": "autonomous_maintenance 扫描异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -268,8 +310,16 @@ class HumanAIControlSurface:
                 preview="返回当前受控恢复计划（需 Owner 授权的动作已标 requires_owner）",
             )
 
+        # 自治维护扫描（只读）—— P5：维护 / 自检 / 依赖自检 / 检查依赖 / 依赖过期 / 升级依赖 / maintenance
+        # 须在 health 之前判定；用词较专，避免与「Agent 社会辩论升级依赖」等表述冲突。
+        if re.search(r"(维护|自检|依赖自检|检查依赖|依赖过期|过期依赖|升级依赖|maintenance|deps|更新检查)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="maintenance", needs_confirmation=False,
+                preview="触发一次自治维护扫描（检测过期依赖→风险分析→生成待审提案，不执行）",
+            )
+
         # 查看健康（只读）
-        if re.search(r"(查看|检查|状态|健康|health)", t, re.IGNORECASE) and "提案" not in t:
+        if re.search(r"(查看|检查|状态|健康|health)", t, re.IGNORECASE) and "提案" not in t and "依赖" not in t:
             return ParsedCommand(
                 intent="health", needs_confirmation=False,
                 preview="返回当前运行时健康与受控恢复计划",

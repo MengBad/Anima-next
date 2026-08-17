@@ -140,7 +140,7 @@ def test_evolution_impact_no_core():
 
 def test_parse_society_readonly():
     s = _surface()
-    c = s.parse_command("让 Agent 社会辩论一下：要不要自动升级依赖？")
+    c = s.parse_command("让 Agent 社会辩论一下：这个架构改动合不合理？")
     assert c.intent == "society"
     assert c.needs_confirmation is False
 
@@ -165,3 +165,10 @@ def test_long_term_memory_no_core():
     s = _surface()
     out = s.long_term_memory(query="中文")
     assert out.get("available") is False
+
+
+def test_parse_maintenance_readonly():
+    s = _surface()
+    c = s.parse_command("做一次依赖自检，看看有没有过期依赖")
+    assert c.intent == "maintenance"
+    assert c.needs_confirmation is False

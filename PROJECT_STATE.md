@@ -132,6 +132,19 @@
   专项 + 关键词查询。WebUI `/api/os/overview` 聚合 `memory`；`/api/os/command` 新增 `memory`
   只读意图（"你还记得我的习惯吗？为什么这么设计？"）。
 
+### P5 Autonomous Maintenance（已完成）
+
+- `anima/agent/autonomous_maintenance.py`：自治维护闭环（检测过期依赖→风险分析→生成 R9 待审
+  提案→可选 CI 预检→等待 Owner）。复用 P4 记忆护栏跳过有意为之的依赖、CORE_PROTECTED 保护、
+  降错优先；绝不自我安装。WebUI `/api/os/overview` 聚合 `maintenance`；`/api/os/command` 新增
+  `maintenance` 只读意图。
+
+
+
+- `anima/memory/long_term.py`：三层长期记忆（事件/知识/行为模式）+ why-described 设计原因
+  专项 + 关键词查询。WebUI `/api/os/overview` 聚合 `memory`；`/api/os/command` 新增 `memory`
+  只读意图（"你还记得我的习惯吗？为什么这么设计？"）。
+
 
 
 - `anima/agent/agent_society.py`：真实多 Agent 协作——角色专精多视角辩论（架构/安全/研究/

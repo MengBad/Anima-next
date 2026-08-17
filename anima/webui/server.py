@@ -2183,6 +2183,12 @@ class WebUIServer:
             memory = surf.long_term_memory()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             memory = {}
+        # P5：自治维护摘要（只读，最近一次扫描的待审提案计数）
+        maintenance = {}
+        try:
+            maintenance = surf.autonomous_maintenance()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
+            maintenance = {}
         if self.core.audit:
             self.core.audit.emit("webui_os_overview", reviewer=owner_id)
         return web.json_response({
@@ -2191,6 +2197,7 @@ class WebUIServer:
             "environment": environment,
             "impact": impact,
             "memory": memory,
+            "maintenance": maintenance,
         })
 
     async def os_command(self, request: web.Request) -> web.Response:
@@ -2258,6 +2265,13 @@ class WebUIServer:
                 report = {"available": False, "reason": "long_term_memory 异常"}
             cmd.preview = cmd.preview or "长期记忆查询结果"
             payload = {"command": cmd.to_dict(), "memory": report}
+        elif cmd.intent == "maintenance":
+            try:
+                report = surf.autonomous_maintenance()
+            except Exception:  # noqa: BLE001
+                report = {"available": False, "reason": "autonomous_maintenance 异常"}
+            cmd.preview = cmd.preview or "自治维护扫描结果（提案待 Owner 批准）"
+            payload = {"command": cmd.to_dict(), "maintenance": report}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()
