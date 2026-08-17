@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-export type ViewId = "overview" | "memory" | "cognition" | "abilities" | "engineering" | "settings";
+export type ViewId = "overview" | "memory" | "cognition" | "abilities" | "engineering" | "settings" | "os";
 export type AbilityTab = "skills" | "exploration" | "automation" | "stickers" | "plugins";
 
 const routeMap: Record<string, ViewId> = {
@@ -12,7 +12,8 @@ const routeMap: Record<string, ViewId> = {
   "/subscriptions": "abilities",
   "/stickers": "abilities",
   "/engineering": "engineering",
-  "/settings": "settings"
+  "/settings": "settings",
+  "/os": "os"
 };
 
 function abilityTabFromPath(pathname: string): AbilityTab {
@@ -33,6 +34,7 @@ export function navigate(view: ViewId, subview?: string): void {
   let path = `/${view}`;
   if (view === "overview") path = "/";
   else if (view === "cognition") path = "/cognitive";
+  else if (view === "os") path = "/os";
   else if (view === "abilities") {
     if (activeAbilityTab.value === "stickers") path = "/stickers";
     else if (activeAbilityTab.value === "exploration") path = "/exploration";
@@ -49,3 +51,7 @@ window.addEventListener("popstate", () => {
     activeAbilityTab.value = abilityTabFromPath(window.location.pathname);
   }
 });
+
+export function viewFromPath(pathname: string): ViewId {
+  return routeMap[pathname] || "overview";
+}

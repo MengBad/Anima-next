@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
-  Bot, BrainCircuit, Command, ChevronRight, Gauge, Menu,
+  Bot, BrainCircuit, Boxes, Command, ChevronRight, Gauge, Menu,
   MessageSquareText, Puzzle, RadioTower, RefreshCw, Settings2, ShieldCheck, Sparkles, X
 } from "@lucide/vue";
 import { activeAbilityTab, activeView, navigate, type AbilityTab, type ViewId } from "../navigation";
@@ -32,6 +32,7 @@ const items: NavItem[] = [
   { id: "subscriptions", view: "abilities", abilityTab: "automation", label: "订阅监控", hint: "B站直播与网页状态", icon: RadioTower, mobile: true },
   { id: "stickers", view: "abilities", abilityTab: "stickers", label: "表情资产", hint: "审核池、图库与发送策略", icon: Bot, mobile: false },
   { id: "engineering", view: "engineering", label: "审批与工程", hint: "证据、测试与回滚", icon: ShieldCheck, mobile: true },
+  { id: "os", view: "os", label: "ANIMA OS", hint: "健康证明·自治·进化", icon: Boxes, mobile: true },
   { id: "settings", view: "settings", label: "设置与权限", hint: "模型、行为与安全", icon: Settings2, mobile: true },
 ];
 
@@ -45,6 +46,7 @@ const commands: CommandItem[] = [
   { id: "subscriptions", label: "订阅监控", hint: "B站直播、网页状态与自动化", keywords: "subscription bili bilibili 直播 监控 订阅" },
   { id: "stickers", label: "表情资产工作室", hint: "审核池、图库、分类与策略", keywords: "sticker 表情 审核 图片" },
   { id: "engineering", label: "审批与工程", hint: "工程证据、测试、回滚与审批", keywords: "approval engineering diff 工程" },
+  { id: "os", label: "ANIMA OS 治理", hint: "健康证明、长期稳定、观测、影响评分、社会、记忆、维护、能力演进", keywords: "os autonomy governance 自治进化 健康证明 稳定 记忆 维护" },
   { id: "llm", label: "模型控制中心", hint: "LLM 路由、Token 与连接测试", keywords: "llm token model 模型 api" },
   { id: "behavior", label: "自主行为与群策略", hint: "主动行为、逐群策略与紧急暂停", keywords: "group policy autonomy 暂停 群策略" },
   { id: "diagnostics", label: "NapCat 与模块诊断", hint: "QQ action/echo 回路与运行模块", keywords: "napcat qq diagnostic 诊断" },
@@ -80,6 +82,7 @@ function selectCommand(item: CommandItem): void {
     return;
   }
   if (item.id === "cognitive") return navigate("cognition");
+  if (item.id === "os") return navigate("os");
   navigate(item.id as ViewId);
 }
 

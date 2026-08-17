@@ -100,3 +100,24 @@ export function timeAgo(value: unknown): string {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)} 小时前`;
   return `${Math.floor(seconds / 86400)} 天前`;
 }
+
+// ---------------------------------------------------------------------------
+// ANIMA OS 治理层（P0–P6 后端只读聚合 + 受限指令）
+// ---------------------------------------------------------------------------
+export interface OsCommandResult {
+  command: {
+    intent: string;
+    needs_confirmation: boolean;
+    preview?: string;
+    confirmation_endpoint?: string;
+  };
+  [key: string]: unknown;
+}
+
+export async function getOsOverview(): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/os/overview");
+}
+
+export async function postOsCommand(command: string): Promise<OsCommandResult> {
+  return api<OsCommandResult>("/api/os/command", json("POST", { command }));
+}
