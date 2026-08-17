@@ -217,7 +217,7 @@ const state = computed<"loading" | "error" | "empty" | "ready">(() => {
           <div class="os-card-foot">结论建议性，不授权执行</div>
         </Card>
 
-        <Card class="os-card interactive" :enter-index="5" @click="runCommand('你还记得我的习惯吗？为什么这么设计？')">
+        <Card class="os-card interactive" :enter-index="5" role="button" tabindex="0" :aria-label="'查询长期记忆'" @click="runCommand('你还记得我的习惯吗？为什么这么设计？')" @keydown.enter="runCommand('你还记得我的习惯吗？为什么这么设计？')" @keydown.space.prevent="runCommand('你还记得我的习惯吗？为什么这么设计？')">
           <div class="os-card-head"><Database :size="17" /><strong>长期记忆</strong><Cpu :size="14" class="muted" /></div>
           <div class="os-card-body" v-if="memorySummary">
             <div class="kv"><span>知识</span><b>{{ memorySummary.knowledge_count ?? '—' }}</b></div>

@@ -277,7 +277,7 @@ onMounted(load);
 .memory-hero strong{margin-top:6px;font:730 21px Georgia,"Songti SC",serif}
 .memory-hero p{margin:8px 0 0;color:var(--muted);font-size:11px;line-height:1.7}
 .memory-hero dl{margin:0;display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
-.memory-hero dl div{padding:17px;background:#1a1524}
+.memory-hero dl div{padding:17px;background:var(--surface-2)}
 .memory-hero dt{color:var(--muted);font-size:var(--fs-sm)}
 .memory-hero dd{margin:7px 0 0;font:730 20px Georgia,serif;color:var(--lime)}
 .signal-row{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:16px}
@@ -309,7 +309,7 @@ onMounted(load);
 .gate-chips{display:flex;flex-wrap:wrap;gap:6px;padding:12px 17px 4px}
 .gate-chips span{padding:4px 8px;border:1px solid var(--line);background:rgba(255,255,255,.03);color:var(--muted);font-size:var(--fs-xs)}
 .cg-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);margin:0}
-.cg-summary div{padding:12px;background:#1a1524}
+.cg-summary div{padding:12px;background:var(--surface-2)}
 .cg-summary dt{color:var(--muted);font-size:var(--fs-xs)}
 .cg-summary dd{margin:6px 0 0;font:730 16px Georgia,serif;color:var(--lime)}
 .note-preview{padding:22px;min-height:230px;background:linear-gradient(transparent 26px,rgba(255,255,255,.035) 27px);background-size:100% 27px}

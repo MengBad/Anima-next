@@ -57,6 +57,12 @@
   --card-border: var(--line);
   --card-hover-border: rgba(196, 246, 110, .34);
   --card-shadow: var(--shadow-sm);
+  /* Secondary / nested surfaces — MUST be tokenized so themes work */
+  --surface-2: #1a1524;
+  --surface-3: #18131f;
+  --surface-raised: #1c1625;
+  --surface-input: rgba(8, 7, 13, .46);
+  --surface-input-solid: #110e17;
   /* Density (toggled via [data-density]) */
   --space-card: 18px;
   --space-grid: 14px;
@@ -87,6 +93,11 @@
   --card-bg: rgba(255, 255, 255, .92);
   --card-border: rgba(26, 22, 34, .12);
   --card-hover-border: rgba(130, 175, 51, .5);
+  --surface-2: #ffffff;
+  --surface-3: #f3eef9;
+  --surface-raised: #ffffff;
+  --surface-input: rgba(26, 22, 34, .05);
+  --surface-input-solid: #ece6f4;
 }
 [data-theme="contrast"] {
   --muted: #bcb1c5;
@@ -94,6 +105,11 @@
   --line-strong: rgba(232, 217, 241, .46);
   --card-border: rgba(232, 217, 241, .34);
   --card-hover-border: var(--lime);
+  --surface-2: #211a2e;
+  --surface-3: #181222;
+  --surface-raised: #241c32;
+  --surface-input: rgba(255, 255, 255, .04);
+  --surface-input-solid: #15101f;
 }
 
 /* ===== Unified card system ===== */
