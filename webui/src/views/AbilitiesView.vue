@@ -1,5 +1,5 @@
-﻿<script setup lang="ts">
-import { onMounted, ref } from "vue";
+<script setup lang="ts">
+import { computed, onMounted, ref } from "vue";
 import { CalendarClock, Compass, ExternalLink, Image, Plus, Puzzle, RadioTower, Sparkles, Trash2, WandSparkles, X } from "@lucide/vue";
 import { api, bestEffort, timeAgo } from "../api";
 import { activeAbilityTab, navigate, type AbilityTab } from "../navigation";
@@ -8,6 +8,60 @@ import StickerManager from "../components/StickerManager.vue";
 
 const emit = defineEmits<{ notify: [tone:"success"|"error"|"info", title:string, detail?:string] }>();
 const skills=ref<any[]>([]);const drafts=ref<any[]>([]);const subscriptions=ref<any[]>([]);const agenda=ref<any[]>([]);const workflows=ref<any[]>([]);const workflowSummary=ref<any>({});const plugins=ref<any[]>([]);const nativePlugins=ref<any[]>([]);const calendar=ref<any>({items:[],weekly_items:[]});const exploration=ref<any>({health:{},items:[]});const skillRequest=ref("");const subscriptionDraft=ref({platform:"bilibili_live",subject_id:"",target_groups:""});const agendaDraft=ref({group_id:"",text_intent:"",priority:"0.5"});const calendarDraft=ref({kind:"daily",group_id:"",weekday:"1",time:"09:00",text:""});const actionBusy=ref("");
+function parseGroups(raw: string): number[] {
+  return raw.split(/[，,\s]+/).filter(Boolean).map((item) => Number(item.trim())).filter((n) => Number.isInteger(n) && n > 0);
+}
+const subscriptionValid = computed(() => {
+  const s = subscriptionDraft.value;
+  if (!s.subject_id.trim() || !s.target_groups.trim()) return false;
+  if (s.platform === "bilibili_live" && !/^\d+$/.test(s.subject_id.trim())) return false;
+  if (s.platform === "http_page" && !/^https?:\/\//i.test(s.subject_id.trim())) return false;
+  return parseGroups(s.target_groups).length > 0;
+});
+const agendaValid = computed(() => {
+  const a = agendaDraft.value;
+  const group = Number(a.group_id);
+  const priority = Number(a.priority);
+  return Number.isInteger(group) && group > 0 && a.text_intent.trim().length > 0
+    && Number.isFinite(priority) && priority >= 0 && priority <= 1;
+});
+const calendarValid = computed(() => {
+  const c = calendarDraft.value;
+  const group = Number(c.group_id);
+  return Number.isInteger(group) && group > 0 && /^([01]\d|2[0-3]):[0-5]\d$/.test(c.time) && c.text.trim().length > 0;
+});
+function subscriptionHint(): string {
+  const s = subscriptionDraft.value;
+  if (subscriptionValid.value) return "";
+  if (!s.subject_id.trim() && !s.target_groups.trim()) return "";
+  if (!s.subject_id.trim()) return s.platform === "bilibili_live" ? "请填写直播间号" : "请填写网页地址";
+  if (s.platform === "bilibili_live" && !/^\d+$/.test(s.subject_id.trim())) return "直播间号应为纯数字";
+  if (s.platform === "http_page" && !/^https?:\/\//i.test(s.subject_id.trim())) return "网页地址需以 http(s):// 开头";
+  if (!s.target_groups.trim()) return "请至少填写一个通知群号";
+  if (parseGroups(s.target_groups).length === 0) return "群号需为逗号分隔的正整数";
+  return "";
+}
+function agendaHint(): string {
+  const a = agendaDraft.value;
+  if (agendaValid.value) return "";
+  if (!a.group_id.trim() && !a.text_intent.trim() && !a.priority.trim()) return "";
+  const group = Number(a.group_id);
+  if (a.group_id.trim() && (!Number.isInteger(group) || group <= 0)) return "群号需为正整数";
+  if (a.text_intent.trim().length === 0) return "请填写她要完成的事";
+  const priority = Number(a.priority);
+  if (!Number.isFinite(priority) || priority < 0 || priority > 1) return "优先级需在 0 到 1 之间";
+  return "";
+}
+function calendarHint(): string {
+  const c = calendarDraft.value;
+  if (calendarValid.value) return "";
+  if (!c.group_id.trim() && !c.text.trim() && !c.time.trim()) return "";
+  const group = Number(c.group_id);
+  if (c.group_id.trim() && (!Number.isInteger(group) || group <= 0)) return "群号需为正整数";
+  if (c.text.trim().length === 0) return "请填写提醒内容";
+  if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(c.time)) return "时间需为合法北京时间 HH:MM";
+  return "";
+}
 const tabs: Array<{ id: AbilityTab; label: string; icon: any }> = [
   { id: "skills", label: "Skills", icon: Puzzle },
   { id: "exploration", label: "自主探索", icon: Compass },
@@ -21,19 +75,11 @@ function selectTab(tab: AbilityTab): void {
 async function load(){const [s,d,sub,a,w,c,p,n,e]=await Promise.all([bestEffort(api<any>("/api/skills"),{items:[]}),bestEffort(api<any>("/api/skill-drafts"),{items:[]}),bestEffort(api<any>("/api/subscriptions"),{items:[]}),bestEffort(api<any>("/api/agenda"),{items:[]}),bestEffort(api<any>("/api/workflows"),{items:[],summary:{}}),bestEffort(api<any>("/api/calendar"),{items:[],weekly_items:[]}),bestEffort(api<any>("/api/compat/plugins"),{items:[]}),bestEffort(api<any>("/api/native-plugins"),{items:[]}),bestEffort(api<any>("/api/exploration"),{health:{},items:[]})]);skills.value=s.items||[];drafts.value=d.items||[];subscriptions.value=sub.items||[];agenda.value=a.items||[];workflows.value=w.items||[];workflowSummary.value=w.summary||{};calendar.value=c;plugins.value=p.items||[];nativePlugins.value=n.items||[];exploration.value=e;}
 async function runExploration(){actionBusy.value="exploration-run";try{const result=await api<any>("/api/exploration/run",{method:"POST",body:"{}",headers:{"Content-Type":"application/json"}});emit("notify",result.item?"success":"info",result.item?"探索完成":"本轮没有新资料",result.item?`${result.item.source} · ${result.item.title}`:"可能已达到新颖性或来源限制");await load()}catch(e:any){emit("notify","error","探索失败",e.message)}finally{actionBusy.value=""}}
 async function createSubscription(){
+  if (!subscriptionValid.value) return;
   const draft = subscriptionDraft.value;
-  if (!draft.subject_id.trim() || !draft.target_groups.trim()) {
-    emit("notify", "error", "订阅信息不完整", "请填写目标和至少一个群号");
-    return;
-  }
-  if (draft.platform === "bilibili_live" && !/^\d+$/.test(draft.subject_id.trim())) {
-    emit("notify", "error", "直播间号无效", "B 站直播间号必须是纯数字");
-    return;
-  }
+  const groups = parseGroups(draft.target_groups);
   actionBusy.value = "subscription-create";
   try {
-    const groups = draft.target_groups.split(/[，,\s]+/).filter(Boolean).map(Number);
-    if (groups.some((group) => !Number.isInteger(group) || group <= 0)) throw new Error("群号必须是正整数");
     const dup = subscriptions.value.some((item) =>
       item.platform === draft.platform
       && String(item.subject_id) === draft.subject_id.trim()
@@ -64,10 +110,10 @@ function subscriptionStateLabel(item: any): string {
 }
 async function createSkillDraft(){const request=skillRequest.value.trim();if(!request){emit("notify","error","先描述希望她学会什么","例如：检查某个公开网站的服务状态并总结内容");return}actionBusy.value="skill-draft-create";try{const created=await api<any>("/api/skill-drafts",{method:"POST",body:JSON.stringify({request}),headers:{"Content-Type":"application/json"}});skillRequest.value="";emit("notify","success","学习草案已生成",created.errors?.length?`草案需要修正：${created.errors[0]}`:"请预览后再决定是否批准");await load()}catch(e:any){emit("notify","error","生成学习草案失败",e.message)}finally{actionBusy.value=""}}
 async function removeSubscription(item:any){if(!window.confirm("移除这个订阅？后续不会再发送通知。"))return;actionBusy.value=item.id;try{await api(`/api/subscriptions/${item.id}`,{method:"DELETE"});emit("notify","success","订阅已移除");await load()}catch(e:any){emit("notify","error","订阅移除失败",e.message)}finally{actionBusy.value=""}}
-async function createAgenda(){const draft=agendaDraft.value;if(!draft.group_id.trim()||!draft.text_intent.trim()){emit("notify","error","议程信息不完整","请填写群号和想做的事");return}actionBusy.value="agenda-create";try{const group=Number(draft.group_id);const priority=Number(draft.priority);if(!Number.isInteger(group)||group<=0||!Number.isFinite(priority)||priority<0||priority>1)throw new Error("群号必须为正整数，优先级需在 0 到 1 之间");await api("/api/agenda",{method:"POST",body:JSON.stringify({group_id:group,text_intent:draft.text_intent.trim(),priority}),headers:{"Content-Type":"application/json"}});agendaDraft.value={group_id:"",text_intent:"",priority:"0.5"};emit("notify","success","议程已加入","她会继续遵守冷却、日预算与安静时段");await load()}catch(e:any){emit("notify","error","议程创建失败",e.message)}finally{actionBusy.value=""}}
+async function createAgenda(){if(!agendaValid.value)return;const draft=agendaDraft.value;actionBusy.value="agenda-create";try{const group=Number(draft.group_id);const priority=Number(draft.priority);await api("/api/agenda",{method:"POST",body:JSON.stringify({group_id:group,text_intent:draft.text_intent.trim(),priority}),headers:{"Content-Type":"application/json"}});agendaDraft.value={group_id:"",text_intent:"",priority:"0.5"};emit("notify","success","议程已加入","她会继续遵守冷却、日预算与安静时段");await load()}catch(e:any){emit("notify","error","议程创建失败",e.message)}finally{actionBusy.value=""}}
 async function cancelAgenda(item:any){if(!window.confirm("取消这项主动议程？"))return;actionBusy.value=item.id;try{await api(`/api/agenda/${item.id}`,{method:"DELETE"});emit("notify","success","议程已取消");await load()}catch(e:any){emit("notify","error","议程取消失败",e.message)}finally{actionBusy.value=""}}
 async function cancelWorkflow(item:any){if(!window.confirm("取消这条自动化工作流？关联的待发送意图也会停止。"))return;actionBusy.value=`workflow:${item.id}`;try{await api(`/api/workflows/${item.id}/cancel`,{method:"POST",body:"{}",headers:{"Content-Type":"application/json"}});emit("notify","success","工作流已取消");await load()}catch(e:any){emit("notify","error","工作流取消失败",e.message)}finally{actionBusy.value=""}}
-async function createCalendar(){const draft=calendarDraft.value;if(!draft.group_id.trim()||!draft.time.trim()||!draft.text.trim()){emit("notify","error","日历信息不完整","请填写群号、北京时间和提醒内容");return}actionBusy.value="calendar-create";try{const group=Number(draft.group_id);if(!Number.isInteger(group)||group<=0)throw new Error("群号必须是正整数");const path=draft.kind==="weekly"?"/api/calendar/weekly":"/api/calendar/daily";const body=draft.kind==="weekly"?{group_id:group,weekday:Number(draft.weekday),time:draft.time,text:draft.text.trim()}:{group_id:group,time:draft.time,text:draft.text.trim()};await api(path,{method:"POST",body:JSON.stringify(body),headers:{"Content-Type":"application/json"}});calendarDraft.value={kind:"daily",group_id:"",weekday:"1",time:"09:00",text:""};emit("notify","success","日历计划已创建","到点会先进入议程，再遵守主动行为预算");await load()}catch(e:any){emit("notify","error","日历创建失败",e.message)}finally{actionBusy.value=""}}
+async function createCalendar(){if(!calendarValid.value)return;const draft=calendarDraft.value;actionBusy.value="calendar-create";try{const group=Number(draft.group_id);const path=draft.kind==="weekly"?"/api/calendar/weekly":"/api/calendar/daily";const body=draft.kind==="weekly"?{group_id:group,weekday:Number(draft.weekday),time:draft.time,text:draft.text.trim()}:{group_id:group,time:draft.time,text:draft.text.trim()};await api(path,{method:"POST",body:JSON.stringify(body),headers:{"Content-Type":"application/json"}});calendarDraft.value={kind:"daily",group_id:"",weekday:"1",time:"09:00",text:""};emit("notify","success","日历计划已创建","到点会先进入议程，再遵守主动行为预算");await load()}catch(e:any){emit("notify","error","日历创建失败",e.message)}finally{actionBusy.value=""}}
 async function cancelCalendar(item:any){if(!window.confirm("停用这条日历计划？"))return;actionBusy.value=item.id;try{await api(`/api/calendar/${item.id}`,{method:"DELETE"});emit("notify","success","日历计划已停用");await load()}catch(e:any){emit("notify","error","日历停用失败",e.message)}finally{actionBusy.value=""}}
 async function previewDraft(item:any){actionBusy.value=`preview:${item.id}`;try{const updated=await api<any>(`/api/skill-drafts/${item.id}/preview`,{method:"POST"});Object.assign(item,updated);emit("notify","success","网页预览完成",updated.preview_result?.content_available?`已提取 ${updated.preview_result.content_chars} 字正文`:'已获得状态结果')}catch(e:any){emit("notify","error","Skill 预览失败",e.message)}finally{actionBusy.value=""}}
 async function approveDraft(item:any){if(!window.confirm("批准并加载这个 Skill？它仍只能执行声明式只读能力。"))return;actionBusy.value=`approve:${item.id}`;try{const updated=await api<any>(`/api/skill-drafts/${item.id}/approve`,{method:"POST",body:JSON.stringify({})});Object.assign(item,updated);emit("notify","success","Skill 已批准并加载");await load()}catch(e:any){emit("notify","error","Skill 批准失败",e.message)}finally{actionBusy.value=""}}
@@ -103,16 +149,19 @@ onMounted(load);
     <section class="panel workflow-panel"><div class="panel-head"><div><strong>自动化交付流程</strong><span>触发、进入意图、QQ 出站确认三步独立记录；这里不展示聊天正文。</span></div></div><div v-if="workflows.length" class="simple-list"><article v-for="item in workflows.slice(0,12)" :key="item.id"><span><RadioTower :size="15"/></span><div><strong>{{ item.kind==='subscription'?'订阅通知':'日历提醒' }} · 群 {{ item.target_group }}</strong><small>{{ item.status==='completed'?'已确认送达':item.status==='awaiting_delivery'?'等待主体表达':item.status==='cancelled'?'已取消':'刚刚触发' }} · 尝试 {{ item.attempts||0 }} 次</small></div><button v-if="['triggered','awaiting_delivery'].includes(item.status)" class="icon-button" :disabled="actionBusy===`workflow:${item.id}`" aria-label="取消工作流" @click="cancelWorkflow(item)"><X :size="14"/></button></article></div><EmptyState v-else title="还没有自动化流程" detail="订阅状态变化和到点日历会在这里留下可追溯的交付记录。"/></section>
     <div class="automation-grid">
       <section class="panel"><div class="panel-head"><div><strong>网站与直播订阅</strong><span>B 站开播或网页状态发生变化时通知群</span></div></div>
-        <div class="automation-form"><select v-model="subscriptionDraft.platform" aria-label="订阅类型"><option value="bilibili_live">B站直播间</option><option value="http_page">公开网页状态</option></select><input v-model="subscriptionDraft.subject_id" :placeholder="subscriptionDraft.platform==='bilibili_live'?'直播间号':'https://example.com/status'" aria-label="订阅目标"/><input v-model="subscriptionDraft.target_groups" placeholder="通知群号，可填多个" aria-label="通知群号"/><button class="action-button subtle" :disabled="actionBusy==='subscription-create'" @click="createSubscription"><Plus :size="14"/>{{ actionBusy==='subscription-create'?'创建中…':'添加订阅' }}</button></div>
+        <div class="automation-form"><select v-model="subscriptionDraft.platform" aria-label="订阅类型"><option value="bilibili_live">B站直播间</option><option value="http_page">公开网页状态</option></select><input v-model="subscriptionDraft.subject_id" :type="subscriptionDraft.platform==='http_page'?'url':'text'" :placeholder="subscriptionDraft.platform==='bilibili_live'?'直播间号（纯数字）':'https://example.com/status'" aria-label="订阅目标"/><input v-model="subscriptionDraft.target_groups" inputmode="numeric" placeholder="通知群号，可填多个，逗号分隔" aria-label="通知群号"/><button class="action-button subtle" :disabled="actionBusy==='subscription-create'||!subscriptionValid" @click="createSubscription"><Plus :size="14"/>{{ actionBusy==='subscription-create'?'创建中…':'添加订阅' }}</button></div>
+        <p v-if="subscriptionHint() && activeAbilityTab==='automation'" class="form-hint">{{ subscriptionHint() }}</p>
         <div v-if="subscriptions.length" class="simple-list"><article v-for="item in subscriptions" :key="item.id"><span><RadioTower :size="15"/></span><div><strong>{{ item.platform==='bilibili_live'?'B站直播':'网页状态' }} · {{ item.subject_id }}</strong><small>{{ subscriptionStateLabel(item) }} · {{ item.enabled===false?'已暂停':'轮询中' }} · 群 {{ item.target_groups?.join('、')||'未指定' }} · {{ item.updated_at ? timeAgo(item.updated_at) : '尚未探测' }}</small></div><button class="icon-button" :disabled="actionBusy===item.id" aria-label="移除订阅" @click="removeSubscription(item)"><Trash2 :size="14"/></button></article></div><EmptyState v-else title="没有订阅" detail="可以在这里添加直播间或公开网页监控。"/>
       </section>
       <section class="panel"><div class="panel-head"><div><strong>待执行议程</strong><span>只在时间、群环境与权限都合适时行动</span></div></div>
-        <div class="automation-form agenda-form"><input v-model="agendaDraft.group_id" inputmode="numeric" placeholder="群号" aria-label="议程群号"/><input v-model="agendaDraft.text_intent" placeholder="她想完成的事" aria-label="议程内容"/><input v-model="agendaDraft.priority" type="number" min="0" max="1" step="0.1" aria-label="议程优先级"/><button class="action-button subtle" :disabled="actionBusy==='agenda-create'" @click="createAgenda"><Plus :size="14"/>{{ actionBusy==='agenda-create'?'加入中…':'加入议程' }}</button></div>
+        <div class="automation-form agenda-form"><input v-model="agendaDraft.group_id" inputmode="numeric" placeholder="群号" aria-label="议程群号"/><input v-model="agendaDraft.text_intent" placeholder="她想完成的事" aria-label="议程内容"/><input v-model="agendaDraft.priority" type="number" min="0" max="1" step="0.1" aria-label="议程优先级（0–1）"/><button class="action-button subtle" :disabled="actionBusy==='agenda-create'||!agendaValid" @click="createAgenda"><Plus :size="14"/>{{ actionBusy==='agenda-create'?'加入中…':'加入议程' }}</button></div>
+        <p v-if="agendaHint() && activeAbilityTab==='automation'" class="form-hint">{{ agendaHint() }}</p>
         <div v-if="agenda.length" class="simple-list"><article v-for="item in agenda" :key="item.id"><span><CalendarClock :size="15"/></span><div><strong>{{ item.text_intent }}</strong><small>群 {{ item.group_id }} · 优先级 {{ item.priority }}</small></div><button class="icon-button" :disabled="actionBusy===item.id" aria-label="取消议程" @click="cancelAgenda(item)"><X :size="14"/></button></article></div><EmptyState v-else title="没有待执行议程" detail="她目前没有需要主动完成的群内行动。"/>
       </section>
     </div>
     <section class="panel calendar-panel"><div class="panel-head"><div><strong>北京时间日历</strong><span>每日或每周计划只会转成议程，不直接绕过主动行为护栏。</span></div></div>
-      <div class="automation-form calendar-form"><select v-model="calendarDraft.kind" aria-label="日历周期"><option value="daily">每天</option><option value="weekly">每周</option></select><input v-model="calendarDraft.group_id" inputmode="numeric" placeholder="群号" aria-label="日历群号"/><select v-if="calendarDraft.kind==='weekly'" v-model="calendarDraft.weekday" aria-label="星期"><option v-for="day in 7" :key="day" :value="String(day)">周{{ ['一','二','三','四','五','六','日'][day-1] }}</option></select><input v-model="calendarDraft.time" type="time" aria-label="北京时间"/><input v-model="calendarDraft.text" placeholder="提醒内容" aria-label="提醒内容"/><button class="action-button subtle" :disabled="actionBusy==='calendar-create'" @click="createCalendar"><Plus :size="14"/>{{ actionBusy==='calendar-create'?'创建中…':'创建计划' }}</button></div>
+      <div class="automation-form calendar-form"><select v-model="calendarDraft.kind" aria-label="日历周期"><option value="daily">每天</option><option value="weekly">每周</option></select><input v-model="calendarDraft.group_id" inputmode="numeric" placeholder="群号" aria-label="日历群号"/><select v-if="calendarDraft.kind==='weekly'" v-model="calendarDraft.weekday" aria-label="星期"><option v-for="day in 7" :key="day" :value="String(day)">周{{ ['一','二','三','四','五','六','日'][day-1] }}</option></select><input v-model="calendarDraft.time" type="time" aria-label="北京时间"/><input v-model="calendarDraft.text" placeholder="提醒内容" aria-label="提醒内容"/><button class="action-button subtle" :disabled="actionBusy==='calendar-create'||!calendarValid" @click="createCalendar"><Plus :size="14"/>{{ actionBusy==='calendar-create'?'创建中…':'创建计划' }}</button></div>
+        <p v-if="calendarHint() && activeAbilityTab==='automation'" class="form-hint">{{ calendarHint() }}</p>
       <div v-if="calendar.items?.length||calendar.weekly_items?.length" class="simple-list"><article v-for="item in [...(calendar.items||[]),...(calendar.weekly_items||[])]" :key="item.id"><span><CalendarClock :size="15"/></span><div><strong>{{ item.text }}</strong><small>群 {{ item.group_id }} · {{ item.weekday ? `每周${['一','二','三','四','五','六','日'][item.weekday-1]}` : '每天' }} {{ String(item.hour).padStart(2,'0') }}:{{ String(item.minute).padStart(2,'0') }} · {{ item.enabled?'启用中':'已停用' }}</small></div><button class="icon-button" :disabled="actionBusy===item.id||!item.enabled" aria-label="停用日历计划" @click="cancelCalendar(item)"><X :size="14"/></button></article></div><EmptyState v-else title="没有日历计划" detail="可以在这里安排固定的北京时间提醒。"/>
     </section>
   </template>
@@ -125,4 +174,5 @@ onMounted(load);
 .workflow-panel{margin-top:14px}
 .skill-request{margin-top:14px;padding:17px;background:linear-gradient(115deg,rgba(173,146,255,.10),rgba(16,13,22,.92))}.skill-request>div{display:grid;grid-template-columns:30px 1fr;gap:10px;align-items:start}.skill-request>div>span{color:var(--purple)}.skill-request strong{font-size:11px}.skill-request p{margin:4px 0 0;color:var(--muted);font-size:var(--fs-xs);line-height:1.5}.skill-request textarea{width:100%;min-height:74px;margin-top:12px;padding:10px;border:1px solid var(--line-strong);background:var(--surface-input-solid);color:var(--ink);resize:vertical;font-size:var(--fs-sm)}.skill-request footer{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-top:9px}.skill-request footer small{color:var(--muted);font-size:var(--fs-xs)}@media(max-width:700px){.skill-request footer{align-items:stretch;flex-direction:column}}
 .exploration-intro{min-height:190px;padding:30px;display:flex;justify-content:space-between;align-items:center;gap:28px;background:linear-gradient(120deg,rgba(123,219,223,.11),rgba(24,20,34,.92))}.exploration-intro>div{display:flex;align-items:center;gap:18px}.exploration-intro>div>span{width:54px;height:54px;display:grid;place-items:center;background:rgba(123,219,223,.13);color:var(--cyan)}.exploration-intro small,.exploration-intro strong{display:block}.exploration-intro small{color:var(--cyan);font:740 var(--fs-xs) ui-monospace,monospace;letter-spacing:1px}.exploration-intro strong{margin-top:6px;font:720 18px Georgia,"Songti SC",serif}.exploration-intro p{max-width:650px;margin:6px 0 0;color:var(--muted);font-size:var(--fs-sm);line-height:1.55}.exploration-intro dl{display:flex;margin:0}.exploration-intro dl div{min-width:92px;padding:13px;border-left:1px solid var(--line)}.exploration-intro dt{color:var(--muted);font-size:var(--fs-xs)}.exploration-intro dd{margin:6px 0 0;font:740 20px Georgia,serif;color:var(--cyan)}.exploration-control{margin-top:14px;padding:17px}.exploration-control>div:first-child{display:flex;align-items:center;justify-content:space-between;gap:14px}.exploration-control strong{font-size:11px}.exploration-control p{margin:5px 0 0;color:var(--muted);font-size:var(--fs-xs)}.source-health{display:flex;flex-wrap:wrap;gap:7px;margin-top:13px}.source-health span{padding:5px 7px;border:1px solid var(--line);color:var(--muted);font-size:var(--fs-xs)}.source-health i{display:inline-block;width:6px;height:6px;margin-right:5px;border-radius:50%;background:var(--lime)}.source-health span.bad i{background:var(--red)}.exploration-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:10px}.exploration-grid article{min-height:160px;padding:17px;display:grid;grid-template-columns:36px 1fr auto;gap:11px}.exploration-grid article>span{width:34px;height:34px;display:grid;place-items:center;background:rgba(123,219,223,.11);color:var(--cyan)}.exploration-grid small,.exploration-grid strong{display:block}.exploration-grid small{color:var(--muted);font-size:var(--fs-xs)}.exploration-grid strong{margin-top:5px;font-size:11px;line-height:1.4}.exploration-grid p{margin:7px 0;color:var(--ink-soft);font-size:var(--fs-sm);line-height:1.55}.exploration-grid a{display:inline-flex;align-items:center;gap:4px;color:var(--cyan);font-size:var(--fs-xs);text-decoration:none}.exploration-grid em{color:var(--lime);font-size:var(--fs-xs);font-style:normal}@media(max-width:700px){.exploration-intro{display:block;padding:22px}.exploration-intro dl{margin-top:22px}.exploration-control>div:first-child{align-items:stretch;flex-direction:column}.exploration-grid{grid-template-columns:1fr}.exploration-grid article{grid-template-columns:36px 1fr}}
+.automation-form .form-hint{margin:8px 0 0;color:var(--amber,var(--muted));font-size:var(--fs-xs);line-height:1.5}
 </style>
