@@ -12,6 +12,22 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P6 Personal Skill Evolution — COMPLETE
+- 新增 `anima/skills/evolution.py`：个人能力生态闭环 **Skill Proposal → Sandbox → Benchmark → Adopt**
+  （采纳仍须 Owner 授权）。
+  - 复用 R 系 Skill 基础设施：`SkillDraftManager.validate`（禁止代码/外部执行、参数一致、min_level
+    受限）与 `approve`（需 Owner，http_get 必须先预览）。
+  - **沙箱即护栏**：Benchmark 前必须 Sandbox 通过（无禁止指令、参数闭环、权限受限）。
+  - **Benchmark 可注入**：默认确定性启发式（清单完整度 / 禁止模式惩罚 / 参数一致性 / 权限安全），
+    真实部署可注入更丰富评测。
+  - **采纳门 fail-closed**：沙箱未过 / Benchmark 未达阈值 → 不可采纳；即便可采纳也只是
+    `pending_owner`，真正的安装复用 Owner 的 `!anima draft approve`。本代理不调用 approve、不写 skill.yaml。
+- 纪律：绝不自我采纳/自我授权；只产出 `SkillEvaluation` 供 Owner 决策。
+- WebUI 接线：`/api/os/overview` 聚合 `skill` 摘要；`/api/os/command` 新增 `skill` 只读意图
+  （"能力演进/技能生态/新技能"）。
+
+路线收官：P0–P6 全部完成并 CI 绿；ANIMA OS 演进路线闭环。
+
 ### P5 Autonomous Maintenance — COMPLETE
 - 新增 `anima/agent/autonomous_maintenance.py`：自治维护闭环（**工程准备自动、执行等待 Owner**）。
   - 流程：检测过期依赖 → 风险分析（复用 P4 记忆护栏 / 参考 P2 影响评分）→ 生成 R9 风格

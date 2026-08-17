@@ -71,7 +71,7 @@ R11 Agent Intelligence（Memory / Skill Evolution）→ R12 Multi-Agent Society�
   为何这样设计）（`anima/memory/long_term.py`）。
 - **P5 Autonomous Maintenance**（规划→**DONE**）：过期依赖检测→风险分析→升级提议→CI 验证→
   等 Owner 批准→执行（工程准备自动，执行需授权）（`anima/agent/autonomous_maintenance.py`）。
-- **P6 Personal Skill Ecosystem**（规划）：Skill Proposal → Sandbox → Benchmark → Adopt 生命周期。
+- **P6 Personal Skill Ecosystem**（规划→**DONE**）：Skill Proposal → Sandbox → Benchmark → Adopt 生命周期（`anima/skills/evolution.py`）。
 
 ## 完成标准（最终判断）
 

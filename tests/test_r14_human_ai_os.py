@@ -172,3 +172,16 @@ def test_parse_maintenance_readonly():
     c = s.parse_command("做一次依赖自检，看看有没有过期依赖")
     assert c.intent == "maintenance"
     assert c.needs_confirmation is False
+
+
+def test_parse_skill_readonly():
+    s = _surface()
+    c = s.parse_command("个人能力生态里，新技能怎么演进评估？")
+    assert c.intent == "skill"
+    assert c.needs_confirmation is False
+
+
+def test_skill_evolution_no_request():
+    s = _surface()
+    out = s.skill_evolution()
+    assert out.get("available") is False

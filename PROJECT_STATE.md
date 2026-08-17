@@ -139,6 +139,22 @@
   降错优先；绝不自我安装。WebUI `/api/os/overview` 聚合 `maintenance`；`/api/os/command` 新增
   `maintenance` 只读意图。
 
+### P6 Personal Skill Evolution（已完成）
+
+- `anima/skills/evolution.py`：个人能力生态闭环（提案→沙箱→Benchmark→采纳判定，采纳仍须 Owner）。
+  复用 SkillDraftManager 静态护栏与 Owner 批准路径；默认确定性 Benchmark 可注入；绝不自我采纳。
+  WebUI `/api/os/overview` 聚合 `skill`；`/api/os/command` 新增 `skill` 只读意图。
+
+**路线收官**：P0–P6 全部完成并 CI 绿；ANIMA OS 以 Owner 长期个人助理为定位的演进闭环成形
+（Runtime 可靠 / 真实环境观察 / 演化影响评分 / 多 Agent 协作 / 长期记忆 / 自治维护 / 个人能力生态）。
+
+
+
+- `anima/agent/autonomous_maintenance.py`：自治维护闭环（检测过期依赖→风险分析→生成 R9 待审
+  提案→可选 CI 预检→等待 Owner）。复用 P4 记忆护栏跳过有意为之的依赖、CORE_PROTECTED 保护、
+  降错优先；绝不自我安装。WebUI `/api/os/overview` 聚合 `maintenance`；`/api/os/command` 新增
+  `maintenance` 只读意图。
+
 
 
 - `anima/memory/long_term.py`：三层长期记忆（事件/知识/行为模式）+ why-described 设计原因

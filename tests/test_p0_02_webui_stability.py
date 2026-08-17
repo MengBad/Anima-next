@@ -138,9 +138,23 @@ async def test_os_command_maintenance_readonly(client):
 
 
 @pytest.mark.asyncio
+async def test_os_command_skill_readonly(client):
+    session, base, headers = client
+    async with session.post(f"{base}/api/os/command", headers=headers,
+                            json={"command": "个人能力生态里，新技能怎么演进评估？"}) as r:
+        assert r.status == 200
+        body = await r.json()
+        cmd = body["command"]
+        assert cmd["intent"] == "skill"
+        assert cmd["needs_confirmation"] is False
+        assert "skill" in body
+
+
+@pytest.mark.asyncio
 async def test_os_overview_includes_memory(client):
     session, base, headers = client
     async with session.get(f"{base}/api/os/overview", headers=headers) as r:
         assert r.status == 200
         body = await r.json()
         assert "memory" in body
+        assert "skill" in body

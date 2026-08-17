@@ -2189,6 +2189,12 @@ class WebUIServer:
             maintenance = surf.autonomous_maintenance()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             maintenance = {}
+        # P6：个人能力演进摘要（只读，能力生态接口可用性）
+        skill = {}
+        try:
+            skill = surf.skill_evolution()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
+            skill = {}
         if self.core.audit:
             self.core.audit.emit("webui_os_overview", reviewer=owner_id)
         return web.json_response({
@@ -2198,6 +2204,7 @@ class WebUIServer:
             "impact": impact,
             "memory": memory,
             "maintenance": maintenance,
+            "skill": skill,
         })
 
     async def os_command(self, request: web.Request) -> web.Response:
@@ -2272,6 +2279,13 @@ class WebUIServer:
                 report = {"available": False, "reason": "autonomous_maintenance 异常"}
             cmd.preview = cmd.preview or "自治维护扫描结果（提案待 Owner 批准）"
             payload = {"command": cmd.to_dict(), "maintenance": report}
+        elif cmd.intent == "skill":
+            try:
+                report = surf.skill_evolution(request=text or "")
+            except Exception:  # noqa: BLE001
+                report = {"available": False, "reason": "skill_evolution 异常"}
+            cmd.preview = cmd.preview or "个人能力演进评估（采纳仍须 Owner）"
+            payload = {"command": cmd.to_dict(), "skill": report}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()

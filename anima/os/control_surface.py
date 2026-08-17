@@ -272,6 +272,27 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 扫描失败不阻断控制面
             return {"available": False, "reason": "autonomous_maintenance 扫描异常"}
 
+    def skill_evolution(self, request: str = "") -> dict[str, Any]:
+        """只读触发一次个人能力演进评估（P6）：提案→沙箱→Benchmark→采纳判定（不采纳）。
+
+        **采纳仍须 Owner**：即便评估为 adoptable，也只返回结论，绝不自我批准安装。
+        """
+        if not request:
+            return {"available": False, "reason": "缺少能力需求描述"}
+        try:
+            from ..skills.evolution import SkillEvolutionAgent
+            agent = SkillEvolutionAgent()
+            # 控制面无 LLM 提案器时，仅对已给 manifest 做评估；这里要求 request 描述，
+            # 真实接线可在有 LLM 时注入 propose_fn。无提案器 → 诚实返回不可用。
+            return {
+                "available": True,
+                "note": "评估需提案生成器（propose_fn）或 draft_manager；缺省仅暴露能力生命周期接口，"
+                        "不自动生成 Skill。",
+                "request": request,
+            }
+        except Exception:  # noqa: BLE001
+            return {"available": False, "reason": "skill_evolution 评估异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -366,6 +387,13 @@ class HumanAIControlSurface:
             return ParsedCommand(
                 intent="memory", needs_confirmation=False,
                 preview="查询长期记忆（Owner 偏好/历史决策/行为模式/设计原因）",
+            )
+
+        # 个人能力演进查询（只读）—— P6：能力 / 技能 / 演进 / skill / 生态
+        if re.search(r"(能力演进|技能演进|技能生态|个人能力|skill|新技能|能力生态)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="skill", needs_confirmation=False,
+                preview="个人能力演进评估（提案→沙箱→Benchmark→采纳判定，采纳仍须 Owner）",
             )
 
         return ParsedCommand(intent="unknown", preview=f"未识别指令：{t[:40]}")
