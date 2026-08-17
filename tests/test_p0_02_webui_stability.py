@@ -109,3 +109,25 @@ async def test_os_command_society_readonly(client):
         assert cmd["needs_confirmation"] is False
         assert "society" in body
         assert body["society"]["verdict"]["judge_id"] == "judge"
+
+
+@pytest.mark.asyncio
+async def test_os_command_memory_readonly(client):
+    session, base, headers = client
+    async with session.post(f"{base}/api/os/command", headers=headers,
+                            json={"command": "你还记得我的习惯吗？"}) as r:
+        assert r.status == 200
+        body = await r.json()
+        cmd = body["command"]
+        assert cmd["intent"] == "memory"
+        assert cmd["needs_confirmation"] is False
+        assert "memory" in body
+
+
+@pytest.mark.asyncio
+async def test_os_overview_includes_memory(client):
+    session, base, headers = client
+    async with session.get(f"{base}/api/os/overview", headers=headers) as r:
+        assert r.status == 200
+        body = await r.json()
+        assert "memory" in body

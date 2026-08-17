@@ -152,3 +152,16 @@ def test_society_debate_returns_verdict():
     assert "verdict" in out
     assert out["verdict"]["judge_id"] == "judge"
     assert out["verdict"]["decision"] in ("support", "reject", "inconclusive")
+
+
+def test_parse_memory_readonly():
+    s = _surface()
+    c = s.parse_command("你还记得我的习惯吗？为什么这么设计？")
+    assert c.intent == "memory"
+    assert c.needs_confirmation is False
+
+
+def test_long_term_memory_no_core():
+    s = _surface()
+    out = s.long_term_memory(query="中文")
+    assert out.get("available") is False

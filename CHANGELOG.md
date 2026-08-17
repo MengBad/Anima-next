@@ -12,6 +12,21 @@
 - 安全纪律不变：Fail Closed · No Hidden Authority · Audit Everything · Identity Cannot Be
   Forged · Production Is Sacred；Self improvement ≠ Self authorization。
 
+### P4 Long-Term Memory — COMPLETE
+- 新增 `anima/memory/long_term.py`：三层长期记忆（事件 → 知识 → 行为模式），对应 Owner 想要的
+  「经验积累」。
+  - **事件层**：原始信号（Owner 偏好/指令、决策、报错、设计原因），追加落盘 `events.jsonl`。
+  - **知识层**：`extract_knowledge` 确定性抽取 Owner 偏好/历史决策/设计原因 → `knowledge.jsonl`。
+  - **行为模式层**：`learn_patterns` 按标签组合聚类 + 频次阈值归纳反复行为 → `patterns.jsonl`。
+  - **why-described 专项**：`record_why(key, reason)` 记录「某模块/决策为何这样设计」，
+    直接服务 P5 自治维护（避免重构误删有意为之的护栏）。
+  - `query(text)` 跨知识+模式关键词检索（无向量依赖，零外部调用）。
+- 纪律：只读抽取 + 追加落盘、坏行隔离；无 LLM 依赖、可单测；数据缺失 → 诚实返回空；
+  记忆层只存不执行，不改变权限/运行态。
+- WebUI 接线：`/api/os/overview` 聚合 `memory` 摘要；`/api/os/command` 新增 `memory` 只读
+  意图（"记忆/记得/习惯/经验/为什么"）。
+- 测试：`tests/test_p4_long_term_memory.py`（9）+ R14 `memory` 意图（2）+ WebUI（2）。
+
 ### P3 Real Agent Society — COMPLETE
 - 新增 `anima/agent/agent_society.py`：在 R12 辩论框架之上把「桩 argue_fn」升级为
   **角色专精多视角发言**——Architect/Security/Research/Coding/Critic/Judge 六类 Agent

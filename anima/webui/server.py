@@ -2177,6 +2177,12 @@ class WebUIServer:
             impact = surf.evolution_impact()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             impact = {}
+        # P4：长期记忆摘要（只读，事件/知识/行为模式/设计原因计数）
+        memory = {}
+        try:
+            memory = surf.long_term_memory()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
+            memory = {}
         if self.core.audit:
             self.core.audit.emit("webui_os_overview", reviewer=owner_id)
         return web.json_response({
@@ -2184,6 +2190,7 @@ class WebUIServer:
             "stability": stability,
             "environment": environment,
             "impact": impact,
+            "memory": memory,
         })
 
     async def os_command(self, request: web.Request) -> web.Response:
@@ -2244,6 +2251,13 @@ class WebUIServer:
                 report = {"available": False, "reason": "society 辩论异常"}
             cmd.preview = cmd.preview or "Agent 社会多视角辩论结果"
             payload = {"command": cmd.to_dict(), "society": report}
+        elif cmd.intent == "memory":
+            try:
+                report = surf.long_term_memory(query=text or None)
+            except Exception:  # noqa: BLE001
+                report = {"available": False, "reason": "long_term_memory 异常"}
+            cmd.preview = cmd.preview or "长期记忆查询结果"
+            payload = {"command": cmd.to_dict(), "memory": report}
         elif cmd.intent == "list_proposals":
             from anima.agent.self_evolution import list_evolution_proposals
             items = list_evolution_proposals()

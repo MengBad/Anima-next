@@ -126,6 +126,18 @@
   编码/批判/裁判）+ 多视角加权裁决（降错优先）+ `run_society_debate` 便捷端到端；结论建议性、
   不授权执行。WebUI `/api/os/command` 新增 `society` 只读意图。
 
+### P4 Long-Term Memory（已完成）
+
+- `anima/memory/long_term.py`：三层长期记忆（事件/知识/行为模式）+ why-described 设计原因
+  专项 + 关键词查询。WebUI `/api/os/overview` 聚合 `memory`；`/api/os/command` 新增 `memory`
+  只读意图（"你还记得我的习惯吗？为什么这么设计？"）。
+
+
+
+- `anima/agent/agent_society.py`：真实多 Agent 协作——角色专精多视角辩论（架构/安全/研究/
+  编码/批判/裁判）+ 多视角加权裁决（降错优先）+ `run_society_debate` 便捷端到端；结论建议性、
+  不授权执行。WebUI `/api/os/command` 新增 `society` 只读意图。
+
 
 
 - `anima/evolution/impact.py`：演化影响评分——聚合历史 Before/After 证据语料为语料级评分 +

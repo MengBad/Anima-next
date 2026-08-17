@@ -201,6 +201,35 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 辩论失败不阻断控制面
             return {"available": False, "reason": "society 辩论异常"}
 
+    def long_term_memory(self, query: str | None = None) -> dict[str, Any]:
+        """只读查询长期记忆（P4）：事件/知识/行为模式三层 + 设计原因。
+
+        - 给定 query → 跨知识+模式关键词检索。
+        - query 为空 → 返回摘要（各层计数 + 最近设计原因）。
+        fail-closed：无数据 → has_data=False，诚实。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+        root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+        try:
+            from ..memory.long_term import LongTermMemory
+            mem = LongTermMemory(root)
+            if query:
+                return mem.query(query)
+            know = mem.knowledge()
+            pats = mem.patterns()
+            whys = mem.why_designed()
+            return {
+                "has_data": bool(know or pats),
+                "knowledge_count": len(know),
+                "pattern_count": len(pats),
+                "why_designed_count": len(whys),
+                "recent_why": [w.statement for w in whys[-3:]],
+            }
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
+            return {"available": False, "reason": "long_term_memory 聚合异常"}
+
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
     # ------------------------------------------------------------------
@@ -280,6 +309,13 @@ class HumanAIControlSurface:
             return ParsedCommand(
                 intent="society", needs_confirmation=False,
                 preview="触发默认 Agent 社会（架构/安全/研究/编码/批判/裁判）多视角辩论，返回建议性裁决",
+            )
+
+        # 长期记忆查询（只读）—— P4：记忆 / 记得 / 习惯 / 经验 / 为什么 / memory
+        if re.search(r"(记忆|记得|习惯|经验|为什么|为何|memory|你还记得)", t, re.IGNORECASE):
+            return ParsedCommand(
+                intent="memory", needs_confirmation=False,
+                preview="查询长期记忆（Owner 偏好/历史决策/行为模式/设计原因）",
             )
 
         return ParsedCommand(intent="unknown", preview=f"未识别指令：{t[:40]}")
