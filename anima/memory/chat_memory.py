@@ -249,9 +249,12 @@ class ChatMemory:
                         max_n = max(max_n, int(suffix))
             od[f"round_{max_n + 1}"] = []
 
-        # LRU
+        # LRU：轮数超上限时淘汰最旧轮。
+        # 兼容 dict / OrderedDict：Python 3.7+ 的普通 dict 也保持插入序，首键即最旧轮。
+        # popitem(last=False) 仅 OrderedDict 支持，普通 dict 传关键字会抛
+        # TypeError，统一改用「首键删除」等价淘汰最旧轮。
         while len(od) > self.max_rounds:
-            od.popitem(last=False)
+            od.pop(next(iter(od)))
 
         # 仅由入站群消息观察路径通知心跳，避免同一条 @ 消息在短期档案写入时重复计数。
         if chat_type == "group" and notify_group and role == "user" and self._on_group_message:
