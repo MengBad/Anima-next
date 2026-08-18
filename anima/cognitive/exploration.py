@@ -350,8 +350,11 @@ class ExplorationManager:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
         headers.update(extra_headers or {})
+        # 可选出站代理：VPS 数据中心 IP 会被维基等公开源 403 封禁，配置
+        # exploration.proxy（如 http://127.0.0.1:10809）可绕过；留空则直连。
+        proxy = str(getattr(getattr(self, "config", None), "proxy", "") or "").strip()
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url, allow_redirects=True, max_redirects=5) as response:
+            async with session.get(url, allow_redirects=True, max_redirects=5, proxy=proxy or None) as response:
                 if response.status >= 400:
                     body = await response.text()
                     raise RuntimeError(

@@ -518,6 +518,9 @@ class ExplorationConfig(BaseModel):
     daily_share_limit: int = Field(default=1, ge=0, le=5)
     share_min_score: float = Field(default=0.75, ge=0.0, le=1.0)
     share_groups: list[int] = Field(default_factory=list)
+    # 出站 HTTP 代理（可选）：VPS 数据中心 IP 会被维基等公开源 403 封禁，
+    # 配置本地代理（如 http://127.0.0.1:10809）可绕过。留空则直连（保持原行为）。
+    proxy: str = ""
 
 
 class ContradictionConfig(BaseModel):
