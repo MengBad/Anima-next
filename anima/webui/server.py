@@ -1544,11 +1544,18 @@ class WebUIServer:
                                   "last_error": "health_read_failed", "notes": 0}
         exploration_enabled = bool(exploration_health.get("enabled"))
         exploration_error = str(exploration_health.get("last_error") or "")
+        # “no_novel_result” 是无新内容可探索的正常结果，不是故障；只有真正的
+        # 异常（http_xxx / JSONDecodeError / ParseError 等）才标记 degraded。
+        _BENIGN_ERRORS = {"", "no_novel_result"}
+        exploration_degraded = bool(
+            exploration_enabled and exploration_error
+            and exploration_error not in _BENIGN_ERRORS
+        )
         modules.append(module(
             "external_exploration", "自主公开信息探索",
-            "degraded" if exploration_enabled and exploration_error else
+            "degraded" if exploration_degraded else
             ("running" if exploration_enabled and running else "disabled"),
-            (f"最近探索失败：{exploration_error}" if exploration_error else
+            (f"最近探索失败：{exploration_error}" if exploration_degraded else
              f"已积累 {int(exploration_health.get('notes', 0) or 0)} 条来源化知识笔记")
             if exploration_enabled else "自主探索已关闭",
             exploration_health,

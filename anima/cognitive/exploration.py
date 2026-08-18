@@ -53,6 +53,16 @@ def _search_terms(value: str) -> set[str]:
     return {term for term in terms if term}
 
 
+def _parse_json(value: bytes) -> dict:
+    """容错解析公开源 JSON：剥离非法控制符（NUL/控制字符常见于 B 站 desc 字段）。"""
+    text = value.decode("utf-8", errors="replace")
+    try:
+        return json.loads(text)
+    except (ValueError, json.JSONDecodeError):
+        cleaned = re.sub(r"[\x00-\x1f\x7f]", "", text)
+        return json.loads(cleaned)
+
+
 def _safe_public_url(value: str, *, feed: bool = False) -> str:
     url = str(value or "").strip()
     parsed = urlparse(url)
@@ -329,12 +339,28 @@ class ExplorationManager:
         extra_headers: dict[str, str] | None = None,
     ) -> bytes:
         timeout = aiohttp.ClientTimeout(total=12)
-        headers = {"User-Agent": "Anima/0.3 (+read-only exploration)"}
+        # 公开源（B 站 / 维基 / BBC）对裸 bot UA 会返回 403/412/空体，
+        # 且 BBC RSS 走 301 重定向；用浏览器 UA + 跟随重定向 + 读取错误体以便诊断。
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+            "Accept": "application/json,text/xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        }
         headers.update(extra_headers or {})
         async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
-            async with session.get(url, allow_redirects=False) as response:
-                response.raise_for_status()
-                content = await response.content.read(max_bytes + 1)
+            async with session.get(url, allow_redirects=True, max_redirects=5) as response:
+                if response.status >= 400:
+                    body = await response.text()
+                    raise RuntimeError(
+                        f"http_{response.status}: {body[:160]!r}"
+                    )
+                # 注意：aiohttp 的 content.read(N) 在分块传输下可能在 N 附近提前返回，
+                # 导致 JSON 被截断而解析失败（B站热门接口常见）。改用 read() 读全量，
+                # 再于超阈值时显式拒绝，既保证完整又保留体积护栏。
+                content = await response.read()
                 if len(content) > max_bytes:
                     raise RuntimeError("exploration_payload_too_large")
                 return content
@@ -342,7 +368,7 @@ class ExplorationManager:
     async def _fetch_bilibili_popular(self) -> list[ExplorationSourceItem]:
         started = time.time()
         try:
-            payload = json.loads((await self._request_bytes(_BILIBILI_POPULAR)).decode("utf-8", errors="replace"))
+            payload = _parse_json(await self._request_bytes(_BILIBILI_POPULAR))
             if int(payload.get("code", -1)) != 0:
                 raise RuntimeError("bilibili_api_error")
             result = []
@@ -379,14 +405,17 @@ class ExplorationManager:
             raw = await self._request_bytes(
                 url, max_bytes=900 * 1024,
                 extra_headers={
-                    "User-Agent": "Mozilla/5.0 (compatible; AnimaReadOnly/0.3)",
                     "Referer": "https://search.bilibili.com/",
                     "Accept": "application/json,text/plain,*/*",
                 },
             )
-            payload = json.loads(raw.decode("utf-8", errors="replace"))
+            payload = _parse_json(raw)
+            # B 站搜索接口现已要求 WBI 签名，未签名请求会返回 code=-412 而非数据；
+            # 这属于来源不可用，记录后返回空列表，不阻断其他来源（热点榜单仍可用）。
             if int(payload.get("code", -1)) != 0:
-                raise RuntimeError("bilibili_search_api_error")
+                logger.debug("B站搜索接口不可用（code=%s），跳过该来源", payload.get("code"))
+                self._source_failed("bilibili_search", RuntimeError("bilibili_search_api_error"))
+                return []
             result = []
             for row in (payload.get("data") or {}).get("result", [])[:20]:
                 if str(row.get("type") or "") != "video":
@@ -424,9 +453,7 @@ class ExplorationManager:
         })
         started = time.time()
         try:
-            payload = json.loads((await self._request_bytes(url, max_bytes=384 * 1024)).decode(
-                "utf-8", errors="replace",
-            ))
+            payload = _parse_json(await self._request_bytes(url, max_bytes=384 * 1024))
             result = []
             for row in (payload.get("query") or {}).get("search", [])[:8]:
                 title = _clean_text(row.get("title"), 160)
