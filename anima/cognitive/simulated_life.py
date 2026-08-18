@@ -255,8 +255,9 @@ class SimulatedLife:
                 learning.add_note(f"[晨间] {reflection}")
                 world_model.add(reflection, category="belief", weight=0.45, source="morning_routine")
                 logger.info("晨间反思已保存（text_len=%d）", len(reflection))
-                # M3: 20% 概率向最近活跃的群发一句早安
-                if random.random() < 0.2 and hasattr(self.core, "propose_agenda"):
+                # M3: 20% 概率向最近活跃的群发一句早安（config.morning_greeting_enabled 关闭时不发）
+                _mg = getattr(getattr(self.core.config, "autonomy", None), "morning_greeting_enabled", True)
+                if _mg and random.random() < 0.2 and hasattr(self.core, "propose_agenda"):
                     try:
                         from anima.cognitive.group_presence import get_group_presence
                         gp = get_group_presence(self._persist.data_dir)

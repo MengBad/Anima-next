@@ -605,8 +605,10 @@ class Heartbeat:
 
         # A3 早晨分享梦境：08:00「醒来」，读昨晚最后一条梦境，10% 概率主动在群里分享
         # （并让 mood_tag 覆盖次日 soul 初始情绪）。每「天」至多尝试一次。
+        # config.morning_dream_share_enabled=False 时彻底关闭此类模板式主动分享。
         try:
-            if self._maybe_morning_dream_share(now):
+            if (getattr(getattr(self.core.config, "autonomy", None), "morning_dream_share_enabled", True)
+                    and self._maybe_morning_dream_share(now)):
                 gid = self._pick_group(now)
                 if gid is not None:
                     from anima.cognitive.dream_engine import DreamEngine

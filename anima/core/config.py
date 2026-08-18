@@ -147,6 +147,10 @@ class AutonomyConfig(BaseModel):
     sleepy_temperature: float = 0.4     # 迷糊回复随机度（偏低，含糊）
     sleepy_llm_enabled: bool = True    # 用 LLM 生成迷糊回复；关闭则只用模板
     secret_auto_enabled: bool = True   # 心跳每日根据群观察自动生成秘密（B2）
+    # 模板式主动发言开关（默认开启，可关掉避免突兀）。二者均只影响
+    # 「主动问候/分享」这类与对话无关的定时插话，不涉及被动回复。
+    morning_greeting_enabled: bool = True    # 晨间反思后 20% 概率向最近活跃群发早安
+    morning_dream_share_enabled: bool = True  # 08:00 每天一次 10% 概率分享昨晚梦境
 
 
 class DriftConfig(BaseModel):
