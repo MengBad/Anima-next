@@ -501,27 +501,47 @@ class ExplorationManager:
         result: list[ExplorationSourceItem] = []
         try:
             limit = int(getattr(self.config, "x_timeline_limit", 8) or 8)
+            # 1) 优先滚账号时间线（需已关注账号才有内容；新号可能为空）
             res = await session.home_timeline(limit=limit)
-            if not res.get("ok"):
-                self._source_failed("x_timeline", RuntimeError(res.get("note", "x_timeline_failed")))
-                return []
-            for tweet in res.get("tweets", [])[:limit]:
-                text = _clean_text(tweet, 400)
-                if len(text) < 4:
-                    continue
-                result.append(ExplorationSourceItem(
-                    source="X时间线",
-                    title=text[:80],
-                    url="https://x.com/home",
-                    summary=text,
-                    published_at="",
-                    popularity=0,
-                ))
+            if res.get("ok"):
+                for tweet in res.get("tweets", [])[:limit]:
+                    text = _clean_text(tweet, 400)
+                    if len(text) < 4:
+                        continue
+                    result.append(ExplorationSourceItem(
+                        source="X时间线", title=text[:80], url="https://x.com/home",
+                        summary=text, published_at="", popularity=0,
+                    ))
+            # 2) 时间线为空（新号无关注）时，回退到关键词搜索，保证有真实内容
+            if not result:
+                kw = self._x_explore_keywords()
+                if kw:
+                    q = kw[random.randint(0, len(kw) - 1)]
+                    sres = await session.search(q, limit=limit)
+                    if sres.get("ok"):
+                        for tweet in sres.get("tweets", [])[:limit]:
+                            text = _clean_text(tweet, 400)
+                            if len(text) < 4:
+                                continue
+                            result.append(ExplorationSourceItem(
+                                source="X搜索", title=text[:80], url="https://x.com/search?q=" + quote(q),
+                                summary=text, published_at="", popularity=0,
+                            ))
             self._source_ok("x_timeline", started, len(result))
             return result
         except Exception as exc:
             self._source_failed("x_timeline", exc)
             raise
+
+    def _x_explore_keywords(self) -> list[str]:
+        """取 X 主动探索关键词：优先 x_browser.explore_keywords，否则用默认领域词。"""
+        try:
+            kw = list(getattr(getattr(self.core, "config", None), "x_browser", None).explore_keywords or [])
+        except Exception:
+            kw = []
+        if not kw:
+            kw = ["人工智能", "科技", "AI", "动漫", "游戏", "美食", "音乐"]
+        return [str(k).strip() for k in kw if str(k).strip()]
 
     async def _fetch_wikipedia_search(self, topic: str) -> list[ExplorationSourceItem]:
         """检索中文百科条目摘要，作为知识线索而非唯一事实来源。"""
