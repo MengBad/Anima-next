@@ -86,21 +86,21 @@ class XBrowserSession:
         self._daily[kind] = self._daily.get(kind, 0) + 1
 
     # -- 浏览器生命周期 --
-    def _ensure_browser(self):
+    async def _ensure_browser(self):
         if self._browser is not None:
             return
         from patchright.async_api import async_playwright
-        pw = async_playwright().start()
+        pw = await async_playwright().start()
         args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
         if self.proxy:
             args.append(f"--proxy-server={self.proxy}")
-        browser = pw.chromium.launch(headless=True, args=args)
+        browser = await pw.chromium.launch(headless=True, args=args)
         self._playwright = pw
         self._browser = browser
 
     async def _get_page(self):
         async with self._lock:
-            self._ensure_browser()
+            await self._ensure_browser()
             ctx = await self._browser.new_context(
                 user_agent=(
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
