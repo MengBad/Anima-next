@@ -123,18 +123,40 @@ class XBrowserSession:
         await asyncio.sleep(base + random.uniform(0.3, 1.8))
 
     # -- 抽取 --
-    @staticmethod
-    def _extract_tweets(page_text: str, limit: int) -> list[str]:
-        """从页面纯文本里粗略切分推文（按空行/常见分隔）。无登录时结果有限。"""
-        # 先按换行切，过滤掉太短的噪声行，保留有内容的句子块。
-        chunks = [c.strip() for c in re.split(r"\n{2,}", page_text) if len(c.strip()) > 12]
+    _NOISE = (
+        "see what's happening", "select an option below", "continue with phone",
+        "continue with email", "use email instead", "use phone instead", "sign up",
+        "already have an account", "log in", "sign in to x", "terms", "privacy",
+        "about", "help center", "get app", "cookie", "回推", "转发", "回复",
+        "x 简介", "正在关注", "关注", "登录", "注册", "返回",
+    )
+
+    @classmethod
+    async def _collect_tweets(cls, page, limit: int) -> list[str]:
+        """从 X 页面的 <article>（推文容器）抽取文本，过滤 UI 噪声。"""
+        try:
+            articles = await page.query_selector_all("article")
+        except Exception:
+            return []
         out: list[str] = []
-        for c in chunks:
+        for art in articles[: limit * 3]:
+            try:
+                t = (await art.inner_text()).strip()
+            except Exception:
+                continue
+            t = re.sub(r"\s+", " ", t)
+            if not t or len(t) < 4:
+                continue
+            low = t.lower()
+            if any(n in low for n in cls._NOISE):
+                continue
+            passed, _ = compliance_check(t)
+            if not passed:
+                continue
+            # 去掉常见的"作者 @handle"前缀尾巴噪音，保留主体
+            out.append(t)
             if len(out) >= limit:
                 break
-            passed, _ = compliance_check(c)
-            if passed:
-                out.append(c)
         return out
 
     async def search(self, query: str, limit: int = 5) -> dict:
@@ -157,9 +179,8 @@ class XBrowserSession:
                     except Exception:
                         pass
                     await self._human_pause(0.8)
-                text = await page.inner_text("body", timeout=15000)
-                logged_in = self._is_logged_in(page, text)
-                tweets = self._extract_tweets(text, limit)
+                logged_in = await self._is_logged_in(page)
+                tweets = await self._collect_tweets(page, limit)
                 await page.close()
                 self._bump("search")
                 return {
@@ -190,9 +211,8 @@ class XBrowserSession:
                     except Exception:
                         pass
                     await self._human_pause(0.8)
-                text = await page.inner_text("body", timeout=15000)
-                logged_in = self._is_logged_in(page, text)
-                tweets = self._extract_tweets(text, limit)
+                logged_in = await self._is_logged_in(page)
+                tweets = await self._collect_tweets(page, limit)
                 await page.close()
                 self._bump("timeline")
                 return {"ok": True, "logged_in": logged_in, "tweets": tweets,
@@ -202,14 +222,17 @@ class XBrowserSession:
                 return {"ok": False, "logged_in": False, "tweets": [], "note": f"X 时间线异常: {e}"}
 
     @staticmethod
-    def _is_logged_in(page, text: str) -> bool:
-        """粗判登录态：URL 跳 login 即未登录；或正文含 Sign in 也判未登录。"""
+    async def _is_logged_in(page) -> bool:
+        """粗判登录态：URL 跳 login 即未登录；或正文头部含 Sign in/登录 也判未登录。"""
         try:
-            if "i/flow/login" in page.url:
+            if "i/flow/login" in page.url or "/login" in page.url:
                 return False
         except Exception:
             pass
-        head = (text or "")[:300]
+        try:
+            head = (await page.inner_text("body", timeout=8000))[:300]
+        except Exception:
+            return True
         return "Sign in" not in head and "登录" not in head
 
     async def close(self):
