@@ -16,6 +16,7 @@ import json
 import logging
 import math
 import re
+import subprocess
 import time
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
@@ -338,7 +339,6 @@ class ExplorationManager:
         self, url: str, *, max_bytes: int = 768 * 1024,
         extra_headers: dict[str, str] | None = None,
     ) -> bytes:
-        timeout = aiohttp.ClientTimeout(total=12)
         # 公开源（B 站 / 维基 / BBC）对裸 bot UA 会返回 403/412/空体，
         # 且 BBC RSS 走 301 重定向；用浏览器 UA + 跟随重定向 + 读取错误体以便诊断。
         headers = {
@@ -352,20 +352,46 @@ class ExplorationManager:
         headers.update(extra_headers or {})
         # 可选出站代理：VPS 数据中心 IP 会被维基等公开源 403 封禁，配置
         # exploration.proxy（如 http://127.0.0.1:10809）可绕过；留空则直连。
-        # 注意：aiohttp 3.14 的 session.get(proxy=) 对 HTTPS 经 HTTP 代理不会正确
-        # 隧道（实测穿透直连被 403），必须用 aiohttp_socks 的 ProxyConnector 才能
-        # 可靠地把请求送进代理隧道。无代理依赖时优雅降级为直连。
+        # 实测 aiohttp 3.14 的 session.get(proxy=) 与 aiohttp_socks 对 HTTPS 经
+        # HTTP 代理都不会正确隧道（转发式请求被 mihomo 直连出口，维基仍 403），而
+        # curl -x 走 CONNECT 隧道被 mihomo 正确经节点出口（实测维基 200）。故配置代理时
+        # 统一走 curl 子进程；无代理时走原生 aiohttp。curl 不可用则回退 aiohttp。
         proxy = str(getattr(getattr(self, "config", None), "proxy", "") or "").strip()
-        connector = None
         if proxy:
             try:
-                from aiohttp_socks import ProxyConnector
-                connector = ProxyConnector.from_url(proxy)
-            except Exception:
-                connector = None
-        async with aiohttp.ClientSession(
-            timeout=timeout, headers=headers, connector=connector,
-        ) as session:
+                return await self._request_via_curl(url, headers, proxy, max_bytes)
+            except Exception as exc:  # curl 失败回退 aiohttp 直连
+                logger.warning("exploration curl 代理失败，回退直连: %s", exc)
+        return await self._request_via_aiohttp(url, headers, max_bytes)
+
+    async def _request_via_curl(
+        self, url: str, headers: dict[str, str], proxy: str, max_bytes: int,
+    ) -> bytes:
+        # curl 走 CONNECT 隧道：mihomo 会经所选节点出口，规避 VPS 数据中心 IP 封禁。
+        args = ["curl", "-sSL", "--max-time", "12", "-x", proxy,
+                "-w", "\n__ANIMA_STATUS__%{http_code}"]
+        for k, v in headers.items():
+            args += ["-H", f"{k}: {v}"]
+        args.append(url)
+        proc = await asyncio.to_thread(
+            subprocess.run, args, capture_output=True, timeout=20,
+        )
+        out = proc.stdout.decode("utf-8", "replace")
+        body, _, status_part = out.rpartition("\n__ANIMA_STATUS__")
+        status = int(status_part.strip()) if status_part.strip().isdigit() else 0
+        if status >= 400 or (status == 0 and proc.returncode != 0):
+            raise RuntimeError(
+                f"http_{status}: {body[:160]!r}" + (f" rc={proc.returncode}" if status == 0 else "")
+            )
+        if len(body.encode("utf-8")) > max_bytes:
+            raise RuntimeError("exploration_payload_too_large")
+        return body.encode("utf-8")
+
+    async def _request_via_aiohttp(
+        self, url: str, headers: dict[str, str], max_bytes: int,
+    ) -> bytes:
+        timeout = aiohttp.ClientTimeout(total=12)
+        async with aiohttp.ClientSession(timeout=timeout, headers=headers) as session:
             async with session.get(url, allow_redirects=True, max_redirects=5) as response:
                 if response.status >= 400:
                     body = await response.text()
