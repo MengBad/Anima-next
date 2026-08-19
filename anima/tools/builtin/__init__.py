@@ -328,7 +328,7 @@ def register_all_builtin(registry, core=None) -> None:
         granted_scopes={"filesystem": True},
     ))
     registry.register(Tool(
-        "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片操作（旋转/翻转/缩放/滤镜，PIL 可用；动画 GIF 用 _edit_each_frame 处理每帧后 _save_output(frames,'out.gif') 保留动画）。禁止访问网络和文件系统。",
+        "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片的几何/像素级操作（旋转/翻转/缩放/裁剪/加文字/贴图/调亮度对比度/纯色滤镜等，PIL 可用；动画 GIF 用 _edit_each_frame 处理每帧后 _save_output(frames,'out.gif') 保留动画）。注意：run_python 只能做像素/几何变换，无法理解图片内容做语义级修改（如换风格、改人物表情、改背景内容、改主体、风格迁移等）——这类需求必须用 edit_image 工具调用 Gemini 图像模型。禁止访问网络和文件系统。",
         {"code": {"type": "string", "description": "要执行的 Python 代码"}},
         run_python,
         min_level=LEVEL_USER,
@@ -426,19 +426,22 @@ def register_all_builtin(registry, core=None) -> None:
 
         registry.register(Tool(
             "generate_image",
-            "当用户明确要求画图、生成图片或制作视觉素材（新图，非改已有图）时调用。调用真实生图接口并发送实际图片；"
-            "不支持时必须如实说明，绝不伪造图片链接。",
+            "当用户明确要求【从无到有画一张全新图片】或制作视觉素材（新图，非修改已有图）时调用。"
+            "调用真实生图接口并发送实际图片；不支持时必须如实说明，绝不伪造图片链接。"
+            "若用户是要修改已提供的图片（改风格/改内容），应使用 edit_image 而非本工具。",
             {"prompt": {"type": "string", "description": "中文或英文图片提示词，包含主体、风格和必要限制"}},
             make_generate_image(core), min_level=LEVEL_USER, required=["prompt"],
         ))
 
         registry.register(Tool(
             "edit_image",
-            "当用户要求在已有图片基础上做修改/编辑（如换风格、改人物表情、加滤镜、改背景、调色、去水印等）时调用。"
-            "需要原始图片（随消息附带或显式传 image）；调用真实 Gemini 图像修改接口并发送修改后的图片；"
-            "不支持时必须如实说明，绝不伪造图片。",
+            "当用户要求在已有图片基础上做【语义级修改】时调用——即需要理解图片内容才能完成的修改："
+            "换画风/改风格（如改成二次元、水墨、写实）、改人物表情/服装/发型、改背景内容、换主体、改变人物穿着气质、"
+            "风格迁移、根据语义改图（如「把人物弄骚一点」「加上星空」）等。"
+            "这类修改必须用 edit_image 调用真实 Gemini 图像模型，而不是用 run_python 做像素处理。"
+            "需要原始图片（随消息附带或显式传 image）；返回修改后的图片并发送。不支持时如实说明，绝不伪造图片。",
             {
-                "prompt": {"type": "string", "description": "对图片的修改指令，描述想改成什么效果"},
+                "prompt": {"type": "string", "description": "对图片的语义级修改指令，描述想改成什么内容/风格/效果"},
                 "image": {"type": "string", "description": "可选：原始图片的 base64/data URI。缺省时自动取本次消息附带的图片"},
             },
             make_edit_image(core), min_level=LEVEL_USER, required=["prompt"],
