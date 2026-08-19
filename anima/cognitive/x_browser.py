@@ -22,6 +22,7 @@ import os
 import random
 import re
 import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, Optional
 
@@ -145,7 +146,7 @@ class XBrowserSession:
         async with self._lock:
             try:
                 page = await self._get_page()
-                url = "https://x.com/search?q=" + __import__("urllib.parse").quote(query) + "&f=live"
+                url = "https://x.com/search?q=" + urllib.parse.quote(query) + "&f=live"
                 await page.goto(url, timeout=30000, wait_until="commit")
                 # 等 SPA 渲染出结果
                 await asyncio.sleep(4)
