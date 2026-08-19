@@ -613,6 +613,9 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             generated = available_tools.get_call_context().get("generated_image_paths", [])
             if isinstance(generated, list):
                 ctx.generated_image_paths = [str(path) for path in generated[:1]]
+            logger.debug("[IMGDEBUG] finally sync generated=%s ctx.generated_image_paths=%s",
+                         list(generated) if isinstance(generated, list) else generated,
+                         getattr(ctx, "generated_image_paths", None))
             available_tools.reset_call_context(context_token)
 
     # 提供器身份泄漏纠偏

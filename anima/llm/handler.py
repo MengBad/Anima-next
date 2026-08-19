@@ -1966,6 +1966,9 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
             logger.exception("被动自动表情选取失败（忽略）")
     for image_path in getattr(ctx, "generated_image_paths", [])[:1]:
         segments.append({"type": "image", "data": {"file": image_path}})
+    if getattr(ctx, "generated_image_paths", None):
+        logger.debug("[IMGDEBUG] build_reply_segments ctx.generated_image_paths=%s",
+                     getattr(ctx, "generated_image_paths", None))
     return segments
 
 
