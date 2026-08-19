@@ -188,8 +188,11 @@ class LLMClient:
         self.request_count += 1
         started = time.perf_counter()
         retry_start = self.retry_count
+        # 图像生成/修改耗时明显长于普通文本（带输入图更甚），给图像请求独立更长的超时，
+        # 避免被全局 LLM timeout（60s）误杀。
+        img_timeout = aiohttp.ClientTimeout(total=240, sock_connect=min(60.0, 10.0))
         try:
-            async with self._session.post(self.endpoint, json=payload, headers=headers) as response:  # type: ignore[union-attr]
+            async with self._session.post(self.endpoint, json=payload, headers=headers, timeout=img_timeout) as response:  # type: ignore[union-attr]
                 self.last_status = response.status
                 if response.status != 200:
                     body = await response.text()
