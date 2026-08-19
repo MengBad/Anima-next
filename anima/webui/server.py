@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import html
 import json
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -99,35 +100,40 @@ class WebUIServer:
     async def x_gui_ws(self, request: web.Request) -> web.StreamResponse:
         # 把 VNC websocket 反向代理到本机 websockify（6080 /websockify）
         import aiohttp
+        _log = logging.getLogger("anima.webui")
         target = "http://127.0.0.1:6080/websockify"
+        local_ws = web.WebSocketResponse(heartbeat=30)
+        await local_ws.prepare(request)
         try:
             async with aiohttp.ClientSession() as session:
                 async with session.ws_connect(target) as remote_ws:
-                    async with web.WebSocketResponse() as local_ws:
-                        await local_ws.prepare(request)
-
-                        async def pump_remote_to_local():
-                            async for msg in remote_ws:
-                                if msg.type == aiohttp.WSMsgType.TEXT:
-                                    await local_ws.send_str(msg.data)
-                                elif msg.type == aiohttp.WSMsgType.BINARY:
-                                    await local_ws.send_bytes(msg.data)
-                                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                                    break
-                        rtask = asyncio.ensure_future(pump_remote_to_local())
-                        try:
-                            async for msg in local_ws:
-                                if msg.type == aiohttp.WSMsgType.TEXT:
-                                    await remote_ws.send_str(msg.data)
-                                elif msg.type == aiohttp.WSMsgType.BINARY:
-                                    await remote_ws.send_bytes(msg.data)
-                                elif msg.type == aiohttp.WSMsgType.CLOSED:
-                                    break
-                        finally:
-                            rtask.cancel()
-                        return local_ws
+                    async def pump_remote_to_local():
+                        async for msg in remote_ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await local_ws.send_str(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                await local_ws.send_bytes(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+                    rtask = asyncio.ensure_future(pump_remote_to_local())
+                    try:
+                        async for msg in local_ws:
+                            if msg.type == aiohttp.WSMsgType.TEXT:
+                                await remote_ws.send_str(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.BINARY:
+                                await remote_ws.send_bytes(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+                    finally:
+                        rtask.cancel()
+                    await remote_ws.close()
+                    return local_ws
         except Exception as e:  # noqa: BLE001
-            logger.warning("VNC WS 反代失败: %s", e)
+            _log.warning("VNC WS 反代失败: %s", e)
+            try:
+                await local_ws.close()
+            except Exception:
+                pass
             raise web.HTTPNotFound(text="vnc ws unavailable")
 
     async def source_page(self, request: web.Request) -> web.Response:
