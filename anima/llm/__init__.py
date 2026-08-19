@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import binascii
 import json
 import logging
 import time
@@ -152,21 +153,43 @@ class LLMClient:
         return await self._request_structured(messages, tools, temperature, max_tokens, model)
 
     async def generate_image(self, prompt: str, *, model: str, max_bytes: int) -> bytes | None:
-        """调用 OpenAI 兼容 images/generations，返回实际图片字节。
+        """经 /v1/chat/completions 调用 Gemini 图像模型（gemini-3.1-flash-image）生成图片。
 
-        AIClient2API 的 Gemini 路由会错误转换 ``size``，因此这里刻意不传
-        尺寸字段，只接受服务端返回的 b64_json。任何非图片响应都视为失败。
+        CLI Proxy 网关的 /images/generations 只认 OpenAI 兼容图像模型（gpt-image/grok-imagine），
+        不认 gemini 图像模型；实测 gemini-3.1-flash-image 需走 chat 端点，返回
+        choices[].message.images[].image_url.url（base64）。任何非图片响应都视为失败。
         """
+        return await self._request_image_via_chat(
+            prompt, model=model, max_bytes=max_bytes, input_image_b64=None,
+        )
+
+    async def edit_image(self, prompt: str, *, model: str, input_image_b64: str, max_bytes: int) -> bytes | None:
+        """经 /v1/chat/completions 用 Gemini 图像模型修改已有图片（多模态输入图 + 指令）。"""
+        return await self._request_image_via_chat(
+            prompt, model=model, max_bytes=max_bytes, input_image_b64=input_image_b64,
+        )
+
+    async def _request_image_via_chat(
+        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+    ) -> bytes | None:
+        """共用实现：Gemini 图像生成/修改都走 chat/completions，解析 message.images[].url(base64)。"""
         if self._session is None:
             await self.start()
         requested_model = self.model_for(current_call_info().module, model)
-        payload = {"model": requested_model, "prompt": prompt[:4000]}
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt[:4000]}]
+        if input_image_b64:
+            # 多模态输入图：可带 data URI 前缀（网关透传），缺失时补 image/png
+            uri = input_image_b64
+            if not uri.startswith("data:"):
+                uri = f"data:image/png;base64,{input_image_b64}"
+            content.append({"type": "image_url", "image_url": {"url": uri}})
+        payload = {"model": requested_model, "messages": [{"role": "user", "content": content}], "max_tokens": 4096}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         self.request_count += 1
         started = time.perf_counter()
         retry_start = self.retry_count
         try:
-            async with self._session.post(self.images_endpoint, json=payload, headers=headers) as response:  # type: ignore[union-attr]
+            async with self._session.post(self.endpoint, json=payload, headers=headers) as response:  # type: ignore[union-attr]
                 self.last_status = response.status
                 if response.status != 200:
                     body = await response.text()
@@ -181,21 +204,24 @@ class LLMClient:
             self.failure_count += 1
             await self._record_usage(payload, None, started, retry_start, "error")
             return None
-        except Exception as exc:
+        except Exception:
             self.last_status = None
-            self._set_error(f"image_unexpected:{type(exc).__name__}")
+            self._set_error("image_unexpected")
             self.failure_count += 1
             logger.exception("生图请求异常")
             return None
         try:
-            item = (data.get("data") or [])[0]
-            encoded = item.get("b64_json") if isinstance(item, dict) else None
-            if not isinstance(encoded, str):
-                raise ValueError("missing_b64_json")
+            choices = (data.get("choices") or [])
+            message = (choices[0].get("message") or {}) if choices else {}
+            images = (message.get("images") or [])
+            url = (images[0].get("image_url") or {}).get("url") if images else None
+            if not isinstance(url, str) or "," not in url:
+                raise ValueError("missing_image_url")
+            encoded = url.split(",", 1)[1]
             image = base64.b64decode(encoded, validate=True)
             if not image or (max_bytes > 0 and len(image) > max_bytes):
                 raise ValueError("invalid_image_size")
-        except (ValueError, TypeError, KeyError, IndexError) as exc:
+        except (ValueError, TypeError, KeyError, IndexError, binascii.Error) as exc:
             self._set_error(f"image_response:{type(exc).__name__}")
             self.failure_count += 1
             await self._record_usage(payload, data, started, retry_start, "error")

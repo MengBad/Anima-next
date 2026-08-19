@@ -69,3 +69,32 @@ def make_generate_image(core):
         return "图片已生成，将作为本次回复的图片发送。"
 
     return _generate_image
+
+
+def make_edit_image(core):
+    """创建改图工具 handler：多模态输入图 + 指令，走 Gemini 图像修改。"""
+
+    async def _edit_image(prompt: str, image: str | None = None) -> str:
+        manager = getattr(core, "image_generation", None)
+        if manager is None:
+            return "生图服务尚未初始化"
+        input_b64 = (image or "").strip()
+        if not input_b64:
+            # 未显式传图时，取本次消息里附带的入站图片（首张）
+            ctx = get_call_context()
+            imgs = (ctx.get("input_images_b64") or []) if ctx else []
+            if imgs:
+                input_b64 = imgs[0]
+        if not input_b64:
+            return "改图需要一张原始图片，请在消息中附带图片后再调用。"
+        try:
+            path = await manager.edit(prompt, input_b64)
+        except (ValueError, RuntimeError) as exc:
+            return f"改图失败：{str(exc)[:180]}"
+        context = get_call_context()
+        paths = context.setdefault("generated_image_paths", [])
+        if isinstance(paths, list):
+            paths.append(path)
+        return "图片已修改，将作为本次回复的图片发送。"
+
+    return _edit_image

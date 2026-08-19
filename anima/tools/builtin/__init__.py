@@ -18,7 +18,7 @@ from .social import (
     make_set_group_card, make_group_ban, make_group_kick,
     make_get_user_relations, make_get_member_facts,
 )
-from .owner import make_propose_skill_draft, make_self_code, make_generate_image
+from .owner import make_propose_skill_draft, make_self_code, make_generate_image, make_edit_image
 from .sticker import make_sticker_tools
 from .merge import make_merge_forward
 from .honor import make_group_honor
@@ -426,10 +426,22 @@ def register_all_builtin(registry, core=None) -> None:
 
         registry.register(Tool(
             "generate_image",
-            "当用户明确要求画图、生成图片或制作视觉素材时调用。调用真实生图接口并发送实际图片；"
+            "当用户明确要求画图、生成图片或制作视觉素材（新图，非改已有图）时调用。调用真实生图接口并发送实际图片；"
             "不支持时必须如实说明，绝不伪造图片链接。",
             {"prompt": {"type": "string", "description": "中文或英文图片提示词，包含主体、风格和必要限制"}},
             make_generate_image(core), min_level=LEVEL_USER, required=["prompt"],
+        ))
+
+        registry.register(Tool(
+            "edit_image",
+            "当用户要求在已有图片基础上做修改/编辑（如换风格、改人物表情、加滤镜、改背景、调色、去水印等）时调用。"
+            "需要原始图片（随消息附带或显式传 image）；调用真实 Gemini 图像修改接口并发送修改后的图片；"
+            "不支持时必须如实说明，绝不伪造图片。",
+            {
+                "prompt": {"type": "string", "description": "对图片的修改指令，描述想改成什么效果"},
+                "image": {"type": "string", "description": "可选：原始图片的 base64/data URI。缺省时自动取本次消息附带的图片"},
+            },
+            make_edit_image(core), min_level=LEVEL_USER, required=["prompt"],
         ))
 
         # --- 社交/群管理工具 ---
