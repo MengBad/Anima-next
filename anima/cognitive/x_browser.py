@@ -64,8 +64,12 @@ class XBrowserSession:
         self.proxy = str(getattr(config, "proxy", "") or "").strip()
         self.data_dir = Path(getattr(config, "data_dir", data_dir) or data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
+        # 持久化浏览器 profile：把登录会话绑定在稳定指纹/本地存储上（X 对跨浏览器
+        # 指纹复用的 cookie 会话会丢弃，storage_state 不牢；profile 目录最稳）。
+        self.profile_dir = self.data_dir / "profile"
+        self.profile_dir.mkdir(parents=True, exist_ok=True)
         self._playwright = None
-        self._browser = None
+        self._context = None
         self._lock = asyncio.Lock()
         self._last_used = 0.0
         self._daily = {"date": "", "search": 0, "timeline": 0}
@@ -87,28 +91,31 @@ class XBrowserSession:
 
     # -- 浏览器生命周期 --
     async def _ensure_browser(self):
-        if self._browser is not None:
+        if self._context is not None:
             return
         from patchright.async_api import async_playwright
         pw = await async_playwright().start()
         args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
         if self.proxy:
             args.append(f"--proxy-server={self.proxy}")
-        browser = await pw.chromium.launch(headless=True, args=args)
+        # 持久化 profile：登录会话绑定在稳定指纹/本地存储，跨启动存活（X 保号关键）
+        ctx = await pw.chromium.launch_persistent_context(
+            str(self.profile_dir),
+            headless=True,
+            args=args,
+            viewport={"width": 1280, "height": 900},
+            user_agent=(
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            ),
+        )
         self._playwright = pw
-        self._browser = browser
+        self._context = ctx
 
     async def _get_page(self):
         async with self._lock:
             await self._ensure_browser()
-            ctx = await self._browser.new_context(
-                user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-                ),
-                storage_state=str(self.data_dir / "storage_state.json") if (self.data_dir / "storage_state.json").exists() else None,
-            )
-            return ctx
+            return await self._context.new_page()
 
     async def _human_pause(self, base: float = 1.2):
         await asyncio.sleep(base + random.uniform(0.3, 1.8))
@@ -136,26 +143,28 @@ class XBrowserSession:
             return {"ok": False, "logged_in": False, "tweets": [], "note": "今日搜索额度已用尽"}
         async with self._lock:
             try:
-                ctx = await self._get_page()
-                page = await ctx.new_page()
+                page = await self._get_page()
                 url = "https://x.com/search?q=" + __import__("urllib.parse").quote(query) + "&f=live"
-                await page.goto(url, timeout=25000, wait_until="domcontentloaded")
+                await page.goto(url, timeout=30000, wait_until="commit")
+                # 等 SPA 渲染出结果
+                await asyncio.sleep(4)
                 await self._human_pause()
-                # 滚动两次以触发懒加载
                 for _ in range(2):
-                    await page.mouse.wheel(0, 1200)
+                    try:
+                        await page.mouse.wheel(0, 1200)
+                    except Exception:
+                        pass
                     await self._human_pause(0.8)
-                text = await page.inner_text("body")
-                logged_in = "登录" not in text[:200] and "Sign in" not in text[:500]
+                text = await page.inner_text("body", timeout=15000)
+                logged_in = self._is_logged_in(page, text)
                 tweets = self._extract_tweets(text, limit)
                 await page.close()
-                await ctx.close()
                 self._bump("search")
                 return {
                     "ok": True,
                     "logged_in": logged_in,
                     "tweets": tweets,
-                    "note": "" if logged_in else "未登录态（结果可能受限，请先人工登录保存 storage_state）",
+                    "note": "" if logged_in else "未登录态（结果可能受限，请先人工登录保存 profile）",
                 }
             except Exception as e:  # noqa: BLE001
                 logger.warning("X 搜索失败（已隔离）: %s", e)
@@ -169,18 +178,20 @@ class XBrowserSession:
             return {"ok": False, "logged_in": False, "tweets": [], "note": "今日时间线额度已用尽"}
         async with self._lock:
             try:
-                ctx = await self._get_page()
-                page = await ctx.new_page()
-                await page.goto("https://x.com/home", timeout=25000, wait_until="domcontentloaded")
+                page = await self._get_page()
+                await page.goto("https://x.com/home", timeout=30000, wait_until="commit")
+                await asyncio.sleep(4)
                 await self._human_pause()
                 for _ in range(3):
-                    await page.mouse.wheel(0, 1200)
+                    try:
+                        await page.mouse.wheel(0, 1200)
+                    except Exception:
+                        pass
                     await self._human_pause(0.8)
-                text = await page.inner_text("body")
-                logged_in = "登录" not in text[:200] and "Sign in" not in text[:500]
+                text = await page.inner_text("body", timeout=15000)
+                logged_in = self._is_logged_in(page, text)
                 tweets = self._extract_tweets(text, limit)
                 await page.close()
-                await ctx.close()
                 self._bump("timeline")
                 return {"ok": True, "logged_in": logged_in, "tweets": tweets,
                         "note": "" if logged_in else "未登录态（时间线不可见，请先人工登录）"}
@@ -188,23 +199,28 @@ class XBrowserSession:
                 logger.warning("X 时间线失败（已隔离）: %s", e)
                 return {"ok": False, "logged_in": False, "tweets": [], "note": f"X 时间线异常: {e}"}
 
-    def save_login_state(self, state: dict) -> None:
-        """人工登录后调用：把 storage_state（cookies/localStorage）落盘。"""
-        (self.data_dir / "storage_state.json").write_text(
-            json.dumps(state, ensure_ascii=False), encoding="utf-8"
-        )
+    @staticmethod
+    def _is_logged_in(page, text: str) -> bool:
+        """粗判登录态：URL 跳 login 即未登录；或正文含 Sign in 也判未登录。"""
+        try:
+            if "i/flow/login" in page.url:
+                return False
+        except Exception:
+            pass
+        head = (text or "")[:300]
+        return "Sign in" not in head and "登录" not in head
 
     async def close(self):
-        if self._browser is not None:
+        if self._context is not None:
             try:
-                await self._browser.close()
+                await self._context.close()
             except Exception:
                 pass
             try:
                 self._playwright.stop()
             except Exception:
                 pass
-            self._browser = None
+            self._context = None
             self._playwright = None
 
 
