@@ -286,7 +286,7 @@ class XBrowserSession:
             except Exception:
                 pass
             try:
-                self._playwright.stop()
+                await self._playwright.stop()
             except Exception:
                 pass
             self._context = None
