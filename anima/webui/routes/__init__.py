@@ -34,6 +34,7 @@ def register_all_routes(app: web.Application, s: "WebUIServer") -> None:
     _register_social(app, s)
     _register_stickers(app, s)
     _register_soul(app, s)
+    _register_x_gui(app, s)
 
 
 # ---------------------------------------------------------------------------
@@ -290,4 +291,16 @@ def _register_soul(app: web.Application, s: "WebUIServer") -> None:
     app.add_routes([
         web.get("/api/soul/state", s.soul_state),
         web.get("/api/soul/history", s.soul_history),
+    ])
+
+
+# ---------------------------------------------------------------------------
+# X 验证 GUI（noVNC 经 WebUI 8088 反代，方便被防火墙挡 6080 的用户访问）
+# ---------------------------------------------------------------------------
+
+def _register_x_gui(app: web.Application, s: "WebUIServer") -> None:
+    app.add_routes([
+        web.get("/vnc", s.x_gui_index),
+        web.get("/vnc/static/{rest:.*}", s.x_gui_static),
+        web.get("/vnc/ws", s.x_gui_ws),
     ])

@@ -77,6 +77,59 @@ class WebUIServer:
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    # -- X 验证 GUI（noVNC 反代到 8088，复用可达端口） --
+    async def x_gui_index(self, request: web.Request) -> web.Response:
+        host = request.host.split(":")[0]
+        redirect = (f"https://{host}:{request.url.port}/vnc/static/vnc.html?autoconnect=true&resize=scale"
+                    f"&host={host}&port={request.url.port}&path=/vnc/ws")
+        return web.HTTPFound(redirect)
+
+    async def x_gui_static(self, request: web.Request) -> web.StreamResponse:
+        rest = request.match_info.get("rest", "")
+        root = Path("/usr/share/novnc").resolve()
+        requested = (root / rest).resolve()
+        try:
+            requested.relative_to(root)
+        except ValueError as exc:
+            raise web.HTTPNotFound(text="not found") from exc
+        if not requested.is_file():
+            raise web.HTTPNotFound(text="not found")
+        return web.FileResponse(requested)
+
+    async def x_gui_ws(self, request: web.Request) -> web.StreamResponse:
+        # 把 VNC websocket 反向代理到本机 websockify（6080 /websockify）
+        import aiohttp
+        target = "http://127.0.0.1:6080/websockify"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.ws_connect(target) as remote_ws:
+                    async with web.WebSocketResponse() as local_ws:
+                        await local_ws.prepare(request)
+
+                        async def pump_remote_to_local():
+                            async for msg in remote_ws:
+                                if msg.type == aiohttp.WSMsgType.TEXT:
+                                    await local_ws.send_str(msg.data)
+                                elif msg.type == aiohttp.WSMsgType.BINARY:
+                                    await local_ws.send_bytes(msg.data)
+                                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                                    break
+                        rtask = asyncio.ensure_future(pump_remote_to_local())
+                        try:
+                            async for msg in local_ws:
+                                if msg.type == aiohttp.WSMsgType.TEXT:
+                                    await remote_ws.send_str(msg.data)
+                                elif msg.type == aiohttp.WSMsgType.BINARY:
+                                    await remote_ws.send_bytes(msg.data)
+                                elif msg.type == aiohttp.WSMsgType.CLOSED:
+                                    break
+                        finally:
+                            rtask.cancel()
+                        return local_ws
+        except Exception as e:  # noqa: BLE001
+            logger.warning("VNC WS 反代失败: %s", e)
+            raise web.HTTPNotFound(text="vnc ws unavailable")
+
     async def source_page(self, request: web.Request) -> web.Response:
         """公开展示当前版本及其 AGPL 对应源码，不要求管理 Token。"""
         from pathlib import Path
@@ -150,7 +203,8 @@ class WebUIServer:
     @web.middleware
     async def _auth(self, request: web.Request, handler: Any) -> web.StreamResponse:
         if (request.path in {"/login", "/source", "/source/archive", "/api/auth/login"}
-                or request.path.startswith("/assets/")):
+                or request.path.startswith("/assets/")
+                or request.path == "/vnc" or request.path.startswith("/vnc/")):
             return await handler(request)
         token = self.config.token.get_secret_value() if self.config.token else ""
         if token:
