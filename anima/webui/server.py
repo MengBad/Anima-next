@@ -81,7 +81,7 @@ class WebUIServer:
     # -- X 验证 GUI（noVNC 反代到 8088，复用可达端口） --
     async def x_gui_index(self, request: web.Request) -> web.Response:
         host = request.host.split(":")[0]
-        redirect = (f"https://{host}:{request.url.port}/vnc/static/vnc.html?autoconnect=true&resize=scale"
+        redirect = (f"http://{host}:{request.url.port}/vnc/static/vnc.html?autoconnect=true&resize=scale"
                     f"&host={host}&port={request.url.port}&path=/vnc/ws")
         return web.HTTPFound(redirect)
 
