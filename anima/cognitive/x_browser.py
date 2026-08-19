@@ -170,8 +170,8 @@ class XBrowserSession:
                 page = await self._get_page()
                 url = "https://x.com/search?q=" + urllib.parse.quote(query) + "&f=live"
                 await page.goto(url, timeout=30000, wait_until="commit")
-                # 等 SPA 渲染出结果
-                await asyncio.sleep(4)
+                await asyncio.sleep(3)
+                await self._ensure_logged_in(page)   # 会话失效时自动重登
                 await self._human_pause()
                 for _ in range(2):
                     try:
@@ -203,7 +203,8 @@ class XBrowserSession:
             try:
                 page = await self._get_page()
                 await page.goto("https://x.com/home", timeout=30000, wait_until="commit")
-                await asyncio.sleep(4)
+                await asyncio.sleep(3)
+                await self._ensure_logged_in(page)   # 会话失效时自动重登
                 await self._human_pause()
                 for _ in range(3):
                     try:
@@ -225,7 +226,7 @@ class XBrowserSession:
     async def _is_logged_in(page) -> bool:
         """粗判登录态：URL 跳 login 即未登录；或正文头部含 Sign in/登录 也判未登录。"""
         try:
-            if "i/flow/login" in page.url or "/login" in page.url:
+            if "i/flow/login" in page.url or "/login" in page.url or "onboarding" in page.url:
                 return False
         except Exception:
             pass
@@ -234,6 +235,49 @@ class XBrowserSession:
         except Exception:
             return True
         return "Sign in" not in head and "登录" not in head
+
+    async def _try_fill(self, page, selectors, value, label) -> bool:
+        for sel in selectors:
+            try:
+                el = page.locator(sel).first
+                await el.wait_for(state="visible", timeout=4000)
+                await el.fill(value)
+                return True
+            except Exception:
+                continue
+        logger.warning("X 登录：找不到 %s 输入框（选择器 %s）", label, selectors)
+        return False
+
+    async def _do_login(self, page) -> bool:
+        """在登录页自动填入账号密码。返回是否提交成功（不保证最终登录成功）。"""
+        user = getattr(self.config, "username", "") or ""
+        pwd = getattr(self.config, "password", "") or ""
+        if not user or not pwd:
+            return False
+        try:
+            if "i/flow/login" not in page.url:
+                await page.goto("https://x.com/i/flow/login", timeout=30000, wait_until="commit")
+            await asyncio.sleep(2)
+            ok = await self._try_fill(page, ['input[autocomplete="username"]', 'input[name="text"]', 'input[type="text"]'], user, "用户名")
+            if ok:
+                await page.keyboard.press("Enter")
+                await asyncio.sleep(3)
+            await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'], pwd, "密码")
+            await page.keyboard.press("Enter")
+            await asyncio.sleep(4)
+            logger.info("X 自动重登已提交（会话失效自愈）")
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("X 自动重登失败: %s", e)
+            return False
+
+    async def _ensure_logged_in(self, page) -> None:
+        """若当前在登录页，尝试用配置凭据自动重登（保号自愈）。"""
+        try:
+            if not await self._is_logged_in(page):
+                await self._do_login(page)
+        except Exception:  # noqa: BLE001
+            logger.warning("X _ensure_logged_in 异常，已隔离")
 
     async def close(self):
         if self._context is not None:

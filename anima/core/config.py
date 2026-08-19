@@ -530,6 +530,9 @@ class XBrowserConfig(BaseModel):
     # 专用家宽代理出口（mihomo 独立监听端口，如 http://127.0.0.1:10810），
     # 与维基/BBC 通用代理隔离，降低 X 风控。留空则走系统默认出口。
     proxy: str = ""
+    # 账号凭据（用于会话失效时自动重登，保号自愈）。生产 config 中配置。
+    username: str = ""
+    password: str = ""
     data_dir: str = "data/x_browser"
     # 每日限流（保护账号/家宽流量）
     search_daily_limit: int = Field(default=10, ge=0, le=100)
