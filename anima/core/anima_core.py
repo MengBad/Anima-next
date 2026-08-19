@@ -247,6 +247,13 @@ class AnimaCore:
         except Exception:
             logger.exception("社交行为监听注册失败，已隔离")
 
+        # 注入 X 浏览器会话单例（带生产配置；未启用则禁用态，不报错）
+        try:
+            from anima.cognitive.x_browser import set_x_browser
+            set_x_browser(self)
+        except Exception:
+            logger.exception("X 浏览器会话初始化失败，已隔离")
+
         if self.config.webui.enabled:
             try:
                 from anima.webui import WebUIServer

@@ -523,6 +523,23 @@ class ExplorationConfig(BaseModel):
     proxy: str = ""
 
 
+class XBrowserConfig(BaseModel):
+    """X（Twitter）受管浏览器会话：虚拟浏览器登录账号、刷时间线/搜索，
+    作为自主探索内容来源，并对外提供 x_search 工具。"""
+    enabled: bool = False
+    # 专用家宽代理出口（mihomo 独立监听端口，如 http://127.0.0.1:10810），
+    # 与维基/BBC 通用代理隔离，降低 X 风控。留空则走系统默认出口。
+    proxy: str = ""
+    data_dir: str = "data/x_browser"
+    # 每日限流（保护账号/家宽流量）
+    search_daily_limit: int = Field(default=10, ge=0, le=100)
+    timeline_daily_limit: int = Field(default=10, ge=0, le=100)
+    # 养号期（前 N 天低频，不主动搜/滚，仅被动）；0 表示已过养号期。
+    warmup_days: int = Field(default=14, ge=0, le=60)
+    # 探索关键词（主动探索用）：留空则只滚时间线/关注流。
+    explore_keywords: list[str] = Field(default_factory=list)
+
+
 class ContradictionConfig(BaseModel):
     """矛盾检测（旧 Anima 模块五回迁）：检测用户陈述与既有记忆/自我独白的事实冲突。
 
@@ -688,6 +705,7 @@ class AnimaConfig(BaseModel):
     scrapling: ScraplingConfig = Field(default_factory=ScraplingConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
+    x_browser: XBrowserConfig = Field(default_factory=XBrowserConfig)
     webui: WebUIConfig = Field(default_factory=WebUIConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     contradiction: ContradictionConfig = Field(default_factory=ContradictionConfig)

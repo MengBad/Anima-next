@@ -10,6 +10,7 @@ from anima.tools import Tool, LEVEL_READONLY, LEVEL_USER, LEVEL_ADMIN, LEVEL_OWN
 from .system import tool_time, tool_calc, tool_weather, tool_runtime_status
 from .web import tool_web_search
 from .web_memory import tool_query_web_memory
+from .x_search import tool_x_search
 from .file import make_file_tool, make_read_file_tool
 from .bilibili import make_bilibili_read, make_subscribe_bilibili_live
 from .social import (
@@ -283,6 +284,20 @@ def register_all_builtin(registry, core=None) -> None:
         min_level=LEVEL_USER,
         # M0.3.1 Pilot：唯一标注点。additive —— name / handler / min_level 均未变。
         capability_ids=[PILOT_CAPABILITY_ID],
+        granted_scopes={"network": True},
+    ))
+    registry.register(Tool(
+        "x_search",
+        "在 X（Twitter）上搜索内容并返回摘要。适用于需要 X 平台实时/专属信息，"
+        "或用户要求「去 X 查/在 X 上搜」时。返回命中的若干条推文文本（已过滤政治与违法内容）。"
+        "结果受账号登录态与每日额度限制；返回为空可能是额度用尽或未登录。",
+        {
+            "query": {"type": "string", "description": "搜索关键词，如 'AI 最新进展' 或 '某账号动态'"},
+            "limit": {"type": "integer", "description": "返回条数，默认 5，范围 1-10"},
+        },
+        tool_x_search,
+        required=["query"],
+        min_level=LEVEL_USER,
         granted_scopes={"network": True},
     ))
     registry.register(Tool(
