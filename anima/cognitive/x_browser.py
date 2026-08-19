@@ -91,6 +91,8 @@ class XBrowserSession:
 
     # -- 浏览器生命周期 --
     async def _ensure_browser(self):
+        """创建持久化 profile 会话。调用方必须已持有 self._lock（防并发双开）。
+        profile 绑定稳定指纹/localStorage，登录态跨启动存活（X 保号关键）。"""
         if self._context is not None:
             return
         from patchright.async_api import async_playwright
@@ -98,7 +100,6 @@ class XBrowserSession:
         args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
         if self.proxy:
             args.append(f"--proxy-server={self.proxy}")
-        # 持久化 profile：登录会话绑定在稳定指纹/本地存储，跨启动存活（X 保号关键）
         ctx = await pw.chromium.launch_persistent_context(
             str(self.profile_dir),
             headless=True,
@@ -113,9 +114,9 @@ class XBrowserSession:
         self._context = ctx
 
     async def _get_page(self):
-        async with self._lock:
-            await self._ensure_browser()
-            return await self._context.new_page()
+        """调用方必须已持有 self._lock。创建会话并返回一个新 page。"""
+        await self._ensure_browser()
+        return await self._context.new_page()
 
     async def _human_pause(self, base: float = 1.2):
         await asyncio.sleep(base + random.uniform(0.3, 1.8))
