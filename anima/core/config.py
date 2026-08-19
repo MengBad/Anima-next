@@ -518,6 +518,8 @@ class ExplorationConfig(BaseModel):
     daily_share_limit: int = Field(default=1, ge=0, le=5)
     share_min_score: float = Field(default=0.75, ge=0.0, le=1.0)
     share_groups: list[int] = Field(default_factory=list)
+    # X 时间线主动探索（需 x_browser 启用）；单次取回条数上限
+    x_timeline_limit: int = Field(default=8, ge=1, le=20)
     # 出站 HTTP 代理（可选）：VPS 数据中心 IP 会被维基等公开源 403 封禁，
     # 配置本地代理（如 http://127.0.0.1:10809）可绕过。留空则直连（保持原行为）。
     proxy: str = ""

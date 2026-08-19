@@ -314,6 +314,9 @@ class ExplorationManager:
             jobs.append(self._fetch_rss(
                 "BBC 中文", "https://feeds.bbci.co.uk/zhongwen/simp/rss.xml"
             ))
+        # X 时间线主动探索：走家宽代理 + 已登录会话，只进记忆不主动发群
+        if "x_timeline" in enabled and not _should_skip("x_timeline"):
+            jobs.append(self._fetch_x_timeline())
         # 热点观察看榜单；具体好奇问题再做受限检索。两类来源相互独立，任何
         # 一个失败都不会阻断其他来源，也不会改为任意网页抓取。
         if not self._is_generic_topic(topic):
@@ -481,6 +484,43 @@ class ExplorationManager:
             return result
         except Exception as exc:
             self._source_failed("bilibili_search", exc)
+            raise
+
+    async def _fetch_x_timeline(self) -> list[ExplorationSourceItem]:
+        """X 时间线/关注流主动探索（家宽代理 + 已登录会话）。只读抽取推文，
+        经 x_browser 合规闸门（政治拒/违法R18拒）；默认只进记忆不主动发群。"""
+        started = time.time()
+        try:
+            from anima.cognitive.x_browser import get_x_browser
+            session = get_x_browser()
+        except Exception as exc:
+            self._source_failed("x_timeline", exc)
+            return []
+        if session is None or not session.enabled:
+            return []
+        result: list[ExplorationSourceItem] = []
+        try:
+            limit = int(getattr(self.config, "x_timeline_limit", 8) or 8)
+            res = await session.home_timeline(limit=limit)
+            if not res.get("ok"):
+                self._source_failed("x_timeline", RuntimeError(res.get("note", "x_timeline_failed")))
+                return []
+            for tweet in res.get("tweets", [])[:limit]:
+                text = _clean_text(tweet, 400)
+                if len(text) < 4:
+                    continue
+                result.append(ExplorationSourceItem(
+                    source="X时间线",
+                    title=text[:80],
+                    url="https://x.com/home",
+                    summary=text,
+                    published_at="",
+                    popularity=0,
+                ))
+            self._source_ok("x_timeline", started, len(result))
+            return result
+        except Exception as exc:
+            self._source_failed("x_timeline", exc)
             raise
 
     async def _fetch_wikipedia_search(self, topic: str) -> list[ExplorationSourceItem]:
