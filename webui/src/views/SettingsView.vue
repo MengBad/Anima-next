@@ -1,7 +1,7 @@
-﻿<script setup lang="ts">
+<script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
-import { Activity, Bot, Check, ChevronRight, CircleAlert, Cpu, Eye, KeyRound, LockKeyhole, MessageSquare, Network, RotateCcw, Save, Search, Settings2, Shield, Sparkles, TestTube2, UserPlus, X, Zap } from "@lucide/vue";
-import { api, bestEffort, formatNumber, json } from "../api";
+import { Activity, Bot, Check, ChevronRight, CircleAlert, Cpu, Eye, KeyRound, LockKeyhole, MessageSquare, Network, Plus, RotateCcw, Save, Search, Settings2, Shield, Sparkles, TestTube2, UserPlus, X, Zap } from "@lucide/vue";
+import { api, bestEffort, changeWebuiToken, formatNumber, json } from "../api";
 import type { ConfigField, ModuleStatus, UsageSummary } from "../types";
 import EmptyState from "../components/EmptyState.vue";
 import StatusDot from "../components/StatusDot.vue";
@@ -9,7 +9,7 @@ import StatusDot from "../components/StatusDot.vue";
 const emit = defineEmits<{ notify: [tone:"success"|"error"|"info", title:string, detail?:string] }>();
 const manifest=ref<{fields:ConfigField[];presets:any[]}>({fields:[],presets:[]});const state=ref<Record<string,any>>({});const providers=ref<any[]>([]);const activeProvider=ref("");const routes=ref<any[]>([]);const usage=ref<UsageSummary|null>(null);const modules=ref<ModuleStatus[]>([]);const permissions=ref<any>({owners:[],admins:[]});const history=ref<any[]>([]);const rollingBack=ref("");
 const category=ref("llm");const draft=ref<Record<string,any>>({});const search=ref("");const loading=ref(true);const validating=ref(false);const testing=ref(false);const testResult=ref<any>(null);const pendingChange=ref<any>(null);const applying=ref(false);const rejecting=ref("");const range=ref("today");const adminQQ=ref("");const napcatProbe=ref<any>(null);const probingNapcat=ref(false);const autonomy=ref<any>(null);const controllingAutonomy=ref(false);const groupPolicyId=ref("");const groupPolicy=ref<any>({reply_enabled:true,reply_only_when_mentioned:true,autonomy:true,tools_enabled:true,stickers_enabled:true});const toolList=ref<any[]>([]);const toolLevelOptions=[{value:0,label:"封禁 (0)"},{value:1,label:"只读 (1)"},{value:2,label:"普通用户 (2)"},{value:3,label:"管理员 (3)"},{value:4,label:"Owner (4)"}];
-const categories=[{id:"llm",label:"模型控制中心",hint:"提供商、路由与用量",icon:Sparkles},{id:"behavior",label:"自主行为",hint:"主动发言、群策略与社交",icon:Zap},{id:"perception",label:"感知与媒体",hint:"图片、表情、生图与视频",icon:Eye},{id:"expression",label:"表达与节奏",hint:"分段、防抖、语音与互动",icon:MessageSquare},{id:"cognition",label:"认知系统",hint:"灵魂、闸门与跨群记忆",icon:Network},{id:"modules",label:"模块与诊断",hint:"运行状态和降级原因",icon:Activity},{id:"permissions",label:"权限管理",hint:"Owner 与管理员",icon:Shield}];
+const categories=[{id:"llm",label:"模型控制中心",hint:"提供商、路由与用量",icon:Sparkles},{id:"behavior",label:"自主行为",hint:"主动发言、群策略与社交",icon:Zap},{id:"perception",label:"感知与媒体",hint:"图片、表情、生图与视频",icon:Eye},{id:"expression",label:"表达与节奏",hint:"分段、防抖、语音与互动",icon:MessageSquare},{id:"cognition",label:"认知系统",hint:"灵魂、闸门与跨群记忆",icon:Network},{id:"modules",label:"模块与诊断",hint:"运行状态和降级原因",icon:Activity},{id:"security",label:"访问安全",hint:"登录令牌与登出",icon:LockKeyhole},{id:"permissions",label:"权限管理",hint:"Owner 与管理员",icon:Shield}];
 const fieldGroups:Record<string,string[]>={llm:["llm."],behavior:["autonomy.","permissions.group_policies","qzone.","qq_status."],perception:["vision.","sticker.","image_generation.","bilibili_read."],expression:["reply_split.","debounce.","voice.","meme."],cognition:["soul.","gate.","sylann.","crossgroup."]};
 const visibleFields=computed(()=>manifest.value.fields.filter(field=>(fieldGroups[category.value]||[]).some(prefix=>field.path.startsWith(prefix))).filter(field=>field.type!=="group_policies").filter(field=>!search.value||field.label.toLowerCase().includes(search.value.toLowerCase())||field.path.includes(search.value)));
 const groupPolicies=computed<Record<string,any>>(()=>draft.value["permissions.group_policies"]??getPath(state.value,"permissions.group_policies")??{});
@@ -38,7 +38,7 @@ function canRollback(item:any){return item.status==="applied"&&!rollingBack.valu
 async function rollbackChange(item:any){if(!canRollback(item))return;if(!window.confirm(`回滚「${changeLabel(item)}」？当前配置将恢复到 ${formatDate(item.created_at)} 前的状态。`))return;rollingBack.value=item.id;try{const result=await api<any>(`/api/config/change-sets/${item.id}/rollback`,json("POST",{}));emit("notify","success",result.restart_scheduled?"已回滚，服务正在受控重启":"配置已回滚",`审计编号 ${item.id}`);window.setTimeout(load,result.restart_scheduled?4500:300)}catch(e:any){emit("notify","error","配置回滚失败",e.message)}finally{rollingBack.value=""}}
 function canReject(item:any){return item.status==="pending"&&!rejecting.value}
 async function rejectChange(item:any){if(!canReject(item))return;const reason=window.prompt(`驳回「${changeLabel(item)}」的原因（可选）`,"Owner 驳回")||"Owner 驳回";rejecting.value=item.id;try{await api<any>(`/api/config/change-sets/${item.id}/reject`,json("POST",{reason}));emit("notify","success","变更已驳回","当前运行配置未被修改");await load()}catch(e:any){emit("notify","error","配置驳回失败",e.message)}finally{rejecting.value=""}}
-async function load(){loading.value=true;try{const [m,s,p,r,u,mod,perm,h,a]=await Promise.all([bestEffort(api<any>("/api/config/manifest"),{fields:[],presets:[]}),bestEffort(api<any>("/api/config/state"),{state:{}}),bestEffort(api<any>("/api/llm/providers"),{providers:[],active:""}),bestEffort(api<any>("/api/llm/routes"),{routes:[]}),bestEffort(api<any>(`/api/llm/usage?range=${range.value}`),null),bestEffort(api<any>("/api/modules/status"),{modules:[]}),bestEffort(api<any>("/api/permissions"),{owners:[],admins:[]}),bestEffort(api<any>("/api/config/change-sets?limit=30"),{changes:[]}),bestEffort(api<any>("/api/autonomy/status"),null)]);manifest.value=m;state.value=s.state||{};providers.value=p.providers||[];activeProvider.value=p.active||"";routes.value=r.routes||[];usage.value=u;modules.value=mod.modules||[];permissions.value=perm;history.value=h.changes||[];autonomy.value=a;loadTools()}finally{loading.value=false}}
+async function load(){loading.value=true;try{const [m,s,p,r,u,mod,perm,h,a]=await Promise.all([bestEffort(api<any>("/api/config/manifest"),{fields:[],presets:[]}),bestEffort(api<any>("/api/config/state"),{state:{}}),bestEffort(api<any>("/api/llm/providers"),{providers:[],active:""}),bestEffort(api<any>("/api/llm/routes"),{routes:[]}),bestEffort(api<any>(`/api/llm/usage?range=${range.value}`),null),bestEffort(api<any>("/api/modules/status"),{modules:[]}),bestEffort(api<any>("/api/permissions"),{owners:[],admins:[]}),bestEffort(api<any>("/api/config/change-sets?limit=30"),{changes:[]}),bestEffort(api<any>("/api/autonomy/status"),null)]);manifest.value=m;state.value=s.state||{};providers.value=p.providers||[];providerList.value=p.providers||[];activeProvider.value=p.active||"";routes.value=r.routes||[];usage.value=u;modules.value=mod.modules||[];permissions.value=perm;history.value=h.changes||[];autonomy.value=a;loadTools()}finally{loading.value=false}}
 async function loadUsage(value:string){range.value=value;try{usage.value=await api<any>(`/api/llm/usage?range=${value}`)}catch(e:any){emit("notify","error","用量读取失败",e.message)}}
 async function testProvider(){testing.value=true;testResult.value=null;try{testResult.value=await api<any>("/api/llm/providers/test",json("POST",{provider:draft.value["llm.active_provider"]||activeProvider.value,endpoint:draft.value["llm.endpoint"]||getPath(state.value,"llm.endpoint"),api_key:draft.value["llm.api_key"]||undefined}));emit("notify",testResult.value.ok?"success":"error",testResult.value.ok?"模型连接正常":"模型连接失败",testResult.value.ok?`${testResult.value.latency_ms} ms · ${testResult.value.models?.length||0} 个模型`:testResult.value.message)}catch(e:any){emit("notify","error","连接测试失败",e.message)}finally{testing.value=false}}
 async function probeNapcat(){probingNapcat.value=true;napcatProbe.value=null;try{napcatProbe.value=await api<any>("/api/diagnostics/napcat",json("POST",{}));emit("notify","success","NapCat 回路正常",`${napcatProbe.value.latency_ms} ms · 未发送消息`)}catch(e:any){napcatProbe.value={ok:false,message:e.message};emit("notify","error","NapCat 诊断失败",e.message)}finally{probingNapcat.value=false}}
@@ -50,6 +50,56 @@ async function removeAdmin(qq:number){try{permissions.value=await api<any>(`/api
 async function loadTools(){try{const r=await api<any>("/api/tools");toolList.value=r.tools||[]}catch(e:any){toolList.value=[]}}
 async function updateToolLevel(name:string,newLevel:number){try{await api("/api/tools/level",json("PATCH",{name,min_level:newLevel}));const t=toolList.value.find(x=>x.name===name);if(t){t.min_level=newLevel;t.min_level_name=["banned","readonly","user","admin","owner"][newLevel]||"unknown"}emit("notify","success",`${name} 已更新为 ${["封禁","只读","普通用户","管理员","Owner"][newLevel]}`)}catch(e:any){emit("notify","error","更新失败",e.message)}}
 function openSettingsSection(event: Event){const target=(event as CustomEvent<string>).detail;if(categories.some(item=>item.id===target))category.value=target}
+// —— 模型提供商管理：增删改 llm.providers 并保存为变更集 ——
+const providerDraft=ref<Record<string,any>>({id:"",label:"",endpoint:"",api_key:""});const editingProvider=ref<string|null>(null);const savingProvider=ref(false);const providerList=ref<any[]>([]);
+async function loadProviders(){try{const r=await api<any>("/api/llm/providers");providers.value=r.providers||[];providerList.value=r.providers||[];activeProvider.value=r.active||""}catch(e:any){emit("notify","error","提供商读取失败",e.message)}}
+function newProvider(){editingProvider.value="__new__";providerDraft.value={id:"",label:"",endpoint:"",api_key:""}}
+function editProvider(p:any){editingProvider.value=String(p.id);providerDraft.value={id:String(p.id),label:p.label||"",endpoint:p.endpoint||"",api_key:""}}
+function cancelProvider(){editingProvider.value=null;providerDraft.value={id:"",label:"",endpoint:"",api_key:""}}
+async function saveProvider(){
+  if(savingProvider.value)return;
+  const id=(providerDraft.value.id||"").trim();const label=(providerDraft.value.label||"").trim();const endpoint=(providerDraft.value.endpoint||"").trim();
+  if(!id||!label||!endpoint){emit("notify","error","提供商 ID / 名称 / 端点均必填","");return}
+  savingProvider.value=true;
+  try{
+    const next=providerList.value.filter(p=>String(p.id)!==id).concat([{id,label,endpoint,api_key:providerDraft.value.api_key||"",models:[]}]);
+    // 通过配置变更集保存 llm.providers；api_key 留空表示保持线上原值
+    const patch:Record<string,any>={llm:{providers:{}}};
+    for(const p of next){patch.llm.providers[p.id]={label:p.label,endpoint:p.endpoint};if(p.api_key)patch.llm.providers[p.id].api_key=p.api_key}
+    const cs=await api<any>("/api/config/change-sets",json("POST",{patch}));
+    await api<any>(`/api/config/change-sets/${cs.id}/apply`,json("POST",{}));
+    emit("notify","success","提供商已保存并应用",`${label} 已加入，可在上方测试连接`);
+    await loadProviders();cancelProvider();
+  }catch(e:any){emit("notify","error","提供商保存失败",e.message)}finally{savingProvider.value=false}
+}
+async function removeProvider(id:string){
+  if(savingProvider.value)return;
+  if(!window.confirm(`删除提供商 ${id}？`))return;
+  savingProvider.value=true;
+  try{
+    const next=providerList.value.filter(p=>String(p.id)!==String(id));
+    const patch:Record<string,any>={llm:{providers:{}}};
+    for(const p of next){patch.llm.providers[p.id]={label:p.label,endpoint:p.endpoint}}
+    const cs=await api<any>("/api/config/change-sets",json("POST",{patch}));
+    await api<any>(`/api/config/change-sets/${cs.id}/apply`,json("POST",{}));
+    emit("notify","success","提供商已删除","");await loadProviders();cancelProvider();
+  }catch(e:any){emit("notify","error","提供商删除失败",e.message)}finally{savingProvider.value=false}
+}
+// —— 访问安全：修改 WebUI 登录令牌 ——
+const tokenCurrent=ref("");const tokenNew=ref("");const tokenConfirm=ref("");const changingToken=ref(false);
+async function changeTokenSubmit(){
+  if(changingToken.value)return;
+  if(!tokenCurrent.value){emit("notify","error","请输入当前令牌","");return}
+  if(tokenNew.value.length<32){emit("notify","error","新令牌至少 32 位随机字符串","");return}
+  if(tokenNew.value!==tokenConfirm.value){emit("notify","error","两次输入的新令牌不一致","");return}
+  changingToken.value=true;
+  try{
+    const r=await changeWebuiToken(tokenCurrent.value,tokenNew.value);
+    emit("notify",r.ok?"success":"error","令牌已更新",r.restart_scheduled?"服务正在重启，请用新令牌重新登录":"请重新登录");
+    tokenCurrent.value="";tokenNew.value="";tokenConfirm.value="";
+    if(r.restart_scheduled)window.setTimeout(()=>window.location.assign("/login"),2500);
+  }catch(e:any){emit("notify","error","令牌修改失败",e.message)}finally{changingToken.value=false}
+}
 onMounted(()=>{load();window.addEventListener("anima:settings-section",openSettingsSection)});
 onBeforeUnmount(()=>window.removeEventListener("anima:settings-section",openSettingsSection));
 </script>
@@ -64,6 +114,18 @@ onBeforeUnmount(()=>window.removeEventListener("anima:settings-section",openSett
         <section class="settings-section"><div class="settings-section-head"><div><h3>快速连接</h3><p>先测试新连接，确认模型列表可用后再生成变更。</p></div><button class="action-button subtle" :disabled="testing" @click="testProvider"><TestTube2 :size="15"/>{{ testing?'测试中':'测试连接' }}</button></div>
           <div class="provider-strip"><button v-for="provider in providers" :key="provider.id" :class="{active:(draft['llm.active_provider']||activeProvider)===provider.id}" @click="setDraft('llm.active_provider',provider.id)"><span><i :class="{configured:provider.configured}"/>{{ provider.label }}</span><small>{{ provider.model }}</small></button></div>
           <div v-if="testResult" class="test-result" :class="{ok:testResult.ok}"><Check v-if="testResult.ok" :size="17"/><CircleAlert v-else :size="17"/><span><strong>{{ testResult.ok?'连接成功':'连接失败' }}</strong><small>{{ testResult.ok?`${testResult.latency_ms} ms · 找到 ${testResult.models?.length||0} 个模型`:testResult.message }}</small></span></div>
+          <div class="provider-manage-head"><span>已配置提供商（{{ providerList.length }}）</span><button class="action-button subtle" @click="newProvider"><Plus :size="15"/>新增提供商</button></div>
+          <div class="provider-list"><article v-for="p in providerList" :key="p.id"><div><strong>{{ p.label }}</strong><small>{{ p.id }} · {{ p.endpoint }}</small></div><span><button class="icon-button" aria-label="编辑" @click="editProvider(p)"><Settings2 :size="16"/></button><button class="icon-button danger-icon" aria-label="删除" @click="removeProvider(String(p.id))"><X :size="16"/></button></span></article></div>
+          <div v-if="editingProvider" class="provider-edit">
+            <label class="field"><span>提供商 ID</span><input :disabled="editingProvider!=='__new__'" v-model="providerDraft.id" placeholder="amd / openai ..."/></label>
+            <label class="field"><span>名称</span><input v-model="providerDraft.label" placeholder="显示名称"/></label>
+            <label class="field"><span>Base URL</span><input v-model="providerDraft.endpoint" placeholder="http://host:port/v1"/></label>
+            <label class="field"><span>API Key</span><input type="password" v-model="providerDraft.api_key" :placeholder="editingProvider==='__new__'?'输入密钥':'留空保持原值'"/></label>
+            <div class="provider-edit-actions">
+              <button class="action-button subtle" :disabled="savingProvider" @click="saveProvider">{{ savingProvider?'保存中':'保存提供商' }}</button>
+              <button class="action-button subtle" @click="cancelProvider">取消</button>
+            </div>
+          </div>
         </section>
         <section class="settings-section"><div class="settings-section-head"><div><h3>默认模型与连接参数</h3><p>留空的 API Key 会保持线上原值。</p></div></div><div class="field-grid">
           <div v-for="field in visibleFields.filter(f=>!['providers','routes'].includes(f.type))" :key="field.path" class="field config-field"><div class="field-top"><label :for="field.path">{{ field.label }}</label><span :class="`risk-${field.risk}`">{{ field.risk==='green'?'即时':field.risk==='yellow'?'需重启':'高风险' }}</span></div>
@@ -74,6 +136,15 @@ onBeforeUnmount(()=>window.removeEventListener("anima:settings-section",openSett
         </div></section>
         <section class="settings-section route-section"><div class="settings-section-head"><div><h3>模块模型路由</h3><p>主聊天换模型，不会强迫表情审核或认知模块一起切换。</p></div></div><datalist id="model-options"><option v-for="model in availableModels" :key="model" :value="model"/></datalist><div class="route-table"><div class="route-row route-header"><span>模块</span><span>当前模型</span><span>今日用量</span></div><div v-for="route in routes" :key="route.id" class="route-row"><span><strong>{{ route.label }}</strong><small>{{ route.inherited?'继承默认模型':'独立路由' }}</small></span><label><input :value="draft[`llm.module_models.${route.id}`]??(route.inherited?'':route.model)" list="model-options" :placeholder="`继承 ${getPath(state,'llm.model')}`" @input="setDraft(`llm.module_models.${route.id}`,($event.target as HTMLInputElement).value)"/></label><span class="route-usage"><strong>{{ formatNumber(route.usage?.total_tokens) }}</strong><small>{{ route.usage?.calls||0 }} 次</small></span></div></div></section>
         <section class="settings-section usage-section"><div class="settings-section-head"><div><h3>Token 与调用统计</h3><p>不保存 Prompt 或回复正文；缺失 usage 时会明确标记估算。</p></div><div class="segmented"><button v-for="item in ['today','7d','30d']" :key="item" :class="{active:range===item}" @click="loadUsage(item)">{{ item==='today'?'今天':item }}</button></div></div><div class="usage-cards"><article><small>总 Token</small><strong>{{ formatNumber(usage?.total_tokens) }}</strong><span>输入 {{ formatNumber(usage?.input_tokens) }} · 输出 {{ formatNumber(usage?.output_tokens) }}</span></article><article><small>调用 / 失败</small><strong>{{ formatNumber(usage?.calls) }} / {{ usage?.failures||0 }}</strong><span>{{ usage?.estimated_calls||0 }} 次为估算</span></article><article><small>平均 / P95 延迟</small><strong>{{ Number(usage?.avg_latency_ms||0).toFixed(0) }} / {{ Number(usage?.p95_latency_ms||0).toFixed(0) }}ms</strong><span>端到端模型请求</span></article></div><div class="module-usage"><article v-for="item in usage?.modules?.slice(0,10)" :key="item.module"><span><strong>{{ item.module }}</strong><small>{{ item.calls }} 次 · {{ formatNumber(item.total_tokens) }}</small></span><i><b :style="{width:`${Math.max(3,item.total_tokens/maxModuleTokens*100)}%`}"/></i></article></div></section>
+      </template>
+      <template v-else-if="category==='security'">
+        <section class="settings-section"><div class="settings-section-head"><div><h3>WebUI 登录令牌</h3><p>修改后服务将重启，需立即用新令牌重新登录。当前令牌至少 32 位随机字符串。</p></div></div><div class="token-form">
+          <label class="field"><span>当前令牌</span><input :type="tokenCurrent?'password':'password'" v-model="tokenCurrent" placeholder="当前令牌" autocomplete="off"/></label>
+          <label class="field"><span>新令牌</span><input type="password" v-model="tokenNew" placeholder="新的随机令牌（≥32 位）" autocomplete="off"/></label>
+          <label class="field"><span>确认新令牌</span><input type="password" v-model="tokenConfirm" placeholder="再次输入新令牌" autocomplete="off"/></label>
+          <button class="action-button subtle danger" :disabled="changingToken" @click="changeTokenSubmit"><KeyRound :size="15"/>{{ changingToken?'保存中':'更新令牌并重启' }}</button>
+        </div></section>
+        <section class="settings-section"><div class="settings-section-head"><div><h3>会话</h3><p>当前浏览器会话为 HttpOnly Cookie，登出即可清除。</p></div></div><p class="hint-line">需要切号或结束会话时，点击右上角「登出」。</p></section>
       </template>
       <template v-else-if="['behavior','perception','expression','cognition'].includes(category)">
         <section v-if="category==='behavior'" class="autonomy-console"><div><small>AUTONOMY SAFETY SWITCH</small><h3>{{ autonomy?.running?'自主心跳正在运行':'自主心跳已暂停' }}</h3><p>今日已主动发言 {{ autonomy?.spoke_today||0 }} 次 · 已感知 {{ autonomy?.groups_known||0 }} 个群。暂停只关闭主动行为，私聊与 @ 回复仍保留。</p></div><button class="action-button" :class="{danger:autonomy?.running}" :disabled="controllingAutonomy" @click="controlAutonomy(autonomy?.running?'pause':'resume')"><Zap :size="15"/>{{ controllingAutonomy?'处理中':autonomy?.running?'暂停主动行为':'恢复主动行为' }}</button></section>
@@ -102,4 +173,5 @@ onBeforeUnmount(()=>window.removeEventListener("anima:settings-section",openSett
 .autonomy-console{display:flex;align-items:center;justify-content:space-between;gap:18px;padding:23px 22px;border-bottom:1px solid var(--line);background:radial-gradient(circle at 88% 25%,rgba(196,246,110,.14),transparent 33%),rgba(196,246,110,.025)}.autonomy-console small{color:var(--lime);font:700 var(--fs-xs) ui-monospace,monospace;letter-spacing:1px}.autonomy-console h3{margin:6px 0 0;font-size:13px}.autonomy-console p{max-width:470px;margin:6px 0 0;color:var(--muted);font-size:var(--fs-xs);line-height:1.55}.action-button.danger{border-color:rgba(255,123,133,.45);background:rgba(255,123,133,.12);color:#ffabb2}@media(max-width:600px){.autonomy-console{display:block}.autonomy-console .action-button{width:100%;margin-top:14px}}
 .group-policy-editor{padding:22px;border-bottom:1px solid var(--line);background:rgba(123,219,223,.025)}.group-policy-editor>.settings-section-head>span{color:var(--cyan);font:700 var(--fs-xs) ui-monospace,monospace}.group-policy-list{display:grid;gap:1px;background:var(--line)}.group-policy-list article{min-height:57px;padding:9px 11px;display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--surface-3)}.group-policy-list strong,.group-policy-list small{display:block}.group-policy-list strong{font-size:var(--fs-sm)}.group-policy-list small{margin-top:4px;color:var(--muted);font-size:var(--fs-xs)}.group-policy-list article>span{display:flex;gap:4px}.danger-icon{color:var(--red)}.group-policy-form{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px}.group-policy-form>input{width:126px;min-height:36px;padding:0 9px;border:1px solid var(--line);background:var(--surface-input-solid);color:var(--ink);font-size:var(--fs-xs)}.mini-switch{display:flex;align-items:center;gap:4px;color:var(--muted);font-size:var(--fs-xs);cursor:pointer}.mini-switch input{accent-color:var(--lime)}.mini-switch span{display:none}@media(max-width:600px){.group-policy-form{display:grid;grid-template-columns:1fr 1fr}.group-policy-form>input,.group-policy-form>.action-button{width:100%}}
 .tools-note{margin:6px 0 14px;color:var(--muted);font-size:var(--fs-xs);line-height:1.5}.tool-perm-table{border:1px solid var(--line);border-radius:4px;overflow:hidden;margin-top:10px}.tool-perm-header{display:grid;grid-template-columns:110px 1fr 120px 70px;gap:8px;align-items:center;min-height:32px;padding:6px 11px;background:rgba(255,255,255,.035);font-size:var(--fs-xs);color:var(--muted);border-bottom:1px solid var(--line)}.tool-perm-row{display:grid;grid-template-columns:110px 1fr 120px 70px;gap:8px;align-items:center;min-height:44px;padding:6px 11px;border-bottom:1px solid var(--line)}.tool-perm-row:last-child{border-bottom:0}.tool-name strong{font-size:var(--fs-xs)}.tool-desc small{color:var(--muted);font-size:var(--fs-xs);line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}.tool-level select{width:100%;min-height:28px;padding:0 4px;border:1px solid var(--line);background:var(--surface-input-solid);color:var(--ink);font-size:var(--fs-xs);border-radius:3px}.tool-status{display:flex;gap:4px;flex-wrap:wrap}.tool-badge{padding:2px 5px;border-radius:3px;font-size:var(--fs-xs);font-weight:700}.tool-badge.enabled{background:rgba(196,246,110,.1);color:var(--lime)}.tool-badge.disabled{background:rgba(255,123,133,.08);color:var(--red)}.tool-badge.danger{background:rgba(255,201,107,.1);color:var(--amber)}@media(max-width:600px){.tool-perm-header,.tool-perm-row{grid-template-columns:80px 1fr 90px 60px;font-size:var(--fs-xs)}}
-</style>
+.provider-manage-head{display:flex;justify-content:space-between;align-items:center;margin-top:14px}.provider-list{display:grid;gap:8px;margin:10px 0}.provider-list article{display:flex;justify-content:space-between;align-items:center;padding:9px 11px;border:1px solid var(--line);border-radius:4px}.provider-list article strong{font-size:var(--fs-sm)}.provider-list article small{display:block;color:var(--muted);font-size:var(--fs-xs);margin-top:2px}.provider-edit{margin-top:12px;display:grid;gap:10px;padding:14px;border:1px solid var(--line);border-radius:6px;background:rgba(255,255,255,.02)}.provider-edit .field{display:grid;gap:4px}.provider-edit .field span{font-size:var(--fs-xs);color:var(--muted)}.provider-edit .field input{min-height:34px;padding:7px 10px;border:1px solid var(--line);background:var(--surface-input-solid);color:var(--ink);border-radius:4px;width:100%}.provider-edit-actions{display:flex;gap:8px}.token-form{display:grid;gap:12px;max-width:420px}.token-form .field{display:grid;gap:4px}.token-form .field span{font-size:var(--fs-xs);color:var(--muted)}.token-form .field input{min-height:36px;padding:8px 11px;border:1px solid var(--line);background:var(--surface-input-solid);color:var(--ink);border-radius:4px}.hint-line{color:var(--muted);font-size:var(--fs-xs);margin:0}</style>
+

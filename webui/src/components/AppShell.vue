@@ -1,17 +1,31 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
-  Bot, BrainCircuit, Boxes, Command, ChevronRight, Gauge, Menu,
+  Bot, BrainCircuit, Boxes, Command, ChevronRight, Gauge, Menu, LogOut,
   MessageSquareText, Puzzle, RadioTower, RefreshCw, Settings2, ShieldCheck, Sparkles, X
 } from "@lucide/vue";
 import { activeAbilityTab, activeView, navigate, type AbilityTab, type ViewId } from "../navigation";
 import CommandPalette, { type CommandItem } from "./CommandPalette.vue";
 import ThemeToggle from "./ThemeToggle.vue";
+import { api, bestEffort, json } from "../api";
 
 defineProps<{ connected: boolean; refreshing: boolean }>();
 const emit = defineEmits<{ refresh: [] }>();
 const drawer = ref(false);
 const commandOpen = ref(false);
+const loggingOut = ref(false);
+
+async function doLogout(): Promise<void> {
+  if (loggingOut.value) return;
+  loggingOut.value = true;
+  try {
+    await bestEffort(api<void>("/api/auth/logout", json("POST", {})), null);
+  } catch {
+    // 即使接口失败也强制回到登录页，避免卡在已失效的会话
+  } finally {
+    window.location.assign("/login");
+  }
+}
 
 type NavItem = {
   id: string;
@@ -163,6 +177,7 @@ onBeforeUnmount(() => window.removeEventListener("keydown", onGlobalKeydown));
           <ThemeToggle />
           <button class="command-trigger" title="快速命令 (Ctrl/⌘ K)" @click="commandOpen=true"><Command :size="15"/><span>命令</span><kbd>⌘K</kbd></button>
           <button class="action-button subtle" :disabled="refreshing" @click="emit('refresh')"><RefreshCw :size="16" :class="{ spin: refreshing }" />刷新</button>
+          <button class="action-button subtle danger" :disabled="loggingOut" @click="doLogout"><LogOut :size="16" />{{ loggingOut ? "登出中" : "登出" }}</button>
         </div>
       </header>
       <div class="content-frame"><slot /></div>

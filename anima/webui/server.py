@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
 from aiohttp import web
+from pydantic import SecretStr
 from .login_page import LOGIN_HTML
 from .source_page import SOURCE_HTML
 from anima.core.config import AnimaConfig
@@ -205,6 +206,50 @@ class WebUIServer:
             self._csrf_tokens.add(csrf_token)
         response.set_cookie("anima_webui_csrf", csrf_token, httponly=False, samesite="Strict")
         return response
+
+    async def logout(self, request: web.Request) -> web.Response:
+        """清除 HttpOnly 会话 Cookie，使当前浏览器登出。"""
+        response = web.json_response({"ok": True})
+        response.del_cookie("anima_webui_token")
+        response.del_cookie("anima_webui_csrf")
+        return response
+
+    async def change_token(self, request: web.Request) -> web.Response:
+        """重新设置 WebUI 登录令牌：需验证明文当前令牌，写入配置并受控重启。
+
+        令牌属敏感字段，刻意绕过 manifest/变更集的脱敏逻辑，改走专用接口。
+        """
+        self._owner_id()
+        configured = self.config.token.get_secret_value() if self.config.token else ""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, TypeError):
+            raise web.HTTPBadRequest(text="需要 JSON 请求体")
+        current = str(body.get("current") or "")
+        new_token = str(body.get("new_token") or "")
+        if not configured or current != configured:
+            raise web.HTTPUnauthorized(text="当前令牌不正确")
+        if len(new_token) < 32:
+            raise web.HTTPBadRequest(text="新令牌至少 32 位随机字符串")
+        # 写回配置（复用 config_service 的落盘与重启路径，但仅改 webui.token）
+        path = getattr(self.core, "config_path", None)
+        if not path:
+            raise web.HTTPBadRequest(text="测试实例不可改令牌")
+        validated = AnimaConfig.model_validate(self.config.model_dump())
+        validated.webui.token = SecretStr(new_token)
+        from .config_service import ConfigService as _CS
+        backup_path = _CS._write_yaml(
+            Path(path),
+            _CS._plain(validated.model_dump()),
+            self.core.persistence.data_dir / "config_backups",
+        )
+        if not backup_path:
+            raise web.HTTPInternalServerError(text="写入配置失败")
+        self.core.config = validated
+        self.core.audit.emit("webui_token_changed", reviewer=self._owner_id())
+        # 立即让旧 Cookie 失效：下次请求会因 token 不符而跳登录页
+        self._schedule_restart()
+        return web.json_response({"ok": True, "restart_scheduled": True})
 
     @web.middleware
     async def _auth(self, request: web.Request, handler: Any) -> web.StreamResponse:

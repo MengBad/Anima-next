@@ -66,6 +66,8 @@ def _register_pages(app: web.Application, s: "WebUIServer") -> None:
 def _register_auth(app: web.Application, s: "WebUIServer") -> None:
     app.add_routes([
         web.post("/api/auth/login", s.login),
+        web.post("/api/auth/logout", s.logout),
+        web.post("/api/webui/change-token", s.change_token),
     ])
 
 

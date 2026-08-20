@@ -128,3 +128,14 @@ export async function getOsOverview(): Promise<Record<string, unknown>> {
 export async function postOsCommand(command: string): Promise<OsCommandResult> {
   return api<OsCommandResult>("/api/os/command", json("POST", { command }));
 }
+
+export async function logout(): Promise<void> {
+  await api<void>("/api/auth/logout", json("POST", {}));
+}
+
+export async function changeWebuiToken(current: string, newToken: string): Promise<{ ok: boolean; restart_scheduled: boolean }> {
+  return api<{ ok: boolean; restart_scheduled: boolean }>(
+    "/api/webui/change-token",
+    json("POST", { current, new_token: newToken }),
+  );
+}
