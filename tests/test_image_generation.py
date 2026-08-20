@@ -77,10 +77,11 @@ async def test_llm_image_endpoint_uses_b64_json_without_size():
 
     async def endpoint(request):
         received.update(await request.json())
-        return web.json_response({"data": [{"b64_json": base64.b64encode(_PNG).decode()}]})
+        url = "data:image/png;base64," + base64.b64encode(_PNG).decode()
+        return web.json_response({"choices": [{"message": {"images": [{"image_url": {"url": url}}]}}]})
 
     app = web.Application()
-    app.router.add_post("/v1/images/generations", endpoint)
+    app.router.add_post("/v1/chat/completions", endpoint)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -89,7 +90,10 @@ async def test_llm_image_endpoint_uses_b64_json_without_size():
     client = LLMClient(f"http://127.0.0.1:{port}/v1", "key")
     try:
         assert await client.generate_image("蓝色圆形", model="image-model", max_bytes=1024) == _PNG
-        assert received == {"model": "image-model", "prompt": "蓝色圆形"}
+        assert received == {"model": "image-model",
+                            "messages": [{"role": "user",
+                                          "content": [{"type": "text", "text": "蓝色圆形"}]}],
+                            "max_tokens": 4096}
     finally:
         await client.close()
         await runner.cleanup()
