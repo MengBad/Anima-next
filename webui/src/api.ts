@@ -32,12 +32,19 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   if (!response.ok) {
     let message = `${response.status} ${response.statusText}`;
+    // 先按 Content-Type 决定读法，避免 json() 失败后 body 流已读导致 text() 报
+    // "body stream already read"（例如 403/非 JSON 错误体）。
+    const isJson = (response.headers.get("content-type") || "").includes("application/json");
     try {
-      const payload = await response.json();
-      message = payload.message || payload.error || JSON.stringify(payload);
+      if (isJson) {
+        const payload = await response.json();
+        message = payload.message || payload.error || JSON.stringify(payload);
+      } else {
+        const text = await response.text();
+        if (text) message = text;
+      }
     } catch {
-      const text = await response.text();
-      if (text) message = text;
+      // 忽略二次解析失败，保留 status + statusText
     }
     throw new ApiError(response.status, message.replace(/^\d+: /, ""));
   }
