@@ -19,7 +19,7 @@ from pydantic import SecretStr
 from .login_page import LOGIN_HTML
 from .source_page import SOURCE_HTML
 from anima.core.config import AnimaConfig
-from anima.core.config_service import ConfigService
+from anima.core.config_service import ConfigService, _plain
 
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
@@ -235,11 +235,11 @@ class WebUIServer:
         path = getattr(self.core, "config_path", None)
         if not path:
             raise web.HTTPBadRequest(text="测试实例不可改令牌")
-        validated = AnimaConfig.model_validate(self.config.model_dump())
+        validated = AnimaConfig.model_validate(self.core.config.model_dump())
         validated.webui.token = SecretStr(new_token)
         backup_path = self.config_service._write_yaml(
             Path(path),
-            self.config_service._plain(validated.model_dump()),
+            _plain(validated.model_dump()),
             self.core.persistence.data_dir / "config_backups",
         )
         if not backup_path:
