@@ -227,9 +227,15 @@ class WebUIServer:
             if request.method not in {"GET", "HEAD", "OPTIONS"} and not request.headers.get("Authorization"):
                 csrf_header = request.headers.get("X-Anima-CSRF", "")
                 csrf_cookie = request.cookies.get("anima_webui_csrf", "")
-                # 验证：header 与 cookie 一致（double-submit）且服务端已知该 token
-                if not csrf_header or csrf_header != csrf_cookie or csrf_header not in self._csrf_tokens:
+                # double-submit：header 与 cookie 必须一致（攻击者无法同时拿到两者）。
+                # 服务端集合仅用于登录时发放验证；重启后集合清空但浏览器仍持旧 token，
+                # 此时 double-submit 仍足以防 CSRF，故接受并重新登记，避免强制重登。
+                if not csrf_header or csrf_header != csrf_cookie:
                     raise web.HTTPForbidden(text="需要 CSRF 校验")
+                if csrf_header not in self._csrf_tokens:
+                    if len(self._csrf_tokens) > 64:
+                        self._csrf_tokens.clear()
+                    self._csrf_tokens.add(csrf_header)
         return await handler(request)
 
     async def health(self, request: web.Request) -> web.Response:
