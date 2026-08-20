@@ -48,11 +48,17 @@ class ImageGenerationManager:
         if llm is None or not hasattr(llm, llm_method):
             raise RuntimeError("当前 LLM 客户端不支持该图像接口")
         fn = getattr(llm, llm_method)
+        # 生图模型解析优先级（与 WebUI「模块模型路由」一致）：
+        #   1. llm.module_models.image_generation（WebUI 下拉可选，最优先）
+        #   2. image_generation.model（显式兜底，仍可配置）
+        #   3. 全空 → None，由 model_for() 回落 llm.model（默认文本模型，需在①②至少一处配图像模型）
+        routed = (getattr(llm, "module_models", None) or {}).get("image_generation")
+        model = (routed or "").strip() or (cfg.model or "").strip() or None
         if input_image_b64 is not None:
-            image = await fn(prompt, model=cfg.model, max_bytes=cfg.max_output_bytes,
+            image = await fn(prompt, model=model, max_bytes=cfg.max_output_bytes,
                              input_image_b64=input_image_b64)
         else:
-            image = await fn(prompt, model=cfg.model, max_bytes=cfg.max_output_bytes)
+            image = await fn(prompt, model=model, max_bytes=cfg.max_output_bytes)
         if not image:
             raise RuntimeError("上游未返回可用图片")
         suffix = _image_suffix(image)

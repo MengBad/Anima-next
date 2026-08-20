@@ -25,6 +25,21 @@ llm:
     - "gemini-3-flash"
   circuit_failure_threshold: 3             # 连续可恢复失败后短暂熔断
   circuit_cooldown_sec: 30
+  # 模块级模型路由：为特定子系统覆盖 llm.model，键是模块名（见 anima/llm/__init__.py 的
+  # scoped_llm / module_models 与 WebUI「模型控制中心→模块模型路由」）。留空继承默认模型。
+  # 示例：让 SelfCode 工程代理用中转站的 DeepSeek-V4-Flash-AMD。
+  #   module_models:
+  #     selfcode: "DeepSeek-V4-Flash-AMD"
+  #   providers:
+  #     amd:
+  #       label: "AMD 中转站"
+  #       endpoint: "http://127.0.0.1:8317/v1"
+  #       api_key: ""                      # 中转站 Bearer
+  #       model: "DeepSeek-V4-Flash-AMD"
+  #   active_provider: "amd"
+  module_models: {}
+  providers: {}
+  active_provider: "default"
 
 vector:
   enabled: true
@@ -146,7 +161,8 @@ vision:                                    # 全量多模态视觉理解（真·
 
 image_generation:
   enabled: false                            # 仅 owner 调用；启用前确认网关 images/generations 可用
-  model: "gemini-3.1-flash-image"
+  model: "gemini-3.1-flash-image"           # 生图模型。优先级：llm.module_models.image_generation > 此字段。
+                                            # 两者皆配时模块路由优先；此字段留空则回落模块路由或 llm.model（需为图像模型）
   daily_limit: 0                            # 当日成功生成图片上限；0 = 不限制，仍受权限/审批约束
   max_output_bytes: 16777216                # 单张图片最大 16MB
 
@@ -274,7 +290,11 @@ self_code:
   model: ""                                  # 空 = 复用 llm.model
   max_review_rounds: 2
   critic_enabled: true
-  coder_backend: "auto"                      # auto | claude | native
+  coder_backend: "native"                  # auto | claude | native
+                                           # auto：检测到 claude 二进制优先用 Claude Code，否则回落 native。
+                                           # claude：强制走 Claude Code CLI（需配 anthropic_api_key 或登录）。
+                                           # native：直接用 bot 的 LLM 生成模块（零外部依赖，最稳）。
+                                           # 若用 native 并指定模型，配 llm.module_models.selfcode 或本块的 model。
 
 webui:
   # 默认关闭且只监听本机；若改为非回环地址，必须设置 token 并通过反向代理加密。
