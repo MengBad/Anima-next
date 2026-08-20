@@ -237,10 +237,9 @@ class WebUIServer:
             raise web.HTTPBadRequest(text="测试实例不可改令牌")
         validated = AnimaConfig.model_validate(self.config.model_dump())
         validated.webui.token = SecretStr(new_token)
-        from .config_service import ConfigService as _CS
-        backup_path = _CS._write_yaml(
+        backup_path = self.config_service._write_yaml(
             Path(path),
-            _CS._plain(validated.model_dump()),
+            self.config_service._plain(validated.model_dump()),
             self.core.persistence.data_dir / "config_backups",
         )
         if not backup_path:
