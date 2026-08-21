@@ -424,12 +424,20 @@ class WebUIServer:
             limit = 1440
         history = getattr(self.core, "health_history", None)
         samples = history.query(start=start, end=now + 1, limit=limit) if history else []
+        # R16: expose a derived anomaly summary over the same window so the
+        # endpoint can answer "what happened / any anomaly" (read-only).
+        if history is not None and hasattr(history, "anomaly_report"):
+            hours = max(1.0, seconds / 3600.0) if seconds else 24.0
+            anomalies = history.anomaly_report(hours=hours)
+        else:
+            anomalies = {"samples": 0, "summary": "no anomaly_report", "anomalies": []}
         return web.json_response({
             "range": value,
             "start": start,
             "end": now,
             "samples": samples,
             "meta": history.health() if history else {"samples": 0},
+            "anomaly": anomalies,
         })
 
     async def backups(self, request: web.Request) -> web.Response:
