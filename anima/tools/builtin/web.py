@@ -38,6 +38,62 @@ def _strip_tags(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
 
 
+# ---- 权威域加权（SearXNG/免费抓取结果再排序）----
+# 权威域：加权重，优先让模型看到可信来源。
+_AUTHORITY_DOMAIN_RE = re.compile(
+    r"(wikipedia\.org|baike\.baidu\.com|gov\.cn|gov\.|^gov|"
+    r"people\.com\.cn|xinhuanet\.com|news\.cn|chinadaily\.com\.cn|"
+    r"reuters\.com|bloomberg\.com|apnews\.com|bbc\.com|nytimes\.com|"
+    r"nature\.com|sciencedirect\.com|pubmed\.ncbi\.nlm\.nih\.gov|"
+    r"arxiv\.org|doi\.org|github\.com|stackoverflow\.com|mdn\.mozilla\.org)",
+    re.I,
+)
+# SEO/内容农场：降权，避免占满结果。
+_SPAM_DOMAIN_RE = re.compile(
+    r"(\.top|\.xyz|\.click|\.link|\.buzz|\.site|\.icu|\.club|\.vip|"
+    r"\.work|\.live|\.fun|\.shop|\.store|\.info|\.bid|\.loan|\.gq|\.ml|\.tk)",
+    re.I,
+)
+
+
+def _url_domain(u: str) -> str:
+    try:
+        from urllib.parse import urlparse
+        return (urlparse(u).netloc or "").lower()
+    except Exception:
+        return ""
+
+
+def _authority_score(r: dict) -> float:
+    """给一条结果打权威分（正=优先，负=降权）。用于免费抓取结果再排序。"""
+    dom = _url_domain(r.get("url", ""))
+    if not dom:
+        return 0.0
+    score = 0.0
+    if _AUTHORITY_DOMAIN_RE.search(dom):
+        score += 3.0
+    elif ".gov." in dom or ".edu." in dom or dom.endswith(".edu.cn"):
+        score += 2.5
+    # 主流新闻域含 date 子域（如 news.xxx）提升
+    if dom.startswith(("news.", "news", "m.")):
+        score += 1.0
+    if _SPAM_DOMAIN_RE.search(dom):
+        score -= 2.0
+    # 无正文纯聚合/目录站略降
+    if not (r.get("snippet") or "").strip():
+        score -= 1.0
+    return score
+
+
+def _rank_by_authority(results: list[dict]) -> list[dict]:
+    """按权威分稳定排序（同分保持原序），让可信来源靠前。"""
+    if not results:
+        return results
+    indexed = list(enumerate(results))
+    indexed.sort(key=lambda it: (_authority_score(it[1]), -it[0]), reverse=True)
+    return [r for _, r in indexed]
+
+
 async def tool_web_search(query: str, num_results: int = 5,
                           fetch_content: bool = True) -> str:
     """联网搜索（Bing，无需 API key）。
@@ -66,8 +122,64 @@ async def tool_web_search(query: str, num_results: int = 5,
     if _TIME_SENSITIVE_RE.search(query):
         _query_for_search = f"{query} {_today_str}"
 
+    # Tavily include_answer 的摘要答案（可变 cell，供头部展示）
+    _tavily_answer: list[str] = [""]
+
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
+
+    # ---- Tavily 配置（优先环境变量；未设置则回落到运行时配置）----
+    def _tavily_config() -> tuple[str, str, int, bool]:
+        """返回 (api_key, search_depth, max_results, include_answer)。
+
+        key 取自环境变量 ANIMA_TAVILY_API_KEY（由 systemd ``.secrets`` 注入），
+        与 LLM/embedding key 同一套外部化模式；未配置则返回空 key（Tavily 不可用，
+        自动降级 SearXNG/Bing）。
+        """
+        import os
+        key = os.environ.get("ANIMA_TAVILY_API_KEY", "").strip()
+        return key, "advanced", 5, True
+
+    def _search_tavily() -> list[dict]:
+        """Tavily 搜索（首选）：结构清晰、带发布时间，相关性显著优于免费抓取。
+
+        POST https://api.tavily.com/search，返回 title/url/content/score/published_date。
+        """
+        import json as _json
+        key, depth, mx, answer = _tavily_config()
+        if not key:
+            raise RuntimeError("tavily key missing")
+        req = urllib.request.Request(
+            "https://api.tavily.com/search",
+            data=_json.dumps({
+                "api_key": key,
+                "query": _query_for_search,
+                "search_depth": depth,
+                "max_results": mx,
+                "include_answer": answer,
+                "include_raw_content": False,
+            }).encode("utf-8"),
+            headers={"Content-Type": "application/json", "User-Agent": UA},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = _json.loads(resp.read().decode("utf-8", errors="replace"))
+        # include_answer=True 时 Tavily 直接给出摘要答案，供头部展示（提升即时准确度）
+        _tavily_answer[0] = str(data.get("answer") or "").strip()
+        results = []
+        for r in data.get("results", []):
+            title = str(r.get("title") or "").strip()
+            href = str(r.get("url") or "").strip()
+            snippet = str(r.get("content") or "").strip()
+            if not title or not href:
+                continue
+            d = {"title": title, "url": href, "snippet": snippet}
+            # Tavily 常带 published_date（RFC3339），保留供时效判断
+            pd = r.get("published_date")
+            if pd:
+                d["published_date"] = str(pd)[:10]
+            results.append(d)
+        return results
 
     def _search_bing() -> list[dict]:
         url = ("https://www.bing.com/search?q="
@@ -148,14 +260,24 @@ async def tool_web_search(query: str, num_results: int = 5,
         return results
 
     def _search() -> list[dict]:
-        """优先本地 SearXNG，失败时降级直接 Bing。"""
+        """Tavily 首选（高相关、带时效）；失败降级本地 SearXNG，最后直接 Bing。
+
+        免费抓取（SearXNG/Bing）结果按「权威域加权」再排序：wikipedia/gov/主流新闻
+        靠前，SEO 内容农场降权。
+        """
+        try:
+            results = _search_tavily()
+            if results:
+                return results  # Tavily 自带高质量相关排序，不二次重排
+        except Exception as e:
+            logger.info("Tavily 搜索不可用/失败(%s)，降级到 SearXNG/Bing", e)
         try:
             results = _search_searxng()
             if results:
-                return results
+                return _rank_by_authority(results)
         except Exception as e:
             logger.info("SearXNG 搜索失败(%s)，降级到直接 Bing", e)
-        return _search_bing()
+        return _rank_by_authority(_search_bing())
 
     def _fetch_page(u: str) -> tuple[str, str]:
         now = time.monotonic()
@@ -191,6 +313,8 @@ async def tool_web_search(query: str, num_results: int = 5,
         blocks = []
         for idx, r in enumerate(results[:n]):
             block = f"【{idx+1}】{r['title']}\n{r['url']}"
+            if r.get("published_date"):
+                block += f"\n发布日期: {r['published_date']}"
             if r["snippet"]:
                 block += f"\n摘要: {r['snippet']}"
             # 仅前 2 条抓正文，避免太慢/踩反爬
@@ -221,6 +345,13 @@ async def tool_web_search(query: str, num_results: int = 5,
             f"【时效提示】结果摘要里的相对时间（如“X 小时前”）请以今天 {_today_str} 为基准换算；"
             f"若网页/摘要未标注日期或明显过时，请在回答中明确说明这是陈旧信息，不要当作最新事实。"
         )
+        # Tavily include_answer 的摘要答案优先展示，作为即时可信依据
+        if _tavily_answer[0]:
+            header = (
+                f"当前日期是 {_today_str}（今天）。关于「{query}」，Tavily 直接给出的答案：\n"
+                f"{_tavily_answer[0]}\n\n"
+                f"以下为搜索结果（共 {len(results)} 条，展示前 {n} 条）："
+            )
         return header + "\n\n" + "\n\n".join(blocks)
 
     except Exception as exc:

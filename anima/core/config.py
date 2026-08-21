@@ -490,6 +490,22 @@ class ScraplingConfig(BaseModel):
     enabled: bool = False             # 默认关闭，需手动启用
 
 
+class TavilyConfig(BaseModel):
+    """Tavily 联网搜索（高相关、带时效字段）。
+
+    作为 ``search.web`` 的首选后端，显著优于免费抓取（SearXNG/Bing）。
+    api_key 为 SecretStr，优先读环境变量 ``ANIMA_TAVILY_API_KEY``，不落盘明文。
+    search_depth: basic=快速 / advanced=深度检索（更准、稍慢）。
+    max_results: 单次返回上限（默认 5）。
+    include_answer: 让 Tavily 直接给出摘要答案（可提升事实类回答的即时准确度）。
+    """
+    enabled: bool = True
+    api_key: SecretStr = SecretStr("")
+    search_depth: str = "advanced"    # basic | advanced
+    max_results: int = Field(default=5, ge=1, le=10)
+    include_answer: bool = True
+
+
 class ContextConfig(BaseModel):
     """聊天上下文预算。
 
@@ -708,6 +724,7 @@ class AnimaConfig(BaseModel):
     voice: VoiceConfig = Field(default_factory=VoiceConfig)
     meme: MemeConfig = Field(default_factory=MemeConfig)
     scrapling: ScraplingConfig = Field(default_factory=ScraplingConfig)
+    tavily: TavilyConfig = Field(default_factory=TavilyConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
     x_browser: XBrowserConfig = Field(default_factory=XBrowserConfig)
@@ -744,5 +761,8 @@ def load_config(path: str | Path | None = None) -> AnimaConfig:
         data.setdefault("vector", {})["embedding_api_key"] = env["ANIMA_EMBEDDING_API_KEY"]
     if "ANIMA_RERANK_API_KEY" in env:
         data.setdefault("vector", {})["rerank_api_key"] = env["ANIMA_RERANK_API_KEY"]
+    # Tavily search key externalized (secret never in config)
+    if "ANIMA_TAVILY_API_KEY" in env:
+        data.setdefault("tavily", {})["api_key"] = env["ANIMA_TAVILY_API_KEY"]
 
     return AnimaConfig.model_validate(data)
