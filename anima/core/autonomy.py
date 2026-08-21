@@ -210,6 +210,10 @@ class Heartbeat:
                  data_dir: str = "data"):
         self.core = core
         self.tick_sec = tick_sec
+        # R16: periodic anomaly self-check throttle + dedupe
+        self._last_anomaly_check = 0.0
+        self._last_anomaly_signature = None
+        self._anomaly_check_interval = 300.0
         self.cooldown_sec = cooldown_sec
         self.daily_max = daily_max
         self.ratio_max = ratio_max
@@ -387,12 +391,52 @@ class Heartbeat:
                     logger.exception("自身状态写入 self_notes 失败")
             self._self_status_cache[gid] = {"title": new_title, "card": new_card}
 
+    def _anomaly_selfcheck(self) -> None:
+        # R16 Production Reliability: derive 24h anomaly report and record
+        # severe findings into audit. Read-only, notification-only.
+        now = time.time()
+        if now - self._last_anomaly_check < self._anomaly_check_interval:
+            return
+        self._last_anomaly_check = now
+        hh = getattr(self.core, "health_history", None)
+        if hh is None or not hasattr(hh, "anomaly_report"):
+            return
+        try:
+            report = hh.anomaly_report(hours=24.0)
+        except Exception:
+            logger.exception("anomaly_report failed, isolated")
+            return
+        severe = [a for a in report.get("anomalies", [])
+                  if a.get("type") in ("process_restart", "channel_disconnect",
+                                       "watchdog_lag", "llm_circuit_open")]
+        if not severe:
+            return
+        items = sorted((a["type"], a.get("count", 0)) for a in severe)
+        sig = repr(items)
+        if sig == self._last_anomaly_signature:
+            return
+        self._last_anomaly_signature = sig
+        audit = getattr(self.core, "audit", None)
+        if audit is not None:
+            audit.emit("runtime_anomaly_detected",
+                       anomalies=items,
+                       summary=report.get("summary"),
+                       samples=report.get("samples"),
+                       latest_running=bool(report.get("latest", {}).get("running")),
+                       latest_connected=bool(report.get("latest", {}).get("channel_connected")))
+
     async def _tick(self) -> None:
+
         self._expire_active_feedback(time.time())
         try:
             self.core.health_history.record()
         except Exception:
             logger.exception("心跳健康采样失败")
+        # R16: periodic anomaly self-check (read-only + dedupe + audit)
+        try:
+            self._anomaly_selfcheck()
+        except Exception:
+            logger.exception("心跳异常自检失败，已隔离")
         try:
             backups = getattr(self.core, "backups", None)
             if backups is not None:
