@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
 import logging
 import re
 import threading
@@ -10,6 +11,15 @@ import time
 from collections import OrderedDict
 
 logger = logging.getLogger("anima.tools.web")
+
+# 时效词：命中即视为对「新鲜度」敏感，追加当前日期以引导引擎/模型优先取新。
+_TIME_SENSITIVE_RE = re.compile(
+    r"(今天|昨天|明天|最近|最新|新闻|资讯|实时|现在|当前|今日|本周|本月|"
+    r"股价|行情|汇率|天气|疫情|比分|赛程|发售|上线|更新|公告|政策|选举|"
+    r"奥运|世界杯|2026|2025|2024|today|news|latest|price|weather|stock|"
+    r"update|release|current)",
+    re.I,
+)
 
 # ---------------------------------------------------------------------------
 # 网页缓存（LRU + TTL）
@@ -47,12 +57,21 @@ async def tool_web_search(query: str, num_results: int = 5,
     import urllib.parse
     import urllib.request
 
+    # 时效锚点：让模型知道「今天是哪一天」，才能判断结果是否陈旧。
+    _today = datetime.date.today()
+    _today_str = _today.isoformat()
+    # 时效敏感查询：把绝对日期追加进 query，引导引擎优先返回近期结果，
+    # 避免拿几年前的文章回答「今天/最新」类问题。
+    _query_for_search = query
+    if _TIME_SENSITIVE_RE.search(query):
+        _query_for_search = f"{query} {_today_str}"
+
     UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
           "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 
     def _search_bing() -> list[dict]:
         url = ("https://www.bing.com/search?q="
-               + urllib.parse.quote(query) + "&setlang=zh-CN")
+               + urllib.parse.quote(_query_for_search) + "&setlang=zh-CN")
         req = urllib.request.Request(
             url,
             headers={"User-Agent": UA, "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
@@ -79,7 +98,7 @@ async def tool_web_search(query: str, num_results: int = 5,
     def _search_ddg() -> list[dict]:
         """DuckDuckGo HTML 版兜底——纯服务端渲染，不依赖 JS。"""
         url = "https://html.duckduckgo.com/html/"
-        data = urllib.parse.urlencode({"q": query}).encode()
+        data = urllib.parse.urlencode({"q": _query_for_search}).encode()
         req = urllib.request.Request(
             url, data=data,
             headers={"User-Agent": UA},
@@ -115,7 +134,7 @@ async def tool_web_search(query: str, num_results: int = 5,
         """本地 SearXNG 聚合搜索（多引擎，无需 API key）。"""
         import json as _json
         url = ("http://127.0.0.1:8888/search?q="
-               + urllib.parse.quote(query) + "&format=json")
+               + urllib.parse.quote(_query_for_search) + "&format=json")
         req = urllib.request.Request(url, headers={"User-Agent": UA})
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = _json.loads(resp.read().decode("utf-8", errors="replace"))
@@ -196,7 +215,12 @@ async def tool_web_search(query: str, num_results: int = 5,
         except Exception as e:  # 记忆化失败绝不拖累搜索本身
             logger.debug("web_search 自动记忆化跳过: %s", e)
 
-        header = f"关于「{query}」的搜索结果（共 {len(results)} 条，展示前 {n} 条）："
+        header = (
+            f"当前日期是 {_today_str}（今天）。关于「{query}」的搜索结果"
+            f"（共 {len(results)} 条，展示前 {n} 条）：\n"
+            f"【时效提示】结果摘要里的相对时间（如“X 小时前”）请以今天 {_today_str} 为基准换算；"
+            f"若网页/摘要未标注日期或明显过时，请在回答中明确说明这是陈旧信息，不要当作最新事实。"
+        )
         return header + "\n\n" + "\n\n".join(blocks)
 
     except Exception as exc:
