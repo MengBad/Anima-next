@@ -276,10 +276,16 @@ def format_rich_card_summary(card: dict[str, str]) -> str:
     return " ".join(parts)
 
 
-def parse_onebot_event(raw: dict) -> dict:
+def parse_onebot_event(raw: dict, *, known_self_id: "int | None" = None) -> dict:
     """将 OneBot11 原始事件归一化为 Anima 内部事件格式。
 
     返回 None 表示应静默丢弃（如 heartbeat）。
+
+    ``known_self_id`` 是渠道已掌握的 bot 自身 QQ（来自配置 ``qq.self_id``
+    或连接后自适应的 ``self.self_id``）。部分 NapCat 版本的下发事件不携带
+    ``self_id`` 字段，若完全依赖 ``raw.get("self_id")`` 会导致 @自己 检测
+    永久失效、群消息被判为 ``mention_only`` 而从不回复。因此将其作为兜底：
+    事件未携带 self_id 时回落到已知 self_id。
     """
     post_type = raw.get("post_type", "unknown")
 
@@ -289,11 +295,18 @@ def parse_onebot_event(raw: dict) -> dict:
 
     base_topic = ONE_BOT_EVENT_TYPES.get(post_type, f"event.{post_type}")
 
+    # 事件自带的 self_id 优先；下发的 message 事件可能缺失该字段，
+    # 此时回落到渠道已知的 self_id，保证 @自己 / 回复自己 检测可用。
+    _raw_self = raw.get("self_id")
+    _self = int(_raw_self) if _raw_self not in (None, "") else None
+    if _self is None and known_self_id is not None:
+        _self = int(known_self_id)
+
     event: dict[str, Any] = {
         "topic": base_topic,
         "raw": raw,
         "time": raw.get("time", int(time.time())),
-        "self_id": raw.get("self_id"),
+        "self_id": _self,
         "post_type": post_type,
     }
 
@@ -408,7 +421,11 @@ def parse_onebot_event(raw: dict) -> dict:
             event["images"] = images
 
         # @自己 / 回复自己 检测（用于强制回复逻辑）
-        self_id = raw.get("self_id")
+        # 优先用事件携带的 self_id；缺失时回落到渠道已知的 self_id，
+        # 否则 NapCat 不下发 self_id 的群环境会永远判成「没 @ 自己」。
+        self_id = event.get("self_id")
+        if self_id is None and known_self_id is not None:
+            self_id = int(known_self_id)
         mentions_self = False
         reply_to_self = False
         for seg in segments:
@@ -890,7 +907,7 @@ class OneBot11Adapter(Module):
 
     async def _dispatch_event_inner(self, raw: dict) -> None:
 
-        event = parse_onebot_event(raw)
+        event = parse_onebot_event(raw, known_self_id=self.self_id)
         if event is None:
             self._record_event_drop("unsupported")
             return
