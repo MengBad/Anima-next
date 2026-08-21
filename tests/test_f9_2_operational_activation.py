@@ -117,8 +117,13 @@ def test_f92_config_new_switches_default_off():
 
 
 def test_f92_config_surface_is_exactly_the_frozen_set():
-    """S1 冻结：治理 section 字段集恰好为下列七项（防止顺手加字段）。"""
-    assert set(CapabilityLayerConfig.model_fields) == {
+    """S1 冻结：治理 section 字段集 = 基础冻结七项 ∪ 显式白名单追加（防顺手加字段）。
+
+    - 基础七项必须全部存在（任一缺失即失败）；
+    - 实际字段不得超过「基础 ∪ 白名单追加」；
+    - 新增字段必须显式写入 _APPENDED 白名单（否则失败），迫使扩展经过确认而非顺手。
+    """
+    base = {
         "capability_mode",
         "pilot_capability_allowlist",
         "capability_gateway_mode",
@@ -127,6 +132,18 @@ def test_f92_config_surface_is_exactly_the_frozen_set():
         "transition_audit_enabled",
         "governance_data_dir",
     }
+    # 合法扩展白名单：R6.4/R8 python_exec 能力配置开关（gateway.py / tools 实际使用）。
+    appended = {
+        "python_exec_enabled",
+        "python_exec_permission_level",
+        "python_exec_require_audit",
+    }
+    expected = base | appended
+    assert base <= set(CapabilityLayerConfig.model_fields), "基础冻结字段缺失"
+    assert set(CapabilityLayerConfig.model_fields) == expected, (
+        f"治理 section 出现未声明白名单的字段："
+        f"{set(CapabilityLayerConfig.model_fields) - expected}"
+    )
 
 
 def test_f92_g01_gateway_mode_no_longer_silently_dropped(tmp_path: Path):
