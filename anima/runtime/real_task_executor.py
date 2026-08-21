@@ -103,6 +103,17 @@ class RealTaskExecutor(TaskExecutor):
         provider failure -> FAILED observation (never a crash, never a fake
         success).  Read-only facts are put after the act (F5.4a policy).
         """
+        # Per-key critical section: the check -> side-effect -> record sequence
+        # for the SAME key must be atomic so concurrent callers produce exactly
+        # one real side effect (P7.17-A Phase 4). Different keys never block.
+        if ledger is not None and hasattr(ledger, "lock_for"):
+            with ledger.lock_for(execution_key):
+                return self._execute_inner(task, execution_key, ledger)
+        return self._execute_inner(task, execution_key, ledger)
+
+    def _execute_inner(
+        self, task: ExecutionStep, execution_key: tuple, ledger: Optional[Any]
+    ) -> ExecutionObservation:
         # Idempotency gate: ledger HIT skips the provider call entirely.
         if ledger is not None:
             cached = ledger.get(execution_key)

@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import pathlib
 import re
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -63,7 +64,8 @@ def _record(scope, **overrides):
         pilot_enablement_id="pe-rt-001",
         operator="owner",
         scope_digest=scope.scope_digest,
-        approved_at="2026-08-11T18:33:00+08:00",
+        # 相对当前时间 1 小时前：保证 72h 窗口在任意运行时刻都有效（消除时间敏感）。
+        approved_at=(datetime.now(timezone.utc).astimezone() - timedelta(hours=1)).isoformat(),
     )
     defaults.update(overrides)
     return PilotEnablementRecord(**defaults)
@@ -163,10 +165,13 @@ def test_f_pilot_admit_conditions():
         gray_percent=0, window_hours=72,
     ) is False
     # window expired -> False
+    from datetime import datetime as _dt, timedelta as _td
+    _approved = _dt.fromisoformat(record.approved_at)
+    _expired_now = (_approved + _td(hours=100)).isoformat()
     assert pilot_admit(
         scope, record, switch, goal_id=goal, plan_id=plan,
         gray_percent=100, window_hours=72,
-        now="2026-08-15T00:00:00+08:00",
+        now=_expired_now,
     ) is False
     # cohort miss (goal outside prefix) -> False
     assert pilot_admit(

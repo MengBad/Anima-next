@@ -120,9 +120,12 @@ class TaskStore:
 
 
 class OwnerTaskAgent:
-    def __init__(self, core: Any):
+    def __init__(self, core: Any, pilot: Any = None):
         self.core = core
         self._locks: dict[str, asyncio.Lock] = {}
+        # P7.18 pilot wiring: defaults to None (legacy path); a wired PilotEntry
+        # admits pilot traffic through the gate, everything else stays legacy.
+        self._pilot = pilot
 
     async def execute(self, task: Task) -> str:
         lock = self._locks.setdefault(task.id, asyncio.Lock())

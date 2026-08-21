@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -54,7 +55,8 @@ def _record(scope):
         pilot_enablement_id="pe-rt-001",
         operator="owner",
         scope_digest=scope.scope_digest,
-        approved_at="2026-08-11T18:33:00+08:00",
+        # 相对当前时间 1 小时前：保证 72h 窗口任意时刻有效（消除时间敏感）。
+        approved_at=(datetime.now(timezone.utc).astimezone() - timedelta(hours=1)).isoformat(),
     )
 
 

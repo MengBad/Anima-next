@@ -42,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import threading
 from typing import Any, Optional
 
 from anima.core.persistence import PersistenceProvider  # storage primitive only
@@ -108,6 +109,11 @@ class ExecutionLedger:
         self._memory: dict[tuple, Any] = {}
         # durable backend (None => memory-only, F5.1-compatible)
         self._persistence = persistence
+        # per-key thread locks: serialise check-execute-record for the SAME key
+        # so concurrent callers produce exactly one side effect (P7.17-A Phase 4).
+        # Distinct keys never block each other.
+        self._locks: dict[tuple, threading.Lock] = {}
+        self._locks_guard = threading.Lock()
 
     # ---- read -----------------------------------------------------------
 
@@ -128,6 +134,16 @@ class ExecutionLedger:
         """Whether a fact is already recorded for this key (idempotency probe)."""
         return self.get(execution_key) is not None
 
+    def lock_for(self, execution_key: tuple) -> threading.Lock:
+        # Per-key lock (created on demand) so get->side-effect->put for the SAME
+        # key is atomic across threads; distinct keys never block each other.
+        with self._locks_guard:
+            lock = self._locks.get(execution_key)
+            if lock is None:
+                lock = threading.Lock()
+                self._locks[execution_key] = lock
+            return lock
+
     # ---- write ----------------------------------------------------------
 
     def put(self, execution_key: tuple, observation: ExecutionObservation) -> None:
@@ -141,6 +157,8 @@ class ExecutionLedger:
         The observation must be pure data (result/error/metadata JSON-serializable);
         a non-serializable payload raises at the ``write_json`` boundary.
         """
+        if self.has(execution_key):
+            return  # already recorded: original fact preserved, no overwrite
         if self._persistence is not None:
             payload = {
                 "key": _key_dict(execution_key),
@@ -151,3 +169,39 @@ class ExecutionLedger:
             self._memory[execution_key] = observation
         else:
             self._memory[execution_key] = observation
+
+    # ---- retention (L2) -------------------------------------------------
+
+    def cleanup(self, before: Optional[float] = None) -> int:
+        """Remove COMPLETED (success=True) records; preserve failed / recoverable.
+
+        L2 retention: a successful fact is done and safe to drop once retention
+        decides; failed / recoverable / unknown records are preserved for replay.
+        before=None removes ALL completed records. before is an optional unix-ts
+        cutoff resolved from metadata ts/recorded_at (absent => eligible).
+        """
+        removed = 0
+        for key in list(self._memory.keys()):
+            obs = self._memory.get(key)
+            if obs is None or not obs.success:
+                continue
+            if before is not None:
+                md = obs.metadata or {}
+                ts = md.get("ts") or md.get("recorded_at")
+                try:
+                    ts = float(ts) if ts is not None else None
+                except (TypeError, ValueError):
+                    ts = None
+                if ts is not None and ts >= before:
+                    continue
+            self._memory.pop(key, None)
+            removed += 1
+            if self._persistence is not None:
+                try:
+                    target = self._persistence.data_dir / _key_path(key)
+                    if target.exists():
+                        target.unlink()
+                    self._persistence.invalidate_cache(_key_path(key))
+                except Exception:
+                    pass
+        return removed
