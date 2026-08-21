@@ -530,6 +530,11 @@ def main():
         sftp.put(str(Path(PROJECT_ROOT) / "config.yaml"), f"{REMOTE_ROOT}/config.yaml")
     sftp.close()
     stage_dir = f"/tmp/anima-next-stage-{git_info['commit']}"
+    # 保护生产用户数据：源码包（gitignored 的 data/）绝不参与同步，
+    # 但为防未来任何意外（bundle 误含 data/、或 cp -a 覆盖），部署前先快照、
+    # 部署后强制恢复——data/ 永远以生产机上那份为准，不被源码覆盖。
+    run(f"rm -rf {REMOTE_ROOT}/data.deploy-bak && "
+        f"cp -a {REMOTE_ROOT}/data {REMOTE_ROOT}/data.deploy-bak 2>/dev/null || true")
     run(
         f"rm -rf {stage_dir} && mkdir -p {stage_dir} && "
         f"unzip -oq {bundle_remote} -d {stage_dir} && "
@@ -537,6 +542,9 @@ def main():
         f"test -n \"$release\" && cp -a \"$release\"/. {REMOTE_ROOT}/ && "
         f"rm -rf {stage_dir} {bundle_remote}"
     )
+    # 恢复生产数据目录（无论 bundle 是否含 data/，都以快照还原）
+    run(f"rm -rf {REMOTE_ROOT}/data && "
+        f"mv {REMOTE_ROOT}/data.deploy-bak {REMOTE_ROOT}/data 2>/dev/null || true")
     release_tmp.cleanup()
     print("[UPLOAD] Done. (one source bundle)")
 
