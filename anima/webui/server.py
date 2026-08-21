@@ -245,6 +245,10 @@ class WebUIServer:
         if not backup_path:
             raise web.HTTPInternalServerError(text="写入配置失败")
         self.core.config = validated
+        # 关键：self.config 在 __init__ 时固定指向旧的 webui 子对象，
+        # 仅替换 self.core.config 不会改变鉴权中间件读取的 token 引用。
+        # 必须同步刷新 self.config，否则新令牌永远不生效（旧 Cookie 仍可用）。
+        self.config = validated.webui
         self.core.audit.emit("webui_token_changed", reviewer=self._owner_id())
         # 立即让旧 Cookie 失效：下次请求会因 token 不符而跳登录页
         self._schedule_restart()
