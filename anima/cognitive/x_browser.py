@@ -159,8 +159,47 @@ class XBrowserSession:
                 break
         return out
 
+    @classmethod
+    async def _collect_tweet_images(cls, page, limit: int) -> list[str]:
+        """从 X 页面的 <article> 里提取推文配图 URL（pbs.twimg.com / cdn 等）。
+
+        X 推文图片通常在 <article> 内的 <img> 标签，src 指向媒体 CDN。
+        只取真实图片（src 含 /media/ 或 twimg），忽略头像/图标等小图。
+        返回去重后的图片 URL 列表。
+        """
+        try:
+            articles = await page.query_selector_all("article")
+        except Exception:
+            return []
+        out: list[str] = []
+        seen: set[str] = set()
+        for art in articles[: limit * 3]:
+            try:
+                imgs = await art.query_selector_all("img")
+            except Exception:
+                continue
+            for img in imgs:
+                try:
+                    src = (await img.get_attribute("src")) or ""
+                except Exception:
+                    continue
+                src = src.strip()
+                # 只认媒体图片：pbs.twimg.com/media 或含 /media/ 的 CDN 图
+                if not src:
+                    continue
+                low = src.lower()
+                if ("pbs.twimg.com/media" in low or "/media/" in low) and (
+                    "profile" not in low
+                ):
+                    if src not in seen:
+                        seen.add(src)
+                        out.append(src)
+                        if len(out) >= limit:
+                            return out
+        return out
+
     async def search(self, query: str, limit: int = 5) -> dict:
-        """搜索 X。返回 {ok, logged_in, tweets, note}。"""
+        """搜索 X。返回 {ok, logged_in, tweets, tweet_images, note}。"""
         if not self.enabled:
             return {"ok": False, "logged_in": False, "tweets": [], "note": "x_browser 未启用"}
         if not self._within_limit("search"):
@@ -181,17 +220,19 @@ class XBrowserSession:
                     await self._human_pause(0.8)
                 logged_in = await self._is_logged_in(page)
                 tweets = await self._collect_tweets(page, limit)
+                tweet_images = await self._collect_tweet_images(page, limit)
                 await page.close()
                 self._bump("search")
                 return {
                     "ok": True,
                     "logged_in": logged_in,
                     "tweets": tweets,
+                    "tweet_images": tweet_images,
                     "note": "" if logged_in else "未登录态（结果可能受限，请先人工登录保存 profile）",
                 }
             except Exception as e:  # noqa: BLE001
                 logger.warning("X 搜索失败（已隔离）: %s", e)
-                return {"ok": False, "logged_in": False, "tweets": [], "note": f"X 搜索异常: {e}"}
+                return {"ok": False, "logged_in": False, "tweets": [], "tweet_images": [], "note": f"X 搜索异常: {e}"}
 
     async def home_timeline(self, limit: int = 10) -> dict:
         """滚时间线/关注流。返回 {ok, logged_in, tweets, note}。"""

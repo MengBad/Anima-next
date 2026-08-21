@@ -3,17 +3,73 @@
 Agent 在需要实时、X 平台专属、或用户明确要求「去 X 查/在 X 上搜」的信息时使用。
 结果经 x_browser 的合规闸门（政治拒、违法R18 拒）后返回文本摘要。
 未登录态时结果可能受限，会在返回里注明。
+
+当用户要「照片 / 图片 / 拿图」时，用 want_images=True：工具会把推文配图下载到
+本地，并写入调用上下文 generated_image_paths，由出站层作为 QQ 图片段发送。
 """
 
 from __future__ import annotations
 
 import logging
+import os
+import time
+from pathlib import Path
 
 logger = logging.getLogger("anima.tools.x_search")
 
 
-async def tool_x_search(query: str, limit: int = 5) -> str:
-    """在 X（Twitter）上搜索内容并返回摘要。
+async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) -> str | None:
+    """经代理下载单张图片到本地，返回本地路径；失败返回 None。"""
+    import aiohttp
+
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+        ),
+        "Referer": "https://x.com/",
+    }
+    try:
+        async with aiohttp.ClientSession(
+            timeout=aiohttp.ClientTimeout(total=25, sock_connect=10)
+        ) as sess:
+            async with sess.get(url, headers=headers, proxy=proxy) as resp:
+                if resp.status != 200:
+                    logger.warning("X 图片下载 HTTP %s: %s", resp.status, url[:80])
+                    return None
+                data = await resp.read()
+                if not data:
+                    return None
+                # 从 URL 猜扩展名；fallback jpg
+                base = os.path.basename(url.split("?")[0])
+                ext = Path(base).suffix.lower()
+                if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
+                    ext = ".jpg"
+                fname = f"x_{int(time.time() * 1000)}_{len(data)}.{ext.lstrip('.')}"
+                dest = dest_dir / fname
+                dest.write_bytes(data)
+                return str(dest.resolve())
+    except Exception as e:  # noqa: BLE001
+        logger.warning("X 图片下载失败（已隔离）: %s", e)
+        return None
+
+
+def _write_image_paths(paths: list[str]) -> None:
+    """把已下载图片路径写入调用上下文 generated_image_paths，供出站发送。"""
+    try:
+        from anima.tools import get_call_context
+        ctx = get_call_context()
+        existing = ctx.setdefault("generated_image_paths", [])
+        if isinstance(existing, list):
+            for p in paths:
+                if p not in existing:
+                    existing.append(p)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("写入 generated_image_paths 失败（忽略）: %s", e)
+
+
+async def tool_x_search(query: str, limit: int = 5, want_images: bool = False) -> str:
+    """在 X（Twitter）上搜索内容并返回摘要；want_images=True 时同时返回推文配图。
 
     适用于：需要 X 平台实时/专属信息（如某账号动态、某话题讨论、用户要求
     「去 X 查一下 XX」）。返回命中的若干条推文文本（已过滤政治与违法内容）。
@@ -22,6 +78,8 @@ async def tool_x_search(query: str, limit: int = 5) -> str:
     Args:
         query: 搜索关键词（中文/英文均可）。
         limit: 返回条数，默认 5，范围 1-10。
+        want_images: 用户要「照片/图片/拿图」时为 True；工具会下载推文配图并
+            放入出站图片段（回复时会作为图片消息发送）。
     """
     query = str(query or "").strip()
     if not query:
@@ -33,6 +91,7 @@ async def tool_x_search(query: str, limit: int = 5) -> str:
         return "X 搜索模块不可用（x_browser 未加载）。"
 
     limit = max(1, min(10, int(limit or 5)))
+    want_images = bool(want_images)
     try:
         session = get_x_browser()
         if session is None or not session.enabled:
@@ -47,15 +106,36 @@ async def tool_x_search(query: str, limit: int = 5) -> str:
         return f"X 搜索未完成：{note}" if note else "X 搜索未完成（未知原因）。"
 
     tweets = res.get("tweets", [])
-    if not tweets:
-        note = res.get("note", "")
-        return ("X 上未找到相关公开内容。" + (f"（{note}）" if note else ""))
+    tweet_images = res.get("tweet_images", [])
 
+    # 用户要照片：下载推文配图并写入出站图片段
+    downloaded: list[str] = []
+    if want_images and tweet_images:
+        proxy = getattr(session, "proxy", "") or None
+        dest_dir = Path(getattr(session, "data_dir", "data/x_browser")) / "downloaded"
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        for url in tweet_images[: limit]:
+            p = await _download_image(url, dest_dir, proxy)
+            if p:
+                downloaded.append(p)
+        if downloaded:
+            _write_image_paths(downloaded)
+
+    # 构造文本摘要
     lines = []
     for i, t in enumerate(tweets[:limit], 1):
         lines.append(f"{i}. {t}")
     header = "X 搜索结果（已过滤政治/违法内容）："
     note = res.get("note", "")
     if note:
-        header += f"\n（{note}）"
+        header += "\n（" + str(note) + "）"
+
+    if want_images:
+        if downloaded:
+            header += "\n（已抓取 " + str(len(downloaded)) + " 张配图，将随回复发送）"
+        elif tweet_images:
+            header += "\n（推文含图但抓取失败，请稍后再试）"
+        else:
+            header += "\n（本批结果无配图）"
+
     return header + "\n" + "\n".join(lines)

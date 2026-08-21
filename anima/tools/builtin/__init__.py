@@ -290,10 +290,12 @@ def register_all_builtin(registry, core=None) -> None:
         "x_search",
         "在 X（Twitter）上搜索内容并返回摘要。适用于需要 X 平台实时/专属信息，"
         "或用户要求「去 X 查/在 X 上搜」时。返回命中的若干条推文文本（已过滤政治与违法内容）。"
-        "结果受账号登录态与每日额度限制；返回为空可能是额度用尽或未登录。",
+        "结果受账号登录态与每日额度限制；返回为空可能是额度用尽或未登录。"
+        "若用户要 X 上的照片/图片/配图，把 want_images 设为 true，工具会下载推文配图并作为图片消息返回。",
         {
             "query": {"type": "string", "description": "搜索关键词，如 'AI 最新进展' 或 '某账号动态'"},
             "limit": {"type": "integer", "description": "返回条数，默认 5，范围 1-10"},
+            "want_images": {"type": "boolean", "description": "用户要照片/图片/配图时设为 true，工具会下载推文配图"},
         },
         tool_x_search,
         required=["query"],
