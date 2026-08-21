@@ -135,3 +135,61 @@ class HealthHistory:
                 "latest_at": latest.get("ts") if latest else None,
                 "retention_samples": self.max_samples,
                 "sample_interval_sec": self.min_interval_sec}
+
+    def anomaly_report(self, *, hours: float = 24.0) -> dict[str, Any]:
+        now = time.time()
+        start = now - float(hours) * 3600.0
+        window = [x for x in self._samples if float(x.get('ts', 0.0) or 0.0) >= start]
+        if not window:
+            return {"hours": hours, "samples": 0, "summary": "no samples in window",
+                    "anomalies": [], "latest": None}
+        latest = window[-1]
+        anomalies = []
+        disc = [x for x in window if not bool(x.get('channel_connected'))]
+        if disc:
+            anomalies.append({"type": "channel_disconnect", "count": len(disc),
+                              "detail": "QQ channel disconnected on %d samples" % len(disc)})
+        nobeat = [x for x in window if not bool(x.get('heartbeat_running', True))]
+        if nobeat:
+            anomalies.append({"type": "heartbeat_loss", "count": len(nobeat),
+                              "detail": "heartbeat lost on %d samples" % len(nobeat)})
+        badwd = [x for x in window if not bool(x.get('watchdog_running', True))
+                 or float(x.get('watchdog_lag_sec', 0.0) or 0.0) > 5.0]
+        if badwd:
+            anomalies.append({"type": "watchdog_lag", "count": len(badwd),
+                              "detail": "watchdog lagged/stopped on %d samples" % len(badwd)})
+        circuit = [x for x in window if bool(x.get('llm_circuit_open'))]
+        if circuit:
+            anomalies.append({"type": "llm_circuit_open", "count": len(circuit),
+                              "detail": "LLM circuit breaker open on %d samples" % len(circuit)})
+        lreq = sum(int(x.get('llm_requests', 0) or 0) for x in window)
+        lfail = sum(int(x.get('llm_failures', 0) or 0) for x in window)
+        if lreq > 0 and (lfail / lreq) > 0.10:
+            anomalies.append({"type": "llm_high_failure", "count": lfail, "total": lreq,
+                              "detail": "LLM failure rate %.0f%% (%d/%d)" % ((lfail / lreq) * 100, lfail, lreq)})
+        bp = sum(int(x.get('events_backpressure_dropped', 0) or 0) for x in window)
+        obf = sum(int(x.get('outbound_failures', 0) or 0) for x in window)
+        if bp:
+            anomalies.append({"type": "backpressure_drop", "count": bp,
+                              "detail": "%d events dropped by backpressure" % bp})
+        if obf:
+            anomalies.append({"type": "outbound_failure", "count": obf,
+                              "detail": "%d outbound failures" % obf})
+        restarts = 0
+        prev = None
+        for x in window:
+            cur = bool(x.get('running'))
+            if prev is False and cur is True:
+                restarts += 1
+            prev = cur
+        if restarts:
+            anomalies.append({"type": "process_restart", "count": restarts,
+                              "detail": "detected %d process restarts" % restarts})
+        return {"hours": hours, "samples": len(window), "window_start": start,
+                "latest": {"ts": latest.get('ts'),
+                           "running": bool(latest.get('running')),
+                           "channel_connected": bool(latest.get('channel_connected')),
+                           "heartbeat_running": bool(latest.get('heartbeat_running'))},
+                "summary": "ok" if not anomalies else "%d anomaly types" % len(anomalies),
+                "anomalies": anomalies}
+
