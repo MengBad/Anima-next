@@ -137,6 +137,27 @@ print(json.dumps({{
 PY"""
 
 
+def _pid_alive(pid: int) -> bool | None:
+    """跨平台探测 PID 是否存活；None 表示无法判定（锁内容损坏）。
+
+    Windows 上 os.kill(pid, 0) 对不存在的进程抛 OSError(errno=22/11)，
+    而非 ProcessLookupError，因此必须显式识别这些 errno 视为已死亡。
+    """
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except OSError as exc:
+        # errno 3 (ESRCH)/11 (EAGAIN)/22 (EINVAL) 均表示进程不存在或 pid 非法
+        if getattr(exc, "errno", None) in (3, 11, 22):
+            return False
+        # EPERM 等：进程存在但无信号权限，视为存活（保守拒绝并发）
+        return True
+    except ValueError:
+        return None
+
+
 def _acquire_local_deploy_lock():
     """Prevent duplicated desktop/tool invocations from racing one VPS release.
 
@@ -151,15 +172,20 @@ def _acquire_local_deploy_lock():
         # PID 锁。仅在该 PID 确认不存在时回收；活跃进程仍必须严格拒绝并发发布。
         try:
             stale_pid = int(path.read_text(encoding="utf-8").strip())
-            os.kill(stale_pid, 0)
-        except ProcessLookupError:
+        except ValueError:
+            # 锁内容损坏：直接回收
             path.unlink(missing_ok=True)
             descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-            print(f"回收失效部署锁（pid={stale_pid}）")
-        except (ValueError, OSError):
-            raise RuntimeError("已有 Anima 发布进程正在运行；请等待它完成后再试")
+            print(f"回收损坏部署锁（原 pid 内容无效）")
         else:
-            raise RuntimeError("已有 Anima 发布进程正在运行；请等待它完成后再试")
+            alive = _pid_alive(stale_pid)
+            if alive is not True:
+                # 进程已死或无法判定：安全回收
+                path.unlink(missing_ok=True)
+                descriptor = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+                print(f"回收失效部署锁（pid={stale_pid}）")
+            else:
+                raise RuntimeError("已有 Anima 发布进程正在运行；请等待它完成后再试")
     with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
         handle.write(str(os.getpid()))
     atexit.register(path.unlink, missing_ok=True)
