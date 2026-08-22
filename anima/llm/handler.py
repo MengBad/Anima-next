@@ -994,8 +994,12 @@ class LLMHandler:
             logger.exception("[睡眠] 迷糊回复发送失败")
 
     def _maybe_record_feedback(self, text: str, *, sender_name: str, user_id, group_id,
-                               detail_type: str, message_id, audit) -> None:
-        """P3 —— 识别工程反馈并记审计（只读，绝不改变回复/绝不自动修复）。"""
+                               detail_type: str, message_id, audit) -> Any:
+        """P3 —— 识别工程反馈并记审计（只读，绝不自动修复）。
+
+        仍只审计 + 记日志；返回值供调用方决定是否在主回复末尾追加一句轻量确认
+        （仅由 _maybe_append_feedback_ack 消费，须显式开启，默认关）。
+        """
         try:
             from anima.observation.feedback_detect import detect_engineering_feedback
             fb = detect_engineering_feedback(
@@ -1019,8 +1023,10 @@ class LLMHandler:
                     )
                 logger.info("识别到工程反馈 kind=%s severity=%s from=%s：%s",
                             fb.kind, fb.severity, fb.source, fb.problem)
+            return fb
         except Exception:  # noqa: BLE001 - 反馈识别失败绝不阻断正常回复
             logger.debug("工程反馈识别失败（忽略）", exc_info=True)
+            return None
 
     async def handle(self, event: dict) -> None:
         # 提取事件信息
@@ -1108,10 +1114,11 @@ class LLMHandler:
 
         # P3：识别工程反馈（用户指出 Bot 出错）。只审计 + 记日志，绝不改变回复、
         # 绝不自动修复；真正修复走既有 R8 闭环 + Owner 审批门（self-improvement
-        # ≠ self-authorization）。
-        self._maybe_record_feedback(text, sender_name=sender_name, user_id=user_id,
-                                    group_id=group_id, detail_type=detail_type,
-                                    message_id=event.get("message_id"), audit=audit)
+        # ≠ self-authorization）。返回值供 §17 在主回复末尾追加轻量确认（默认关）。
+        _fb_detected = self._maybe_record_feedback(
+            text, sender_name=sender_name, user_id=user_id,
+            group_id=group_id, detail_type=detail_type,
+            message_id=event.get("message_id"), audit=audit)
 
         # P1-8：每次入站生成短 trace_id，串起本次处理的全部日志（命令/观察/出站），
         # 便于线上按 trace 追踪「收到 → 处理 → 出站」全链路。
@@ -1406,6 +1413,12 @@ class LLMHandler:
         segments = _build_reply_segments(
             ctx, detail_type, user_id, group_id, self.core,
             sticker_auto_last=self._sticker_auto_last,
+        )
+        # §17：安全版反馈自然回话——识别到反馈且开启时，仅私聊+已有主回复文本才在
+        # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关。
+        segments = _maybe_append_feedback_ack(
+            segments, detail_type=detail_type,
+            fb=_fb_detected, enabled=getattr(self, "feedback_ack_enabled", False),
         )
 
         quality = getattr(self.core, "reply_quality", None)
@@ -1900,6 +1913,24 @@ class LLMHandler:
             logger.info("视觉描述已存记忆（images=%d desc_len=%d）", len(descs), len(desc))
         except Exception:
             logger.exception("视觉描述后台任务异常")
+
+
+# §17 安全版反馈自然回话：仅在私聊 + 已有主回复文本时，于主回复段末尾追加
+# 一句轻量确认。绝不额外发第二条消息；默认关（由 handler 显式开启）。
+_FEEDBACK_ACK_SUFFIX = "（本喵已经把这个问题记下喵～会去找原因哒）"
+
+
+def _maybe_append_feedback_ack(segments: "list[dict]", *, detail_type: str,
+                               fb: Any, enabled: bool) -> "list[dict]":
+    """若有开启 + 私聊 + 识别到反馈 + 主回复已有文本，则在末尾追加一句轻量确认。
+
+    纯函数（可单测）：不额外发消息、不改主回复内容；任一条件不满足则原样返回。
+    """
+    if not (enabled and fb is not None and detail_type == "private"):
+        return segments
+    if not any(isinstance(s, dict) and s.get("type") == "text" for s in segments):
+        return segments
+    return [*segments, {"type": "text", "data": {"text": _FEEDBACK_ACK_SUFFIX}}]
 
 
 def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
