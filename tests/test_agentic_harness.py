@@ -93,3 +93,21 @@ def test_planner_llm_parse_falls_back_gracefully():
     # 但 _decompose 整体仍走兜底
     steps = asyncio.run(planner.plan("查一下问题"))
     assert steps
+
+
+def test_casual_time_words_do_not_trigger_tools():
+    # 回归：裸「最近/今天/现在」不得把闲聊误判为实时查询（Round 6-7 修复）
+    for text in (
+        "最近怎么样", "最近在忙什么", "最近过得怎么样",
+        "今天心情怎么样", "今天过得怎么样", "今天在干嘛",
+        "现在怎么样", "现在在忙吗",
+    ):
+        assert not _REALTIME_TOOL_RE.search(text), f"{text!r} 不应触发搜索工具"
+
+
+def test_legit_factual_time_queries_still_trigger():
+    for text in (
+        "最近天气怎么样", "最近有什么新闻", "帮我查一下最近股价",
+        "今天天气如何", "今天有什么新闻", "现在几点",
+    ):
+        assert _REALTIME_TOOL_RE.search(text), f"{text!r} 应触发搜索工具"
