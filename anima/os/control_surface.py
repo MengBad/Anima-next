@@ -261,6 +261,32 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "engineering_loop 聚合异常"}
 
+    def long_term_operation(self, *, stability: dict | None = None,
+                            observed_count: int = 0,
+                            pending_owner_count: int = 0,
+                            evidence_count: int = 0) -> dict[str, Any]:
+        """R20 —— 只读聚合一份长期自主运行快照（Long-Term Operation）。
+
+        复用既有稳定记录（P0-02）、观测闭环（R19）、演化证据（P2），产出确定性
+        「继续 / 降级 / 移除」能力判定。只陈述、只建议：downgrade/remove 均落在
+        capability_verdicts / recommendations，交既有 Owner 审批门，绝不自动禁用。
+        fail-closed：信号缺失即诚实 unavailable。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        try:
+            from ..observation.long_term_operation import build_long_term_operation
+            op = build_long_term_operation(
+                core=self._core,
+                stability=stability,
+                observed_count=observed_count,
+                pending_owner_count=pending_owner_count,
+                evidence_count=evidence_count,
+            )
+            return op.to_dict()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
+            return {"available": False, "reason": "long_term_operation 聚合异常"}
+
     def evolution_impact(self) -> dict[str, Any]:
         """只读聚合演化影响评分（P2）：基于历史 Before/After 证据语料。
 

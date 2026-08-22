@@ -2457,6 +2457,19 @@ class WebUIServer:
             self.core.audit.emit("webui_os_engineering_loop", reviewer=owner_id)
         return web.json_response(surf.engineering_loop())
 
+    async def os_long_term_operation(self, request: web.Request) -> web.Response:
+        """R20 —— 只读聚合一份长期自主运行快照（Long-Term Operation）。
+
+        复用 R14 控制面 HumanAIControlSurface.long_term_operation：只陈述、只建议，
+        绝不执行。「继续/降级/移除」判定均落 capability_verdicts，交既有 Owner 审批门。
+        """
+        owner_id = self._owner_id()
+        from anima.os.control_surface import HumanAIControlSurface
+        surf = HumanAIControlSurface(self.core)
+        if self.core.audit:
+            self.core.audit.emit("webui_os_long_term_operation", reviewer=owner_id)
+        return web.json_response(surf.long_term_operation())
+
     async def os_command(self, request: web.Request) -> web.Response:
         """解析 Owner 的受限自然语言指令（白名单 + 确定性规则）。
 

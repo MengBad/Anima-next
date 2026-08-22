@@ -212,6 +212,7 @@ def _register_engineering(app: web.Application, s: "WebUIServer") -> None:
         web.get("/api/os/overview", s.os_overview),
         web.get("/api/os/self-evaluation", s.os_self_evaluation),
         web.get("/api/os/engineering-loop", s.os_engineering_loop),
+        web.get("/api/os/long-term-operation", s.os_long_term_operation),
         web.post("/api/os/command", s.os_command),
     ])
 
