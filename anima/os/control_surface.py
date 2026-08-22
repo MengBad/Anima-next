@@ -146,13 +146,14 @@ class HumanAIControlSurface:
         """
         if self._core is None:
             return {"available": False, "reason": "core 未注入"}
-        # R17：未显式注入 github 源时，尝试用生产已认证的 gh CLI 拉取真实信号。
+        # R17：未显式注入 github 源时，默认接入 GitHubSignalSource。
+        # 该类内部按优先级路由：gh 已认证走 gh、否则回退公开 REST，
+        # 故无论生产机有无 gh / 有无凭据都应注入，fail-closed 交给
+        # recent_activity() 内部处理（取不到即空列表，不掩盖缺失）。
         if github is None:
             try:
                 from ..observation.github_source import GitHubSignalSource
-                src = GitHubSignalSource()
-                if src.available():
-                    github = src
+                github = GitHubSignalSource()
             except Exception:  # noqa: BLE001 - 信号源不可用不阻断聚合
                 github = None
         try:

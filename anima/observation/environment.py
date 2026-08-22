@@ -266,8 +266,13 @@ def analyze_environment(
 
     # GitHub 真实信号
     gh_events = collect_from_github(github, window_sec=window_sec, now=now)
-    if github is not None:
+    if github is not None and getattr(github, "probed_ok", True):
+        # 真正取到了信号（gh 鉴权或公开 REST 任一路径成功）：纳入可用源。
         available.append("github")
+    elif github is not None:
+        # 已接入源但根本取不到（私有库/无凭据/无网络）：诚实归为缺失源，
+        # 不谎称「已观测」——fail-closed。
+        missing.append("github")
     else:
         missing.append("github")
     events.extend(gh_events)

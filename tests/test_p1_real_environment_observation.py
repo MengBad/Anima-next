@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 from anima.observation import environment as env
+from anima.observation.github_source import GitHubSignalSource
 
 
 class _FakeGitHub:
@@ -145,3 +146,30 @@ def test_to_dev_issues_skips_low():
     gh = _FakeGitHub([{"kind": "commit", "status": "ok", "ts": now - 100, "detail": "x"}])
     report = env.analyze_environment(_FakeCore(), github=gh, audit=_FakeAudit([]), now=now)
     assert env.to_dev_issues(report) == []
+
+
+# ---------------------------------------------------------------------------
+# 6. R17 诚实契约：真实源 probe 失败（私有库/无凭据/无网络）必须归 sources_missing
+# ---------------------------------------------------------------------------
+def test_github_signal_source_probed_ok_false_on_failure():
+    # 私有/不可达仓库：gh 缺失且 REST 404 → recent_activity 返回 [] 且 probed_ok=False
+    src = GitHubSignalSource.__new__(GitHubSignalSource)
+    src.repo = "private/does-not-exist"
+    src.probed_ok = False
+    # 直接验证 analyze_environment 把 probed_ok=False 的源归入 missing（不谎称可用）
+    report = env.analyze_environment(
+        _FakeCore(), github=src, audit=_FakeAudit([]), now=1_700_000_000)
+    assert "github" in report.sources_missing
+    assert "github" not in report.sources_available
+    assert report.incomplete is True
+
+
+def test_github_signal_source_probed_ok_true_when_data():
+    # 注入一个探针成功（probed_ok=True）的源 → 应纳入 available，不再 missing
+    src = _FakeGitHub([])
+    src.probed_ok = True
+    report = env.analyze_environment(
+        _FakeCore(), github=src, audit=_FakeAudit([]), now=1_700_000_000)
+    assert "github" in report.sources_available
+    assert "github" not in report.sources_missing
+    assert report.incomplete is False

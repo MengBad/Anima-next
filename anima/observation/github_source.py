@@ -106,6 +106,8 @@ class GitHubSignalSource:
 
     def __init__(self, repo: Optional[str] = None):
         self.repo = _resolve_repo(repo)
+        # 是否真正取到过信号：gh 或 REST 任一路径返回非空列表即视为可达。
+        self.probed_ok: bool = False
 
     def available(self) -> bool:
         """gh 已登录即视为可用；否则视 REST 公开端点是否可达。"""
@@ -123,6 +125,8 @@ class GitHubSignalSource:
         data = _gh_api(self.repo, f"commits?per_page={n}")
         if data is None:
             data = _rest_get(f"{_REST_BASE}/{self.repo}/commits?per_page={n}")
+        if data is not None:
+            self.probed_ok = True
         if data:
             for c in data[:n]:
                 sha = str(c.get("sha", ""))[:10]
@@ -140,6 +144,8 @@ class GitHubSignalSource:
         data = _gh_api(self.repo, f"issues?state=open&per_page={n}&filter=all")
         if data is None:
             data = _rest_get(f"{_REST_BASE}/{self.repo}/issues?state=open&per_page={n}")
+        if data is not None:
+            self.probed_ok = True
         if data:
             for it in data[:n]:
                 if "pull_request" in it:
@@ -155,6 +161,8 @@ class GitHubSignalSource:
         # CI runs 需鉴权：gh 可用时取，否则诚实留空（REST 公开端点不含私有 CI）。
         rows: list[dict[str, Any]] = []
         data = _gh_api(self.repo, f"actions/runs?per_page={n}")
+        if data is not None:
+            self.probed_ok = True
         if data:
             for r in data[:n]:
                 concl = str(r.get("conclusion") or "").lower()
