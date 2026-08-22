@@ -47,36 +47,67 @@ async def test_provenance_endpoint_returns_expected_keys():
         "commit": "deadbeefcafe",
         "branch": "release/test",
         "dirty": False,
+        "commit_subject": "build: 修复心跳丢帧 (R16)",
         "deployed_at": "2026-08-21T12:00:00Z",
         "source": "deploy",
         "source_archive_sha256": "sha256:abc123",
     }
     _VERSION_JSON.write_text(json.dumps(fake_v), encoding="utf-8")
     try:
-        # 固定 git log 输出(提交主题 + 提交时间), 避免依赖本地仓库状态。
-        fake_git = SimpleNamespace(
-            returncode=0,
-            stdout="build: 修复心跳丢帧 (R16)\x1f1755776000\n",
-        )
-        with mock.patch("subprocess.run", return_value=fake_git):
+        # 已固化的 commit_subject 优先, 不应再去查 git(无 .git 的生产机也是这条路径)。
+        with mock.patch("subprocess.run") as sp:
             server = _server(_fake_core())
             resp = await server.provenance(_mk_request(server))
+        sp.assert_not_called()
         assert resp.status == 200
         body = json.loads(resp.body)
-        for key in ("version", "commit", "branch", "dirty", "deployed_at",
-                    "source", "source_archive_sha256", "built_at",
-                    "reason_commit_subject", "explanation"):
+        for key in ("version", "commit", "branch", "dirty", "commit_subject",
+                    "deployed_at", "source", "source_archive_sha256",
+                    "built_at", "reason_commit_subject", "explanation"):
             assert key in body, f"missing {key}"
         assert body["version"] == "9.9.9-test"
         assert body["commit"] == "deadbeefcafe"
         assert body["branch"] == "release/test"
         assert body["dirty"] is False
+        assert body["commit_subject"] == "build: 修复心跳丢帧 (R16)"
+        assert body["reason_commit_subject"] == "build: 修复心跳丢帧 (R16)"
         assert body["deployed_at"] == "2026-08-21T12:00:00Z"
         assert body["source"] == "deploy"
         assert body["source_archive_sha256"] == "sha256:abc123"
-        assert body["built_at"] == 1755776000.0
-        assert body["reason_commit_subject"] == "build: 修复心跳丢帧 (R16)"
+        assert body["built_at"] is None  # 无 git 回退时为空
         assert body["explanation"] == "deploy"
+    finally:
+        if prior is None:
+            _VERSION_JSON.unlink(missing_ok=True)
+        else:
+            _VERSION_JSON.write_text(prior, encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_provenance_endpoint_falls_back_to_git_when_no_baked_subject():
+    # version.json 无 commit_subject 时, 本地开发机回退到 git log 实时查询。
+    prior = _VERSION_JSON.read_text(encoding="utf-8") if _VERSION_JSON.exists() else None
+    fake_v = {
+        "version": "9.9.9-test",
+        "commit": "deadbeefcafe",
+        "branch": "release/test",
+        "dirty": False,
+        "deployed_at": "2026-08-21T12:00:00Z",
+        "source": "deploy",
+    }
+    _VERSION_JSON.write_text(json.dumps(fake_v), encoding="utf-8")
+    try:
+        fake_git = SimpleNamespace(
+            returncode=0,
+            stdout="build: 实时 git 主题\x1f1755776000\n",
+        )
+        with mock.patch("subprocess.run", return_value=fake_git):
+            server = _server(_fake_core())
+            resp = await server.provenance(_mk_request(server))
+        body = json.loads(resp.body)
+        assert body["commit_subject"] == "build: 实时 git 主题"
+        assert body["reason_commit_subject"] == "build: 实时 git 主题"
+        assert body["built_at"] == 1755776000.0
     finally:
         if prior is None:
             _VERSION_JSON.unlink(missing_ok=True)
@@ -99,6 +130,7 @@ async def test_provenance_endpoint_without_version_file_falls_back():
         body = json.loads(resp.body)
         assert body["commit"] == "development"
         assert body["version"] == ANIMA_VERSION
+        assert body["commit_subject"] == ""
         assert body["reason_commit_subject"] == ""
         assert body["explanation"] == "local/development"
     finally:

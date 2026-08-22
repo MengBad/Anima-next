@@ -456,9 +456,11 @@ class WebUIServer:
         except Exception:
             _v = None
         commit = str(vdata.get("commit") or "development")
-        subject = ""
+        # 优先用部署时固化的提交主题(生产机无 .git 也能回答「为什么部署」)；
+        # 本地开发有 .git 时回退到 git log 实时查询。
+        subject = str(vdata.get("commit_subject") or "")
         committed_at = None
-        if commit and commit != "development":
+        if not subject and commit and commit != "development":
             try:
                 import subprocess
                 out = subprocess.run(
@@ -476,6 +478,7 @@ class WebUIServer:
             "commit": commit,
             "branch": str(vdata.get("branch") or "unknown"),
             "dirty": bool(vdata.get("dirty")),
+            "commit_subject": subject,
             "deployed_at": vdata.get("deployed_at"),
             "source": str(vdata.get("source") or "unknown"),
             "source_archive_sha256": vdata.get("source_archive_sha256"),

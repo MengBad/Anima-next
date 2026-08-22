@@ -216,12 +216,14 @@ def _git_info() -> dict[str, object]:
     branch = git("rev-parse", "--abbrev-ref", "HEAD") or "source-archive"
     dirty = bool(git("status", "--porcelain=v1", "--untracked-files=all"))
     epoch_text = git("show", "-s", "--format=%ct", "HEAD")
+    commit_subject = git("show", "-s", "--format=%s", "HEAD")
     try:
         commit_epoch = int(epoch_text)
     except ValueError:
         commit_epoch = 315532800  # 1980-01-01，ZIP 支持的最早稳定时间
     return {"commit": commit, "branch": branch, "dirty": dirty,
-            "commit_epoch": max(commit_epoch, 315532800)}
+            "commit_epoch": max(commit_epoch, 315532800),
+            "commit_subject": commit_subject}
 
 
 def _require_env():
@@ -664,6 +666,8 @@ def main():
         "branch": git_info["branch"],
         "version": version,
         "dirty": bool(git_info["dirty"]),
+        # R16: 把构建提交主题随发布戳固化，使生产机(无 .git)也能回答「为什么部署」。
+        "commit_subject": git_info.get("commit_subject") or "",
         "source_archive_sha256": source_sha256,
         "deployed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "source": "deploy",
