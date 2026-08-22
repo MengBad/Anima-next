@@ -93,9 +93,9 @@ def test_source_unavailable_when_gh_missing_rest_ok():
         captured["last_url"] = getattr(req, "full_url", "")
         return _Resp()
 
-    with mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=_urlopen):
+    with mock.patch.dict("os.environ", {"ANIMA_GITHUB_TOKEN": ""}),          mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=_urlopen):
         src = GitHubSignalSource(repo="o/r")
-        assert src.available() is False  # gh 缺失
+        assert src.available() is False  # gh 缺失且无 token
         rows = src.recent_activity()
         kinds = {r["kind"] for r in rows}
         # gh 缺失 -> 无 CI（需鉴权），但 commits + issues 经 REST 取回
@@ -155,3 +155,47 @@ def test_source_rest_failure_fail_closed():
     with mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=_Bad()):
         src = GitHubSignalSource(repo="o/r")
         assert src.recent_activity() == []
+
+
+def test_token_unlocks_available_without_gh():
+    # 配置了 ANIMA_GITHUB_TOKEN -> available()=True，即便 gh 缺失
+    runs = '[{"name":"CI","head_branch":"main","conclusion":"failure","created_at":"2026-08-21T11:00:00Z"}]'
+    commits = '[{"sha":"deadbeefcafe","commit":{"message":"fix","author":{"date":"2026-08-21T10:00:00Z"}}}]'
+
+    def _runner(args, *a, **k):
+        raise FileNotFoundError()  # gh 永远缺失
+
+    captured = {}
+
+    class _Resp:
+        def read(self):
+            url = captured.get("last_url", "")
+            if "actions/runs" in url:
+                return runs.encode()
+            if "commits" in url:
+                return commits.encode()
+            return b"[]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *e):
+            return False
+
+    def _urlopen(req, timeout=20):
+        captured["last_url"] = getattr(req, "full_url", "")
+        captured["headers"] = dict(getattr(req, "headers", {}))
+        return _Resp()
+
+    with mock.patch.dict("os.environ", {"ANIMA_GITHUB_TOKEN": "ghp_test_token"}),          mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=_urlopen):
+        src = GitHubSignalSource(repo="o/r")
+        assert src.available() is True  # token 注入即视为可用
+        assert src.token == "ghp_test_token"
+        rows = src.recent_activity()
+        kinds = {r["kind"] for r in rows}
+        # 无 gh：commits（REST）+ ci（带 token 的 REST 回退）均可取，不取 issues 因本夹具未给
+        assert "commit" in kinds
+        assert "ci" in kinds
+        # 带鉴权请求头应发送 Bearer
+        assert captured["headers"].get("Authorization") == "Bearer ghp_test_token"
+

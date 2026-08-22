@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import os
 import subprocess
 import urllib.request
 from typing import Any, Optional
@@ -30,6 +31,9 @@ _DEFAULT_REPO = "MengBad/Anima-next"
 _GH_BIN = "gh"
 _MAX_PER_KIND = 20
 _REST_BASE = "https://api.github.com/repos"
+# 可选：生产机经此环境变量注入 GitHub token（仅用于带鉴权的 REST，
+# 无需安装 gh CLI）。私有库 / CI runs 均需鉴权。取不到即为 None（诚实降级）。
+_GITHUB_TOKEN_ENV = "ANIMA_GITHUB_TOKEN"
 
 
 def _resolve_repo(explicit: Optional[str] = None) -> str:
@@ -87,10 +91,18 @@ def _gh_api(repo: str, endpoint: str) -> Optional[list[dict[str, Any]]]:
     return data if isinstance(data, list) else None
 
 
-def _rest_get(url: str, *, timeout: int = 20) -> Optional[list[dict[str, Any]]]:
-    """未鉴权 REST 回退（公开端点）：失败返回 None（fail-closed）。"""
+def _rest_get(url: str, *, timeout: int = 20,
+              token: Optional[str] = None) -> Optional[list[dict[str, Any]]]:
+    """GitHub REST GET（公开端点或带鉴权）。失败返回 None（fail-closed）。
+
+    - token=None → 未鉴权公开请求（commits/issues 公开数据，60 req/h 限速）。
+    - token 非空 → 带 ``Authorization: Bearer``，可访问私有库与更多端点。
+    """
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Anima-OS"})
+        headers = {"User-Agent": "Anima-OS", "Accept": "application/vnd.github+json"}
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception:  # noqa: BLE001 - 网络/限流/解析失败均诚实降级
@@ -106,11 +118,20 @@ class GitHubSignalSource:
 
     def __init__(self, repo: Optional[str] = None):
         self.repo = _resolve_repo(repo)
+        # 可选 token：生产机经 ANIMA_GITHUB_TOKEN 注入，用于带鉴权 REST
+        # （私有库 / CI runs 均需鉴权）。取不到即为 None（诚实降级，不阻断观测）。
+        self.token: Optional[str] = os.environ.get(_GITHUB_TOKEN_ENV) or None
         # 是否真正取到过信号：gh 或 REST 任一路径返回非空列表即视为可达。
         self.probed_ok: bool = False
 
     def available(self) -> bool:
-        """gh 已登录即视为可用；否则视 REST 公开端点是否可达。"""
+        """gh 已登录、或配置了鉴权 token 即视为可用。
+
+        注：公开 REST（无 token）即便可达也只够 commits/issues；
+        CI runs 与私有库需鉴权，故 available 以「是否能取到真实信号」为准。
+        """
+        if self.token:
+            return True
         try:
             out = subprocess.run(
                 [_GH_BIN, "auth", "status"],
@@ -120,11 +141,15 @@ class GitHubSignalSource:
         except Exception:  # noqa: BLE001 - gh 缺失 -> 回退 REST
             return False
 
+    def _rest(self, endpoint: str, *, timeout: int = 20) -> Optional[list[dict[str, Any]]]:
+        return _rest_get(f"{_REST_BASE}/{self.repo}/{endpoint}",
+                         timeout=timeout, token=self.token)
+
     def _fetch_commits(self, n: int) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         data = _gh_api(self.repo, f"commits?per_page={n}")
         if data is None:
-            data = _rest_get(f"{_REST_BASE}/{self.repo}/commits?per_page={n}")
+            data = self._rest(f"commits?per_page={n}")
         if data is not None:
             self.probed_ok = True
         if data:
@@ -143,7 +168,7 @@ class GitHubSignalSource:
         rows: list[dict[str, Any]] = []
         data = _gh_api(self.repo, f"issues?state=open&per_page={n}&filter=all")
         if data is None:
-            data = _rest_get(f"{_REST_BASE}/{self.repo}/issues?state=open&per_page={n}")
+            data = self._rest(f"issues?state=open&per_page={n}&filter=all")
         if data is not None:
             self.probed_ok = True
         if data:
@@ -158,9 +183,12 @@ class GitHubSignalSource:
         return rows
 
     def _fetch_ci(self, n: int) -> list[dict[str, Any]]:
-        # CI runs 需鉴权：gh 可用时取，否则诚实留空（REST 公开端点不含私有 CI）。
+        # CI runs 需鉴权：gh 可用时取；否则带 token 的 REST 回退也行；
+        # 二者皆无则诚实留空（公开 REST 不含私有 CI）。
         rows: list[dict[str, Any]] = []
         data = _gh_api(self.repo, f"actions/runs?per_page={n}")
+        if data is None and self.token:
+            data = self._rest(f"actions/runs?per_page={n}")
         if data is not None:
             self.probed_ok = True
         if data:
