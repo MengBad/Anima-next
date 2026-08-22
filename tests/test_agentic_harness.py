@@ -111,3 +111,16 @@ def test_legit_factual_time_queries_still_trigger():
         "今天天气如何", "今天有什么新闻", "现在几点",
     ):
         assert _REALTIME_TOOL_RE.search(text), f"{text!r} 应触发搜索工具"
+
+
+
+def test_presence_ping_does_not_trigger_tools():
+    # 回归：裸「在吗」是在场探测（group_gate/cognition 均视为闲聊），不应触发搜索
+    for text in ("在吗", "在吗在吗", "你在吗", "在嘛"):
+        assert not _REALTIME_TOOL_RE.search(text), f"{text!r} 不应触发搜索工具"
+
+
+def test_legit_open_status_queries_still_trigger():
+    # 「店/门开了吗」是真实的状态查询，仍应触发实时工具
+    for text in ("店开了吗", "门开了吗", "今天开了吗"):
+        assert _REALTIME_TOOL_RE.search(text), f"{text!r} 应触发实时工具"
