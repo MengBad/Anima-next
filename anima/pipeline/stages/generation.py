@@ -19,7 +19,9 @@ logger = logging.getLogger("anima.pipeline.stages")
 # 所有动态提示都必须留在 cognition_stage 生成的唯一 system 消息中。
 _IDENTITY_LOCK_HEADING = "## 身份锁定（最高优先级）"
 _REALTIME_TOOL_RE = re.compile(
-    r"(直播|天气|搜(?:一下|一個|索)?|查(?:一下|一個|询)?|最新|最近|今天|现在|新闻|"
+    r"(直播|天气|搜(?:一下|一個|索)?|查(?:一下|一個|询)?|最新|"
+    r"最近(?:新闻|消息|动态|进展|更新|版本|股价|汇率|比分|赛程|事件|情况|天气)|"
+    r"今天|现在|新闻|"
     r"多少度|华氏|摄氏|几点|开了吗|在吗|更新|版本|发布|上市|股价|汇率|比分|赛程|"
     r"bilibili|B站|b站|space\.bilibili|https?://|是什么|为什么|多少钱|哪里|哪家|"
     r"官网|官方|资料|维基|百科|知乎|小红书|微博|推特|x\.com|youtube|youtu\.be)",
