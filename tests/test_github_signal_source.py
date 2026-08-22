@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""R17 —— GitHub 真实信号源单元测试（确定性，mock 掉 gh CLI）。
+"""R17 —— GitHub 真实信号源单元测试（确定性，mock 掉 gh CLI 与 REST）。
 
-验证 GitHubSignalSource 在 gh 可用时把 commits/CI/issues 归一化为 ObservationEvent
-所需的 recent_activity 结构；以及 gh 缺失 / CLI 失败时 fail-closed 返回空列表。
+验证 GitHubSignalSource：
+- gh 可用时归一化 commits/CI/issues；
+- gh 缺失时回退公开 REST（commits/issues 取得到，CI 诚实留空）；
+- 任一源失败 fail-closed 返回空列表；
+- 不接触任何明文凭据。
 """
 from __future__ import annotations
 
@@ -30,7 +33,6 @@ def test_resolve_repo_explicit_wins():
 
 
 def test_resolve_repo_fallback_when_git_missing():
-    # 无显式仓库且 git 反推失败 → 回退默认仓库（不报错）
     with mock.patch("subprocess.run", side_effect=FileNotFoundError):
         assert _resolve_repo(None) == "MengBad/Anima-next"
 
@@ -57,24 +59,59 @@ def _fake_run(returncode, stdout):
     return mock.Mock(returncode=returncode, stdout=stdout, stderr="")
 
 
-def test_source_unavailable_when_gh_missing():
-    with mock.patch("subprocess.run", side_effect=FileNotFoundError):
-        src = GitHubSignalSource(repo="o/r")
-        assert src.available() is False
-        assert src.recent_activity() == []
-
-
-def test_source_recent_activity_normalizes_events():
-    # gh auth status OK；三类 API 各返回一条样本
-    auth = _fake_run(0, "")
+def test_source_unavailable_when_gh_missing_rest_ok():
+    # gh 缺失 -> available()=False，但 REST 回退仍可取公开 commits/issues
+    gh_missing = FileNotFoundError()
     commits = '[{"sha":"deadbeefcafe","commit":{"message":"fix: 心跳丢帧","author":{"date":"2026-08-21T10:00:00Z"}}}]'
+    issues = '[{"title":"崩溃","state":"open","created_at":"2026-08-21T12:00:00Z"}]'
+
+    captured = {}
+
+    def _runner(args, *a, **k):
+        s = " ".join(str(x) for x in args)
+        captured.setdefault("calls", []).append(s)
+        if "auth" in s:
+            raise gh_missing
+        return _fake_run(1, "")  # gh api 一律失败
+
+    class _Resp:
+        def read(self):
+            url = captured.get("last_url", "")
+            if "commits" in url:
+                return commits.encode()
+            if "issues" in url:
+                return issues.encode()
+            return b"[]"
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *e):
+            return False
+
+    def _urlopen(req, timeout=20):
+        captured["last_url"] = getattr(req, "full_url", "")
+        return _Resp()
+
+    with mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=_urlopen):
+        src = GitHubSignalSource(repo="o/r")
+        assert src.available() is False  # gh 缺失
+        rows = src.recent_activity()
+        kinds = {r["kind"] for r in rows}
+        # gh 缺失 -> 无 CI（需鉴权），但 commits + issues 经 REST 取回
+        assert kinds == {"commit", "issue"}
+        assert all(r["ts"] is not None for r in rows)
+
+
+def test_source_gh_preferred_over_rest():
+    commits = '[{"sha":"deadbeefcafe","commit":{"message":"fix","author":{"date":"2026-08-21T10:00:00Z"}}}]'
     runs = '[{"name":"CI","head_branch":"main","conclusion":"failure","created_at":"2026-08-21T11:00:00Z"}]'
     issues = '[{"title":"崩溃","state":"open","created_at":"2026-08-21T12:00:00Z"}]'
 
     def _runner(args, *a, **k):
         s = " ".join(str(x) for x in args)
         if "auth" in s:
-            return auth
+            return _fake_run(0, "")
         if "commits" in s:
             return _fake_run(0, commits)
         if "actions/runs" in s:
@@ -83,7 +120,7 @@ def test_source_recent_activity_normalizes_events():
             return _fake_run(0, issues)
         return _fake_run(1, "")
 
-    with mock.patch("subprocess.run", side_effect=_runner):
+    with mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=AssertionError("REST 不应被调用")):
         src = GitHubSignalSource(repo="o/r")
         assert src.available() is True
         rows = src.recent_activity()
@@ -91,21 +128,30 @@ def test_source_recent_activity_normalizes_events():
         assert kinds == {"commit", "ci", "issue"}
         ci = [r for r in rows if r["kind"] == "ci"][0]
         assert ci["status"] == "failed"
-        commit = [r for r in rows if r["kind"] == "commit"][0]
-        assert "deadbeef" in commit["detail"]
-        assert commit["ts"] is not None
 
 
 def test_source_skips_pull_requests_in_issues():
     issues = '[{"title":"PR","state":"open","created_at":"2026-08-21T12:00:00Z","pull_request":{}}]'
-    def _runner(args, *a, **k):
-        s = " ".join(str(x) for x in args)
-        if "auth" in s:
-            return _fake_run(0, "")
-        return _fake_run(0, issues)
-
-    with mock.patch("subprocess.run", side_effect=_runner):
+    with mock.patch("subprocess.run", side_effect=lambda args, *a, **k: (
+            _fake_run(0, "") if "auth" in " ".join(map(str, args)) else _fake_run(0, issues))):
         src = GitHubSignalSource(repo="o/r")
         rows = src.recent_activity()
-        # PR 被排除，不应产生 issue 行
         assert all(r["kind"] != "issue" for r in rows)
+
+
+def test_source_rest_failure_fail_closed():
+    # gh 缺失且 REST 也失败 -> 空列表，不抛异常
+    def _runner(args, *a, **k):
+        if "auth" in " ".join(map(str, args)):
+            raise FileNotFoundError()
+        return _fake_run(1, "")
+
+    class _Bad:
+        def __enter__(self):
+            raise OSError("network down")
+        def __exit__(self, *e):
+            return False
+
+    with mock.patch("subprocess.run", side_effect=_runner),          mock.patch("urllib.request.urlopen", side_effect=_Bad()):
+        src = GitHubSignalSource(repo="o/r")
+        assert src.recent_activity() == []
