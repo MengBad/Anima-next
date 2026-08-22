@@ -440,6 +440,51 @@ class WebUIServer:
             "anomaly": anomalies,
         })
 
+    async def provenance(self, request: web.Request) -> web.Response:
+        # R16: read-only deployment provenance. Answers what version is
+        # running, when/from what deployed, and why (the building commit subject).
+        # Public read-only metadata (AGPL transparency).
+        from pathlib import Path as _P
+        root = _P(__file__).resolve().parents[2]
+        vdata = {}
+        try:
+            vdata = json.loads((root / "version.json").read_text(encoding="utf-8"))
+        except (OSError, ValueError, TypeError):
+            vdata = {}
+        try:
+            from anima import __version__ as _v
+        except Exception:
+            _v = None
+        commit = str(vdata.get("commit") or "development")
+        subject = ""
+        committed_at = None
+        if commit and commit != "development":
+            try:
+                import subprocess
+                out = subprocess.run(
+                    ["git", "-C", str(root), "log", "-1", "--format=%s%x1f%ct", "HEAD"],
+                    capture_output=True, text=True, timeout=5)
+                if out.returncode == 0 and out.stdout.strip():
+                    parts = out.stdout.strip().rsplit("\x1f", 1)
+                    subject = parts[0]
+                    if len(parts) > 1 and parts[1].strip().isdigit():
+                        committed_at = float(parts[1])
+            except Exception:
+                subject, committed_at = "", None
+        return web.json_response({
+            "version": str(vdata.get("version") or _v or "unknown"),
+            "commit": commit,
+            "branch": str(vdata.get("branch") or "unknown"),
+            "dirty": bool(vdata.get("dirty")),
+            "deployed_at": vdata.get("deployed_at"),
+            "source": str(vdata.get("source") or "unknown"),
+            "source_archive_sha256": vdata.get("source_archive_sha256"),
+            "built_at": committed_at,
+            "reason_commit_subject": subject,
+            "explanation": "deploy" if (vdata.get("source") == "deploy")
+                           else "local/development",
+        })
+
     async def backups(self, request: web.Request) -> web.Response:
         """List owner-created state snapshots without exposing their contents."""
         self._owner_id()
