@@ -79,3 +79,69 @@ def test_build_self_evaluation_without_interaction_no_crash():
     assert ev.overall is not None or ev.axes
     iax = next((a for a in ev.axes if a.axis == "interaction"), None)
     assert iax is not None and iax.status == "unknown"
+
+
+def _mk_core():
+    class P:
+        data_dir = "data"
+    class Cfg:
+        persistence = P()
+    class Core:
+        config = Cfg()
+    return Core()
+
+
+def test_control_surface_interaction_summary_mocks():
+    from anima.os.control_surface import HumanAIControlSurface
+    from unittest import mock
+    surf = HumanAIControlSurface(_mk_core())
+    with mock.patch("anima.cognitive.reply_quality.get_reply_quality") as gq, \
+         mock.patch("anima.media.prepare_cache_stats") as pcs:
+        gq.return_value.report.return_value = {
+            "total_replies": 100,
+            "overlong_replies": 2, "label_leaks": 0, "identity_leaks": 1,
+            "repeated_replies": 1, "empty_should_reply": 1, "unavailable_replies": 1,
+            "tool_calls": 50, "tool_failures": 5,
+        }
+        pcs.return_value = {"hits": 90, "misses": 10}
+        out = surf._interaction_summary()
+    assert out["conversation"]["ok_ratio"] == 0.94
+    assert out["conversation"]["samples"] == 100
+    assert out["tools"]["success_rate"] == 0.9
+    assert out["persona"]["stability"] == 0.99
+    assert out["image"]["delivery_ok_ratio"] == 0.9
+
+
+def test_control_surface_interaction_summary_fail_closed():
+    from anima.os.control_surface import HumanAIControlSurface
+    from unittest import mock
+    surf = HumanAIControlSurface(_mk_core())
+    with mock.patch("anima.cognitive.reply_quality.get_reply_quality",
+                    side_effect=RuntimeError("boom")), \
+         mock.patch("anima.media.prepare_cache_stats",
+                    side_effect=RuntimeError("boom")):
+        out = surf._interaction_summary()
+    assert out == {}
+
+
+def test_control_surface_self_evaluation_includes_interaction():
+    from anima.os.control_surface import HumanAIControlSurface
+    from unittest import mock
+    surf = HumanAIControlSurface(_mk_core())
+    with mock.patch.object(surf, "_snapshot_health",
+                           return_value={"snapshot": {"runtime_running": 1.0,
+                                                       "channel_connected": 1.0},
+                                          "degraded": False}), \
+         mock.patch.object(surf, "environment_report",
+                           return_value={"sources_available": ["performance", "audit"],
+                                         "sources_missing": [], "incomplete": False}), \
+         mock.patch.object(surf, "stability_summary",
+                           return_value={"uptime_ratio": 0.99, "anomaly_total": 0,
+                                         "permission_drift_count": 0}), \
+         mock.patch("anima.observation.environment.audit_deny_growth",
+                    return_value={"available": True, "growing": False}), \
+         mock.patch("anima.cognitive.reply_quality.get_reply_quality",
+                    side_effect=RuntimeError("no data")):
+        out = surf.self_evaluation()
+    axes = {a["axis"]: a for a in out["axes"]}
+    assert "interaction" in axes

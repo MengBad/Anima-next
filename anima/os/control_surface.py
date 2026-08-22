@@ -108,6 +108,58 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001
             return []
 
+    def _interaction_summary(self) -> dict[str, Any]:
+        """P5 —— 只读聚合交互质量遥测（对话/工具/人格一致性/图片交付）。
+
+        全部 fail-closed：任一源解析失败则跳过该项，绝不编造分数；交给
+        build_self_evaluation 的 interaction 轴时，缺失子源会标 available:False。
+        """
+        out: dict[str, Any] = {}
+        try:
+            data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+            data_dir = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+            from ..cognitive.reply_quality import get_reply_quality
+            q = get_reply_quality(data_dir).report()
+            total = int(q.get("total_replies", 0) or 0)
+            if total > 0:
+                # 对话质量：有效回复占比（剔除超长/泄漏/复读/空回/不可用）
+                bad = sum(int(q.get(k, 0) or 0) for k in (
+                    "overlong_replies", "label_leaks", "identity_leaks",
+                    "repeated_replies", "empty_should_reply", "unavailable_replies"))
+                out["conversation"] = {
+                    "ok_ratio": max(0.0, min(1.0, (total - bad) / total)),
+                    "samples": total,
+                }
+                # 工具成功率
+                calls = int(q.get("tool_calls", 0) or 0)
+                if calls > 0:
+                    fails = int(q.get("tool_failures", 0) or 0)
+                    out["tools"] = {
+                        "success_rate": max(0.0, min(1.0, (calls - fails) / calls)),
+                        "calls": calls,
+                    }
+                # 人格一致性：身份/标签泄漏越少越稳定（P5 人格轴）
+                leaks = int(q.get("identity_leaks", 0) or 0) + int(q.get("label_leaks", 0) or 0)
+                out["persona"] = {
+                    "stability": max(0.0, min(1.0, 1.0 - leaks / total)),
+                    "drift_rejects": 0,
+                }
+        except Exception:  # noqa: BLE001 - 交互质量聚合失败不阻断
+            pass
+        try:
+            from ..media import prepare_cache_stats
+            st = prepare_cache_stats()
+            hits = int(st.get("hits", 0) or 0)
+            misses = int(st.get("misses", 0) or 0)
+            if (hits + misses) > 0:
+                out["image"] = {
+                    "delivery_ok_ratio": max(0.0, min(1.0, hits / (hits + misses))),
+                    "samples": hits + misses,
+                }
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
     def _evolution_proposals(self) -> list[dict[str, Any]]:
         try:
             from ..agent.self_evolution import list_evolution_proposals
@@ -232,6 +284,7 @@ class HumanAIControlSurface:
             audit_deny_trend=audit_deny_trend,
             config_drift=config_drift,
             evolution=evolution,
+            interaction=self._interaction_summary(),
         )
         return ev.to_dict()
 
