@@ -206,9 +206,11 @@ def _project_version() -> str:
 def _git_info() -> dict[str, object]:
     """返回发布身份；没有 Git 时允许源码归档用户继续部署。"""
     def git(*args: str) -> str:
+        # 强制 UTF-8 解码: 提交主题含中文时, Windows 默认 gbk 会触发
+        # UnicodeDecodeError 让整次部署崩溃。errors="replace" 兜底防意外字节。
         result = subprocess.run(
             ["git", "-C", PROJECT_ROOT, *args], capture_output=True,
-            text=True, timeout=15,
+            text=True, encoding="utf-8", errors="replace", timeout=15,
         )
         return result.stdout.strip() if result.returncode == 0 else ""
 
