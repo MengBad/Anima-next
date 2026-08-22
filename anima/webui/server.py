@@ -2011,6 +2011,29 @@ class WebUIServer:
         report = monitor.check(self.core.config)
         return web.json_response(report)
 
+    async def audit_query(self, request: web.Request) -> web.Response:
+        """R16 闭环5：只读审计查询——按时间窗与类型过滤，可跨日回溯。"""
+        self._owner_id()
+        audit = getattr(self.core, "audit", None)
+        if audit is None:
+            return web.json_response({"items": [], "count": 0})
+        try:
+            since = float(request.query.get("since")) if request.query.get("since") else None
+        except (TypeError, ValueError):
+            since = None
+        try:
+            until = float(request.query.get("until")) if request.query.get("until") else None
+        except (TypeError, ValueError):
+            until = None
+        types_raw = request.query.get("types", "")
+        types = set(t for t in types_raw.split(",") if t) if types_raw else None
+        try:
+            limit = min(max(1, int(request.query.get("limit", "500"))), 5000)
+        except (TypeError, ValueError):
+            limit = 500
+        items = audit.query(since=since, until=until, types=types, limit=limit)
+        return web.json_response({"items": items, "count": len(items)})
+
     async def tools_list(self, request: web.Request) -> web.Response:
         """返回所有已注册工具的名称、描述、最低权限等级和启用状态。"""
         self._owner_id()

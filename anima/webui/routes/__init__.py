@@ -87,6 +87,7 @@ def _register_health(app: web.Application, s: "WebUIServer") -> None:
         web.get("/api/backups", s.backups),
         web.post("/api/backups", s.create_backup),
         web.get("/api/provenance", s.provenance),
+        web.get("/api/audit", s.audit_query),
         web.get("/api/evaluation", s.evaluation),
         web.get("/api/replays", s.replays),
         web.post("/api/replays/run", s.run_replay),

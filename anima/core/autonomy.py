@@ -530,6 +530,16 @@ class Heartbeat:
                     logger.info("WebKnowledgeStore 每日衰减清理 %d 条过期知识", removed)
             except Exception as e:
                 logger.warning("WebKnowledgeStore 每日衰减失败（已忽略）: %s", e)
+            # R16 闭环5：每日低峰清理过期审计文件（整文件粒度），保持可回溯窗口
+            # 连续不断档，同时防止小盘 VPS 上审计日志无限膨胀。
+            try:
+                audit = getattr(self.core, "audit", None)
+                if audit is not None:
+                    removed_audit = audit.prune(retention_days=90)
+                    if removed_audit:
+                        logger.info("audit 保留期清理 %d 个过期审计文件", removed_audit)
+            except Exception as e:
+                logger.warning("audit 清理失败（已忽略）: %s", e)
 
         # Token 预算检查
         if self.token_budget and self._tokens_today >= self.token_budget:
