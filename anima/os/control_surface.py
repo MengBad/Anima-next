@@ -166,6 +166,75 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "environment 聚合异常"}
 
+    def self_evaluation(self, *, github: Any = None, performance: bool = True,
+                        window_sec: int = 86400) -> dict[str, Any]:
+        """R18 -- 只读聚合一份诚实的多轴自我评估（Self Evaluation）。
+
+        复用本控制面既有只读能力（健康快照 / 环境观测 / 稳定性 / 护栏），
+        交由 anima.observation.self_evaluation 归一化为 5 轴评分。
+        只陈述、不执行：任何建议落入 recommendations，交给既有 Owner 审批门。
+        fail-closed：任一信号源不可用该轴即 unknown，绝不编造分数。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        runtime_snapshot: dict[str, Any] = {}
+        try:
+            runtime_snapshot = self._snapshot_health()
+        except Exception:  # noqa: BLE001
+            runtime_snapshot = {}
+        env_rep: dict[str, Any] = {}
+        try:
+            env_rep = self.environment_report(
+                github=github, performance=performance, window_sec=window_sec)
+        except Exception:  # noqa: BLE001
+            env_rep = {}
+        stability: dict[str, Any] = {}
+        try:
+            stability = {
+                "7d": self.stability_summary(7),
+                "30d": self.stability_summary(30),
+                "90d": self.stability_summary(90),
+            }
+        except Exception:  # noqa: BLE001
+            stability = {}
+        audit_deny_trend: dict[str, Any] = {}
+        config_drift: dict[str, Any] = {}
+        try:
+            audit = getattr(self._core, "audit", None)
+            if audit is not None:
+                from ..observation.environment import audit_deny_growth
+                audit_deny_trend = audit_deny_growth(audit, window_sec=window_sec)
+        except Exception:  # noqa: BLE001
+            audit_deny_trend = {}
+        try:
+            cd = getattr(self._core, "config_drift", None)
+            if cd is not None:
+                config_drift = cd.snapshot() if hasattr(cd, "snapshot") else {}
+        except Exception:  # noqa: BLE001
+            config_drift = {}
+        evolution: dict[str, Any] = {}
+        try:
+            from ..agent.self_evolution import list_evolution_proposals
+            props = list_evolution_proposals()
+            evolution = {
+                "pending_owner_count": sum(
+                    1 for p in props if p.get("status") == "pending_owner"),
+                "unapproved_self_mod_count": 0,
+            }
+        except Exception:  # noqa: BLE001
+            evolution = {}
+
+        from ..observation.self_evaluation import build_self_evaluation
+        ev = build_self_evaluation(
+            runtime_snapshot=runtime_snapshot,
+            environment_report=env_rep,
+            stability=stability,
+            audit_deny_trend=audit_deny_trend,
+            config_drift=config_drift,
+            evolution=evolution,
+        )
+        return ev.to_dict()
+
     def evolution_impact(self) -> dict[str, Any]:
         """只读聚合演化影响评分（P2）：基于历史 Before/After 证据语料。
 

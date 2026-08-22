@@ -2430,6 +2430,19 @@ class WebUIServer:
             "skill": skill,
         })
 
+    async def os_self_evaluation(self, request: web.Request) -> web.Response:
+        """R18 —— 只读聚合一份诚实的多轴自我评估（Self Evaluation）。
+
+        复用 R14 控制面 HumanAIControlSurface.self_evaluation：只陈述、只观测，
+        绝不自我授权。任何建议落入 recommendations，交给既有 Owner 审批门。
+        """
+        owner_id = self._owner_id()
+        from anima.os.control_surface import HumanAIControlSurface
+        surf = HumanAIControlSurface(self.core)
+        if self.core.audit:
+            self.core.audit.emit("webui_os_self_evaluation", reviewer=owner_id)
+        return web.json_response(surf.self_evaluation())
+
     async def os_command(self, request: web.Request) -> web.Response:
         """解析 Owner 的受限自然语言指令（白名单 + 确定性规则）。
 
