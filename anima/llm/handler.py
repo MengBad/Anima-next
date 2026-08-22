@@ -993,6 +993,35 @@ class LLMHandler:
         except Exception:
             logger.exception("[睡眠] 迷糊回复发送失败")
 
+    def _maybe_record_feedback(self, text: str, *, sender_name: str, user_id, group_id,
+                               detail_type: str, message_id, audit) -> None:
+        """P3 —— 识别工程反馈并记审计（只读，绝不改变回复/绝不自动修复）。"""
+        try:
+            from anima.observation.feedback_detect import detect_engineering_feedback
+            fb = detect_engineering_feedback(
+                text,
+                sender_name=sender_name,
+                message_id=message_id,
+                conversation_id=group_id or user_id,
+                source="qq_group" if detail_type == "group" else "qq_private",
+            )
+            if fb is not None:
+                if audit:
+                    audit.emit(
+                        "engineering_feedback_detected",
+                        kind=fb.kind,
+                        source=fb.source,
+                        user_id=int(user_id),
+                        group_id=int(group_id) if group_id else None,
+                        message_id=message_id,
+                        severity=fb.severity,
+                        problem=fb.problem,
+                    )
+                logger.info("识别到工程反馈 kind=%s severity=%s from=%s：%s",
+                            fb.kind, fb.severity, fb.source, fb.problem)
+        except Exception:  # noqa: BLE001 - 反馈识别失败绝不阻断正常回复
+            logger.debug("工程反馈识别失败（忽略）", exc_info=True)
+
     async def handle(self, event: dict) -> None:
         # 提取事件信息
         text = event.get("text", "").strip()
@@ -1076,6 +1105,13 @@ class LLMHandler:
                 text_length=len(text),
                 media=event.get("media_observation"),
             )
+
+        # P3：识别工程反馈（用户指出 Bot 出错）。只审计 + 记日志，绝不改变回复、
+        # 绝不自动修复；真正修复走既有 R8 闭环 + Owner 审批门（self-improvement
+        # ≠ self-authorization）。
+        self._maybe_record_feedback(text, sender_name=sender_name, user_id=user_id,
+                                    group_id=group_id, detail_type=detail_type,
+                                    message_id=event.get("message_id"), audit=audit)
 
         # P1-8：每次入站生成短 trace_id，串起本次处理的全部日志（命令/观察/出站），
         # 便于线上按 trace 追踪「收到 → 处理 → 出站」全链路。
