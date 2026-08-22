@@ -44,6 +44,7 @@ from .orchestrator import (
 ISSUE_SOURCE_OWNER = "owner"
 ISSUE_SOURCE_SELF_MONITOR = "self_monitor"
 ISSUE_SOURCE_AUDIT = "audit"
+ISSUE_SOURCE_FEEDBACK = "feedback"  # P3：用户/群友实时纠错反馈
 
 
 @dataclass

@@ -15,6 +15,7 @@ from typing import Any
 
 from .devloop import (
     ISSUE_SOURCE_AUDIT,
+    ISSUE_SOURCE_FEEDBACK,
     ISSUE_SOURCE_OWNER,
     ISSUE_SOURCE_SELF_MONITOR,
     DevIssue,
@@ -115,3 +116,38 @@ def _filter_severity(issues: list[DevIssue], min_severity: str) -> list[DevIssue
     """按最低严重度过滤（默认保留 low 及以上）。"""
     threshold = _SEVERITY_ORDER.get(min_severity, 0)
     return [i for i in issues if _SEVERITY_ORDER.get(i.severity, 1) >= threshold]
+
+
+def collect_feedback_issues(
+    feedback_signals: list[Any] | None = None,
+    *,
+    min_severity: str = "normal",
+) -> list[DevIssue]:
+    """P3 —— 采集用户/群友实时纠错反馈 → DevIssue。
+
+    feedback_signals：``anima.observation.feedback_detect.FeedbackSignal`` 列表。
+    每条信号是一个被识别的工程反馈（bug/behavior/memory/persona/tool/image/system）。
+
+    只读采集：产出 ``DevIssue``（source=feedback）进入既有 R8 闭环，需 Owner 授权
+    才跑 DevLoopOrchestrator，绝不自动修复、绝不自我授权。默认过滤掉 low 严重度，
+    避免把偶发吐槽当开发任务。
+    """
+    out: list[DevIssue] = []
+    for sig in (feedback_signals or []):
+        # 兼容 FeedbackSignal 与 dict 两种形态
+        kind = getattr(sig, "kind", None) or (sig.get("kind") if isinstance(sig, dict) else "")
+        problem = getattr(sig, "problem", "") or (sig.get("problem") if isinstance(sig, dict) else "")
+        evidence = getattr(sig, "evidence", "") or (sig.get("evidence") if isinstance(sig, dict) else "")
+        sender = getattr(sig, "sender", "") or (sig.get("user") if isinstance(sig, dict) else "")
+        severity = getattr(sig, "severity", "normal") or (sig.get("severity") if isinstance(sig, dict) else "normal")
+        if not problem:
+            continue
+        out.append(DevIssue(
+            title=f"[用户反馈:{kind}] {str(problem)[:60]}",
+            detail=f"用户 {sender or '未知'} 指出：{problem}\n证据：{evidence or problem}",
+            source=ISSUE_SOURCE_FEEDBACK,
+            capability="code.develop",
+            required_scopes=frozenset({"write"}),
+            severity=str(severity or "normal"),
+        ))
+    return _filter_severity(out, min_severity)
