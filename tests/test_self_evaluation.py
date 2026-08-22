@@ -2,7 +2,7 @@
 """R18 —— Self Evaluation 聚合单元测试（确定性，信号源全部 mock）。
 
 验证 build_self_evaluation：
-- 5 轴（runtime / observation / stability / safety / evolution）正确评分；
+- 6 轴（runtime / observation / stability / safety / evolution / interaction）正确评分；
 - 信号缺失 -> 该轴 unknown，绝不编造分数；
 - 诚实推荐：GitHub 缺失给出 ANIMA_GITHUB_TOKEN 建议；
 - HumanAIControlSurface.self_evaluation 在 core 缺失时 fail-closed。
@@ -152,13 +152,19 @@ def _full_signals():
         "audit_deny_trend": {"available": True, "growing": False, "current": 0},
         "config_drift": {"available": True, "drift_count": 0},
         "evolution": {"unapproved_self_mod_count": 0, "pending_owner_count": 0},
+        "interaction": {
+            "conversation": {"ok_ratio": 0.9},
+            "tools": {"success_rate": 0.88},
+            "persona": {"stability": 1.0},
+            "image": {"delivery_ok_ratio": 0.95},
+        },
     }
 
 
 def test_build_self_evaluation_all_ok():
     ev = build_self_evaluation(**_full_signals())
     assert isinstance(ev, SelfEvaluation)
-    assert len(ev.axes) == 5
+    assert len(ev.axes) == 6  # runtime/observation/stability/safety/evolution/interaction
     assert ev.overall is not None and ev.overall >= 0.9
     assert ev.attention == []
     assert ev.recommendations == []

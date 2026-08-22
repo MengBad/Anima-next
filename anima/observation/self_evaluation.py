@@ -16,6 +16,7 @@
 - stability   长期稳定（近 7/30/90 天 uptime / 异常 / 漂移 / 演化计数）
 - safety      护栏有效性（审计 DENY 是否受控、配置/权限漂移是否被盯住）
 - evolution   演化纪律（提案是否都经 Owner 审批、有无越权自改）
+- interaction 交互质量（对话质量/工具成功率/人格一致性/图片交付，P5）
 """
 
 from __future__ import annotations
@@ -169,6 +170,55 @@ def _score_evolution(evolution: dict[str, Any]) -> AxisScore:
         "演化纪律良好（无越权自改）" if status == "ok" else "演化纪律告警：存在未审批自改", ev)
 
 
+def _score_interaction(interaction: dict[str, Any]) -> AxisScore:
+    """P5 —— 交互质量轴（对话 / 工具 / 人格一致性 / 图片交付）。
+
+    interaction 期望含子字典，各子源缺失则该项 marked unknown（诚实 fail-closed）：
+    - conversation: ok_ratio（对话适当率）, samples
+    - tools:       success_rate（工具成功率）, calls
+    - persona:     stability（人格一致性 0~1，越高越稳定）, drift_rejects（近窗口拒绝漂移次数）
+    - image:       delivery_ok_ratio（图片成功交付率）, samples
+    """
+    ev: dict[str, Any] = {}
+    subs: list[float] = []
+    for key in ("conversation", "tools", "persona", "image"):
+        sub = interaction.get(key)
+        if not isinstance(sub, dict) or not sub:
+            ev[key] = {"available": False}
+            continue
+        ok_ratio = sub.get("ok_ratio")
+        success = sub.get("success_rate")
+        stab = sub.get("stability")
+        deliver = sub.get("delivery_ok_ratio")
+        val = None
+        if key == "conversation":
+            val = _clamp(float(ok_ratio)) if ok_ratio is not None else None
+        elif key == "tools":
+            val = _clamp(float(success)) if success is not None else None
+        elif key == "persona":
+            val = _clamp(float(stab)) if stab is not None else None
+        elif key == "image":
+            val = _clamp(float(deliver)) if deliver is not None else None
+        ev[key] = {"available": val is not None,
+                   "value": round(val, 4) if val is not None else None,
+                   **({k: sub.get(k) for k in ("samples", "calls", "drift_rejects") if sub.get(k) is not None})}
+        if val is not None:
+            subs.append(val)
+    if not ev:
+        return AxisScore("interaction", None, "unknown", "无交互质量信号，无法判定", {})
+    if not subs:
+        return AxisScore("interaction", None, "unknown",
+                         "交互质量各源均缺失，无法判定", ev)
+    score = _clamp(sum(subs) / len(subs))
+    status = "ok" if (score >= 0.7 and len(subs) == 4) else "attention"
+    summary = (
+        "交互质量良好（对话/工具/人格/图片均完整）"
+        if status == "ok"
+        else ("交互质量关注项（分数偏低或部分信号缺失）"
+              if len(subs) < 4 else "交互质量关注项（分数偏低）"))
+    return AxisScore("interaction", score, status, summary, ev)
+
+
 def build_self_evaluation(
     *,
     runtime_snapshot: Optional[dict[str, Any]] = None,
@@ -177,6 +227,7 @@ def build_self_evaluation(
     audit_deny_trend: Optional[dict[str, Any]] = None,
     config_drift: Optional[dict[str, Any]] = None,
     evolution: Optional[dict[str, Any]] = None,
+    interaction: Optional[dict[str, Any]] = None,
     now: Optional[float] = None,
 ) -> SelfEvaluation:
     """把各信号源（均已存在）聚合为一份诚实自评。"""
@@ -187,6 +238,7 @@ def build_self_evaluation(
     axes.append(_score_stability(stability or {}))
     axes.append(_score_safety(audit_deny_trend or {}, config_drift or {}))
     axes.append(_score_evolution(evolution or {}))
+    axes.append(_score_interaction(interaction or {}))
 
     known = [a for a in axes if a.score is not None]
     overall = round(sum(a.score for a in known) / len(known), 4) if known else None
