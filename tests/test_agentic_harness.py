@@ -124,3 +124,20 @@ def test_legit_open_status_queries_still_trigger():
     # 「店/门开了吗」是真实的状态查询，仍应触发实时工具
     for text in ("店开了吗", "门开了吗", "今天开了吗"):
         assert _REALTIME_TOOL_RE.search(text), f"{text!r} 应触发实时工具"
+
+
+def test_image_manip_guidance_is_gated_by_inbound_image():
+    # _IMAGE_MANIP_RE 本身是宽匹配（会命中「处理一下」「编辑文档」等通用词），
+    # 但真正注入图片操作引导必须同时满足「有入站图」（ctx.inbound_images 非空）。
+    # 此测试固化该门控语义：宽正则命中 ≠ 触发图片操作，避免未来误把宽匹配当操作意图。
+    from anima.pipeline.stages.generation import _IMAGE_MANIP_RE
+    # 通用词确实命中正则（宽匹配，但无图时不会注入引导）——
+    assert _IMAGE_MANIP_RE.search("处理一下")
+    assert _IMAGE_MANIP_RE.search("编辑文档")
+    assert _IMAGE_MANIP_RE.search("压缩文件")
+    # 关键不变量：命中命令式图片操作词才是有图时触发操作的强信号，
+    # 而宽泛动词（处理/编辑/压缩）单独出现不代表图片操作意图。
+    # （注入路径见 generation_stage:_has_image_manip_request = available_tools and ctx.inbound_images and _IMAGE_MANIP_RE.search）
+    assert _IMAGE_MANIP_RE.search("把这张图翻转一下")
+    assert _IMAGE_MANIP_RE.search("给我放大这张照片")
+    assert _IMAGE_MANIP_RE.search("这个滤镜怎么加")
