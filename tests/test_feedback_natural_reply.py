@@ -72,6 +72,18 @@ def test_pure_not_mutating_input():
     assert segs == snapshot  # 输入列表未被原地修改
 
 
+def test_config_gate_natural_feedback_ack_reads_yaml(tmp_path):
+    # 真实读取 config.yaml 的开关路径：默认关，置 true 即启
+    import yaml
+    from anima.core.config import load_config
+    cfg = load_config(tmp_path / "c.yaml")  # 不存在 -> 用默认
+    assert cfg.conversation.natural_feedback_ack is False
+    p = tmp_path / "c.yaml"
+    p.write_text("conversation:\n  natural_feedback_ack: true\n", encoding="utf-8")
+    cfg2 = load_config(p)
+    assert cfg2.conversation.natural_feedback_ack is True
+
+
 def test_maybe_record_feedback_returns_signal():
     from anima.llm.handler import LLMHandler
     from anima.observation.feedback_detect import FeedbackSignal

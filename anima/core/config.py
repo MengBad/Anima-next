@@ -420,6 +420,9 @@ class ConversationConfig(BaseModel):
     enabled: bool = True
     wait_sec: float = 1.5
     max_wait_sec: float = 8.0
+    # §17 安全版反馈自然回话：识别到工程反馈时，仅私聊+已有主回复文本才在回复末尾
+    # 追加一句轻量确认（不双发/不改主回复）。默认关；置 true 即启用。
+    natural_feedback_ack: bool = False
 
 
 class ReplySplitConfig(BaseModel):

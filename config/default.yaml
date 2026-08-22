@@ -246,6 +246,7 @@ conversation:
   enabled: true
   wait_sec: 1.5
   max_wait_sec: 8.0
+  natural_feedback_ack: false   # §17 反馈自然回话：识别到反馈时私聊主回复末尾追加一句轻量确认（默认关）
 
 context:
   # 请求前上下文预算：人格、身份护栏和本轮用户输入不可裁，最旧历史/低优先级

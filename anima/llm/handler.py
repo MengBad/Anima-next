@@ -1415,10 +1415,13 @@ class LLMHandler:
             sticker_auto_last=self._sticker_auto_last,
         )
         # §17：安全版反馈自然回话——识别到反馈且开启时，仅私聊+已有主回复文本才在
-        # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关。
+        # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关，开关读自
+        # config.conversation.natural_feedback_ack（实例属性 feedback_ack_enabled 供测试覆盖）。
+        _ack_cfg = getattr(getattr(self.core, "config", None), "conversation", None)
+        _ack_on = bool(getattr(_ack_cfg, "natural_feedback_ack", False))
+        _ack_on = _ack_on or bool(getattr(self, "feedback_ack_enabled", False))
         segments = _maybe_append_feedback_ack(
-            segments, detail_type=detail_type,
-            fb=_fb_detected, enabled=getattr(self, "feedback_ack_enabled", False),
+            segments, detail_type=detail_type, fb=_fb_detected, enabled=_ack_on,
         )
 
         quality = getattr(self.core, "reply_quality", None)
