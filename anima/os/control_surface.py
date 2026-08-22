@@ -262,9 +262,9 @@ class HumanAIControlSurface:
             return {"available": False, "reason": "engineering_loop 聚合异常"}
 
     def long_term_operation(self, *, stability: dict | None = None,
-                            observed_count: int = 0,
-                            pending_owner_count: int = 0,
-                            evidence_count: int = 0) -> dict[str, Any]:
+                            observed_count: int | None = None,
+                            pending_owner_count: int | None = None,
+                            evidence_count: int | None = None) -> dict[str, Any]:
         """R20 —— 只读聚合一份长期自主运行快照（Long-Term Operation）。
 
         复用既有稳定记录（P0-02）、观测闭环（R19）、演化证据（P2），产出确定性
@@ -274,14 +274,30 @@ class HumanAIControlSurface:
         """
         if self._core is None:
             return {"available": False, "reason": "core 未注入"}
+        # 未显式注入观测/待审/证据计数时，从 R19 工程闭环取真实信号，避免默认 0 造成不诚实。
+        if observed_count is None or pending_owner_count is None or evidence_count is None:
+            try:
+                loop = self.engineering_loop()
+                if observed_count is None:
+                    observed_count = int(loop.get("observed_count", 0) or 0)
+                if pending_owner_count is None:
+                    pending_owner_count = int(loop.get("pending_owner_count", 0) or 0)
+                if evidence_count is None:
+                    se = loop.get("self_evaluation") or {}
+                    evo = next((a for a in se.get("axes", []) if a.get("axis") == "evolution"), {})
+                    evidence_count = int((evo.get("evidence") or {}).get("evidence_count", 0) or 0)
+            except Exception:  # noqa: BLE001 - 闭环不可用则回退 0，诚实降级
+                observed_count = observed_count if observed_count is not None else 0
+                pending_owner_count = pending_owner_count if pending_owner_count is not None else 0
+                evidence_count = evidence_count if evidence_count is not None else 0
         try:
             from ..observation.long_term_operation import build_long_term_operation
             op = build_long_term_operation(
                 core=self._core,
                 stability=stability,
-                observed_count=observed_count,
-                pending_owner_count=pending_owner_count,
-                evidence_count=evidence_count,
+                observed_count=observed_count or 0,
+                pending_owner_count=pending_owner_count or 0,
+                evidence_count=evidence_count or 0,
             )
             return op.to_dict()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
