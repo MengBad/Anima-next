@@ -2443,6 +2443,20 @@ class WebUIServer:
             self.core.audit.emit("webui_os_self_evaluation", reviewer=owner_id)
         return web.json_response(surf.self_evaluation())
 
+    async def os_engineering_loop(self, request: web.Request) -> web.Response:
+        """R19 —— 只读聚合一份自主工程闭环快照（Engineering Loop，提案闭环）。
+
+        复用 R14 控制面 HumanAIControlSurface.engineering_loop：只陈述、只提案，
+        绝不执行。任何可行动项落入 proposed_issues / recommendations，交给既有
+        Owner 审批门（R8/R9/R14）。
+        """
+        owner_id = self._owner_id()
+        from anima.os.control_surface import HumanAIControlSurface
+        surf = HumanAIControlSurface(self.core)
+        if self.core.audit:
+            self.core.audit.emit("webui_os_engineering_loop", reviewer=owner_id)
+        return web.json_response(surf.engineering_loop())
+
     async def os_command(self, request: web.Request) -> web.Response:
         """解析 Owner 的受限自然语言指令（白名单 + 确定性规则）。
 

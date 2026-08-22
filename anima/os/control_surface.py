@@ -235,6 +235,32 @@ class HumanAIControlSurface:
         )
         return ev.to_dict()
 
+    def engineering_loop(self, *, observation_events: list | None = None,
+                         proposed_issues: list | None = None,
+                         evolution_proposals: list | None = None,
+                         self_evaluation: dict | None = None) -> dict[str, Any]:
+        """R19 —— 只读聚合一份自主工程闭环快照（Engineering Loop，提案闭环）。
+
+        复用既有的观测（R10-01）、自监控提案（R8）、演化提案（R9）、自评（R18），
+        归一化为「Observe → Plan → ... → Evidence」闭环状态快照。
+        只陈述、只提案、绝不执行：任何可行动项落在 proposed_issues / recommendations，
+        交由既有 Owner 审批门（R8/R9/R14）处理。fail-closed：信号缺失即诚实 unavailable。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        try:
+            from ..observation.engineering_loop import build_engineering_loop
+            loop = build_engineering_loop(
+                core=self._core,
+                observation_events=observation_events,
+                proposed_issues=proposed_issues,
+                evolution_proposals=evolution_proposals,
+                self_evaluation=self_evaluation,
+            )
+            return loop.to_dict()
+        except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
+            return {"available": False, "reason": "engineering_loop 聚合异常"}
+
     def evolution_impact(self) -> dict[str, Any]:
         """只读聚合演化影响评分（P2）：基于历史 Before/After 证据语料。
 
