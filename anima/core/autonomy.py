@@ -425,6 +425,35 @@ class Heartbeat:
                        latest_running=bool(report.get("latest", {}).get("running")),
                        latest_connected=bool(report.get("latest", {}).get("channel_connected")))
 
+    def _config_drift_check(self) -> None:
+        # R16 闭环4：周期比对敏感配置/权限基线。仅只读告警进审计，绝不自动回滚。
+        monitor = getattr(self.core, "config_drift", None)
+        if monitor is None:
+            return
+        audit = getattr(self.core, "audit", None)
+        try:
+            monitor.maybe_emit(self.core.config, audit)
+        except Exception:
+            logger.exception("config drift check failed, isolated")
+
+    async def _tick(self) -> None:
+
+        self._expire_active_feedback(time.time())
+        try:
+            self.core.health_history.record()
+        except Exception:
+            logger.exception("心跳健康采样失败")
+        # R16: periodic anomaly self-check (read-only + dedupe + audit)
+        try:
+            self._anomaly_selfcheck()
+        except Exception:
+            logger.exception("心跳异常自检失败，已隔离")
+        # R16 闭环4: periodic config/permission drift check (read-only + audit)
+        try:
+            self._config_drift_check()
+        except Exception:
+            logger.exception("心跳配置漂移自检失败，已隔离")
+
     async def _tick(self) -> None:
 
         self._expire_active_feedback(time.time())

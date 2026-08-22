@@ -95,6 +95,9 @@ class AnimaCore:
         self.calendar = CalendarStore(self.persistence)
         from anima.core.audit import AuditLogger
         self.audit = AuditLogger(config.persistence.data_dir)
+        # R16 闭环4：敏感配置/权限漂移基线（启动即锚定当前配置为基线）。
+        from anima.core.config_drift import ConfigDriftMonitor
+        self.config_drift = ConfigDriftMonitor(config, actor="bootstrap")
         from anima.cognitive.reply_quality import get_reply_quality
         self.reply_quality = get_reply_quality(config.persistence.data_dir)
         from anima.core.approvals import ApprovalStore

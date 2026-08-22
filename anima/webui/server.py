@@ -1988,6 +1988,29 @@ class WebUIServer:
             self.core.audit.emit("webui_admin_removed", reviewer=owner_id, target_qq=qq)
         return web.json_response({"admins": admins})
 
+    async def config_drift(self, request: web.Request) -> web.Response:
+        """R16 闭环4：只读展示敏感配置/权限相对基线的漂移。"""
+        self._owner_id()
+        monitor = getattr(self.core, "config_drift", None)
+        if monitor is None:
+            return web.json_response({"drift_detected": False, "watched_fields": 0,
+                                      "items": [], "dangerous": [],
+                                      "baseline_at": None, "baseline_actor": None})
+        report = monitor.check(self.core.config)
+        return web.json_response(report)
+
+    async def config_drift_repin(self, request: web.Request) -> web.Response:
+        """R16 闭环4：owner 在受控变更后重新校准漂移基线（消除已知变更告警）。"""
+        owner_id = self._owner_id()
+        monitor = getattr(self.core, "config_drift", None)
+        if monitor is None:
+            raise web.HTTPNotFound(text="漂移监控未初始化")
+        monitor.repin(self.core.config, actor=f"owner:{owner_id}")
+        if self.core.audit:
+            self.core.audit.emit("config_drift_baseline_repinned", reviewer=owner_id)
+        report = monitor.check(self.core.config)
+        return web.json_response(report)
+
     async def tools_list(self, request: web.Request) -> web.Response:
         """返回所有已注册工具的名称、描述、最低权限等级和启用状态。"""
         self._owner_id()
