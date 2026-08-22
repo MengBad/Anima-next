@@ -54,7 +54,7 @@ def _resolve_repo(explicit: Optional[str] = None) -> str:
             if url.returncode == 0:
                 u = url.stdout.strip()
                 if "github.com" in u:
-                    tail = u.split("github.com")[-1].lstrip(":/").rstrip("/.git")
+                    tail = u.split("github.com")[-1].lstrip(":/").removesuffix(".git").rstrip("/")
                     if tail.count("/") == 1:
                         return tail
     except Exception:  # noqa: BLE001 - 反推失败不阻断观测
@@ -147,9 +147,16 @@ class GitHubSignalSource:
 
     def _fetch_commits(self, n: int) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        data = _gh_api(self.repo, f"commits?per_page={n}")
-        if data is None:
+        if self.token:
+            # 显式 token 优先：gh CLI 可能登录的是别的账号，空结果不可信，
+            # 带鉴权 REST 才是本仓库的权威信号。
             data = self._rest(f"commits?per_page={n}")
+            if data is None:
+                data = _gh_api(self.repo, f"commits?per_page={n}")
+        else:
+            data = _gh_api(self.repo, f"commits?per_page={n}")
+            if data is None:
+                data = self._rest(f"commits?per_page={n}")
         if data is not None:
             self.probed_ok = True
         if data:
@@ -166,9 +173,14 @@ class GitHubSignalSource:
 
     def _fetch_issues(self, n: int) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
-        data = _gh_api(self.repo, f"issues?state=open&per_page={n}&filter=all")
-        if data is None:
+        if self.token:
             data = self._rest(f"issues?state=open&per_page={n}&filter=all")
+            if data is None:
+                data = _gh_api(self.repo, f"issues?state=open&per_page={n}&filter=all")
+        else:
+            data = _gh_api(self.repo, f"issues?state=open&per_page={n}&filter=all")
+            if data is None:
+                data = self._rest(f"issues?state=open&per_page={n}&filter=all")
         if data is not None:
             self.probed_ok = True
         if data:
@@ -186,9 +198,12 @@ class GitHubSignalSource:
         # CI runs 需鉴权：gh 可用时取；否则带 token 的 REST 回退也行；
         # 二者皆无则诚实留空（公开 REST 不含私有 CI）。
         rows: list[dict[str, Any]] = []
-        data = _gh_api(self.repo, f"actions/runs?per_page={n}")
-        if data is None and self.token:
+        if self.token:
             data = self._rest(f"actions/runs?per_page={n}")
+            if data is None:
+                data = _gh_api(self.repo, f"actions/runs?per_page={n}")
+        else:
+            data = _gh_api(self.repo, f"actions/runs?per_page={n}")
         if data is not None:
             self.probed_ok = True
         if data:

@@ -37,6 +37,40 @@ def test_resolve_repo_fallback_when_git_missing():
         assert _resolve_repo(None) == "MengBad/Anima-next"
 
 
+def test_resolve_repo_does_not_truncate_trailing_t():
+    # 回归：仓库名以 "t" 结尾（如 Anima-next）不得被 .rstrip("/.git") 误删。
+    def _fake_run(args, **kwargs):
+        if args[:2] == ["git", "rev-parse"]:
+            return mock.Mock(returncode=0, stdout="/repo", stderr="")
+        if args[:3] == ["git", "-C", "/repo", "config"]:
+            return mock.Mock(
+                returncode=0,
+                stdout="https://github.com/MengBad/Anima-next.git",
+                stderr="",
+            )
+        return mock.Mock(returncode=1, stdout="", stderr="")
+
+    with mock.patch("subprocess.run", side_effect=_fake_run):
+        assert _resolve_repo(None) == "MengBad/Anima-next"
+
+
+def test_resolve_repo_does_not_truncate_trailing_t_direct_ssh():
+    # SSH 形态 + 以 t 结尾：git@github.com:MengBad/Anima-next.git
+    def _fake_run(args, **kwargs):
+        if args[:2] == ["git", "rev-parse"]:
+            return mock.Mock(returncode=0, stdout="/repo", stderr="")
+        if args[:3] == ["git", "-C", "/repo", "config"]:
+            return mock.Mock(
+                returncode=0,
+                stdout="git@github.com:MengBad/Anima-next.git",
+                stderr="",
+            )
+        return mock.Mock(returncode=1, stdout="", stderr="")
+
+    with mock.patch("subprocess.run", side_effect=_fake_run):
+        assert _resolve_repo(None) == "MengBad/Anima-next"
+
+
 def test_gh_api_returns_none_on_failure():
     with mock.patch("subprocess.run", return_value=mock.Mock(
             returncode=1, stdout="", stderr="")):
