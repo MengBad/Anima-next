@@ -132,6 +132,19 @@ MANIFEST: list[dict[str, Any]] = [
     {"path": "bilibili_read.sessdata", "label": "B 站 SESSDATA", "type": "secret", "risk": "yellow", "restart": False, "impact": ["视频字幕"]},
     {"path": "bilibili_read.bili_jct", "label": "B 站 bili_jct", "type": "secret", "risk": "yellow", "restart": False, "impact": ["视频字幕"]},
     {"path": "bilibili_read.max_subtitle_length", "label": "字幕截断上限", "type": "number", "min": 500, "max": 20000, "risk": "green", "restart": False, "impact": ["视频字幕"]},
+    # —— 向量 / 语义检索（硅基流动）——
+    {"path": "vector.enabled", "label": "语义向量记忆", "type": "boolean", "risk": "yellow", "restart": True, "impact": ["语义检索", "长期记忆"]},
+    {"path": "vector.embedding_backend", "label": "Embedding 后端", "type": "text", "risk": "yellow", "restart": True, "impact": ["语义检索"]},
+    {"path": "vector.embedding_endpoint", "label": "Embedding 端点", "type": "url", "risk": "yellow", "restart": True, "impact": ["语义检索"]},
+    {"path": "vector.embedding_model", "label": "Embedding 模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["语义检索"]},
+    {"path": "vector.embedding_dim", "label": "向量维度", "type": "number", "min": 64, "max": 8192, "risk": "yellow", "restart": True, "impact": ["语义检索"]},
+    {"path": "vector.embedding_api_key", "label": "Embedding API Key", "type": "secret", "risk": "yellow", "restart": True, "impact": ["语义检索"]},
+    {"path": "vector.cache", "label": "缓存 Embedding", "type": "boolean", "risk": "green", "restart": False, "impact": ["语义检索"]},
+    {"path": "vector.rerank_enabled", "label": "语义重排", "type": "boolean", "risk": "yellow", "restart": True, "impact": ["排序质量"]},
+    {"path": "vector.rerank_endpoint", "label": "Rerank 端点", "type": "url", "risk": "yellow", "restart": True, "impact": ["排序质量"]},
+    {"path": "vector.rerank_model", "label": "Rerank 模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["排序质量"]},
+    {"path": "vector.rerank_top_n", "label": "重排取前 N", "type": "number", "min": 1, "max": 50, "risk": "green", "restart": False, "impact": ["排序质量"]},
+    {"path": "vector.rerank_api_key", "label": "Rerank API Key", "type": "secret", "risk": "yellow", "restart": True, "impact": ["排序质量"]},
 ]
 
 
@@ -186,6 +199,11 @@ class ConfigService:
         llm = cleaned.get("llm") if isinstance(cleaned.get("llm"), dict) else {}
         if "api_key" in llm and (llm["api_key"] in (None, "") or isinstance(llm["api_key"], dict)):
             llm.pop("api_key", None)
+        # 向量检索密钥同样：留空/configured 对象不写回，保持原值
+        vector = cleaned.get("vector") if isinstance(cleaned.get("vector"), dict) else {}
+        for _vk in ("embedding_api_key", "rerank_api_key"):
+            if _vk in vector and (vector[_vk] in (None, "") or isinstance(vector[_vk], dict)):
+                vector.pop(_vk, None)
         merged = _deep_merge(current, cleaned)
         return _plain(AnimaConfig.model_validate(merged).model_dump())
 
