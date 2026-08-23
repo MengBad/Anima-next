@@ -28,6 +28,8 @@ STICKER_POLICY_FIELDS = {
     "share_across_groups", "classify_at_collect", "llm_select",
     "send_probability", "send_by_emotion", "send_cooldown_sec",
     "collect_allowlist", "collect_blocklist", "send_allowlist", "send_blocklist",
+    "self_review", "natural_forget",
+    "forget_age_days", "forget_used_max", "forget_last_used_days",
 }
 
 

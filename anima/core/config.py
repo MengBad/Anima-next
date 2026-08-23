@@ -309,6 +309,12 @@ class StickerConfig(BaseModel):
     classify_at_collect: bool = True   # LLM 视觉闸门：导入时判定是否为表情包并分类（否=拒收）
     llm_select: bool = True            # LLM 视觉终选：发送时从候选里挑最贴的（否=退回本地标签匹配/随机）
     select_model: str = ""             # 选图/分类视觉模型；空=复用 label_model
+    # --- 表情包自审查 / 自过审：AI 判定明确的表情自动入库可发，只留拿不准的给 Owner ---
+    self_review: bool = True            # AI 自审自过审：收集/打标后判定明确即自动 approved，无需 Owner 逐张批
+    natural_forget: bool = True         # 自然遗忘：旧且少用的表情自动腾位（即使未到硬上限）
+    forget_age_days: float = 60.0       # 超过该天数的旧表情才纳入自然遗忘候选
+    forget_used_max: int = 2            # 历史使用次数 <= 此值才算"少用/远"
+    forget_last_used_days: float = 30.0 # 距上次使用超过该天才算"已凉"（last_used 为 0 视为从未用过）
     # --- 对话中被动自动附带（照 astrbot_plugin_stealer 概率/冷却模式精神）---
     send_probability: float = 0.35    # LLM 未主动选图时，被动附带表情的概率（0=关，1=必带）
     send_by_emotion: bool = True      # 被动附带优先按回复情绪匹配；否则随机

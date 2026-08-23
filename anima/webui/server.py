@@ -2994,6 +2994,9 @@ class WebUIServer:
                 raise ValueError("收集方式只能是概率或冷却")
             if body.get("default_scope", "local") not in {"local", "public"}:
                 raise ValueError("默认作用域只能是来源群或公共")
+            for name in ("self_review", "natural_forget"):
+                if name in body and not isinstance(body[name], bool):
+                    raise ValueError(f"{name} 必须是布尔")
             for name in ("collect_probability", "send_probability"):
                 if name in body and not 0 <= float(body[name]) <= 1:
                     raise ValueError(f"{name} 必须在 0 到 1 之间")
@@ -3004,6 +3007,9 @@ class WebUIServer:
             for name in ("max_stickers", "pending_capacity"):
                 if name in body and int(body[name]) < 1:
                     raise ValueError(f"{name} 必须是正整数")
+            for name in ("forget_age_days", "forget_used_max", "forget_last_used_days"):
+                if name in body and float(body[name]) < 0:
+                    raise ValueError(f"{name} 不能小于 0")
             for name in ("collect_allowlist", "collect_blocklist",
                          "send_allowlist", "send_blocklist"):
                 if name in body and (not isinstance(body[name], list)

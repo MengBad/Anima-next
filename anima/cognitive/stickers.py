@@ -119,7 +119,10 @@ class StickerManager:
                  label_throttle_per_user: int = 600,
                  label_by_vision: bool = True, label_model: str = "",
                  recent_window: int = 4, gif_min_interval_sec: int = 1800,
-                 classify_at_collect: bool = True, select_model: str = ""):
+                 classify_at_collect: bool = True, select_model: str = "",
+                 self_review: bool = False, natural_forget: bool = False,
+                 forget_age_days: float = 60.0, forget_used_max: int = 2,
+                 forget_last_used_days: float = 30.0):
         from anima.core.persistence import PersistenceProvider
         self._persist = PersistenceProvider(data_dir)
         # 绝对化 stickers 目录：pick/random_one 返回的路径会被 sticker 提取逻辑
@@ -135,6 +138,13 @@ class StickerManager:
         self.gif_min_interval_sec = max(0, int(gif_min_interval_sec))
         self.classify_at_collect = classify_at_collect
         self.select_model = select_model
+        # --- 表情包自审查 / 自过审 + 自然遗忘 ---
+        self.self_review = bool(self_review)
+        self.natural_forget_enabled = bool(natural_forget)
+        self.forget_age_days = max(1.0, float(forget_age_days))
+        self.forget_used_max = max(0, int(forget_used_max))
+        self.forget_last_used_days = max(0.0, float(forget_last_used_days))
+        self._forgotten_total = 0
         self._meta_path = "stickers.json"
         self._lock = asyncio.Lock()
         self._last_label: dict[str, float] = {}  # user_id -> 上次打标时间
@@ -159,7 +169,15 @@ class StickerManager:
             config, "classify_at_collect", self.classify_at_collect,
         ))
         self.select_model = str(getattr(config, "select_model", self.select_model) or "")
+        self.self_review = bool(getattr(config, "self_review", self.self_review))
+        self.natural_forget_enabled = bool(getattr(
+            config, "natural_forget", self.natural_forget_enabled))
+        self.forget_age_days = max(1.0, float(getattr(config, "forget_age_days", self.forget_age_days)))
+        self.forget_used_max = max(0, int(getattr(config, "forget_used_max", self.forget_used_max)))
+        self.forget_last_used_days = max(0.0, float(getattr(config, "forget_last_used_days", self.forget_last_used_days)))
         self._enforce_cap()
+        if self.natural_forget_enabled:
+            self.natural_forget()
 
     # ------------------------------------------------------------------
     # 收集
@@ -222,7 +240,16 @@ class StickerManager:
                     "is_sticker": is_sticker,
                     "ctx_text": (ctx_text or "")[:400],
                     "used": 0,
-                    "status": "pending_review" if approval_required else "approved",
+                    "status": self._initial_status(
+                        approval_required, labels, category, emotion, is_sticker
+                    ),
+                    "review_method": (
+                        "self" if approval_required and self.self_review
+                        and self._self_review_pass(labels, category, emotion, is_sticker)
+                        else ("" if not approval_required else "owner")
+                    ),
+                    "reviewed_at": time.time() if approval_required and self.self_review
+                    and self._self_review_pass(labels, category, emotion, is_sticker) else 0,
                     "scope": "public" if default_scope == "public" else "local",
                 }
                 self._write_meta(meta)
@@ -232,6 +259,8 @@ class StickerManager:
         if added:
             self._total_collected += added
             self._enforce_cap()
+            if self.natural_forget_enabled:
+                self.natural_forget()
             logger.info("表情收集 +%d（库共 %d）", added, len(self._read_meta()))
         return added
 
@@ -263,11 +292,28 @@ class StickerManager:
                 "category": str(category).strip()[:64] or verdict.get("category") or "unknown",
                 "emotion": verdict.get("emotion") or "", "is_sticker": verdict.get("is_sticker"),
                 "ctx_text": "", "used": 0,
-                "status": "pending_review" if approval_required else "approved", "scope": scope,
+                "status": self._initial_status(
+                    approval_required, verdict.get("labels"), verdict.get("category"),
+                    verdict.get("emotion"), verdict.get("is_sticker"),
+                ),
+                "review_method": (
+                    "self" if approval_required and self.self_review and self._self_review_pass(
+                        verdict.get("labels"), verdict.get("category"),
+                        verdict.get("emotion"), verdict.get("is_sticker"),
+                    ) else ("" if not approval_required else "owner")
+                ),
+                "reviewed_at": time.time() if approval_required and self.self_review
+                and self._self_review_pass(
+                    verdict.get("labels"), verdict.get("category"),
+                    verdict.get("emotion"), verdict.get("is_sticker"),
+                ) else 0,
+                "scope": scope,
             }
             added += 1
         if added:
             self._write_meta(meta); self._enforce_cap()
+            if self.natural_forget_enabled:
+                self.natural_forget()
         return {"added": added, "skipped": skipped, "rejected": rejected}
 
     async def _fetch_bytes(self, img: dict, resolver=None) -> Optional[bytes]:
@@ -307,6 +353,74 @@ class StickerManager:
 
     def _exists(self, h: str, ext: str) -> bool:
         return (self._dir / f"{h}{ext}").exists()
+
+    @staticmethod
+    def _self_review_pass(labels, category, emotion, is_sticker) -> bool:
+        """自过审判定：只有拿到明确的识别结果才允许 bot 自动过审入库。
+
+        is_sticker 非 False 之外，还得有可用的标签/分类/情绪之一，否则判定未定
+        （分类失败或含糊），仍留在 pending_review 交给 Owner / 后续打标补齐。
+        """
+        if is_sticker is False:
+            return False
+        labs = [str(x).strip() for x in (labels or []) if str(x).strip()]
+        cat = str(category or "").strip()
+        emo = str(emotion or "").strip()
+        return bool(labs) or bool(cat and cat != "unknown") or bool(emo)
+
+    def _initial_status(self, approval_required: bool, labels, category, emotion,
+                        is_sticker) -> str:
+        """入库初始状态：不需审核=approved；需审核时若自过审通过也 approved。"""
+        if not approval_required:
+            return "approved"
+        if self.self_review and self._self_review_pass(
+                labels, category, emotion, is_sticker):
+            return "approved"
+        return "pending_review"
+
+    def natural_forget(self, now: float | None = None) -> int:
+        """自然遗忘旧且少用的表情，腾出位置（即使未到硬上限）。
+
+        淘汰条件（且）：
+        - 已 approved（不碰 pending_review，也不碰 Owner 手动上传）
+        - 库龄 > forget_age_days（"旧"）
+        - 使用次数 <= forget_used_max（"远/少用"）
+        - 从未用过，或距上次使用 > forget_last_used_days（"已凉"）
+
+        返回本轮淘汰数量。就近、高频、新鲜的表情一律保留。
+        """
+        if not self.natural_forget_enabled:
+            return 0
+        now = time.time() if now is None else float(now)
+        meta = self._read_meta()
+        drop: list[str] = []
+        for h, m in meta.items():
+            if m.get("status") not in (None, "approved"):
+                continue
+            if str(m.get("src_user") or "") == "owner_upload":
+                continue
+            created = float(m.get("time") or 0)
+            if not created or (now - created) < self.forget_age_days * 86400:
+                continue
+            if int(m.get("used") or 0) > self.forget_used_max:
+                continue
+            last_used = float(m.get("last_used") or 0)
+            if last_used and (now - last_used) <= self.forget_last_used_days * 86400:
+                continue
+            drop.append(h)
+        if not drop:
+            return 0
+        for h in drop:
+            m = meta.get(h)
+            try:
+                (self._dir / f"{h}{m.get('ext', '.jpg')}").unlink(missing_ok=True)
+            except Exception:
+                pass
+            meta.pop(h, None)
+        self._write_meta(meta)
+        self._forgotten_total += len(drop)
+        logger.info("表情自然遗忘 %d 张（旧且少用，腾位）", len(drop))
+        return len(drop)
 
     def _enforce_cap(self) -> None:
         """超过 max_stickers 时淘汰（最少用 + 最旧优先）。"""
@@ -368,6 +482,13 @@ class StickerManager:
             if labels is None:
                 continue
             m["labels"] = labels
+            if (self.self_review and m.get("status") == "pending_review"
+                    and self._self_review_pass(m.get("labels"), m.get("category"),
+                                               m.get("emotion"), m.get("is_sticker"))):
+                # 自过审：标签补齐后判定明确 -> 自动入库可发
+                m["status"] = "approved"
+                m["review_method"] = "self"
+                m["reviewed_at"] = now
             self._last_label[user] = now
             labeled += 1
         if labeled:
@@ -778,6 +899,9 @@ class StickerManager:
             "total_collected": self._total_collected,
             "fetch_fail_total": self._fetch_fail_total,
             "max_stickers": self.max_stickers,
+            "self_review": self.self_review,
+            "natural_forget": self.natural_forget_enabled,
+            "forgotten_total": self._forgotten_total,
             "pending_review": sum(1 for m in meta.values() if m.get("status") == "pending_review"),
             "approved": sum(1 for m in meta.values() if m.get("status", "approved") == "approved"),
             "rejected": sum(1 for m in meta.values() if m.get("status") == "rejected"),

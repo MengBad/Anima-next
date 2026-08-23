@@ -133,7 +133,12 @@ sticker:                                   # 表情包自收集系统
   max_stickers: 500                       # 表情库硬上限（环形淘汰最旧/最少用）
   label_throttle_per_user: 600            # 每发送者打标最小间隔（秒）
   label_model: ""                         # 打标模型；空=复用 llm.model
-  require_owner_review: true               # 新图必须经 owner 批准才会被使用
+  require_owner_review: true               # 新图先入候选区；结合 self_review：判定明确的自动过审，拿不准的留给 owner
+  self_review: true                        # 表情包自审查/自过审：AI 判定明确即自动入库可发
+  natural_forget: true                     # 自然遗忘：旧且少用的表情自动腾位
+  forget_age_days: 60.0                    # 超过该天数的旧表情才纳入遗忘候选
+  forget_used_max: 2                       # 历史使用次数 <= 此值才算"少用/远"
+  forget_last_used_days: 30.0              # 距上次使用超该天才算"已凉"
   pending_capacity: 200                    # 待审核池达到上限即暂停自动收集
   default_scope: "local"                  # local=来源群可用；public=跨群可用（仍受总开关约束）
   collect_allowlist: []                    # group:<群号> / user:<QQ号>；空=不限制
