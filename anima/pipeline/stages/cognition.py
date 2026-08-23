@@ -590,6 +590,33 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         except Exception:
             logger.exception("跨群氛围/记忆注入失败")
 
+    # 私聊个性化注入：与群分支同一用户、同一偏好/记忆，避免「群里有记忆、私聊像没学过」。
+    # 只注入对话者本人的记忆与偏好（一对一，不构成他群私密的泄漏；他群/他群私聊 fact 不进群），
+    # 社交图谱/被提及成员/群氛围情绪仍仅限群内。
+    if cg_cfg and getattr(cg_cfg, "enabled", True) and ctx.detail_type == "private":
+        try:
+            from anima.crossgroup import (
+                get_crossgroup_manager,
+                build_crossgroup_fragment,
+                AtmosphereProfile,
+                AtmosphereStyle,
+            )
+            cgm = get_crossgroup_manager()
+            user_mem = cgm.get_user(str(ctx.user_id), ctx.sender_name)
+            _pref_frag = user_mem.preference_fragment()
+            if _pref_frag:
+                add_system_fragment("user_preference", _pref_frag, 58)
+            add_system_fragment(
+                "crossgroup_private",
+                build_crossgroup_fragment(
+                    AtmosphereProfile(group_id="private", style=AtmosphereStyle.NEUTRAL),
+                    user_mem,
+                ),
+                70,
+            )
+        except Exception:
+            logger.exception("私聊个性化注入失败")
+
     # 模拟生活连续性
     try:
         from anima.cognitive.simulated_life import recent_activity_hint

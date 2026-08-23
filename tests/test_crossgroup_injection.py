@@ -132,3 +132,48 @@ def test_crossgroup_fragment_forbids_identity_assertion(crossgroup_tmp):
     assert "你是" in frag, "未给出『不要说你是 X』的反面示例"
     # 事实本身仍被携带（作为背景）
     assert "是上海人" in frag
+
+
+@pytest.mark.asyncio
+async def test_injects_user_memory_in_private(crossgroup_tmp, monkeypatch):
+    """私聊也应为同一用户注入「本人」的跨群记忆/偏好，避免群里记得、私聊像没学过。
+
+    只注入对话者本人的记忆（一对一，不构成他群/他群私聊泄漏）；仍保持单一 system 消息。
+    """
+    _stub_cognitive(monkeypatch)
+    cgm = crossgroup_tmp
+    # Alice 在技术群学的 Rust（跨群事实）——同一人在私聊里也应能"记得"
+    cgm.add_user_fact("888", "正在学 Rust", source_group="111", name="Alice")
+
+    ctx = PipelineContext(
+        event={}, text="你还记得我在学什么吗", user_id=888,
+        group_id=None, detail_type="private", sender_name="Alice",
+        meta={"core": _FakeCore(enabled=True)},
+    )
+    ctx.messages = []
+    await cognition_stage(ctx)
+
+    # 单一 system 消息回归守护仍成立
+    assert sum(1 for m in ctx.messages if m.get("role") == "system") == 1
+    assert "哈基米" in ctx.system_prompt
+    # 私聊召回对话者本人的跨群事实
+    assert "Rust" in ctx.system_prompt
+
+
+@pytest.mark.asyncio
+async def test_private_skips_when_disabled(crossgroup_tmp, monkeypatch):
+    """crossgroup.enabled=False 时私聊也不注入跨群回忆。"""
+    _stub_cognitive(monkeypatch)
+    cgm = crossgroup_tmp
+    cgm.add_user_fact("888", "正在学 Rust", source_group="111", name="Alice")
+
+    ctx = PipelineContext(
+        event={}, text="在吗", user_id=888, group_id=None,
+        detail_type="private", sender_name="Alice",
+        meta={"core": _FakeCore(enabled=False)},
+    )
+    ctx.messages = []
+    await cognition_stage(ctx)
+
+    assert "Rust" not in ctx.system_prompt
+    assert sum(1 for m in ctx.messages if m.get("role") == "system") == 1
