@@ -301,6 +301,8 @@ self_code:
                                            # claude：强制走 Claude Code CLI（需配 anthropic_api_key 或登录）。
                                            # native：直接用 bot 的 LLM 生成模块（零外部依赖，最稳）。
                                            # 若用 native 并指定模型，配 llm.module_models.selfcode 或本块的 model。
+  coder_retries: 4                       # 原生 coder/critic 最大尝试次数；LLM 异常或未出代码块时退避重试，慢慢跑
+  coder_retry_delay: 5.0                 # 重试基础退避秒数，线性递增（attempt*delay）
 
 webui:
   # 默认关闭且只监听本机；若改为非回环地址，必须设置 token 并通过反向代理加密。

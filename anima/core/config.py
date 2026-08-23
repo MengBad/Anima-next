@@ -364,6 +364,8 @@ class SelfCodeConfig(BaseModel):
     max_review_rounds: int = 2     # 双 agent 自纠错轮数（Coder↔Critic）
     critic_enabled: bool = True    # 是否启用 Critic 只读审查（自纠错关键环节）
     coder_backend: str = "auto"     # auto=claude 可用则用之否则原生 | claude=强制 CLI | native=直接用 bot 的 LLMClient
+    coder_retries: int = 4          # 原生 coder/critic 单次产出失败(LLM 异常或没给出代码块)时的最大尝试次数；重试退避让它"慢慢跑"
+    coder_retry_delay: float = 5.0  # 原生 coder/critic 重试基础退避秒数(线性递增=attempt*delay)
 
 
 class VisionConfig(BaseModel):

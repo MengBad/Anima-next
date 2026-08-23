@@ -480,7 +480,8 @@ class SelfCodeManager:
         return await self._run_native_critic(candidate)
 
     # ------------------------------------------------------------------
-    # 原生代码 Agent（直接用 bot 的 LLMClient，同网关同模型 gemini-3.5-flash-low）
+    # 原生代码 Agent（直接用 bot 的 LLMClient；模型经 @scoped_llm("selfcode") → llm.module_models.selfcode，
+    # 生产为 DeepSeek-V4-Flash-AMD。LLM 偶发限流/超时或首条回复未带代码块时，重试退避慢慢跑，不轻言失败。）
     # ------------------------------------------------------------------
     @scoped_llm("selfcode", "coder")
     async def _run_native_coder(self, goal: str) -> tuple[int, str]:
@@ -492,26 +493,42 @@ class SelfCodeManager:
         system = ("你是资深 Python 工程师。只输出一个 Python 模块的代码本身，"
                   "用 ```python 围栏包裹，不要任何解释、不要 markdown 之外的文字。")
         user = _GEN_MODULE_CONTRACT.format(goal=goal[:1500])
-        try:
-            resp = await llm.chat(
-                [{"role": "system", "content": system},
-                 {"role": "user", "content": user}],
-                temperature=0.7, max_tokens=3000,
-            )
-        except Exception as exc:
-            self._last_out = ""
-            return -2, f"[selfcode] 原生 coder LLM 调用失败：{exc!r}"
-        code = _extract_python_block(resp)
-        if not code:
+        retries = max(int(getattr(self.cfg, "coder_retries", 1) or 1), 1) if self.cfg else 1
+        delay = max(float(getattr(self.cfg, "coder_retry_delay", 5.0) or 0), 0.0) if self.cfg else 5.0
+        last_err = "<unknown>"
+        for attempt in range(1, retries + 1):
+            try:
+                resp = await llm.chat(
+                    [{"role": "system", "content": system},
+                     {"role": "user", "content": user}],
+                    temperature=0.7, max_tokens=3000,
+                )
+            except Exception as exc:
+                last_err = f"{exc!r}"
+                if attempt < retries:
+                    self._audit("coder_retry_llm_error", attempt=attempt, err=str(exc)[:200])
+                    await asyncio.sleep(delay * attempt)
+                    continue
+                self._last_out = ""
+                return -2, f"[selfcode] 原生 coder LLM 调用失败（重试{retries}次）：{last_err}"
+            code = _extract_python_block(resp)
+            if not code:
+                last_err = "未产出 Python 代码块"
+                if attempt < retries:
+                    self._audit("coder_retry_no_code", attempt=attempt, out_len=len(resp or ""))
+                    await asyncio.sleep(delay * attempt)
+                    continue
+                self._last_out = resp
+                return 1, f"[selfcode] 原生 coder 在 {retries} 次内仍未产出 Python 代码块"
+            # 覆盖式写入：保持工作区只留一个候选，便于 Critic 与 REVISE 回灌
+            existing = [p for p in self.workspace.glob("*.py")
+                        if not p.name.startswith("_selftest_")]
+            target = existing[0] if existing else (self.workspace / f"gen_{int(time.time())}.py")
+            target.write_text(code, encoding="utf-8")
             self._last_out = resp
-            return 1, "[selfcode] 原生 coder 未产出 Python 代码块"
-        # 覆盖式写入：保持工作区只留一个候选，便于 Critic 与 REVISE 回灌
-        existing = [p for p in self.workspace.glob("*.py")
-                    if not p.name.startswith("_selftest_")]
-        target = existing[0] if existing else (self.workspace / f"gen_{int(time.time())}.py")
-        target.write_text(code, encoding="utf-8")
-        self._last_out = resp
-        return 0, resp
+            return 0, resp
+        self._last_out = resp if "resp" in locals() else ""
+        return 1, f"[selfcode] 原生 coder 失败：{last_err}"
 
     @scoped_llm("selfcode", "critic")
     async def _run_native_critic(self, candidate: Path) -> tuple[int, str]:
@@ -525,15 +542,23 @@ class SelfCodeManager:
             return 1, f"[selfcode] 无法读取候选：{exc!r}"
         user = (f"候选模块绝对路径：{candidate.resolve()}\n\n文件内容：\n```python\n"
                 f"{content}\n```\n请严格输出 JSON 审查结论。")
-        try:
-            resp = await llm.chat(
-                [{"role": "system", "content": _REVIEW_SYSTEM},
-                 {"role": "user", "content": user}],
-                temperature=0.3, max_tokens=800,
-            )
-        except Exception as exc:
-            return -2, f"[selfcode] 原生 critic LLM 调用失败：{exc!r}"
-        return 0, resp
+        retries = max(int(getattr(self.cfg, "coder_retries", 1) or 1), 1) if self.cfg else 1
+        delay = max(float(getattr(self.cfg, "coder_retry_delay", 5.0) or 0), 0.0) if self.cfg else 5.0
+        for attempt in range(1, retries + 1):
+            try:
+                resp = await llm.chat(
+                    [{"role": "system", "content": _REVIEW_SYSTEM},
+                     {"role": "user", "content": user}],
+                    temperature=0.3, max_tokens=800,
+                )
+                return 0, resp
+            except Exception as exc:
+                if attempt < retries:
+                    self._audit("critic_retry_llm_error", attempt=attempt, err=str(exc)[:200])
+                    await asyncio.sleep(delay * attempt)
+                    continue
+                return -2, f"[selfcode] 原生 critic LLM 调用失败（重试{retries}次）：{exc!r}"
+        return -2, "[selfcode] 原生 critic LLM 调用失败（重试耗尽）"
 
     # ------------------------------------------------------------------
     # 沙箱自测（复用 bwrap 隔离原语，但 ro-bind 仓库根以便 import）
