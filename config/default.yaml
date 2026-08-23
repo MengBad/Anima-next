@@ -21,7 +21,7 @@ llm:
   retries: 2                               # 仅超时、429、5xx 时重试；鉴权错误不重试
   retry_backoff_sec: 0.6
   fallback_models:                         # 同网关备用模型（主模型瞬态失败时切换）
-    - "gemini-2.5-flash"
+    - "gemini-3.6-flash"
     - "gemini-3-flash"
   circuit_failure_threshold: 3             # 连续可恢复失败后短暂熔断
   circuit_cooldown_sec: 30
