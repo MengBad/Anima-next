@@ -200,3 +200,45 @@ def test_emotion_intensity():
     assert emo == "angry" and 0 < inten <= 1.0
     assert detect_emotion("") is None
     assert dominant_terms("我好难过想哭")  # 应有命中词
+
+
+# ---------------------------------------------------------------------------
+# StickerEmbedder 懒索引 + smart_pick 嵌入路径
+# ---------------------------------------------------------------------------
+
+def test_embedder_ensure_indexed():
+    emb = StickerEmbedder(_FakeEmbedder(), 8)
+    assert emb.size == 0
+    n = asyncio.run(emb.ensure_indexed({"h1": "开心大笑", "h2": "生气愤怒"}))
+    assert n == 2 and emb.size == 2
+    # 内容不变不再重算
+    n2 = asyncio.run(emb.ensure_indexed({"h1": "开心大笑", "h2": "生气愤怒"}))
+    assert n2 == 0
+    # 内容变了才补算
+    n3 = asyncio.run(emb.ensure_indexed({"h3": "委屈"}))
+    assert n3 == 1 and emb.size == 3
+
+
+def test_embedder_no_backing_rejects_index():
+    emb = StickerEmbedder(None, 8)
+    assert asyncio.run(emb.ensure_indexed({"h1": "x"})) == 0
+    assert emb.size == 0
+
+
+def test_smart_pick_uses_embedder_when_available(tmp_path):
+    from anima.cognitive.stickers import StickerManager
+    mgr = _seed_mgr(tmp_path)
+    # 注入一个可见的伪 embedder，验证 smart_pick 会先铺索引再检索
+    class _Injected(StickerEmbedder):
+        def __init__(self):
+            super().__init__(_FakeEmbedder(), 8)
+        async def search(self, query, top_k=8):
+            # 命中含「开心」的条目
+            hits = super().search(query, top_k=top_k) if False else []
+            with self._lock:
+                texts = list(self._texts.items())
+            return [(h, 0.9) for h, t in texts if "开心" in t][:top_k]
+    mgr._embedder = _Injected()
+    p = asyncio.run(mgr.smart_pick("心情超好超开心", group_id=999, allow_cross_group=True))
+    assert p and p.endswith(".jpg")
+    assert mgr._embedder.size > 0  # 懒索引已铺开

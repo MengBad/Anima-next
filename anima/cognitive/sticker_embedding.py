@@ -112,3 +112,29 @@ class StickerEmbedder:
                 scored.append((h, s))
         scored.sort(key=lambda x: -x[1])
         return scored[:top_k]
+
+    @property
+    def size(self) -> int:
+        with self._lock:
+            return len(self._vectors)
+
+    async def ensure_indexed(self, text_map: dict[str, str]) -> int:
+        """按需同步索引：仅对未索引或文本已变化的条目打向量，返回新增条数。
+
+        让 smart_pick 在首次用到嵌入时把整个候选库一次性铺进来（提交 collect 不背这个
+        成本，也不绑定 core）。embedding 不可用/失败时静默返回 0，上层照旧走 BM25。
+        """
+        if self._embedder is None:
+            return 0
+        need: list[tuple[str, str]] = []
+        with self._lock:
+            for h, text in (text_map or {}).items():
+                if not text:
+                    continue
+                if h not in self._vectors or self._texts.get(h) != text:
+                    need.append((h, text))
+        added = 0
+        for h, text in need:
+            if await self.index(h, text):
+                added += 1
+        return added

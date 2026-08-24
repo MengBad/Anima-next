@@ -840,6 +840,14 @@ class StickerManager:
         try:
             emb = self._attach_embedder(core)
             if emb and emb.available:
+                # 首次使用嵌入时同步整个候选库的索引（不背在 collect 上）
+                from .sticker_embedding import build_text
+                if emb.size == 0:
+                    await emb.ensure_indexed({
+                        h: build_text(it.get("category"), it.get("desc"),
+                                      it.get("labels") or it.get("tags"), it.get("scenes"))
+                        for h, it in key_to_item.items()
+                    })
                 hits = await emb.search(query, top_k=8)
                 embedding_bonus = {h: s for h, s in hits}
         except Exception:
