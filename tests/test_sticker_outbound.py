@@ -96,6 +96,31 @@ def test_split_no_image_is_single_message():
     assert {s["type"] for s in msgs[0]} == {"at", "text"}
 
 
+def test_group_passive_reply_no_at():
+    """被动熟人接话：对方未 @ / 未回复 / 未点名时，出站不应前插 @ 段。
+
+    修复热群「每条回复都 @ 对方」刷屏：familiar 模式的主动接话不 @。
+    """
+    ctx = _ctx(sticker=None, atm="formal")
+    segs = _build_reply_segments(ctx, "group", 123, 456, _core(), at_trigger=False)
+    assert not any(s["type"] == "at" for s in segs)
+    assert any(s["type"] == "text" for s in segs)
+
+
+def test_group_direct_trigger_keeps_at():
+    """对方真正点名（@/回复/喊名）时，「@ 触发者」仍应保留。"""
+    ctx = _ctx(sticker=None, atm="formal")
+    segs = _build_reply_segments(ctx, "group", 123, 456, _core(), at_trigger=True)
+    assert any(s["type"] == "at" and s["data"]["qq"] == "123" for s in segs)
+
+
+def test_private_never_at():
+    """私聊从不前插 @ 段（QQ 私聊无 @ 语义）。"""
+    ctx = _ctx(sticker=None, atm="formal")
+    segs = _build_reply_segments(ctx, "private", 123, 456, _core(), at_trigger=True)
+    assert not any(s["type"] == "at" for s in segs)
+
+
 def test_split_generated_image_also_separate():
     """表情 + 生图都应各自独立成条（共 3 条：@文本 / 表情 / 生图）。"""
     ctx = _ctx(sticker="/opt/anima/data/stickers/x.jpg")

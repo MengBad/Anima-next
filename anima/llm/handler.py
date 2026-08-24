@@ -1578,9 +1578,19 @@ class LLMHandler:
 
         # 出站消息段：@ 触发者 + 文本 + （可选）表情图 + （可选）生图，
         # 抽成纯函数以便单测（逻辑见 _build_reply_segments）。
+        # 仅当对方真正「点到」了 bot（@ / 回复 / 点名）时才回 @；
+        # 被动熟人接话 / 主动插话不 @，避免热群连续 @ 同一个人刷屏。
+        at_trigger = True
+        if detail_type == "group":
+            try:
+                from anima.llm.group_gate import is_direct_group_call
+                at_trigger = bool(is_direct_group_call(event, text))
+            except Exception:
+                at_trigger = False
         segments = _build_reply_segments(
             ctx, detail_type, user_id, group_id, self.core,
             sticker_auto_last=self._sticker_auto_last,
+            at_trigger=at_trigger,
         )
         # §17：安全版反馈自然回话——识别到反馈且开启时，仅私聊+已有主回复文本才在
         # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关，开关读自
@@ -2105,8 +2115,14 @@ def _maybe_append_feedback_ack(segments: "list[dict]", *, detail_type: str,
 
 
 def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
-                          sticker_auto_last: dict | None = None) -> "list[dict]":
+                          sticker_auto_last: dict | None = None,
+                          at_trigger: bool = True) -> "list[dict]":
     """构造出站消息段：@ 触发者 + 文本 + （可选）表情图 + （可选）生图。
+
+    at_trigger：是否前插 @ 段。仅当对方真正「点到」了 bot（真 @ / 回复引用 /
+    点名「哈基米」）时才应回 @；被动熟人接话 / 主动插话不应 @，否则热群会
+    连续 @ 同一个人刷屏。
+    
 
     表情附带规则（修复前 bug：群聊普通氛围下 LLM 已 pick_sticker 选了图却发不出）：
       - LLM 主动选了表情（ctx.sticker_to_send 有值）-> 尊重其意图，群聊/私聊都附带发出；
@@ -2115,7 +2131,7 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     NapCat 不保证以 bot 工作目录解析相对路径，统一传绝对路径。
     """
     segments: list[dict] = []
-    if detail_type == "group":
+    if detail_type == "group" and at_trigger:
         segments.append({"type": "at", "data": {"qq": str(user_id)}})
     segments.append({"type": "text", "data": {"text": ctx.reply}})
     scfg = getattr(core.config, "sticker", None)

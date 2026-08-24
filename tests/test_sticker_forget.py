@@ -15,10 +15,14 @@ def _img(tmp_path, name, body):
 def test_self_review_pass_helper():
     p = StickerManager._self_review_pass
     assert p(["开心"], "reaction", "开心", True) is True
-    assert p([], "reaction", "", None) is True
+    # 收紧：is_sticker=None（视觉含糊/未跑）+ 仅有分类 -> 不再自动过审，留给 Owner。
+    assert p([], "reaction", "", None) is False
     assert p([], "unknown", "", None) is False
     assert p([], "unknown", "", True) is False
     assert p(["开心"], "reaction", "", False) is False
+    # None 但有实打实标签/情绪证据（label_pending 补齐后）仍可自过审。
+    assert p(["开心"], "unknown", "", None) is True
+    assert p([], "unknown", "开心", None) is True
 
 
 def test_self_review_keeps_ambiguous_pending(tmp_path):

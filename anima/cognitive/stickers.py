@@ -80,6 +80,50 @@ def _semantic_label_terms(text: str) -> set[str]:
             terms.add(canonical)
     return terms
 
+
+# 否定词集合（移植自 astrbot_plugin_stealer 的语义反转检测）：
+# 关键词前紧邻否定词时，语义反转——如「不开心」「别笑了」不应命中对应情绪。
+_NEGATION_CHARS = frozenset("不没别无非未莫休勿非")
+
+
+def _has_negation_prefix(text: str, keyword: str) -> bool:
+    """检测关键词在文本中是否被否定词前缀反转。"""
+    value = str(text or "").lower()
+    key = str(keyword or "").strip().lower()
+    if not key:
+        return False
+    idx = value.find(key)
+    if idx <= 0:
+        return False
+    return value[idx - 1] in _NEGATION_CHARS
+
+
+# 最近使用分级惩罚（对标 stealer 的 MemeSelectionStrategy）：越新用惩罚越大，
+# 但【不硬剔除】——候选库里只有它时仍可复用，避免「整池有 fresh 就团灭最近 N 张」。
+_RECENT_PENALTY_STEPS = (0.55, 0.38, 0.24, 0.14)
+
+
+def _recent_penalty(recent: list, h: str) -> float:
+    """按 h 在 recent 中的新旧排名返回惩罚分（0.0=不在近期窗口）。"""
+    try:
+        rank = len(recent) - 1 - list(recent).index(h)
+    except ValueError:
+        return 0.0
+    if rank < len(_RECENT_PENALTY_STEPS):
+        return _RECENT_PENALTY_STEPS[rank]
+    return max(0.06, 0.14 - (rank - len(_RECENT_PENALTY_STEPS) + 1) * 0.02)
+
+
+def _chinese_bigram_overlap(a: str, b: str) -> float:
+    """中文 bigram 词干重叠因子（0..1），用于 _match_score 的语义级兜底。"""
+    def bigrams(s: str) -> frozenset:
+        chars = re.sub(r"[\sA-Za-z0-9]+", "", str(s or "").lower())
+        return frozenset(chars[i:i + 2] for i in range(len(chars) - 1))
+    ga, gb = bigrams(a), bigrams(b)
+    if not ga or not gb:
+        return 0.0
+    return len(ga & gb) / len(ga | gb)
+
 STICKERS_SUBDIR = "stickers"
 META_FILE = "stickers.json"
 
@@ -356,17 +400,25 @@ class StickerManager:
 
     @staticmethod
     def _self_review_pass(labels, category, emotion, is_sticker) -> bool:
-        """自过审判定：只有拿到明确的识别结果才允许 bot 自动过审入库。
+        """自过审判定：只有拿到【明确的】识别结果才允许 bot 自动过审入库。
 
-        is_sticker 非 False 之外，还得有可用的标签/分类/情绪之一，否则判定未定
-        （分类失败或含糊），仍留在 pending_review 交给 Owner / 后续打标补齐。
+        收紧（对标 astrbot_plugin_stealer 的「通过质量」治理，重点砍掉两条放水路）
+        - is_sticker is False -> 拒收（本来就是拒收）。
+        - is_sticker is True + 有标签/分类/情绪任一 -> 明确，放行。
+        - is_sticker is None（视觉未跑/含糊/失败）+ 只有分类 -> 不再放行：
+          此时唯一证据是「非 unknown 的分类」，不足以证明是表情包，交给 Owner；
+          但若已有实打实的标签或情绪证据（如后续 label_pending 用上下文补齐标签），
+          仍判定明确、自动入库可发。
         """
         if is_sticker is False:
             return False
         labs = [str(x).strip() for x in (labels or []) if str(x).strip()]
         cat = str(category or "").strip()
         emo = str(emotion or "").strip()
-        return bool(labs) or bool(cat and cat != "unknown") or bool(emo)
+        if is_sticker is True:
+            return bool(labs) or bool(cat and cat != "unknown") or bool(emo)
+        # is_sticker is None：仅分类不算数；必须有一致标签/情绪证据。
+        return bool(labs) or bool(emo)
 
     def _initial_status(self, approval_required: bool, labels, category, emotion,
                         is_sticker) -> str:
@@ -535,7 +587,8 @@ class StickerManager:
     # ------------------------------------------------------------------
 
     def _eligible(self, meta: dict, group_id: Any,
-                  allow_cross_group: bool) -> list[tuple[str, dict]]:
+                  allow_cross_group: bool,
+                  exclude_recent: bool = True) -> list[tuple[str, dict]]:
         group_key = str(group_id) if group_id is not None else "global"
         now = time.time()
         rows = []
@@ -569,6 +622,8 @@ class StickerManager:
         true_rows = [(h, it) for h, it in rows if it.get("is_sticker") is True]
         if true_rows:
             rows = true_rows
+        if not exclude_recent:
+            return rows
         recent = set(self._recent_by_group.get(group_key, [])[-self.recent_window:])
         fresh = [(h, item) for h, item in rows if h not in recent]
         # 候选很少时允许复用，否则严格避开近期窗口。
@@ -579,19 +634,30 @@ class StickerManager:
         q = str(query or "").strip().lower()
         if not q:
             return 0.0
-        q_terms = _semantic_label_terms(q)
+        # query 中被否定的同义词项（如「不开心」里的「开心」）从词干匹配里剔除，
+        # 避免语义反转仍命中对应情绪的标签。
+        q_terms = {t for t in _semantic_label_terms(q) if not _has_negation_prefix(q, t)}
         score = 0.0
         for label in labels:
             lab = str(label or "").strip().lower()
             if not lab:
                 continue
+            # 否定前置「开心」被 query 反转（「不开心」）：该标签不参与匹配。
+            if _has_negation_prefix(q, lab):
+                continue
             if q == lab:
                 score = max(score, 4.0)
-            elif q in lab or lab in q:
+            elif q in lab:
+                score = max(score, 3.0)
+            elif lab in q:
                 score = max(score, 3.0)
             overlap = q_terms & _semantic_label_terms(lab)
             if overlap:
                 score = max(score, 2.0 + 0.2 * len(overlap))
+            # 语义级兜底：中文 bigram 词干重叠（如「裂开大笑」vs 标签「大笑」）。
+            bg = _chinese_bigram_overlap(q, lab)
+            if bg > 0.3:
+                score = max(score, 1.5 + bg)
         return score
 
     def _mark_selected(self, meta: dict, group_id: Any, h: str, item: dict) -> str:
@@ -611,22 +677,40 @@ class StickerManager:
         self._write_meta(meta)
         return str(self._dir / f"{h}{item.get('ext', '.jpg')}")
 
+    def _top_by_penalty(self, matched: list, group_key: str) -> tuple[str, dict]:
+        """从 (score,h,item) 里选：同分档优先 fresh，其次最近使用惩罚分档，
+        再用最少用 + 随机打破平局。修正旧实现的硬排除缺陷——只因为整池有任意
+        fresh 就团灭最近 N 张，会让「最佳匹配恰好是刚发过的那张」时选不到它。"""
+        best = max(score for score, _, _ in matched)
+        top = [(s, h, item) for s, h, item in matched if s == best]
+        recent = list(self._recent_by_group.get(group_key, []))[-self.recent_window:] \
+            if self.recent_window > 0 else []
+        recent_set = set(recent)
+        fresh = [(s, h, item) for s, h, item in top if h not in recent_set]
+        pool = fresh if fresh else top
+        # 同档内再按最近使用分级惩罚分档，宁选更新/未发的。
+        def key(t):
+            return t[0] - _recent_penalty(recent, t[1])
+        best_adj = max(key(t) for t in pool)
+        adj = [(s, h, item) for s, h, item in pool if key((s, h, item)) == best_adj]
+        least = min(item.get("used", 0) for _, _, item in adj)
+        _, h, item = random.choice([t for t in adj if t[2].get("used", 0) == least])
+        return h, item
+
     def pick(self, query: str, group_id: Any = None, allow_cross_group: bool = False) -> Optional[str]:
-        """按标签语义匹配，避开近期重复并控制 GIF 发送频率。"""
+        """按标签语义匹配；避开近期重复但【不因存在任意 fresh 而把最近佳选硬剔除】。"""
         meta = self._read_meta()
         if not meta:
             return None
+        group_key = str(group_id) if group_id is not None else "global"
         matched = []
-        for h, item in self._eligible(meta, group_id, allow_cross_group):
+        for h, item in self._eligible(meta, group_id, allow_cross_group, exclude_recent=False):
             score = self._match_score(query, item.get("labels", []))
             if score > 0:
                 matched.append((score, h, item))
         if not matched:
             return None
-        best = max(score for score, _, _ in matched)
-        top = [(h, item) for score, h, item in matched if score == best]
-        least_used = min(item.get("used", 0) for _, item in top)
-        h, item = random.choice([(h, item) for h, item in top if item.get("used", 0) == least_used])
+        h, item = self._top_by_penalty(matched, group_key)
         return self._mark_selected(meta, group_id, h, item)
 
     def random_one(self, group_id: Any = None, allow_cross_group: bool = False) -> Optional[str]:
@@ -670,17 +754,14 @@ class StickerManager:
         meta = self._read_meta()
         if not meta:
             return None
-        eligible = self._eligible(meta, group_id, allow_cross_group)
-        matched = [(h, it) for h, it in eligible if self._emotion_of(it) == emotion]
+        group_key = str(group_id) if group_id is not None else "global"
+        matched = [(1.0, h, it) for h, it
+                   in self._eligible(meta, group_id, allow_cross_group, exclude_recent=False)
+                   if self._emotion_of(it) == emotion]
         if not matched:
             return None
-        # 避开近期重复 + 最少用优先（与 pick 一致）
-        group_key = str(group_id) if group_id is not None else "global"
-        recent = set(self._recent_by_group.get(group_key, [])[-self.recent_window:])
-        fresh = [(h, it) for h, it in matched if h not in recent]
-        pool = fresh or matched
-        least_used = min(it.get("used", 0) for _, it in pool)
-        h, item = random.choice([(h, it) for h, it in pool if it.get("used", 0) == least_used])
+        # 避开近期重复 + 最少用优先（与 pick 一致；同样不因存在任意 fresh 而硬排除）。
+        h, item = self._top_by_penalty(matched, group_key)
         return self._mark_selected(meta, group_id, h, item)
 
     @staticmethod
@@ -689,10 +770,11 @@ class StickerManager:
         if not text:
             return None
         value = str(text)
-        # 中文不依赖空白分词，逐关键词做包含匹配并计票
+        # 中文不依赖空白分词，逐关键词做包含匹配并计票；
+        # 被否定词前缀反转的关键词不计票（如「不开心」「别笑了」不命中对应情绪）。
         scores: dict[str, int] = {}
         for emo, words in EMOTION_SYNONYMS.items():
-            cnt = sum(1 for w in words if w and w in value)
+            cnt = sum(1 for w in words if w and w in value and not _has_negation_prefix(value, w))
             if cnt:
                 scores[emo] = scores.get(emo, 0) + cnt
         if not scores:

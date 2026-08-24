@@ -267,6 +267,58 @@ def test_detect_reply_emotion(tmp_path):
     assert mgr.detect_reply_emotion("今天天气不错") is None
 
 
+def test_detect_reply_emotion_ignores_negated_keywords(tmp_path):
+    """否定词前缀反转不参与情绪计票（移植 astrbot_plugin_stealer）：
+    「不开心」「不好笑」都不该命中对应情绪。"""
+    mgr = StickerManager(str(tmp_path), label_throttle_per_user=0)
+    assert mgr.detect_reply_emotion("我一点都不开心") is None
+    assert mgr.detect_reply_emotion("别笑了别笑了") is None
+    assert mgr.detect_reply_emotion("不赞同") is None
+    # 非否定语境仍正常命中
+    assert mgr.detect_reply_emotion("这波啊这波是开心") == "开心"
+
+
+def test_pick_negated_query_does_not_match_emotion_label(tmp_path):
+    """query 前置否定词时，对应情绪标签大幅降分（不误选「开心」图）。"""
+    mgr = StickerManager(str(tmp_path), label_throttle_per_user=0)
+    f = _img(tmp_path, "happy.jpg")
+    asyncio.run(mgr.collect([{"url": "", "file": f, "sub_type": ""}], 123, 999, "x"))
+    meta = mgr._read_meta()
+    k = next(iter(meta))
+    meta[k]["labels"] = ["开心"]
+    meta[k]["status"] = "approved"
+    mgr._write_meta(meta)
+    # 库里只有这张开心图：否定 query 不会命中（score<=0 视为无匹配），避免语义反转误发
+    assert mgr.pick("不开心", group_id=999) is None
+    assert mgr.pick("开心", group_id=999)
+
+
+def test_pick_best_match_recent_still_usable_when_no_fresh(tmp_path):
+    """收紧前缺陷：整池存在任意 fresh 时硬排除最近 N 张，会让「唯一最佳匹配恰好是
+    刚发过的那张」返回 None。现在改用分级惩罚，最佳匹配即使 recent 也能兜底选到。"""
+    recent_best = _img(tmp_path, "best.jpg", b"\xff\xd8\xffbest")
+    unrelated = _img(tmp_path, "other.jpg", b"\xff\xd8\xffother")
+    mgr = StickerManager(str(tmp_path), label_throttle_per_user=0, recent_window=2)
+    asyncio.run(mgr.collect([
+        {"url": "", "file": recent_best, "sub_type": ""},
+        {"url": "", "file": unrelated, "sub_type": ""},
+    ], 123, 999, "x"))
+    meta = mgr._read_meta()
+    for item in meta.values():
+        item["status"] = "approved"
+    keys = list(meta)
+    # best 图只标「开心」，other 是无关分类（不带开心标签）
+    meta[keys[0]]["labels"] = ["开心"]
+    meta[keys[1]]["labels"] = ["吃瓜"]
+    mgr._write_meta(meta)
+    # 先把唯一“开心”图用掉，让它进入 recent 窗口
+    first = mgr.pick("开心", group_id=999)
+    assert first and first.endswith(".jpg")
+    # 再查「开心」：库里没其他开心图，应回到那张 recent 的 best（同路复用），而非 None
+    second = mgr.pick("开心", group_id=999)
+    assert second is not None and second == first
+
+
 def test_pick_by_emotion_matches(tmp_path):
     """按情绪选图：命中返回路径，未命中/未知情绪返回 None。"""
     mgr = StickerManager(str(tmp_path), label_throttle_per_user=0)
