@@ -25,6 +25,10 @@ from typing import Any
 # 进程内单例 gate：跨请求持久化提案状态（WebUI 审批通道复用）。
 _GATE_SINGLETON: "EvolutionGate | None" = None
 
+# R12 多 Agent 评议入评审: 默认关(fail-closed, 须 Owner 开闸才给 Owner 附上评议建议)。
+SOCIETY_REVIEW_ENABLED = False
+
+
 # 受保护的核心文件：R9 闭环**绝不自动修改**（触碰即提案被拒，需 Owner 人工 PR）。
 # 这些是权限/安全/部署的命根子，违反「Production Is Sacred」与「No Hidden Authority」。
 CORE_PROTECTED = frozenset({
@@ -364,9 +368,17 @@ async def propose_evolution(goal: str, *, target_files: tuple[str, ...] = (),
     proposal = get_evolution_gate().get(pid) if pid else None
     if proposal is not None:
         proposal.decision = decision.get("decision", "")
+    review: dict = {} if SOCIETY_REVIEW_ENABLED else {"available": False, "reason": "society_review_disabled"}
+    if SOCIETY_REVIEW_ENABLED:
+        try:
+            from .society_review import run_society_review
+            review = await run_society_review(goal, context="自进化提案(多Agent评议建议性参考)")
+        except Exception:  # noqa: BLE001
+            review = {"available": False, "reason": "society_review_failed"}
     return {
         "proposal": proposal.to_dict() if proposal is not None else None,
         "decision": decision,
+        "society_review": review,
     }
 
 
