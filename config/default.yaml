@@ -110,7 +110,7 @@ capabilities:                              # P1：个人能力自生长系统
   enabled: true                           # 总开关
   initial_confidence: 0.3                 # 新建能力基线置信度（脱钩 LLM 自评）
   auto_register_confidence: 0.65          # 参考阈值（实际注册走 value_score 晋升）
-  dynamic_daily_quota: 3                   # 每日新注册能力工具上限
+  dynamic_daily_quota: 8                   # 每日新注册能力工具上限（给命名候选留位）
   max_total: 40                           # 能力库硬上限
   unused_drop_days: 30                    # 未使用超此天数淘汰
   unused_decay_days: 14                   # 未使用超此天数降权

@@ -170,6 +170,39 @@ class LLMHandler:
         owners = getattr(perms, "owners", None) or ()
         return user_id in owners
 
+    def _ignore_store(self):
+        """懒加载忽略名单存储（data/ignore_list.json）。"""
+        s = getattr(self, "_ignore_store_obj", None)
+        if s is None:
+            dd = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
+            from anima.llm.ignore_list import IgnoreStore
+            s = self._ignore_store_obj = IgnoreStore(dd or "data")
+        return s
+
+    def _track_group_speaker(self, gid: int, uid: int) -> None:
+        """记录该群最近发言的非 owner 用户（供“别理那两人”解析目标）。"""
+        spk = getattr(self, "_recent_spk", None)
+        if spk is None:
+            spk = self._recent_spk = {}
+        dq = spk.setdefault(str(gid), {})
+        dq[str(int(uid))] = time.time()
+        if len(dq) > 20:
+            for k in sorted(dq, key=dq.get)[: len(dq) - 20]:
+                dq.pop(k, None)
+
+    def _maybe_apply_ignore_directive(self, text: str, gid: int, uid: int) -> None:
+        """识别 owner 的“别再理那两人/别理某人”并持久化到忽略名单。"""
+        from anima.llm.ignore_list import matches_ignore_directive, resolve_ignore_targets
+        if not matches_ignore_directive(text):
+            return
+        spk = (getattr(self, "_recent_spk", {}) or {}).get(str(gid), {})
+        recent = [int(u) for u, _ in sorted(spk.items(), key=lambda kv: kv[1], reverse=True)]
+        targets = resolve_ignore_targets(text, recent)
+        if not targets:
+            return
+        got = self._ignore_store().add(str(gid), targets)
+        logger.info("[ignore] owner=%s 于群 %s 持久化忽略 %s（共 %d）", uid, gid, targets, got)
+
     def _looks_like_owner_task(self, text: str, user_id: int, detail_type: str) -> bool:
         if detail_type != "private" or not self._is_owner(user_id):
             return False
@@ -266,6 +299,31 @@ class LLMHandler:
             hb = self.core.heartbeat
             status = "运行中" if (hb and hb._running) else "已停止"
             reply = f"{at_prefix}自主心跳: {status} | 自主开关: {self.core.config.autonomy.enabled}"
+        elif raw_cmd.startswith("ignore "):
+            scope = str(group_id) if detail_type == "group" else "global"
+            tokens = [t for t in raw_cmd[len("ignore "):].replace(",", " ").replace("，", " ").split() if t.strip().isdigit()]
+            if tokens:
+                got = self._ignore_store().add(scope, [int(t) for t in tokens])
+                reply = f"{at_prefix}已把 {tokens} 加入忽略名单（{got} 个）。"
+            elif detail_type == "group":
+                spk = (getattr(self, "_recent_spk", {}) or {}).get(str(group_id), {})
+                recent = [int(u) for u, _ in sorted(spk.items(), key=lambda kv: kv[1], reverse=True)]
+                if not recent:
+                    reply = f"{at_prefix}用法：!anima ignore <qq...>（本群最近无发言者可忽略）"
+                else:
+                    self._ignore_store().add(scope, recent[:2])
+                    reply = f"{at_prefix}已把最近发言的 {recent[:2]} 加入忽略名单。"
+            else:
+                reply = f"{at_prefix}私聊无法用最近发言解析，请用 !anima ignore <qq...>"
+        elif raw_cmd.startswith("unignore "):
+            scope = str(group_id) if detail_type == "group" else "global"
+            tokens = [t for t in raw_cmd[len("unignore "):].replace(",", " ").replace("，", " ").split() if t.strip().isdigit()]
+            removed = [t for t in tokens if self._ignore_store().remove(scope, int(t))]
+            reply = f"{at_prefix}已移除忽略 {removed}。" if removed else f"{at_prefix}没有需要移除的（可用 !anima ignore list 查看）。"
+        elif cmd in ("ignore", "ignore list"):
+            scope = str(group_id) if detail_type == "group" else "global"
+            lst = self._ignore_store().list(scope)
+            reply = f"{at_prefix}忽略名单: " + (", ".join(lst) if lst else "空")
         elif cmd in ("tasks", "task list"):
             rows = [f"{x.id} [{x.status}] {x.request[:70]}" for x in self.core.tasks.list()[:10]]
             reply = f"{at_prefix}" + ("\n".join(rows) if rows else "暂无 Owner 任务")
@@ -868,6 +926,17 @@ class LLMHandler:
             return
         if not text or text.startswith("!"):
             return
+        # owner 忽略名单：记录最近群发言者；识别 owner 的“别理那两人”并持久化。
+        if detail_type == "group" and group_id is not None:
+            try:
+                self._track_group_speaker(int(group_id), int(user_id))
+            except Exception:
+                logger.debug("ignore-track speaker failed", exc_info=True)
+            if self._is_owner(int(user_id)):
+                try:
+                    self._maybe_apply_ignore_directive(text, int(group_id), int(user_id))
+                except Exception:
+                    logger.debug("ignore-directive apply failed", exc_info=True)
         from anima.crossgroup import get_crossgroup_manager
         cgm = get_crossgroup_manager()
         cgm.max_facts_per_user = cfg.max_facts_per_user
@@ -1274,6 +1343,19 @@ class LLMHandler:
             logger.debug("[群策略][trace=%s] 群 %s 已关闭普通回复", trace, group_id)
             return
         if detail_type == "group":
+            # owner 忽略名单：命中直接跳过（“别再理那两人”落地成真的拦截）。
+            from anima.llm.ignore_list import should_skip_ignored
+            if should_skip_ignored(self._ignore_store(), detail_type, int(group_id), int(user_id)):
+                mode = resolve_group_reply_mode(group_policy, self.core.config.autonomy)
+                logger.info("[回复闸门][trace=%s] skip reason=ignored_user gid=%s uid=%s mode=%s",
+                            trace, group_id, user_id, mode)
+                quality = getattr(self.core, "reply_quality", None)
+                if quality is not None:
+                    try:
+                        quality.record_gate_skip("ignored_user")
+                    except Exception:
+                        logger.debug("ignore gate skip telemetry failed", exc_info=True)
+                return
             data_dir = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
             skip_reason = classify_group_reply_skip(
                 event, text,

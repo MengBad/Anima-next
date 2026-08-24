@@ -219,7 +219,7 @@ class CapabilityConfig(BaseModel):
     enabled: bool = True              # 总开关
     initial_confidence: float = 0.3   # 新建能力基线置信度（脱钩 LLM 自评）
     auto_register_confidence: float = 0.65  # 仅作参考阈值（实际注册走 value_score 晋升）
-    dynamic_daily_quota: int = 3      # 每日新注册能力工具上限
+    dynamic_daily_quota: int = 8      # 每日新注册能力工具上限（曾因自动能力占满3导致命名候选排队）
     max_total: int = 40               # 能力库硬上限
     unused_drop_days: int = 30        # 未使用超此天数淘汰
     unused_decay_days: int = 14       # 未使用超此天数降权
