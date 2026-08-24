@@ -453,19 +453,6 @@ class Heartbeat:
             self._config_drift_check()
         except Exception:
             logger.exception("心跳配置漂移自检失败，已隔离")
-
-    async def _tick(self) -> None:
-
-        self._expire_active_feedback(time.time())
-        try:
-            self.core.health_history.record()
-        except Exception:
-            logger.exception("心跳健康采样失败")
-        # R16: periodic anomaly self-check (read-only + dedupe + audit)
-        try:
-            self._anomaly_selfcheck()
-        except Exception:
-            logger.exception("心跳异常自检失败，已隔离")
         try:
             backups = getattr(self.core, "backups", None)
             if backups is not None:

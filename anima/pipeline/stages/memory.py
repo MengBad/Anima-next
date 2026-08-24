@@ -155,6 +155,7 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
             _flashbulb = True
     except Exception:
         logger.debug("闪光灯情绪检测失败", exc_info=True)
+    ctx.meta["_flashbulb"] = _flashbulb
 
     # 群聊消息已在 observe_group_message 中持久化到个人桶，这里只补记私聊。
     if ctx.detail_type != "group":

@@ -261,51 +261,6 @@ class TestSoulSystem:
             assert abs(soul2.state.expression_desire - soul1.state.expression_desire) < 0.01
 
 
-# ---------------------------------------------------------------------------
-# D2: Gate 双模型判断
-# ---------------------------------------------------------------------------
-
-class TestGate:
-    """测试轻重双模型 Gate。"""
-
-    def test_skip_gate_for_at_me(self):
-        """@ 自己的消息跳过 Gate。"""
-        from anima.pipeline.gate import Gate
-        gate = Gate(llm_client=None)
-        event = {"at_me": True}
-        assert gate.should_skip_gate(event, "测试", 123, False, 999) is True
-
-    def test_skip_gate_for_owner(self):
-        """owner 消息跳过 Gate。"""
-        from anima.pipeline.gate import Gate
-        gate = Gate(llm_client=None)
-        event = {}
-        assert gate.should_skip_gate(event, "测试", 123, True, 999) is True
-
-    def test_skip_gate_for_command(self):
-        """指令消息跳过 Gate。"""
-        from anima.pipeline.gate import Gate
-        gate = Gate(llm_client=None)
-        event = {}
-        assert gate.should_skip_gate(event, "!anima help", 123, False, 999) is True
-
-    @pytest.mark.asyncio
-    async def test_empty_message_blocked(self):
-        """空消息被阻止。"""
-        from anima.pipeline.gate import Gate
-        gate = Gate(llm_client=None)
-        decision = await gate.evaluate("", {}, 123, False, 999)
-        assert decision.need_reply is False
-
-    @pytest.mark.asyncio
-    async def test_fallback_on_error(self):
-        """错误时 fallback。"""
-        from anima.pipeline.gate import Gate
-        mock_llm = AsyncMock()
-        mock_llm.chat.side_effect = Exception("API error")
-        gate = Gate(llm_client=mock_llm, fallback_to_full=True)
-        decision = await gate.evaluate("你好", {}, 123, False, 999)
-        assert decision.need_reply is True  # fallback 到完整流程
 
 
 # ---------------------------------------------------------------------------

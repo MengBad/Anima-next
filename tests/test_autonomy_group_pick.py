@@ -367,3 +367,12 @@ def test_low_value_active_reply_filter():
 
 def test_clean_active_reply_strips_labels():
     assert _clean_active_reply("[你]: 活得好好的呢喵") == "活得好好的呢喵"
+
+
+def test_autonomy_tick_single_definition_and_drift_check():
+    """T0.1 回归：autonomy._tick 必须只定义一次，且存活版本保留 config 漂移自检与模拟生活节律。"""
+    import pathlib
+    src = pathlib.Path("anima/core/autonomy.py").read_text(encoding="utf-8")
+    assert src.count("    async def _tick(self) -> None:") == 1, "重复定义 _tick"
+    assert "_config_drift_check()" in src, "存活 _tick 丢失配置漂移自检"
+    assert "_life_checkpoints()" in src, "存活 _tick 应保留模拟生活节律"
