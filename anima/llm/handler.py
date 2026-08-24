@@ -203,6 +203,76 @@ class LLMHandler:
         got = self._ignore_store().add(str(gid), targets)
         logger.info("[ignore] owner=%s 于群 %s 持久化忽略 %s（共 %d）", uid, gid, targets, got)
 
+    # ── 唤醒会话窗：被 keyword「哈基米」/ @ / 引用唤醒后，窗内可自然接续 ──
+    WAKE_SESSION_TTL = 240.0  # 秒；可经 autonomy.wake_session_ttl_sec 覆盖
+
+    def _wake_session_ttl(self) -> float:
+        try:
+            v = getattr(self.core.config.autonomy, "wake_session_ttl_sec", None)
+            if v is not None:
+                return float(v)
+        except Exception:
+            pass
+        return float(self.WAKE_SESSION_TTL)
+
+    def _mark_wake(self, gid: int) -> None:
+        try:
+            s = getattr(self, "_wake_sessions", None)
+            if s is None:
+                s = self._wake_sessions = {}
+            s[str(int(gid))] = time.time() + self._wake_session_ttl()
+        except Exception:
+            logger.debug("mark wake failed", exc_info=True)
+
+    def _wake_session_active(self, gid: Any) -> bool:
+        try:
+            s = getattr(self, "_wake_sessions", None)
+            if not s:
+                return False
+            return bool(s.get(str(int(gid)))) and time.time() < s[str(int(gid))]
+        except Exception:
+            return False
+
+    def _recent_speaker_uids(self, gid: Any) -> list[int]:
+        spk = (getattr(self, "_recent_spk", {}) or {}).get(str(gid), {})
+        return [int(u) for u, _ in sorted(spk.items(), key=lambda kv: kv[1], reverse=True)]
+
+    def _request_executor(self):
+        """通用口头发话执行器（记住/提醒/别再理/查询/代办）。"""
+        ex = getattr(self, "_request_executor_obj", None)
+        if ex is None:
+            dd = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
+            from anima.llm.request_executor import RequestExecutor
+            from anima.llm.ignore_list import IgnoreStore
+            ex = self._request_executor_obj = RequestExecutor(
+                self.core, data_dir=dd or "data",
+                recent_speakers=lambda gid: self._recent_speaker_uids(gid),
+                ignore_store=IgnoreStore(dd or "data"),
+            )
+        return ex
+
+    async def _try_verbal_request(self, text, user_id, group_id, detail_type, event) -> str | None:
+        """owner 或被@ 的一句话要求 → 就地办好并回执；否则返回 None 走正常回复。"""
+        try:
+            if not (text or "").strip():
+                return None
+            is_owner = self._is_owner(int(user_id))
+            if detail_type == "private":
+                if not is_owner:
+                    return None
+            else:
+                from anima.llm.group_gate import is_direct_group_call
+                if not (is_owner or is_direct_group_call(event, text)):
+                    return None
+            return await self._request_executor().handle(
+                text, user_id=int(user_id),
+                group_id=int(group_id) if group_id is not None else None,
+                detail_type=detail_type,
+            )
+        except Exception:
+            logger.exception("口头发话执行异常（已隔离）")
+            return None
+
     def _looks_like_owner_task(self, text: str, user_id: int, detail_type: str) -> bool:
         if detail_type != "private" or not self._is_owner(user_id):
             return False
@@ -1200,6 +1270,13 @@ class LLMHandler:
             await self.core.gateway.send(OutboundMsg("private", int(user_id), await self._create_owner_task(text, int(user_id))))
             return
 
+        # P2 通用口头发话执行器：owner（或群内被@）的一句话要求就地办好并回执。
+        vr = await self._try_verbal_request(text, int(user_id), group_id, detail_type, event)
+        if vr:
+            _vtgt = int(group_id) if detail_type == "group" else int(user_id)
+            await self.core.gateway.send(OutboundMsg(detail_type, _vtgt, vr))
+            return
+
         # Phase 3/4：主人多步 Agent 任务自动路由（仅真正主人，permission_level>=4）。
         # 审计 B0：is_agent_task 内部已强制 permission_level>=4，QQ 群主角色不会越权进入。
         from anima.agent.intent import is_agent_task
@@ -1356,6 +1433,14 @@ class LLMHandler:
                     except Exception:
                         logger.debug("ignore gate skip telemetry failed", exc_info=True)
                 return
+            # 唤醒会话窗：直接呼叫即开启/续期；窗内相关消息可自然接续。
+            try:
+                from anima.llm.group_gate import is_direct_group_call
+                if is_direct_group_call(event, text):
+                    self._mark_wake(int(group_id))
+                session_active = self._wake_session_active(int(group_id))
+            except Exception:
+                session_active = False
             data_dir = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
             skip_reason = classify_group_reply_skip(
                 event, text,
@@ -1364,6 +1449,7 @@ class LLMHandler:
                 autonomy=self.core.config.autonomy,
                 data_dir=str(data_dir or "data"),
                 social=getattr(self.core.config, "social", None),
+                session_active=session_active,
             )
             if skip_reason:
                 mode = resolve_group_reply_mode(group_policy, self.core.config.autonomy)

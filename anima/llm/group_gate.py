@@ -176,6 +176,29 @@ def is_familiar_idle_unaddressed(event: dict, text: str) -> bool:
     return False
 
 
+def _is_session_thread_idle(event: dict, text: str) -> bool:
+    """唤醒会话窗内的轻量可接续判定：只拦明显刷屏/插不进话的情形。
+
+    与 familiar 的 12 字闲聊闸不同：短句有意义的接续应放行（否则“自然接续”会被
+    字数闸误杀）。仍拦截：纯图/纯噪音、闲聊短语表、以及 @ 他人的两人对话。
+    """
+    if is_direct_group_call(event, text):
+        return False
+    raw = text or ""
+    if re.search(r"\[CQ:at,", raw, re.I) and not event.get("mentions_self"):
+        return True
+    plain = _plain_group_text(raw)
+    if not plain:
+        return True
+    normalized = plain.replace("？", "").replace("?", "").replace("！", "").replace("!", "").strip()
+    if plain in _FAMILIAR_IDLE_PHRASES or normalized in _FAMILIAR_IDLE_PHRASES:
+        return True
+    compact = re.sub(r"[\s\W_]+", "", plain, flags=re.UNICODE).lower()
+    if compact in _FAMILIAR_IDLE_PHRASES:
+        return True
+    return False
+
+
 def classify_group_reply_skip(
     event: dict,
     text: str,
@@ -185,10 +208,13 @@ def classify_group_reply_skip(
     autonomy,
     data_dir: str = "data",
     social=None,
+    session_active: bool = False,
 ) -> str | None:
     """若不回复返回原因码，否则 None。
 
     原因：bot_ignore | bot_cooldown | bot_loop | other_bot | idle | mention_only | unfamiliar | other
+    session_active：唤醒会话窗内，相关消息可自然接续（不必每条再 @/喊名），
+    但仍由 idle 次闸门挡住超短闲聊/对人打招呼/其它 bot，避免刷屏。
     """
     # ── 多 Bot 社交：防止 Bot 互 @ 死循环（Critical）──
     # 对所有群消息记录入站（构建连续 Bot 链），再判断发送者是否为其它 Bot。
@@ -220,6 +246,11 @@ def classify_group_reply_skip(
     mode = resolve_group_reply_mode(group_policy, autonomy)
     if is_addressed_to_other_bot(event, text, group_policy=group_policy, autonomy=autonomy):
         return "other_bot"
+    # 唤醒会话窗：窗内非刷屏即可自然接续（等效于放宽到可接话，但不刷屏）。
+    if session_active:
+        if _is_session_thread_idle(event, text):
+            return "idle"
+        return None
     if mode == "open":
         return None
     if is_direct_group_call(event, text):

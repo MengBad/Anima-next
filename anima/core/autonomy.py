@@ -755,10 +755,11 @@ class Heartbeat:
             self.persist()
             return
 
-        # 仅在真正尝试开口时记入意图账本，便于总览解释“为什么开口”。
+        # 主动“可接可不接”：无真实接话点时不开口（省一次 LLM、不刷“尝试即失败”账本）。
+        has_hook = self._active_hook_present(group_id, now)
         subject = getattr(self.core, "subject", None)
         proactive_intent = None
-        if subject is not None:
+        if subject is not None and has_hook:
             try:
                 proposed = subject.propose_expression(
                     group_id, "主动接话", source="heartbeat", priority=0.35,
@@ -792,7 +793,7 @@ class Heartbeat:
         except Exception:
             logger.exception("多 Bot 主动意图失败（已隔离）")
 
-        spoke = await self._speak(group_id, now)
+        spoke = await self._speak(group_id, now) if has_hook else False
         if subject and proactive_intent:
             if spoke:
                 subject.ledger.complete(proactive_intent.id, "主动接话出站成功")
@@ -954,6 +955,20 @@ class Heartbeat:
     # ------------------------------------------------------------------
     # 发言
     # ------------------------------------------------------------------
+
+    def _active_hook_present(self, group_id: int, now: float) -> bool:
+        """是否存在值得主动接住的近期群语接话点（短时上下文评分 >= 0.24）。"""
+        try:
+            from anima.memory.chat_memory import get_chat_memory
+            memory = get_chat_memory()
+            recent_context = getattr(memory, "get_recent_group_context", None)
+            history = recent_context(group_id, limit=12) if callable(recent_context) else []
+            if not history:
+                return False
+            return score_active_context(history) >= 0.24
+        except Exception:
+            # 评分失败保守放行：回退给原模型 [skip] 判断，不削弱主动发言。
+            return True
 
     async def _speak(self, group_id: int, now: float, intent: str = "") -> bool:
         """生成并发送主动发言。"""
