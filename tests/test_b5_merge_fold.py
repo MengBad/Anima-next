@@ -1,14 +1,22 @@
 # -*- coding: utf-8 -*-
-"""B5-merge — 首折叠 intent_fact: 规范层与顶层 shim 同一单源。"""
+"""B5-merge 折叠批: 规范层与顶层 shim 同源可导入。"""
 import importlib
-import inspect
 
-def test_both_import_paths_expose_same_intent_fact():
-    canonical = importlib.import_module("anima.capability.intent_fact")
-    shim = importlib.import_module("anima.capability_intent_fact")
-    assert canonical.IntentFact is shim.IntentFact
-    assert shim.__doc__
+FOLDED = ["intent_fact", "evolution_contract", "runtime_execution_ledger_reader",
+          "runtime_observation_store", "runtime_workflow_snapshot",
+          "runtime_consumption", "runtime_evidence_reconciliation"]
 
-def test_legacy_from_import_works():
-    from anima.capability_intent_fact import IntentFact
-    assert inspect.isclass(IntentFact)
+def test_each_folded_importable_via_both_paths():
+    for n in FOLDED:
+        canonical = importlib.import_module("anima.capability." + n)
+        shim = importlib.import_module("anima.capability_" + n)
+        assert shim.__doc__, (n, "shim missing doc")
+        assert canonical.__name__ == "anima.capability." + n
+
+def test_shim_exposes_canonical_public_names():
+    src = importlib.import_module("anima.capability.runtime_consumption")
+    shim = importlib.import_module("anima.capability_runtime_consumption")
+    pub = [k for k in dir(src) if not k.startswith("_")]
+    assert pub, "no public names in runtime_consumption"
+    for k in pub[:3]:
+        assert getattr(shim, k) is getattr(src, k), k

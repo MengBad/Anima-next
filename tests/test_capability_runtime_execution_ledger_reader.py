@@ -389,6 +389,12 @@ _MODULES = (
     "capability_suspend_revocation",
 )
 
+
+def _source_for(name: str) -> pathlib.Path:
+    """折叠过的模块其实现已移入 anima/capability/, 治理扫描须指向单源。"""
+    canon = pathlib.Path(f"anima/capability/{name.removeprefix('capability_')}.py")
+    return canon if canon.exists() else pathlib.Path(f"anima/{name}.py")
+
 _TRANSPORT_NEEDLES = (
     "sub" + "process",
     r"\b" + "ssh" + r"\b",
@@ -428,7 +434,7 @@ _MUTATION_NEEDLES = (
 def test_k1_forbidden_transport_tokens_zero_p3_p64():
     hits = []
     for name in _MODULES:
-        source = pathlib.Path(f"anima/{name}.py").read_text(encoding="utf-8")
+        source = _source_for(name).read_text(encoding="utf-8")
         for needle in _TRANSPORT_NEEDLES:
             if re.search(needle, source):
                 hits.append((name, needle))
@@ -438,7 +444,7 @@ def test_k1_forbidden_transport_tokens_zero_p3_p64():
 def test_k2_no_mutation_callables_p3_p64():
     hits = []
     for name in _MODULES:
-        source = pathlib.Path(f"anima/{name}.py").read_text(encoding="utf-8")
+        source = _source_for(name).read_text(encoding="utf-8")
         for needle in _MUTATION_NEEDLES:
             if re.search(needle, source):
                 hits.append((name, needle))
@@ -448,9 +454,7 @@ def test_k2_no_mutation_callables_p3_p64():
 def test_l1_p64_module_imports_no_frozen_subsystem():
     """The P6.4 module must NOT import anima.runtime / anima.constitution /
     anima.core / anima.watchdog - it mirrors the ledger schema, never imports it."""
-    source = pathlib.Path(
-        "anima/capability_runtime_execution_ledger_reader.py"
-    ).read_text(encoding="utf-8")
+    source = _source_for("capability_runtime_execution_ledger_reader").read_text(encoding="utf-8")
     frozen = re.compile(
         r"^\s*(?:from|import)\s+anima\.(runtime|constitution|core|watchdog|"
         r"lifecycle|foundation|memory|identity|capability_contract)\b",
@@ -476,7 +480,7 @@ def test_l2_no_frozen_imports_across_p3_p64():
     )
     hits = []
     for name in _MODULES:
-        source = pathlib.Path(f"anima/{name}.py").read_text(encoding="utf-8")
+        source = _source_for(name).read_text(encoding="utf-8")
         for match in frozen.findall(source):
             hits.append((name, match))
     assert hits == [], f"frozen subsystem imports present: {hits}"

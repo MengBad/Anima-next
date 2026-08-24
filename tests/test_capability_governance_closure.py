@@ -117,13 +117,22 @@ def _build_evolution_chain(decision: str = "approved"):
 
 # --- static boundary scan ------------------------------------------------
 
-ALL_MODULES = [
-    "anima/capability_activation_contract.py",
-    "anima/capability_activation_proof.py",
-    "anima/capability_staged_activation.py",
-    "anima/capability_suspend_revocation.py",
-    "anima/capability_evolution_contract.py",
+_ALL_MODULE_NAMES = [
+    "capability_activation_contract",
+    "capability_activation_proof",
+    "capability_staged_activation",
+    "capability_suspend_revocation",
+    "capability_evolution_contract",
 ]
+
+
+def _real_source(name: str) -> Path:
+    """折叠过的模块其实现已移入 anima/capability/, 治理扫描须指向单源。"""
+    canon = Path(f"anima/capability/{name.removeprefix('capability_')}.py")
+    return canon if canon.exists() else Path(f"anima/{name}.py")
+
+
+ALL_MODULES = [_real_source(n) for n in _ALL_MODULE_NAMES]
 _RUNTIME_PAT = [
     r"subprocess", r"\bssh\b", r"systemctl", r"docker", r"\brequests\b",
     r"httpx", r"aiohttp", r"urllib", r"http\.client", r"importlib",

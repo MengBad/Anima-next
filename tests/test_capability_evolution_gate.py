@@ -254,7 +254,10 @@ def test_approval_is_not_apply():
 
 def test_static_boundary_scan_gate_no_executor_or_runtime_calls():
     repo_root = Path(__file__).resolve().parent.parent
-    source = (repo_root / "anima/capability_evolution_contract.py").read_text(encoding="utf-8")
+    ev = repo_root / "anima/capability/evolution_contract.py"
+    if not ev.exists():
+        ev = repo_root / "anima/capability_evolution_contract.py"
+    source = ev.read_text(encoding="utf-8")
     patterns = [
         r"subprocess",
         r"\bssh\b",
