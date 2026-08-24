@@ -73,6 +73,8 @@ CLASSIFY_SYSTEM = (
     "emotion 从固定词表选一个最能代表该表情包传达情绪的："
     + "/".join(STICKER_EMOTIONS)
     + "；若情绪不明显或不适配词表，省略 emotion 字段。"
+    "；并给出 1-2 个场景（scenes，该表情最常出现的场合/用途，如 群聊斗图/安慰/震惊/玩梗，非表情包留空）；"
+    "以及一句话中文画面描述（desc，图里画了什么/在玩什么梗，非表情包留空）。"
 )
 
 CLASSIFY_TOOLS: list[dict[str, Any]] = [
@@ -110,6 +112,15 @@ CLASSIFY_TOOLS: list[dict[str, Any]] = [
                         # represents "no clear emotion" without weakening the
                         # downstream empty-string fallback.
                         "enum": STICKER_EMOTIONS,
+                    },
+                    "scenes": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "1-2 个场景（该表情最常出现的场合/用途，如 群聊斗图/安慰/震惊）；非表情包省略",
+                    },
+                    "desc": {
+                        "type": "string",
+                        "description": "一句话中文画面/梗描述（≤120字）；非表情包省略",
                     },
                 },
                 "required": ["is_sticker", "category"],
@@ -286,11 +297,15 @@ class VisionManager:
             emo = str(data.get("emotion") or "").strip()
             if emo not in STICKER_EMOTIONS:
                 emo = ""
+            scenes = [str(x).strip() for x in (data.get("scenes") or [])
+                      if str(x).strip()][:2]
+            desc = str(data.get("desc") or "").strip()[:120]
+            rich = {"scenes": scenes, "desc": desc}
             if is_st is True:
-                return {"is_sticker": True, "labels": labels, "category": cat, "emotion": emo}
+                return {"is_sticker": True, "labels": labels, "category": cat, "emotion": emo, **rich}
             if is_st is False:
-                return {"is_sticker": False, "labels": [], "category": cat, "emotion": emo}
-            return {"is_sticker": None, "labels": labels, "category": cat, "emotion": emo}
+                return {"is_sticker": False, "labels": [], "category": cat, "emotion": emo, **rich}
+            return {"is_sticker": None, "labels": labels, "category": cat, "emotion": emo, **rich}
         return {"is_sticker": None, "labels": [], "category": "unknown", "emotion": ""}
 
     @scoped_llm("sticker_select", "select")

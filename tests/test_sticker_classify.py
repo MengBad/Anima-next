@@ -89,3 +89,25 @@ async def test_classify_stores_emotion(mgr):
     assert mgr.count() == 1
     item = next(iter(mgr._read_meta().values()))
     assert item["emotion"] == "嘲讽"
+
+
+@pytest.mark.asyncio
+async def test_classify_stores_scenes_desc(mgr):
+    # 复刻 stealer 富分类：scenes(1-2) 与 desc 应产出并落库
+    vision = FakeVision({
+        "is_sticker": True, "labels": ["狗头", "嘲讽"],
+        "category": "梗图", "emotion": "嘲讽",
+        "scenes": ["群聊斗图"], "desc": "一只狗头在嘲讽"})
+    await _collect(mgr, vision, llm=object())
+    assert mgr.count() == 1
+    item = next(iter(mgr._read_meta().values()))
+    assert item["scenes"] == ["群聊斗图"]
+    assert item["desc"] == "一只狗头在嘲讽"
+
+
+def test_classify_contract_has_scenes_desc():
+    # VLM 富分类契约应声明 scenes/desc（源级回归护栏）
+    import pathlib
+    src = pathlib.Path("anima/cognitive/vision.py").read_text(encoding="utf-8")
+    assert '"scenes"' in src and '"desc"' in src
+    assert '1-2 个场景' in src

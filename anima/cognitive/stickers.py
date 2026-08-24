@@ -335,12 +335,16 @@ class StickerManager:
                 category = "unknown"
                 is_sticker: Any = None
                 emotion = ""
+                scenes: list[str] = []
+                desc = ""
                 if llm is not None and self.classify_at_collect:
                     verdict = await self._classify(data, img, llm)
                     is_sticker = verdict["is_sticker"]
                     labels = verdict["labels"]
                     category = verdict["category"]
                     emotion = verdict.get("emotion", "") or ""
+                    scenes = verdict.get("scenes") or []
+                    desc = str(verdict.get("desc") or "")[:120]
                     if is_sticker is False:
                         logger.info("表情收集跳过（非表情包，LLM 判定）: file=%s",
                                     str(img.get("file") or "")[:24])
@@ -367,6 +371,8 @@ class StickerManager:
                     "labels": labels,
                     "category": category,
                     "emotion": emotion,
+                    "scenes": list(scenes or [])[:2],
+                    "desc": desc,
                     "is_sticker": is_sticker,
                     "ctx_text": (ctx_text or "")[:400],
                     "used": 0,
@@ -409,7 +415,7 @@ class StickerManager:
             ext = self._guess_ext({"file": name}, data)
             if digest in meta or self._exists(digest, ext):
                 skipped += 1; continue
-            verdict = {"is_sticker": None, "labels": [], "category": "unknown", "emotion": ""}
+            verdict = {"is_sticker": None, "labels": [], "category": "unknown", "emotion": "", "scenes": [], "desc": ""}
             if auto_analyze and llm is not None:
                 verdict = await self._classify(data, {"file": name, "ext": ext}, llm)
                 if verdict.get("is_sticker") is False:
@@ -421,6 +427,8 @@ class StickerManager:
                 "labels": verdict.get("labels") or [],
                 "category": str(category).strip()[:64] or verdict.get("category") or "unknown",
                 "emotion": verdict.get("emotion") or "", "is_sticker": verdict.get("is_sticker"),
+                "scenes": list(verdict.get("scenes") or [])[:2],
+                "desc": str(verdict.get("desc") or "")[:120],
                 "ctx_text": "", "used": 0,
                 "status": self._initial_status(
                     approval_required, verdict.get("labels"), verdict.get("category"),
