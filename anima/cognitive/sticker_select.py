@@ -1,4 +1,4 @@
-﻿"""表情包智能选图（对标 astrbot_plugin_stealer 的 meme_selector + smart_select，能力对等移植）。
+"""表情包智能选图（对标 astrbot_plugin_stealer 的 meme_selector + smart_select，能力对等移植）。
 
 在 StickerManager 之上叠加「多信号打分 + 加权随机」的选图逻辑：
 - 分类/描述/标签/场景、使用次数、收藏、BM25、嵌入语义多路打分融合
@@ -13,7 +13,7 @@ from __future__ import annotations
 import random
 from typing import Any, Optional
 
-from .sticker_similarity import _extract_words, calculate_hybrid_similarity
+from .sticker_similarity import _extract_words, _has_negation_prefix, calculate_hybrid_similarity
 
 _W_DESC = 0.35
 _W_TAG = 0.25
@@ -31,6 +31,31 @@ _TOP_K = 3
 _LOW_SCORE_DESC_MIN = 0.1
 _DESC_BOOST_BIGRAM = 0.25
 _DESC_BOOST_UNI = 0.1
+
+
+_DEFAULT_WEIGHTS = {
+    "desc": _W_DESC, "tag": _W_TAG, "scene": _W_SCENE,
+    "bm25": _BM25_BONUS_WEIGHT, "emb": _EMB_BONUS_WEIGHT,
+    "favorite": _FAVORITE_BONUS, "recency": 0.1, "negation": 0.5, "top_k": _TOP_K,
+}
+
+
+def _resolve_weights(weights=None) -> dict:
+    out = dict(_DEFAULT_WEIGHTS)
+    if weights:
+        out.update({k: v for k, v in weights.items() if v is not None})
+    return out
+
+
+def _query_negated_hit(q_lower, cand_text):
+    ct = str(cand_text or "").lower()
+    if not ct:
+        return False
+    toks = set(_extract_words(ct)) | {t for t in ct.split() if t and len(t.strip()) > 0}
+    for tok in toks:
+        if tok and tok in q_lower and _has_negation_prefix(q_lower, tok):
+            return True
+    return False
 
 
 def _parse_tags(raw):
@@ -69,10 +94,11 @@ def _scene_score(query_lower, scenes):
     return min(1.0, matched / max(len(scenes), 1))
 
 
-def score_entry(query, item, target_category="", bm25_tokens_overlap=None, embedding_score=None):
+def score_entry(query, item, target_category="", bm25_tokens_overlap=None, embedding_score=None, weights=None):
     q = str(query or "").strip()
     if not q:
         return 0.0
+    w = _resolve_weights(weights)
     q_lower = q.lower()
     q_words = set(_extract_words(q))
 
@@ -89,20 +115,23 @@ def score_entry(query, item, target_category="", bm25_tokens_overlap=None, embed
     category_bonus = _CAT_BONUS_EXACT if category == target_category else _CAT_BONUS_OTHER
     use_count = int(item.get("used") or item.get("use_count") or 0)
     use_bonus = min(_USE_BONUS_CAP, use_count * _USE_BONUS_RATE)
-    fav_bonus = _FAVORITE_BONUS if item.get("is_favorite") else 0.0
-    bm25_bonus = (bm25_tokens_overlap or 0.0) * _BM25_BONUS_WEIGHT
-    emb_bonus = (embedding_score if embedding_score is not None else 0.0) * _EMB_BONUS_WEIGHT
+    fav_bonus = w["favorite"] if item.get("is_favorite") else 0.0
+    bm25_bonus = (bm25_tokens_overlap or 0.0) * w["bm25"]
+    emb_bonus = (embedding_score if embedding_score is not None else 0.0) * w["emb"]
 
     base = (
-        dsc * _W_DESC
-        + tsc * _W_TAG
-        + ssc * _W_SCENE
+        dsc * w["desc"]
+        + tsc * w["tag"]
+        + ssc * w["scene"]
         + category_bonus
         + use_bonus
         + fav_bonus
         + bm25_bonus
         + emb_bonus
     )
+    neg = w.get("negation", 0.0)
+    if neg and _query_negated_hit(q_lower, category + " " + desc + " " + " ".join(tags) + " " + " ".join(scenes)):
+        base *= (1.0 - float(neg))
     if base < _MIN_BASE_SCORE:
         return round(dsc, 4) if dsc > _LOW_SCORE_DESC_MIN else 0.0
     return round(max(0.0, base + random.uniform(0, _DIVERSITY_MAX)), 4)

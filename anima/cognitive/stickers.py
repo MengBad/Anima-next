@@ -852,6 +852,8 @@ class StickerManager:
 
         from .sticker_select import score_entry, choose
         key_to_item = eligible
+        weights = getattr(getattr(getattr(core, "config", None), "sticker", None), "select_weights", None)
+        weights = dict(weights) if weights else None
 
         # 1) BM25 召回
         bm25_keys = self.search_engine().search(query, key_to_item, top_k=16)
@@ -881,7 +883,7 @@ class StickerManager:
                 continue
             s = score_entry(query, item, target_category,
                             bm25_tokens_overlap=1.0,
-                            embedding_score=embedding_bonus.get(h))
+                            embedding_score=embedding_bonus.get(h), weights=weights)
             if s > 0:
                 scored.append((h, item, s))
                 seen.add(h)
@@ -890,7 +892,7 @@ class StickerManager:
                 if h in seen:
                     continue
                 s = score_entry(query, item, target_category,
-                                embedding_score=embedding_bonus.get(h))
+                                embedding_score=embedding_bonus.get(h), weights=weights)
                 if s > 0:
                     scored.append((h, item, s))
                     seen.add(h)
@@ -901,8 +903,10 @@ class StickerManager:
         recent = list(self._recent_by_group.get(group_key, []))[-self.recent_window:] \
             if self.recent_window > 0 else []
         recent_set = set(recent)
-        scored = [(h, it, s - (0.1 if h in recent_set else 0.0)) for h, it, s in scored]
-        h = choose(scored)
+        recency_pen = (weights or {}).get("recency", 0.1)
+        top_k = (weights or {}).get("top_k", 3)
+        scored = [(h, it, s - (recency_pen if h in recent_set else 0.0)) for h, it, s in scored]
+        h = choose(scored, top_k=top_k)
         if h is None:
             return None
         return self._mark_selected(meta, group_id, h, key_to_item[h])
