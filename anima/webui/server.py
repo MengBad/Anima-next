@@ -2661,6 +2661,17 @@ class WebUIServer:
         size = max(1, min(100, int(request.query.get("page_size", str(limit)))))
         return web.json_response({"events": events[(page-1)*size:page*size], "page": page, "page_size": size, "total": len(events)})
 
+    async def life_timeline(self, request: web.Request) -> web.Response:
+        """一生时间线(只读): 把 audit 事件按一生阶段打标投影, 供 Life 页展示。"""
+        from anima.webui.life_timeline import build_life_timeline
+        raw = request.query.get("limit", "100")
+        try:
+            limit = min(500, max(1, int(raw)))
+        except ValueError:
+            limit = 100
+        events = build_life_timeline(self.core.audit.recent(limit))
+        return web.json_response({"events": events, "total": len(events), "read_only": True})
+
     async def skills(self, request: web.Request) -> web.Response:
         registry = getattr(self.core, "skills", None)
         manifests = getattr(registry, "manifests", {}).values() if registry else []

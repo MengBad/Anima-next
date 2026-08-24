@@ -26,7 +26,7 @@ onMounted(async () => {
     </div>
     <ul v-else class="life-timeline">
       <li v-for="(e, idx) in events" :key="idx" class="tl-item">
-        <span class="tl-dot"></span>
+        <span class="tl-dot" :class="`stage-${e.stage || 'life'}`"></span>
         <span class="tl-kind">{{ e.kind || "event" }}</span>
         <span class="tl-text">{{ e.summary || e.text || "—" }}</span>
         <span v-if="e.ts" class="muted">{{ e.ts }}</span>
