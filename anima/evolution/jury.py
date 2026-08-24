@@ -77,6 +77,13 @@ def _direction(key: str, policy: JuryPolicy) -> str:
     return "higher"  # 未知默认按传入方向处理, 无对齐则 no_evidence
 
 
+def _get(m: Mapping, key: str, default: Any = None):
+    """兼容 dict 与 dataclass(如 ImprovementEvidence) 取字段。"""
+    if isinstance(m, Mapping):
+        return m.get(key, default)
+    return getattr(m, key, default)
+
+
 def _as_float(v: Any) -> float:
     try:
         return float(v)
@@ -97,9 +104,9 @@ def judge(metrics, policy: JuryPolicy = DEFAULT_POLICY) -> EvidenceVerdict:
     """输入: 指标列表 [{metric_key,before,after}...]。输出: EvidenceVerdict。"""
     parsed: list = []
     for m in metrics:
-        key = str(m.get("metric_key") or m.get("key") or "metric")
-        before = m.get("before")
-        after = m.get("after")
+        key = str(_get(m, "metric_key") or _get(m, "key") or "metric")
+        before = _get(m, "before")
+        after = _get(m, "after")
         direction = _direction(key, policy)
         norm = _normalized(before, after, direction)
         if norm != norm:
@@ -127,3 +134,19 @@ def judge(metrics, policy: JuryPolicy = DEFAULT_POLICY) -> EvidenceVerdict:
     if best is not None:
         return EvidenceVerdict("keep", "有改善但未达晋升阈 → 保留", parsed, sample_n)
     return EvidenceVerdict("degraded", "未见有效改善 → 诚实降级(不升级)", parsed, sample_n)
+
+
+def verdict_for_report(report, policy: JuryPolicy = DEFAULT_POLICY) -> dict:
+    """From Benchmark 报告(dict, 含 evidence:[{metric_key,before,after}...]) 出 EvidenceVerdict dict。"""
+    metrics = report.get("evidence") or [] if isinstance(report, dict) else []
+    return judge(metrics, policy).to_dict()
+
+
+def verdict_for_metrics_pair(before, after, policy: JuryPolicy = DEFAULT_POLICY) -> dict:
+    """From 两套键值指标 {metric_key: value} -> EvidenceVerdict dict(非 Benchmark 时用)。"""
+    metrics = [
+        {"metric_key": k, "before": b, "after": after.get(k, b)}
+        for k, b in (before or {}).items()
+    ]
+    return judge(metrics, policy).to_dict()
+

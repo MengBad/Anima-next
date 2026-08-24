@@ -266,6 +266,10 @@ class EvolutionLoop:
         if bench is not None:
             try:
                 report = bench.capture_after(self._core)
+                if isinstance(report, dict):
+                    from anima.evolution.jury import verdict_for_report
+                    # G4 客观晋升尺: 以 Before/After 证据判定 保留/晋级/回滚(仍须 Owner 最终闸)
+                    report["evidence_jury"] = verdict_for_report(report)
                 improvement_evidence = report
                 self._save_evidence(proposal.id, report)
             except Exception:  # noqa: BLE001
