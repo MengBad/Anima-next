@@ -118,4 +118,7 @@ export interface EvolutionProposal {
   decision: string;
   touches_core: boolean;
   created_at: number;
+  evidence_jury?: { decision?: string; reasons?: string[] } | null;
+  society_review?: { available?: boolean; verdict?: { decision?: string } } | null;
+  ci_dod?: { pass?: boolean; reasons?: string[] } | null;
 }

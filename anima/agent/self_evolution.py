@@ -58,6 +58,10 @@ class EvolutionProposal:
     status: str = "proposed"            # proposed | approved | rejected | applied
     decision: str = ""                  # 门禁决策：pending_owner | approved | rejected（UI 展示用）
     created_at: float = field(default_factory=time.time)
+    # B3 闭环建议(只读渲染): 客观晋升尺 / 多Agent评议 / CI DoD 门结果, 缺省 None。
+    evidence_jury: dict | None = None
+    society_review: dict | None = None
+    ci_dod: dict | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +77,9 @@ class EvolutionProposal:
             "decision": self.decision,
             "touches_core": self.touches_core(),
             "created_at": self.created_at,
+            "evidence_jury": self.evidence_jury,
+            "society_review": self.society_review,
+            "ci_dod": self.ci_dod,
         }
 
     def touches_core(self) -> bool:
@@ -251,6 +258,7 @@ class EvolutionLoop:
         if self._ci_dod_bundle is not None:
             from anima.evolution.ci_dod import check_ci_dod, candidate_reviewable
             dod = check_ci_dod(**self._ci_dod_bundle)
+            proposal.ci_dod = dod
             if not candidate_reviewable(dod):
                 return {
                     "id": proposal.id,
@@ -290,6 +298,7 @@ class EvolutionLoop:
                     from anima.evolution.jury import verdict_for_report
                     # G4 客观晋升尺: 以 Before/After 证据判定 保留/晋级/回滚(仍须 Owner 最终闸)
                     report["evidence_jury"] = verdict_for_report(report)
+                    proposal.evidence_jury = report["evidence_jury"]
                 improvement_evidence = report
                 self._save_evidence(proposal.id, report)
             except Exception:  # noqa: BLE001
@@ -389,6 +398,8 @@ async def propose_evolution(goal: str, *, target_files: tuple[str, ...] = (),
         try:
             from .society_review import run_society_review
             review = await run_society_review(goal, context="自进化提案(多Agent评议建议性参考)")
+            if proposal is not None:
+                proposal.society_review = review
         except Exception:  # noqa: BLE001
             review = {"available": False, "reason": "society_review_failed"}
     return {
