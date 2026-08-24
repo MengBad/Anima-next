@@ -2636,6 +2636,9 @@ class WebUIServer:
         notes = persistence.read_text("self_notes.md", "")
         scars = get_scar_system(data_dir)
         world = get_world_model(data_dir)
+        from anima.webui.life_archive import snapshot_inventory, memory_continuity
+        snap = snapshot_inventory(data_dir)
+        episodic = getattr(self.core, "episodes", None)
         return web.json_response({
             "diary_tail": diary[-2000:],
             "notes_tail": notes[-2000:],
@@ -2645,9 +2648,13 @@ class WebUIServer:
             "episodic_memory": getattr(self.core, "episodes", None).summary() if getattr(self.core, "episodes", None) else {},
             "open_commitments": [
                 self._plain(item)
-                for item in (getattr(self.core, "episodes", None).open_commitments(limit=12)
-                             if getattr(self.core, "episodes", None) else [])
+                for item in (episodic.open_commitments(limit=12)
+                             if episodic and hasattr(episodic, "open_commitments") else [])
             ],
+            "snapshot": snap,
+            "snapshot_count": len(snap),
+            "memory_continuity": memory_continuity(
+                episodic.summary() if episodic and hasattr(episodic, "summary") else None),
         })
 
     async def timeline(self, request: web.Request) -> web.Response:
