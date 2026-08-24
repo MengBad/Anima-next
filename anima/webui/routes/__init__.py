@@ -230,6 +230,7 @@ def _register_autonomy(app: web.Application, s: "WebUIServer") -> None:
         web.get("/api/life", s.life),
         web.get("/api/timeline", s.timeline),
         web.get("/api/life/timeline", s.life_timeline),
+        web.get("/api/platform/summary", s.platform_summary),
         web.get("/api/agenda", s.agenda),
         web.post("/api/agenda", s.create_agenda),
         web.delete("/api/agenda/{agenda_id}", s.cancel_agenda),

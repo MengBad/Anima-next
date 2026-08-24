@@ -2661,6 +2661,20 @@ class WebUIServer:
         size = max(1, min(100, int(request.query.get("page_size", str(limit)))))
         return web.json_response({"events": events[(page-1)*size:page*size], "page": page, "page_size": size, "total": len(events)})
 
+    async def platform_summary(self, request: web.Request) -> web.Response:
+        """底座收拢(只读): runtime + 能力RFC层 + 安全审计 一屏概览。"""
+        from anima.webui.platform_summary import build_platform_summary, security_audit_map
+        import json as _json
+        runtime_block: dict = {"running": bool(getattr(self.core, "_running", False))}
+        try:
+            resp = await self.modules_status(request)
+            body = _json.loads(resp.body.decode("utf-8")) if getattr(resp, "body", None) else {}
+            runtime_block["modules"] = body.get("modules", [])
+        except Exception:  # noqa: BLE001
+            runtime_block["modules"] = []
+        events = self.core.audit.recent(80)
+        return web.json_response(build_platform_summary(runtime_block, events))
+
     async def life_timeline(self, request: web.Request) -> web.Response:
         """一生时间线(只读): 把 audit 事件按一生阶段打标投影, 供 Life 页展示。"""
         from anima.webui.life_timeline import build_life_timeline
