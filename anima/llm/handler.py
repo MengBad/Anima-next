@@ -977,6 +977,12 @@ class LLMHandler:
                 asyncio.create_task(self._reclassify_stickers(mgr, detail_type, target_id))
                 reply = (f"{at_prefix}开始用 LLM 重新分类现有 {n} 张表情库"
                          f"（非表情包将被剔除），完成后汇报结果~")
+        elif raw_cmd.startswith("meme"):
+            from anima.cognitive.meme_commands import handle_meme_command
+            rep = handle_meme_command(raw_cmd, at_prefix, self.core)
+            if rep is None:
+                return False
+            reply = rep
         else:
             return False
 
@@ -1706,7 +1712,15 @@ class LLMHandler:
                                 group_id: Any, detail_type: str) -> None:
         """从群消息 image 段收集表情包。私聊不收集（隐私）；频率节流。"""
         cfg = self.core.config.sticker
-        if not (cfg.enabled and cfg.auto_collect):
+        _auto = cfg.auto_collect
+        try:
+            from anima.cognitive.stickers import get_sticker_manager
+            _rt = get_sticker_manager(self.core.config.persistence.data_dir).runtime_auto_collect()
+            if _rt is not None:
+                _auto = _rt
+        except Exception:
+            _auto = cfg.auto_collect
+        if not (cfg.enabled and _auto):
             return
         if detail_type != "group":
             return
@@ -2159,7 +2173,12 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     send_allowed = True
     if detail_type == "group" and scfg is not None:
         rules = {f"group:{group_id}", f"user:{user_id}"}
-        blocked = set(getattr(scfg, "send_blocklist", []) or [])
+        try:
+            from anima.cognitive.stickers import get_sticker_manager
+            _rtbl = list(get_sticker_manager(core.config.persistence.data_dir).runtime_blocklist() or [])
+        except Exception:
+            _rtbl = []
+        blocked = set((getattr(scfg, "send_blocklist", []) or []) + _rtbl)
         allowed = set(getattr(scfg, "send_allowlist", []) or [])
         send_allowed = not bool(rules & blocked) and (not allowed or bool(rules & allowed))
     sticker_path = getattr(ctx, "sticker_to_send", None)
@@ -2178,6 +2197,13 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
             last = sticker_auto_last.get(str(group_id), 0.0)
             if hasattr(scfg, "send_probability"):
                 probability = float(scfg.send_probability)
+                try:
+                    from anima.cognitive.stickers import get_sticker_manager
+                    _rprob = get_sticker_manager(core.config.persistence.data_dir).runtime_send_probability()
+                except Exception:
+                    _rprob = None
+                if _rprob is not None:
+                    probability = float(_rprob)
                 cooldown = float(getattr(scfg, "send_cooldown_sec", 0.0))
                 by_emotion = bool(getattr(scfg, "send_by_emotion", False))
             else:

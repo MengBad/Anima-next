@@ -326,6 +326,9 @@ class StickerManager:
         任何下载失败/去重命中都静默跳过。
         """
         # 审核池容量是自动收集的硬边界；手工导入可在 WebUI 另走明确的 owner 操作。
+        _cap = self.runtime_capacity()
+        if _cap is not None:
+            pending_capacity = _cap
         if approval_required and pending_capacity > 0 and len(self.pending()) >= pending_capacity:
             logger.info("表情审核池已满，暂停自动收集（capacity=%d）", pending_capacity)
             return 0
@@ -1296,6 +1299,95 @@ class StickerManager:
             return None
         path = self._asset_file(sticker_hash, item)
         return path if path.is_file() else None
+
+    # ---------------- /meme 运行时控制（复刻 stealer 指令集）----------------
+    _RUNTIME_FILE = "sticker_runtime.json"
+
+    def _runtime(self) -> dict:
+        return dict(self._persist.read_json(self._RUNTIME_FILE, {}) or {})
+
+    def _save_runtime(self, d: dict) -> None:
+        self._persist.write_json(self._RUNTIME_FILE, d)
+
+    def runtime_auto_collect(self):
+        return self._runtime().get("auto_collect")
+
+    def set_auto_collect(self, enabled: bool) -> dict:
+        r = self._runtime(); r["auto_collect"] = bool(enabled); self._save_runtime(r); return r
+
+    def runtime_capacity(self):
+        return self._runtime().get("pending_capacity")
+
+    def set_capacity(self, n: int) -> dict:
+        n = max(0, int(n)); r = self._runtime(); r["pending_capacity"] = n; self._save_runtime(r); return r
+
+    def runtime_send_probability(self):
+        return self._runtime().get("send_probability")
+
+    def set_send_probability(self, v: float) -> dict:
+        v = max(0.0, min(1.0, float(v))); r = self._runtime(); r["send_probability"] = v; self._save_runtime(r); return r
+
+    def runtime_blocklist(self) -> list:
+        return list(self._runtime().get("blocklist") or [])
+
+    def add_blacklist(self, key: str) -> list:
+        key = str(key).strip()
+        r = self._runtime(); bl = list(r.get("blocklist") or [])
+        if key and key not in bl:
+            bl.append(key)
+        r["blocklist"] = bl; self._save_runtime(r); return bl
+
+    def remove_blacklist(self, key: str) -> list:
+        r = self._runtime(); key = str(key).strip()
+        bl = [k for k in (r.get("blocklist") or []) if k != key]
+        r["blocklist"] = bl; self._save_runtime(r); return bl
+
+    def emotion_stats(self) -> dict:
+        meta = self._read_meta(); out: dict = {}
+        for it in meta.values():
+            e = str(it.get("emotion") or "") or "unknown"
+            out[e] = out.get(e, 0) + 1
+        return out
+
+    def tag_stats(self) -> dict:
+        meta = self._read_meta(); cats: dict = {}; labs: dict = {}
+        for it in meta.values():
+            c = str(it.get("category") or "unknown")
+            cats[c] = cats.get(c, 0) + 1
+            for l in (it.get("labels") or []):
+                labs[str(l)] = labs.get(str(l), 0) + 1
+        return {"categories": cats, "labels": labs}
+
+    def clear_emotion_cache(self) -> int:
+        cache = getattr(self, "_emotion_cache", None)
+        cleared = len(cache) if cache else 0
+        if cache:
+            cache.clear()
+        return cleared
+
+    def rebuild_index(self) -> int:
+        try:
+            engine = self.search_engine
+            if engine is not None and hasattr(engine, "rebuild"):
+                engine.rebuild()
+        except Exception:
+            logger.exception("rebuild_index 检索索引失败")
+        return 0
+
+    def runtime_summary(self) -> dict:
+        r = self._runtime()
+        return {"auto_collect": r.get("auto_collect", "config"),
+                "pending_capacity": r.get("pending_capacity", "config"),
+                "send_probability": r.get("send_probability", "config"),
+                "blocklist": list(r.get("blocklist") or [])}
+
+    def runtime_default_scope(self):
+        v = self._runtime().get("default_scope")
+        return v if v in ("local", "public") else None
+
+    def set_default_scope(self, scope: str) -> dict:
+        scope = scope if scope in ("local", "public") else "local"
+        r = self._runtime(); r["default_scope"] = scope; self._save_runtime(r); return r
 
     def clear(self) -> int:
         """清空表情库（主人指令用）。返回删除数量。"""
