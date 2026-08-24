@@ -123,3 +123,73 @@ def test_corrupt_jsonl_isolated(tmp_path):
     # 追加一条新事件，验证读写不崩
     m.record_event(lt.EVENT_OWNER_PREFERENCE, "第二条", tags=[])
     assert len(m.events()) == 2
+
+
+# ---------------------------------------------------------------------------
+# ④ 接线：long_term 注入认知上下文（默认关，fail-closed）
+# ---------------------------------------------------------------------------
+def test_long_term_wiring_enabled(tmp_path):
+    from anima.memory.long_term import LongTermMemory
+    from anima.pipeline.stages.memory import _long_term_query
+    store = LongTermMemory(str(tmp_path))
+    ev = store.record_event(lt.EVENT_OWNER_PREFERENCE, "我习惯用 pytest 全量跑测试",
+                           tags=["owner_preference", "pytest"])
+    store.extract_and_store(ev)  # 事件还要抽取成知识，query 才可命中
+
+    class _M:
+        long_term_context = True
+    class _P:
+        def __init__(self, d):
+            self.data_dir = d
+    class _Cfg:
+        def __init__(self, d):
+            self.memory = _M()
+            self.persistence = _P(d)
+    class _Core:
+        def __init__(self, d):
+            self.config = _Cfg(d)
+            self.long_term = None
+    core = _Core(str(tmp_path))
+    res = _long_term_query(core, "pytest")
+    assert res is not None
+    assert res.get("knowledge_matches")
+    # 惰性把 LongTermMemory 挂到 core，供上层复用
+    assert core.long_term is not None
+
+
+def test_long_term_wiring_disabled(tmp_path):
+    from anima.pipeline.stages.memory import _long_term_query
+    class _M:
+        long_term_context = False
+    class _P:
+        def __init__(self, d):
+            self.data_dir = d
+    class _Cfg:
+        def __init__(self, d):
+            self.memory = _M()
+            self.persistence = _P(d)
+    class _Core:
+        def __init__(self, d):
+            self.config = _Cfg(d)
+            self.long_term = None
+    assert _long_term_query(_Core(str(tmp_path)), "pytest") is None
+
+
+def test_long_term_wiring_no_data(tmp_path):
+    from anima.memory.long_term import LongTermMemory
+    from anima.pipeline.stages.memory import _long_term_query
+    LongTermMemory(str(tmp_path))  # 无任何事件
+    class _M:
+        long_term_context = True
+    class _P:
+        def __init__(self, d):
+            self.data_dir = d
+    class _Cfg:
+        def __init__(self, d):
+            self.memory = _M()
+            self.persistence = _P(d)
+    class _Core:
+        def __init__(self, d):
+            self.config = _Cfg(d)
+            self.long_term = None
+    assert _long_term_query(_Core(str(tmp_path)), "pytest") is None

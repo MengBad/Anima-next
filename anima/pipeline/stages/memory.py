@@ -36,6 +36,28 @@ def _contains_secret(text: str) -> bool:
     return any(p.search(text) for p in _SECRET_PATTERNS)
 
 
+def _long_term_query(core, text: str):
+    """④ long_term 第三层查询：memory.long_term_context 开启且有命中时返回结果，否则 None（fail-closed）。"""
+    try:
+        cfg = getattr(core, "config", None)
+        mem_cfg = getattr(cfg, "memory", None)
+        if not (mem_cfg and getattr(mem_cfg, "long_term_context", False)):
+            return None
+        data_dir = str(getattr(getattr(cfg, "persistence", None), "data_dir", "data"))
+        lt = getattr(core, "long_term", None)
+        if lt is None:
+            from anima.memory.long_term import LongTermMemory
+            lt = LongTermMemory(data_dir)
+            core.long_term = lt
+        res = lt.query(text, limit=6)
+        if res.get("has_data") and (res.get("knowledge_matches") or res.get("pattern_matches")):
+            return res
+        return None
+    except Exception:
+        logger.debug("long_term 接线读取失败，隔离")
+        return None
+
+
 def _memory_audit(ctx: PipelineContext, event: str, reason: str = "") -> None:
     """P10.4-R2-A: memory_read audit sink (subject hash only, never plaintext)."""
     try:
@@ -142,6 +164,14 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
                 ctx.meta["episodic_context"] = episode_context
         except Exception:
             logger.exception("情节记忆召回失败")
+
+    # ④ long_term 第三层：开启时注入事件→知识→行为模式查询命中（默认关，fail-closed）
+    try:
+        _ltv = _long_term_query(core, ctx.text)
+        if _ltv:
+            ctx.meta["long_term_context"] = _ltv
+    except Exception:
+        logger.debug("long_term 上下文注入失败，隔离")
 
     # 记录当前用户消息（纯图片消息用占位文本，视觉描述由后台 _observe_vision 补写）
     # B2: 闪光灯记忆——高唤醒状态时自动标记

@@ -331,6 +331,10 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     episodic_context = ctx.meta.get("episodic_context")
     if episodic_context:
         add_system_fragment("episodic_context", str(episodic_context), 80)
+    # ④ long_term 第三层：事件→知识→行为模式，命中注入只读上下文（默认关）
+    ltv = ctx.meta.get("long_term_context")
+    if ltv and (ltv.get("knowledge_matches") or ltv.get("pattern_matches")):
+        add_system_fragment("long_term_context", str(ltv), 90)
 
     # 关系信息追加到 system prompt
     if relation_ctx:

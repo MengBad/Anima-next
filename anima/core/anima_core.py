@@ -30,6 +30,7 @@ STICKER_POLICY_FIELDS = {
     "collect_allowlist", "collect_blocklist", "send_allowlist", "send_blocklist",
     "self_review", "natural_forget",
     "forget_age_days", "forget_used_max", "forget_last_used_days",
+    "phash_dedup", "phash_threshold", "smart_select",
 }
 
 
@@ -81,6 +82,9 @@ class AnimaCore:
         self.subject = SubjectOrchestrator(self.intent_ledger)
         from anima.memory.episodes import EpisodicMemory
         self.episodes = EpisodicMemory(self.persistence)
+        # ④ long_term 第三层（事件→知识→行为模式；默认仅装配，注入关由 memory.long_term_context 控制）
+        from anima.memory.long_term import LongTermMemory
+        self.long_term = LongTermMemory(config.persistence.data_dir)
         from anima.core.workflows import WorkflowStore
         self.workflows = WorkflowStore(self.persistence)
         # 意图过期时同步关闭等待交付的工作流，避免悬挂通知。

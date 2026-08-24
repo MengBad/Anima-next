@@ -312,6 +312,10 @@ class StickerConfig(BaseModel):
     classify_at_collect: bool = True   # LLM 视觉闸门：导入时判定是否为表情包并分类（否=拒收）
     llm_select: bool = True            # LLM 视觉终选：发送时从候选里挑最贴的（否=退回本地标签匹配/随机）
     select_model: str = ""             # 选图/分类视觉模型；空=复用 label_model
+    # --- 对标 astrbot_plugin_stealer 的能力增强 ---
+    phash_dedup: bool = True           # 收集时 pHash 感知哈希近似去重（乱序截帧/改色/加字视为同一张）
+    phash_threshold: int = 20          # pHash 汉明阈值（越低越严格）
+    smart_select: bool = False         # 选图走 BM25+混合相似度+嵌入语义 加权随机（否=旧本地/LLM 视觉选图）
     # --- 表情包自审查 / 自过审：AI 判定明确的表情自动入库可发，只留拿不准的给 Owner ---
     self_review: bool = True            # AI 自审自过审：收集/打标后判定明确即自动 approved，无需 Owner 逐张批
     natural_forget: bool = True         # 自然遗忘：旧且少用的表情自动腾位（即使未到硬上限）
@@ -701,6 +705,12 @@ class PersonaConfig(BaseModel):
     # 种子关系（首次初始化写入）——生产环境在 config.yaml 中配置，源码不内嵌真实个人信息
 
 
+class MemoryConfig(BaseModel):
+    # ④ 长期记忆第三层：把 long_term（事件→知识→行为模式）查询注入认知上下文。
+    # 默认关（fail-closed）。开启后 memory 阶段按本次消息 keyword 注入命中片段，仅供上下文参考不改变权限。
+    long_term_context: bool = False
+
+
 # ---------------------------------------------------------------------------
 # 顶层
 # ---------------------------------------------------------------------------
@@ -713,6 +723,7 @@ class AnimaConfig(BaseModel):
     drift: DriftConfig = Field(default_factory=DriftConfig)
     permissions: PermissionConfig = Field(default_factory=PermissionConfig)
     persistence: PersistenceConfig = Field(default_factory=PersistenceConfig)
+    memory: MemoryConfig = Field(default_factory=MemoryConfig)
     compat: CompatConfig = Field(default_factory=CompatConfig)
     crossgroup: CrossGroupConfig = Field(default_factory=CrossGroupConfig)
     tool_learning: ToolLearningConfig = Field(default_factory=ToolLearningConfig)
