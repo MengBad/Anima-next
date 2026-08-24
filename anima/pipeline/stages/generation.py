@@ -725,7 +725,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         _apply_capability_feedback(core, trace)
         stickers_enabled = group_policy.get("stickers_enabled") is not False
         for t in trace:
-            if t.get("ok") and t.get("name") in ("pick_sticker", "random_sticker"):
+            if t.get("ok") and t.get("name") in ("pick_sticker", "random_sticker", "send_meme"):
                 res = t.get("result")
                 path = _extract_sticker_path(res)
                 if path and Path(path).exists() and stickers_enabled:
