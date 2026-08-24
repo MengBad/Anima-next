@@ -189,6 +189,62 @@ def _decide_morning_dream_share(
     return (True, False)       # 抽中分享（成功后再标记）
 
 
+def _constitution_drive(mood_arousal, mood_valence, relation_depth=0.2, threat=0.0):
+    """T1.1 轻量宪法桥：用可见 runtime 信号沉淀最小 Memory → Constitution M1 链 → Drive dict。
+
+    Constitution 只产出趋近/回避取向(Drive)，不改任何出站语言，只可能压制主动表达。
+    任何一步失败返回 None(fail-closed)。
+    """
+    try:
+        import anima.constitution.state as _C
+        from anima.constitution.identity import derive_identity
+        from anima.constitution.need import derive_need
+        from anima.constitution.affect import derive_affect
+        from anima.constitution.drive import derive_drive
+    except Exception:
+        logger.debug("constitution 引擎不可用，跳过 Drive 桥", exc_info=True)
+        return None
+    try:
+        _mem = _C.Memory(
+            semantic=[_C.MemoryRecord(
+                kind="semantic",
+                content={"valence": round(float(mood_valence), 3),
+                         "arousal": round(float(mood_arousal), 3)},
+                salience=min(1.0, abs(float(mood_valence))),
+            )],
+            relations=[_C.MemoryRecord(
+                kind="relation",
+                content={"depth": round(float(relation_depth), 3)},
+                salience=min(1.0, float(relation_depth)),
+            )],
+        )
+        _percept = _C.Perception(signals={
+            "novelty": max(0.0, float(mood_arousal)),
+            "threat": max(0.0, float(threat)),
+        })
+        _drive = derive_drive(
+            derive_affect(derive_need(derive_identity(_mem)), _percept)
+        )
+        _ori = _drive.orientation
+        return {
+            "activated": bool(_drive.activated),
+            "approach": float(_ori.get(_C.OrientationAxis.APPROACH, 0.0)),
+            "avoid": float(_ori.get(_C.OrientationAxis.AVOID, 0.0)),
+            "intensity": float(_ori.get(_C.OrientationAxis.INTENSITY, 0.0)),
+        }
+    except Exception:
+        logger.debug("Drive 推导失败，fail-closed 视为无驱动的主动", exc_info=True)
+        return None
+
+
+def _drive_gate_ok(drive) -> bool:
+    """T1.1 主动表达 Drive 门：须呈现且已激活、且趋近>回避，否则 fail-closed 压制。"""
+    if not drive or not isinstance(drive, dict):
+        return False
+    if not drive.get("activated"):
+        return False
+    return float(drive.get("approach", 0.0)) > float(drive.get("avoid", 0.0))
+
 class Heartbeat:
     """自主心跳引擎。"""
 
@@ -746,6 +802,16 @@ class Heartbeat:
         has_hook = self._active_hook_present(group_id, now)
         subject = getattr(self.core, "subject", None)
         proactive_intent = None
+        # T1.1: Constitution Drive 门（默认关，fail-closed）——主动表达须源于趋近 Drive 才开口，可 trace。
+        drive_origin = None
+        if getattr(self.core.config.autonomy, "drive_gate", False):
+            drive_origin = self._constitution_drive_snapshot(group_id)
+            if drive_origin and not _drive_gate_ok(drive_origin):
+                logger.info(
+                    "[宪法Drive] 群%s 无趋近驱动(activated=%s approach=%s avoid=%s)，压制主动说话",
+                    group_id, drive_origin["activated"], drive_origin["approach"], drive_origin["avoid"],
+                )
+                has_hook = False
         if subject is not None and has_hook:
             try:
                 proposed = subject.propose_expression(
@@ -755,6 +821,19 @@ class Heartbeat:
                 proactive_intent = subject.ledger.claim(proposed.id, now)
                 if proactive_intent:
                     subject.ledger.mark_dispatched(proactive_intent.id, "主动接话出站中")
+                if drive_origin:
+                    audit = getattr(self.core, "audit", None)
+                    if audit:
+                        try:
+                            audit.emit(
+                                "proactive_expression_drive", group_id=group_id, source="heartbeat",
+                                activated=bool(drive_origin["activated"]),
+                                approach=round(drive_origin["approach"], 3),
+                                avoid=round(drive_origin["avoid"], 3),
+                                intensity=round(drive_origin.get("intensity", 0.0), 3),
+                            )
+                        except Exception:
+                            logger.exception("Drive trace 审计失败（已隔离）")
             except Exception:
                 logger.exception("主动发言意图登记失败")
                 proactive_intent = None
@@ -943,6 +1022,22 @@ class Heartbeat:
     # 发言
     # ------------------------------------------------------------------
 
+    def _constitution_drive_snapshot(self, group_id: int):
+        """汇集群级 today 信号 → 轻量宪法桥 → 带 gate_ok 的 Drive，供主动表达 trace。失败返回 None。"""
+        data_dir = str(getattr(self.core.config.persistence, "data_dir", "data"))
+        arousal, valence = 0.2, 0.1
+        try:
+            from anima.cognitive.mood import get_mood_system
+            _m = get_mood_system(data_dir).get_state()
+            arousal = float(getattr(_m, "arousal", arousal))
+            valence = float(getattr(_m, "valence", valence))
+        except Exception:
+            logger.debug("Drive 桥 mood 读取失败，用默认", exc_info=True)
+        threat = max(0.0, -valence)
+        d = _constitution_drive(arousal, valence, 0.2, threat)
+        if d:
+            d["gate_ok"] = _drive_gate_ok(d)
+        return d
     def _active_hook_present(self, group_id: int, now: float) -> bool:
         """是否存在值得主动接住的近期群语接话点（短时上下文评分 >= 0.24）。"""
         try:

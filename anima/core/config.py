@@ -118,6 +118,9 @@ class AutonomyConfig(BaseModel):
     # Candidate B：主动发言接地网关。True=出站前校验回复不可虚构前提/断言群友
     # 心理状态/离题；未接地一律丢弃。默认开启（fail-closed 行为加固）。
     proactive_grounding: bool = True
+    # T1.1: Constitution(M1) Drive 门。True=主动表达须源于趋近 Drive(approach>avoid)才开口，
+    #      且把 Drive 记入审计 trace。默认关(fail-closed,行为不变)。Constitution 只改意图/表达倾向，不改出站语言。
+    drive_gate: bool = False
     # 群最近一次人类发言距今 ≥ 该秒数，才考虑主动插话（避免对话正嗨时打断）。
     active_silence_min_sec: int = 300
     # 全局两次主动发言的最小间隔（秒），防止多群同时刷屏。

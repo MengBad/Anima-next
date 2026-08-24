@@ -376,3 +376,30 @@ def test_autonomy_tick_single_definition_and_drift_check():
     assert src.count("    async def _tick(self) -> None:") == 1, "重复定义 _tick"
     assert "_config_drift_check()" in src, "存活 _tick 丢失配置漂移自检"
     assert "_life_checkpoints()" in src, "存活 _tick 应保留模拟生活节律"
+
+
+def test_constitution_drive_shapes_and_sign():
+    """T1.1：轻量宪法桥产出合法 Drive；正情绪+高唤醒 → activated 且 approach>avoid。"""
+    from anima.core.autonomy import _constitution_drive, _drive_gate_ok
+    d = _constitution_drive(0.8, 0.6, relation_depth=0.2, threat=0.0)
+    assert d is not None
+    assert set(d) >= {"activated", "approach", "avoid", "intensity"}
+    assert _drive_gate_ok(d) is True  # 趋近驱动 → 允许主动表达
+    d_avoid = _constitution_drive(0.1, -0.8, relation_depth=0.2, threat=0.9)
+    assert d_avoid is not None
+    assert _drive_gate_ok(d_avoid) is False  # 回避主导 → fail-closed 压制
+
+
+def test_drive_gate_ok_fail_closed():
+    from anima.core.autonomy import _drive_gate_ok
+    assert _drive_gate_ok(None) is False
+    assert _drive_gate_ok({}) is False
+    assert _drive_gate_ok({"activated": False, "approach": 0.9, "avoid": 0.0}) is False
+    assert _drive_gate_ok({"activated": True, "approach": 0.9, "avoid": 0.0}) is True
+
+
+def test_drive_gate_default_off():
+    """T1.1：drive_gate 默认 False，生产行为保持不变(fail-closed)。"""
+    from anima.core.config import AutonomyConfig
+    assert isinstance(AutonomyConfig().drive_gate, bool)
+    assert AutonomyConfig().drive_gate is False
