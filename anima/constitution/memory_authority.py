@@ -81,8 +81,12 @@ class MemoryAuthority:
     Drive) or the owned Goal. The loop closes *through* it, not *by* it editing the chain.
     """
 
-    def __init__(self, engine: MemoryEngine | None = None) -> None:
+    def __init__(self, engine: MemoryEngine | None = None,
+                 hydrate_now: bool = False, cm=None) -> None:
         self.engine = engine or MemoryEngine()
+        self._hydrated = False
+        if hydrate_now:
+            self.hydrate_from_chat(cm=cm)
 
     def ingest(self, reflection_result: ReflectionResult) -> "MemoryAuthority":
         """Ingest a ReflectionResult into the one Memory. Returns self for chaining."""
@@ -92,3 +96,20 @@ class MemoryAuthority:
     def snapshot_memory(self):
         """Read surface for the derivation chain (``f(Memory)``). Does not expose writers."""
         return self.engine.snapshot()
+
+    def hydrate_from_chat(self, cm=None, *, force: bool = False,
+                          max_episodes: int = 24,
+                          min_salience: float = 0.15,
+                          max_salience: float = 0.4) -> int:
+        """M1.2 — From chat_memory 水合一次(默认懒一次, fail-soft)。
+
+        只喂 Memory 读面(f(Memory)); 不触碰派生态/不暴露写面。
+        cm 可注入(test 隔离源)。
+        """
+        if self._hydrated and not force:
+            return 0
+        added = self.engine.hydrate(cm, max_episodes=max_episodes,
+                                    min_salience=min_salience,
+                                    max_salience=max_salience)
+        self._hydrated = True
+        return added
