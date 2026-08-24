@@ -212,13 +212,16 @@ class EvolutionLoop:
     """
 
     def __init__(self, dev_loop: Any, *, selfcode_manager: Any = None,
-                 gate: "EvolutionGate | None" = None, core: Any = None) -> None:
+                 gate: "EvolutionGate | None" = None, core: Any = None,
+                 ci_dod_bundle: dict | None = None) -> None:
         self._dev = dev_loop
         self._proposer = EvolutionProposer(selfcode_manager)
         # 默认复用进程内单例审批门：WebUI 的 list/decide 与 propose 共享同一状态。
         self._gate = gate if gate is not None else get_evolution_gate()
         # core 可选：提供时，evolve 部署前后自动采集 Before/After 指标，产出改进证据。
         self._core = core
+        # CI DoD 门(可选): 提供 bundle 则落地前强校验, 失败即不部署(fail-closed)。
+        self._ci_dod_bundle = ci_dod_bundle
 
     async def propose(self, goal: str, *, target_files: tuple[str, ...] = ()) -> dict[str, Any]:
         """生成提案并进入审批队列（默认不落地）。返回门禁决策。"""
@@ -243,6 +246,19 @@ class EvolutionLoop:
                 "decision": "pending_owner",
                 "message": "提案已就绪，等待 Owner 审批；未授权不部署（fail-closed）",
             }
+
+        # CI DoD 门(fail-closed): 提供 bundle 才算启用; 任一必需项未过则不落地。
+        if self._ci_dod_bundle is not None:
+            from anima.evolution.ci_dod import check_ci_dod, candidate_reviewable
+            dod = check_ci_dod(**self._ci_dod_bundle)
+            if not candidate_reviewable(dod):
+                return {
+                    "id": proposal.id,
+                    "decision": "blocked_ci_dod",
+                    "message": "CI DoD 未通过, 候选不可落地(fail-closed): "
+                               + "; ".join(dod["reasons"]),
+                    "ci_dod": dod,
+                }
 
         # Owner 已显式批准且授权部署 → 经 R8 闭环落地（R8 内部仍受控）
         self._gate.approve(proposal.id)
