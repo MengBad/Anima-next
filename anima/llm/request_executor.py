@@ -193,19 +193,7 @@ class RequestExecutor:
         return f"已设提醒喵：群 {group_id}，每天 {hh:02d}:{mm:02d} 提醒「{content}」。"
 
     async def _do_task(self, text: str, user_id: int) -> str:
-        tasks = getattr(self.core, "tasks", None)
-        if tasks is None or not hasattr(tasks, "create"):
-            return "任务系统暂不可用喵。"
-        plan = [
-            "收集日志、配置与相关代码证据",
-            "给出最小修复方案并等待确认",
-            "修改后跑测试",
-            "部署/重启前单独请求批准",
-            "验证并记录结论",
-        ]
+        from anima.agent.owner_proposal import handle_owner_problem
         req = _strip_trigger(text).strip() or text
-        task = tasks.create(req, int(user_id), plan)
-        return (
-            f"已给本喵记下问题喵（任务 {task.id}）。先诊断给方案，改/部署会再单独请示你。"
-            f"回复「!anima task approve {task.id}」执行。"
-        )
+        _task, reply = await handle_owner_problem(self.core, req, int(user_id))
+        return reply

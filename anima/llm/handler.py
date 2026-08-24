@@ -282,9 +282,9 @@ class LLMHandler:
         return action and scope and len(text) >= 8
 
     async def _create_owner_task(self, text: str, user_id: int) -> str:
-        plan = ["收集日志、配置和相关代码证据", "给出最小修复方案并等待修改确认", "修改后运行测试", "部署/重启前等待部署确认", "验证结果并记录任务结论"]
-        task = self.core.tasks.create(text, user_id, plan)
-        return f"已创建 Owner 任务 {task.id}。请回复「!anima task approve {task.id}」开始诊断；修改、重启和部署会单独请求审批。"
+        from anima.agent.owner_proposal import handle_owner_problem
+        _t, reply = await handle_owner_problem(self.core, text, int(user_id), prefix="")
+        return reply
 
     def _turn_lock(self, detail_type: str, group_id: Any, user_id: Any) -> asyncio.Lock:
         """返回按（私聊用户）或（群、用户）隔离的回合锁。"""
