@@ -1,8 +1,31 @@
 # PROJECT_STATE — ANIMA 当前状态快照
 
 > 维护者：Principal Autonomous Engineering Agent
-> 更新：2026-08-16（R6–R9 全部完成并部署）
-> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`e1b32e7e1a5a`
+> 更新：2026-08-24（C 地基 + B 阶段全部完成并部署）
+> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`246d3700ecfb`
+
+## B / C 阶段增量（2026-08-24）
+
+### C 阶段（友好 AI OS 地基）
+| 项 | 状态 |
+|---|---|
+| 宪法记忆水合 memory_engine/MemoryAuthority | COMPLETE（`fbc911d`/`a7df3d5`） |
+| G4 客观晋升尺 EvidenceJury | COMPLETE+接线（`ef4b694`） |
+| CI DoD 定义+落地硬门 | COMPLETE（`f14b40c`/`c62a146`） |
+| R12 多 Agent 评议入评审（默认关） | COMPLETE（`260c0a9`） |
+
+### B 阶段（推翻重构适配两纵四横）
+| 项 | 状态 |
+|---|---|
+| B0 重构蓝图 | `reports/2026-08-24_b_phase_webui_rebuild_blueprint.md` |
+| B1 外壳两纵四横导航（一生项） | COMPLETE（`37d6437`） |
+| B2 一生时间线只读 `/api/life/timeline` | COMPLETE+已部署 |
+| B3 自治工作台闭环徽标（CI DoD/晋升尺/评议） | COMPLETE+已部署 |
+| B4 底座收拢一屏 `/api/platform/summary` | COMPLETE+已部署 |
+| B5 底座冻结核（anti-entropy 顶层 16 冻结） | COMPLETE+已推送（测试轮） |
+| B6 一生档案·传承（快照清点/遗忘/日记/伤痕/议程） | COMPLETE+已部署 |
+
+> 全量 pytest **3336 passed**；WebUI `npm run build` 通过。未完成：B5-merge（顶层 16 个 capability_* 折叠进 `anima/capability/`，跨轮大件）；B4 平台四横前端分组（纯前端）。
 
 ## CURRENT
 
