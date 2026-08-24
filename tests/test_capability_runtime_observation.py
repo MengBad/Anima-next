@@ -517,7 +517,9 @@ def test_module_source_contains_no_forbidden_runtime_tokens():
     P4.4 pins its own ``ALL_MODULES`` list; extending that list would mutate a
     frozen P4.4 artifact, so P5.1 carries an equivalent (superset) scan here.
     """
-    module_path = pathlib.Path("anima/capability_runtime_observation.py")
+    module_path = pathlib.Path("anima/capability/runtime_observation.py")
+    if not module_path.exists():
+        module_path = pathlib.Path("anima/capability_runtime_observation.py")
     source = module_path.read_text(encoding="utf-8")
     patterns = (
         "sub" + "process",
@@ -549,7 +551,9 @@ def test_module_source_contains_no_forbidden_runtime_tokens():
 
 
 def test_module_does_not_import_frozen_subsystems():
-    module_path = pathlib.Path("anima/capability_runtime_observation.py")
+    module_path = pathlib.Path("anima/capability/runtime_observation.py")
+    if not module_path.exists():
+        module_path = pathlib.Path("anima/capability_runtime_observation.py")
     source = module_path.read_text(encoding="utf-8")
     frozen = re.compile(
         r"^\s*(?:from|import)\s+anima\."

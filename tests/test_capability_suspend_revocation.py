@@ -257,7 +257,10 @@ def test_suspend_revocation_source_has_no_executor_or_runtime_calls():
     from pathlib import Path
 
     repo_root = Path(__file__).resolve().parent.parent
-    source = (repo_root / "anima/capability_suspend_revocation.py").read_text(encoding="utf-8")
+    ev = repo_root / "anima/capability/suspend_revocation.py"
+    if not ev.exists():
+        ev = repo_root / "anima/capability_suspend_revocation.py"
+    source = ev.read_text(encoding="utf-8")
     compiled = [re.compile(p) for p in _FORBIDDEN_SOURCE_PATTERNS]
     for pattern in compiled:
         assert not pattern.search(source), f"source contains forbidden pattern {pattern.pattern!r}"
