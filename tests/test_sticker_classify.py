@@ -92,6 +92,19 @@ async def test_classify_stores_emotion(mgr):
 
 
 @pytest.mark.asyncio
+async def test_pick_by_emotion_accepts_english_canonical(mgr):
+    # sticker_emotion 输出英文 canonical，pick_by_emotion 应归一为中文字表（happy->开心）
+    vision = FakeVision({'is_sticker': True, 'labels': ['狗头'],
+                         "category": "梗图", "emotion": "开心"})
+    await _collect(mgr, vision, llm=object())
+    h = next(iter(mgr._read_meta()))
+    mgr.approve(h)
+    zh = mgr.pick_by_emotion("开心")
+    en = mgr.pick_by_emotion("happy")
+    assert zh is not None and en == zh
+
+
+@pytest.mark.asyncio
 async def test_classify_stores_scenes_desc(mgr):
     # 复刻 stealer 富分类：scenes(1-2) 与 desc 应产出并落库
     vision = FakeVision({

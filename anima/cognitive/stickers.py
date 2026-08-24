@@ -39,6 +39,15 @@ EMOTION_TAXONOMY = [
     "撒娇", "委屈", "赞同", "吃瓜", "安慰", "害羞", "得意",
 ]
 
+# sticker_emotion(sticker_emotion.py) 输出英文 canonical，pick_by_emotion 只认中文词表；
+# 这里给出英文→中文 归一映射（如 happy→开心），修复「情绪联动因语种不匹配而落空」的 bug。
+EMOTION_EN2ZH = {
+    "happy": "开心", "sad": "委屈", "angry": "生气", "afraid": "震惊",
+    "surprised": "震惊", "disgust": "无语", "love": "开心", "shy": "害羞",
+    "confused": "无语", "tired": "委屈", "speechless": "无语", "troll": "嘲讽",
+    "excited": "开心", "thank": "赞同", "dumb": "无语", "cry": "委屈", "sigh": "无语",
+}
+
 # 回复文本 -> 情绪的廉价关键词映射（零额外 API 调用，用于"按概率附带情绪匹配表情"）。
 EMOTION_SYNONYMS = {
     "开心": ("哈哈", "哈哈哈", "笑死", "笑哭", "233", "太好笑了", "开心", "高兴", "乐", "可爱", "萌", "喜欢", "爱了", "嘻嘻", "嘿嘿"),
@@ -935,6 +944,7 @@ class StickerManager:
         匹配规则：emotion 字段直接相等，或（老库无 emotion 时）labels 命中情绪词。
         """
         emotion = str(emotion or "").strip()
+        emotion = EMOTION_EN2ZH.get(emotion, emotion)
         if emotion not in EMOTION_TAXONOMY:
             return None
         meta = self._read_meta()
