@@ -233,11 +233,21 @@ _STAGED_ACTIVATION_CHAIN_MODULES = [
 ]
 
 
+def _resolve_for_scan(repo_root: Path, relative: str) -> Path:
+    """折叠过的模块其实现已移入 anima/capability/, 边界扫描须指向单源。"""
+    p = repo_root / relative
+    if relative.startswith("anima/capability_") and relative.endswith(".py"):
+        canon = repo_root / "anima/capability" / relative[len("anima/capability_"):]
+        if canon.exists():
+            return canon
+    return p
+
+
 def test_staged_activation_chain_source_has_no_executor_or_runtime_calls():
     repo_root = Path(__file__).resolve().parent.parent
     compiled = [re.compile(pattern) for pattern in _FORBIDDEN_SOURCE_PATTERNS]
     for relative in _STAGED_ACTIVATION_CHAIN_MODULES:
-        source = (repo_root / relative).read_text(encoding="utf-8")
+        source = _resolve_for_scan(repo_root, relative).read_text(encoding="utf-8")
         for pattern in compiled:
             assert not pattern.search(
                 source

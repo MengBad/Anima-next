@@ -110,7 +110,7 @@ class _FakeEmbedder:
         self.calls.append(text)
         vec = [0.0] * 8
         for ch in str(text):
-            vec[hash(ch) % 8] += 1.0
+            vec[ord(ch) % len(vec)] += 1.0  # ord 稳定; hash() 进程随机会致排名翻转
         return vec
 
 
