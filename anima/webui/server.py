@@ -31,6 +31,14 @@ SPA_PATHS = {
 }
 
 
+def _paginate(items, page, limit):
+    """服务端分页切片：page(>=1) / limit(1..500)，返回 (切片, 总数, page, limit)。"""
+    page = max(1, int(page or 1))
+    limit = max(1, min(500, int(limit or 100)))
+    start = (page - 1) * limit
+    return items[start:start + limit], len(items), page, limit
+
+
 class WebUIServer:
     def __init__(self, core: "AnimaCore"):
         self.core = core
@@ -2970,8 +2978,14 @@ class WebUIServer:
             request.query.get("category", ""), request.query.get("scope", ""),
             request.query.get("sort", "newest"),
         )
+        try:
+            paged, total, page, limit = _paginate(
+                rows, request.query.get("page", "1"), request.query.get("limit", "100"))
+        except (ValueError, TypeError):
+            raise web.HTTPBadRequest(text="page/limit 必须是非负整数") from None
         categories = sorted({row["category"] for row in manager.assets() if row["category"]})
-        return web.json_response({"items": rows, "stats": manager.stats(), "categories": categories})
+        return web.json_response({"items": paged, "total": total, "page": page, "limit": limit,
+                                  "stats": manager.stats(), "categories": categories})
 
     async def sticker_policy(self, request: web.Request) -> web.Response:
         """读取或更新不含密钥的表情策略；更新项独立持久化。"""

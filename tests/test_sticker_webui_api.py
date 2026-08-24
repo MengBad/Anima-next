@@ -59,3 +59,17 @@ def test_delete_assets(tmp_path):
     h = mgr.search_assets(category="sad")[0]["id"]
     n = mgr.delete_assets([h])
     assert n == 1 and mgr.count() == before - 1
+
+def test_server_paginate_helper():
+    # M8b：WebUI 列表/审核区的服务端分页切片（page/limit 语义）
+    from anima.webui.server import _paginate
+    items = list(range(10))
+    p1, total, page, limit = _paginate(items, "1", "5")
+    assert p1 == [0, 1, 2, 3, 4] and total == 10 and page == 1 and limit == 5
+    p2, _, _, _ = _paginate(items, "2", "5")
+    assert p2 == [5, 6, 7, 8, 9]
+    empty, total0, _, _ = _paginate(items, "99", "5")
+    assert empty == [] and total0 == 10
+    big, _, _, lim = _paginate(items, "1", "99999")
+    assert lim == 500  # 上限封顶
+    assert _paginate(items, "0", "0")[2] == 1 and _paginate(items, "1", "0")[3] == 1
