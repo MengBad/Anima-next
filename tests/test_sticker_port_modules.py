@@ -1,4 +1,4 @@
-﻿"""对标 astrbot_plugin_stealer 的能力对等移植：叶子模块单测（无网络/无 LLM）。"""
+"""对标 astrbot_plugin_stealer 的能力对等移植：叶子模块单测（无网络/无 LLM）。"""
 import asyncio
 
 from anima.cognitive.sticker_similarity import (
@@ -176,3 +176,27 @@ def test_smart_select_no_match_returns_none(tmp_path):
     mgr = _seed_mgr(tmp_path)
     r = asyncio.run(mgr.smart_pick("数据库查询性能优化", group_id=999, allow_cross_group=True))
     assert r is None or r.endswith(".jpg")
+
+
+# ---------------------------------------------------------------------------
+# sticker_emotion（自然语言情绪分析）
+# ---------------------------------------------------------------------------
+
+def test_emotion_basic():
+    from anima.cognitive.sticker_emotion import detect_emotion_name
+    assert detect_emotion_name("我真的好开心哈哈") == "happy"
+    assert detect_emotion_name("看到这个我直接 卧槽") == "surprised"
+
+
+def test_emotion_negation_rejected():
+    from anima.cognitive.sticker_emotion import detect_emotion_name
+    assert detect_emotion_name("不开心") is None
+    assert detect_emotion_name("别笑了") is None
+
+
+def test_emotion_intensity():
+    from anima.cognitive.sticker_emotion import detect_emotion, dominant_terms
+    emo, inten = detect_emotion("气死我了，滚")
+    assert emo == "angry" and 0 < inten <= 1.0
+    assert detect_emotion("") is None
+    assert dominant_terms("我好难过想哭")  # 应有命中词

@@ -2202,9 +2202,16 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                     _auto = _mgr.pick_by_emotion(
                         _mood_emotion, group_id=group_id,
                         allow_cross_group=bool(getattr(scfg, "share_across_groups", False)))
-                # fallback: 文本情绪推断
+                # fallback: 文本情绪推断（先走自然语言分析器，再退关键词计票）
                 if _auto is None and by_emotion:
-                    _em = _mgr.detect_reply_emotion(ctx.reply)
+                    _em = ctx.reply
+                    try:
+                        from anima.cognitive.sticker_emotion import detect_emotion_name
+                        _em = detect_emotion_name(_em) if _em else None
+                    except Exception:
+                        _em = None
+                    if not _em:
+                        _em = _mgr.detect_reply_emotion(ctx.reply)
                     if _em:
                         _auto = _mgr.pick_by_emotion(
                             _em, group_id=group_id,
