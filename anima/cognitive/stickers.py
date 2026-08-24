@@ -196,6 +196,13 @@ class StickerManager:
         self._total_collected = 0    # 历史成功入库总数（诊断用）
         self._recent_by_group: dict[str, list[str]] = {}
         self._last_gif_by_group: dict[str, float] = {}
+        # --- 对标 astrbot_plugin_stealer 的能力增强（懒加载）---
+        self._search_engine = None        # StickerSearchEngine（BM25 索引）
+        self._phash = None                # StickerPhash（感知哈希去重）
+        self._embedder = None             # StickerEmbedder（嵌入语义检索）
+        self.phash_dedup = True           # 收集时用 pHash 近似去重（默认开）
+        self.phash_threshold = 20         # pHash 汉明阈值
+        self.smart_select = False         # 选图走 BM25+hybrid+embedding 加权随机（默认关，保持旧行为）
 
     def apply_config(self, config: Any) -> None:
         """把运行时 StickerConfig 同步到长生命周期单例。"""
@@ -213,6 +220,9 @@ class StickerManager:
             config, "classify_at_collect", self.classify_at_collect,
         ))
         self.select_model = str(getattr(config, "select_model", self.select_model) or "")
+        self.phash_dedup = bool(getattr(config, "phash_dedup", self.phash_dedup))
+        self.phash_threshold = max(0, int(getattr(config, "phash_threshold", self.phash_threshold)))
+        self.smart_select = bool(getattr(config, "smart_select", self.smart_select))
         self.self_review = bool(getattr(config, "self_review", self.self_review))
         self.natural_forget_enabled = bool(getattr(
             config, "natural_forget", self.natural_forget_enabled))
@@ -222,6 +232,73 @@ class StickerManager:
         self._enforce_cap()
         if self.natural_forget_enabled:
             self.natural_forget()
+
+    # ------------------------------------------------------------------
+    # 能力增强：懒加载原语（对标 astrbot_plugin_stealer）
+    # ------------------------------------------------------------------
+
+    def search_engine(self):
+        if self._search_engine is None:
+            from .sticker_search import StickerSearchEngine
+            self._search_engine = StickerSearchEngine()
+        return self._search_engine
+
+    def phash(self):
+        if self._phash is None:
+            from .sticker_phash import StickerPhash
+            self._phash = StickerPhash(hamming_threshold=self.phash_threshold)
+        return self._phash
+
+    def _attach_embedder(self, core=None):
+        if self._embedder is None:
+            from .sticker_embedding import StickerEmbedder
+            self._embedder = StickerEmbedder.from_core(core)
+        return self._embedder
+
+    async def _phash_of_bytes(self, data: bytes) -> str:
+        """把字节写临时文件算 phash；失败/无 PIL 返回空串。"""
+        if not self.phash_dedup:
+            return ""
+        try:
+            import tempfile
+            import os
+            fd, tmp = tempfile.mkstemp(suffix=".img")
+            os.close(fd)
+            try:
+                with open(tmp, "wb") as f:
+                    f.write(data)
+                return await self.phash().compute(tmp)
+            finally:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+        except Exception:
+            logger.warning("表情感知哈希计算失败（略过 phash）")
+            return ""
+
+    async def _phash_duplicate_async(self, data: bytes) -> Optional[str]:
+        """返回库中与 data 视觉近似的条目 hash；无则 None。"""
+        try:
+            new_phash = await self._phash_of_bytes(data)
+            if not new_phash:
+                return None
+            phash_svc = self.phash()
+            meta = self._read_meta()
+            for h, item in meta.items():
+                cur = item.get("phash") or ""
+                if cur and phash_svc.is_duplicate(new_phash, cur):
+                    return h
+        except Exception:
+            logger.warning("表情感知哈希去重跳过（失败）")
+        return None
+
+    async def _compute_phash_async(self, data: bytes) -> str:
+        """给刚写好的字节算 phash 存元数据（供后续去重比对）。"""
+        try:
+            return await self._phash_of_bytes(data)
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------
     # 收集
@@ -268,12 +345,21 @@ class StickerManager:
                         logger.info("表情收集跳过（非表情包，LLM 判定）: file=%s",
                                     str(img.get("file") or "")[:24])
                         continue
+                # 感知哈希近似去重（对标 stealer）：与库里某张视觉近似则视为同一张，跳过。
+                # 精确 sha1 去重已在前 _exists 拦截；pHash 处理乱序截帧/改色/加字的近似重复。
+                if self.phash_dedup:
+                    dupe = await self._phash_duplicate_async(data)
+                    if dupe:
+                        logger.info("表情收集跳过（视觉近似重复）: dupe=%s", str(dupe)[:8])
+                        continue
                 path = self._dir / f"{h}{ext}"
                 path.write_bytes(data)
+                phash_val = await self._compute_phash_async(data)
                 meta = self._read_meta()
                 meta[h] = {
                     "hash": h,
                     "ext": ext,
+                    "phash": phash_val,
                     "src_user": str(src_user),
                     "src_group": str(src_group),
                     "time": time.time(),
@@ -724,6 +810,90 @@ class StickerManager:
         least_used = min(item.get("used", 0) for _, item in approved)
         h, item = random.choice([(h, item) for h, item in approved if item.get("used", 0) == least_used])
         return self._mark_selected(meta, group_id, h, item)
+
+    async def smart_pick(self, query: str, group_id: Any = None,
+                         allow_cross_group: bool = False, core: Any = None,
+                         target_category: str = "") -> Optional[str]:
+        """对标 astrbot_plugin_stealer 的智能选图（smart_select 开启时优先）。
+
+        BM25 全文索引 + 混合相似度 + 嵌入语义 + 使用次数/收藏多信号打分，top-k 加权随机，
+        recency 分级惩罚。embedding 未配/查询失败时自动降级到 BM25+hybrid（与 stealer 同构）。
+        无匹配返回 None，调用方可降级 random_one。
+        """
+        meta = self._read_meta()
+        if not meta:
+            return None
+        eligible = dict(self._eligible(meta, group_id, allow_cross_group, exclude_recent=False))
+        if not eligible:
+            return None
+        query = str(query or "").strip()
+        if not query:
+            return await self._smart_random(eligible, group_id, core)
+
+        from .sticker_select import score_entry, choose
+        key_to_item = eligible
+
+        # 1) BM25 召回
+        bm25_keys = self.search_engine().search(query, key_to_item, top_k=16)
+        # 2) 嵌入语义召回（可选，抓 BM25 查不到的近义表述）
+        embedding_bonus: dict[str, float] = {}
+        try:
+            emb = self._attach_embedder(core)
+            if emb and emb.available:
+                hits = await emb.search(query, top_k=8)
+                embedding_bonus = {h: s for h, s in hits}
+        except Exception:
+            logger.exception("表情嵌入检索失败（降级 BM25）")
+
+        scored: list[tuple[str, dict, float]] = []
+        seen: set[str] = set()
+        for h in bm25_keys:
+            item = key_to_item.get(h)
+            if item is None:
+                continue
+            s = score_entry(query, item, target_category,
+                            bm25_tokens_overlap=1.0,
+                            embedding_score=embedding_bonus.get(h))
+            if s > 0:
+                scored.append((h, item, s))
+                seen.add(h)
+        if len(scored) < 4:
+            for h, item in key_to_item.items():
+                if h in seen:
+                    continue
+                s = score_entry(query, item, target_category,
+                                embedding_score=embedding_bonus.get(h))
+                if s > 0:
+                    scored.append((h, item, s))
+                    seen.add(h)
+        if not scored:
+            return None
+
+        group_key = str(group_id) if group_id is not None else "global"
+        recent = list(self._recent_by_group.get(group_key, []))[-self.recent_window:] \
+            if self.recent_window > 0 else []
+        recent_set = set(recent)
+        scored = [(h, it, s - (0.1 if h in recent_set else 0.0)) for h, it, s in scored]
+        h = choose(scored)
+        if h is None:
+            return None
+        return self._mark_selected(meta, group_id, h, key_to_item[h])
+
+    async def _smart_random(self, eligible: dict, group_id: Any,
+                            core: Any = None) -> Optional[str]:
+        """无 query 时的智能随机：优先收藏/低使用次数，加权随机。"""
+        from .sticker_select import choose
+        scores = []
+        for h, item in eligible.items():
+            fav = 1.0 if item.get("is_favorite") else 0.4
+            used = int(item.get("used") or item.get("use_count") or 0)
+            use_w = max(0.1, 1.0 - min(0.9, used * 0.05))
+            scores.append((h, item, fav * use_w))
+        h = choose(scores, top_k=5)
+        if h is None:
+            return None
+        meta = self._read_meta()
+        return self._mark_selected(meta, group_id, h, eligible[h])
 
     # ------------------------------------------------------------------
     # 情绪匹配（对话中按概率附带的核心）

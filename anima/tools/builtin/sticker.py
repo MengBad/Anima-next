@@ -27,7 +27,16 @@ def make_sticker_tools(core) -> list[Tool]:
         group_id = context.get("group_id")
         allow_cross = bool(context.get("share_stickers", False))
         path = None
-        if getattr(cfg, "llm_select", True) and getattr(core, "llm", None) is not None:
+        # smart_select：BM25+混合相似度+嵌入语义 加权随机（对标 stealer），零 LLM 视觉终选
+        if getattr(cfg, "smart_select", False):
+            try:
+                path = await mgr.smart_pick(
+                    query, group_id=group_id, allow_cross_group=allow_cross,
+                    core=core, target_category="")
+            except Exception:
+                logger.exception("smart_select 失败，退回旧路径")
+                path = None
+        if path is None and getattr(cfg, "llm_select", True) and getattr(core, "llm", None) is not None:
             try:
                 path = await mgr.llm_select(
                     core.llm, query, group_id=group_id, allow_cross_group=allow_cross,
