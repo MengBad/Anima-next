@@ -1,6 +1,6 @@
 import { ref } from "vue";
 
-export type ViewId = "overview" | "memory" | "cognition" | "abilities" | "engineering" | "settings" | "os";
+export type ViewId = "overview" | "life" | "memory" | "cognition" | "abilities" | "engineering" | "settings" | "os";
 export type AbilityTab = "skills" | "exploration" | "automation" | "stickers" | "plugins";
 
 const routeMap: Record<string, ViewId> = {
@@ -13,7 +13,8 @@ const routeMap: Record<string, ViewId> = {
   "/stickers": "abilities",
   "/engineering": "engineering",
   "/settings": "settings",
-  "/os": "os"
+  "/os": "os",
+  "/life": "life"
 };
 
 function abilityTabFromPath(pathname: string): AbilityTab {

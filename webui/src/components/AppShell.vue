@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import {
-  Bot, BrainCircuit, Boxes, Command, ChevronRight, Gauge, Menu, LogOut,
+  Bot, BrainCircuit, Boxes, Command, ChevronRight, Gauge, History, Menu, LogOut,
   MessageSquareText, Puzzle, RadioTower, RefreshCw, Settings2, ShieldCheck, Sparkles, X
 } from "@lucide/vue";
 import { activeAbilityTab, activeView, navigate, type AbilityTab, type ViewId } from "../navigation";
@@ -40,6 +40,7 @@ type NavItem = {
 
 const items: NavItem[] = [
   { id: "overview", view: "overview", label: "生命总览", hint: "健康与待办", icon: Gauge, mobile: true },
+  { id: "life", view: "life", label: "一生时间线", hint: "生命线·快照·传承", icon: History, mobile: true },
   { id: "memory", view: "memory", label: "对话与记忆", hint: "连续性与群体", icon: MessageSquareText, mobile: true },
   { id: "cognition", view: "cognition", label: "认知状态", hint: "欲望、关系与 Sylann", icon: BrainCircuit, mobile: true },
   { id: "abilities", view: "abilities", abilityTab: "skills", label: "能力与自动化", hint: "Skills、表情与插件", icon: Puzzle, mobile: true },
@@ -55,6 +56,7 @@ const mobileItems = computed(() => items.filter((item) => item.mobile !== false)
 
 const gotoMap: Record<string, () => void> = {
   o: () => navigate("overview"),
+  l: () => navigate("life"),
   m: () => navigate("memory"),
   c: () => navigate("cognition"),
   a: () => navigate("abilities", "skills"),
@@ -66,6 +68,7 @@ let gPending = false;
 
 const commands: CommandItem[] = [
   { id: "overview", label: "生命总览", hint: "健康、待办与最近活动", keywords: "dashboard health 状态" },
+  { id: "life", label: "一生时间线", hint: "生命线回放、身份快照、传承档案", keywords: "life 一生 时间线 生命 快照 传承" },
   { id: "memory", label: "对话与记忆", hint: "会话连续性与群体感知", keywords: "memory chat 记忆" },
   { id: "cognitive", label: "认知状态", hint: "人格、欲望、关系与 Sylann", keywords: "cognitive sylann 人格" },
   { id: "skills", label: "能力与自动化", hint: "Skills、表情与插件", keywords: "skill 能力" },

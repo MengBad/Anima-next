@@ -12,6 +12,7 @@ import AbilitiesView from "./views/AbilitiesView.vue";
 import EngineeringView from "./views/EngineeringView.vue";
 import SettingsView from "./views/SettingsView.vue";
 import OsView from "./views/OsView.vue";
+import LifeView from "./views/LifeView.vue";
 
 const health = ref<Health | null>(null);
 const modules = ref<ModuleStatus[]>([]);
@@ -116,6 +117,7 @@ onBeforeUnmount(() => {
       <AbilitiesView v-else-if="activeView === 'abilities'" :key="`abilities-${refreshVersion}`" @notify="notify" />
       <EngineeringView v-else-if="activeView === 'engineering'" :key="`engineering-${refreshVersion}`" @notify="notify" />
       <OsView v-else-if="activeView === 'os'" :key="`os-${refreshVersion}`" />
+      <LifeView v-else-if="activeView === 'life'" :key="`life-${refreshVersion}`" @notify="notify" />
       <SettingsView v-else :key="`settings-${refreshVersion}`" @notify="notify" />
     </Transition>
   </AppShell>
