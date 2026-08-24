@@ -2192,6 +2192,11 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
             from anima.cognitive.stickers import get_sticker_manager
             from anima.cognitive.mood import get_mood_system
             scfg = core.config.sticker
+            # 意图门控（对标 stealer）：严肃/服务氛围不加被动表情，且在触及选图前短路
+            ig = bool(getattr(scfg, "intent_gate", False))
+            ig_serious = set(getattr(scfg, "intent_gate_serious_atmospheres", []) or [])
+            if ig and str(getattr(ctx, "atmosphere_style", "")).strip() in ig_serious:
+                return segments
             sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
             now = time.time()
             last = sticker_auto_last.get(str(group_id), 0.0)

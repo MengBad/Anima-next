@@ -117,6 +117,41 @@ def test_group_passive_reply_no_at():
     ctx = _ctx(sticker=None, atm="formal")
     segs = _build_reply_segments(ctx, "group", 123, 456, _core(), at_trigger=False)
     assert not any(s["type"] == "at" for s in segs)
+
+def test_intent_gate_skips_passive_on_serious_atmosphere(monkeypatch):
+    """意图门控：严肃氛围命中 intent_gate_serious_atmospheres -> 不触碰选图，直接不带图。"""
+    ctx = _ctx(sticker=None, atm="support")
+    sc = SimpleNamespace(always_atmosphere=("support",), intent_gate=True,
+                         intent_gate_serious_atmospheres=("support",))
+    core = SimpleNamespace(config=SimpleNamespace(
+        sticker=sc, persistence=SimpleNamespace(data_dir="data")))
+
+    def _boom(*a, **k):
+        raise AssertionError("意图门控未拦截：不应触发选图/取管理器")
+
+    with patch("anima.cognitive.stickers.get_sticker_manager", side_effect=_boom):
+        segs = _build_reply_segments(ctx, "group", 123, 456, core)
+    assert not any(s["type"] == "image" for s in segs)
+
+
+def test_intent_gate_disabled_still_attempts_pick():
+    """意图门控关闭：严肃氛围仍会尝试被动选图（触碰 get_sticker_manager）。"""
+    ctx = _ctx(sticker=None, atm="support")
+    sc = SimpleNamespace(always_atmosphere=("support",), intent_gate=False,
+                         intent_gate_serious_atmospheres=("support",))
+    core = SimpleNamespace(config=SimpleNamespace(
+        sticker=sc, persistence=SimpleNamespace(data_dir="data")))
+
+    calls = []
+
+    def _rec(*a, **k):
+        calls.append(1)
+        return None
+
+    with patch("anima.cognitive.stickers.get_sticker_manager", side_effect=_rec):
+        segs = _build_reply_segments(ctx, "group", 123, 456, core)
+    assert calls, "门控关闭时仍应尝试被动选图取管理器"
+    assert not any(s["type"] == "image" for s in segs)
     assert any(s["type"] == "text" for s in segs)
 
 

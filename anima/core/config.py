@@ -329,6 +329,9 @@ class StickerConfig(BaseModel):
     send_probability: float = 0.35    # LLM 未主动选图时，被动附带表情的概率（0=关，1=必带）
     send_by_emotion: bool = True      # 被动附带优先按回复情绪匹配；否则随机
     send_cooldown_sec: float = 20.0   # 同群被动带图最小间隔（秒），防连续刷屏
+    # --- 意图门控（对标 stealer）：严肃/服务类氛围下不被动附表情，避免嬉皮笑脸 ---
+    intent_gate: bool = True          # 开启后，命中 intent_gate_serious_atmospheres 时跳过被动带图
+    intent_gate_serious_atmospheres: list[str] = ["formal", "help", "support"]  # 严肃/服务类氛围
     # 注：被动自动附带不再受 always_atmosphere 门控（stealer 为全局概率模式），
     # 仅在群聊内触发，scope 受 share_across_groups 控制。
 
