@@ -133,6 +133,9 @@ sticker:                                   # 表情包自收集系统
   max_stickers: 500                       # 表情库硬上限（环形淘汰最旧/最少用）
   label_throttle_per_user: 600            # 每发送者打标最小间隔（秒）
   label_model: ""                         # 打标模型；空=复用 llm.model
+  phash_dedup: true                       # 收集时 pHash 感知哈希近似去重（乱序截帧/改色/加字视为同一张）
+  phash_threshold: 20                     # pHash 汉明阈值（越低越严格）
+  smart_select: true                      # 选图走 BM25+混合相似度+嵌入语义 加权随机（未配向量库自动退 BM25）
   require_owner_review: true               # 新图先入候选区；结合 self_review：判定明确的自动过审，拿不准的留给 owner
   self_review: true                        # 表情包自审查/自过审：AI 判定明确即自动入库可发
   natural_forget: true                     # 自然遗忘：旧且少用的表情自动腾位

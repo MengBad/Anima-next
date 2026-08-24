@@ -315,7 +315,7 @@ class StickerConfig(BaseModel):
     # --- 对标 astrbot_plugin_stealer 的能力增强 ---
     phash_dedup: bool = True           # 收集时 pHash 感知哈希近似去重（乱序截帧/改色/加字视为同一张）
     phash_threshold: int = 20          # pHash 汉明阈值（越低越严格）
-    smart_select: bool = False         # 选图走 BM25+混合相似度+嵌入语义 加权随机（否=旧本地/LLM 视觉选图）
+    smart_select: bool = True          # 选图走 BM25+混合相似度+嵌入语义 加权随机（否=旧本地/LLM 视觉选图）
     # --- 表情包自审查 / 自过审：AI 判定明确的表情自动入库可发，只留拿不准的给 Owner ---
     self_review: bool = True            # AI 自审自过审：收集/打标后判定明确即自动 approved，无需 Owner 逐张批
     natural_forget: bool = True         # 自然遗忘：旧且少用的表情自动腾位（即使未到硬上限）

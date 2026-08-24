@@ -202,7 +202,7 @@ class StickerManager:
         self._embedder = None             # StickerEmbedder（嵌入语义检索）
         self.phash_dedup = True           # 收集时用 pHash 近似去重（默认开）
         self.phash_threshold = 20         # pHash 汉明阈值
-        self.smart_select = False         # 选图走 BM25+hybrid+embedding 加权随机（默认关，保持旧行为）
+        self.smart_select = True          # 选图走 BM25+hybrid+embedding 加权随机（默认开，可配置关闭）
 
     def apply_config(self, config: Any) -> None:
         """把运行时 StickerConfig 同步到长生命周期单例。"""
