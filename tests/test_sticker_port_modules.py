@@ -242,3 +242,33 @@ def test_smart_pick_uses_embedder_when_available(tmp_path):
     p = asyncio.run(mgr.smart_pick("心情超好超开心", group_id=999, allow_cross_group=True))
     assert p and p.endswith(".jpg")
     assert mgr._embedder.size > 0  # 懒索引已铺开
+
+def test_from_core_missing_embedder_unavailable():
+    # M7：真实 Embedder(from_core) 取不到（core 无 vector_memory / 无 embedder）-> 不可用，走 BM25 降级
+    from types import SimpleNamespace
+    from anima.cognitive.sticker_embedding import StickerEmbedder
+    assert StickerEmbedder.from_core(None).available is False
+    assert StickerEmbedder.from_core(SimpleNamespace()).available is False
+
+    class _VM:
+        embedding = _FakeEmbedder()
+        embedding_dim = 8
+    emb = StickerEmbedder.from_core(SimpleNamespace(vector_memory=_VM()))
+    assert emb.available is True and emb._dim >= 8
+
+
+def test_smart_pick_degrades_to_bm25_on_embedding_failure(tmp_path):
+    # M7：嵌入服务可用但检索抛错（网络/接口异常）-> smart_pick 捕获后降级 BM25，仍能出图
+    mgr = _seed_mgr(tmp_path)
+
+    class _Fail:
+        available = True
+        size = 1
+        async def ensure_indexed(self, *_a, **_k):
+            return 0
+        async def search(self, *_a, **_k):
+            raise RuntimeError("embed API down")
+
+    mgr._embedder = _Fail()
+    p = asyncio.run(mgr.smart_pick("开心", group_id=999, allow_cross_group=True))
+    assert p and p.endswith(".jpg")  # 嵌入失败降级 BM25 仍出图
