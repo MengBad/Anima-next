@@ -10,7 +10,12 @@ besides the Planning Authority's Goal. Reflection writes here, never to Goal.
 """
 from __future__ import annotations
 
+import logging
+
 from anima.constitution.state import Memory, MemoryRecord
+
+logger = logging.getLogger("anima.constitution.memory_engine")
+
 
 
 class MemoryEngine:
@@ -46,7 +51,43 @@ class MemoryEngine:
         """Return a fresh snapshot for ``f(Memory)``. Derivation must not mutate it."""
         return self._memory.snapshot()
 
-    # --- (future) grounding on existing infra --------------------------------
-    # TODO(M1.2): hydrate from anima.memory.chat_memory / episodes / vector_memory
-    # so the Constitution Layer reuses the production bot's persisted experience
-    # instead of an in-memory store. Keep the Constitution vocabulary stable.
+    def hydrate(self, cm=None, *, max_episodes: int = 24,
+                min_salience: float = 0.15, max_salience: float = 0.4) -> int:
+        """M1.2 — From已持久化经验(chat_memory) 采样水合 Constitution Memory。
+
+        单写者语义: 此方法显式被 Memory Authority 调用才采样; 只读现场、
+        词汇稳定(kind=episode)、有界(max_episodes)、fail-soft(任一源失败即隔离, 不抛)。
+
+        cm: 可注入的 chat_memory 适配(缺省取进程内单例)。测试可传隔离 fake。
+        返回新增 episode 数。
+        """
+        added = 0
+        try:
+            if cm is None:
+                from anima.memory.chat_memory import get_chat_memory
+                cm = get_chat_memory()
+            gids = list(cm.group_recent_ids())
+            collected = 0
+            salience = min(max(min_salience, 0.2), max_salience)
+            for gid in gids[:8]:
+                hist = cm.get_recent_group_context(gid, limit=8) or []
+                for entry in hist:
+                    if collected >= max_episodes:
+                        break
+                    text = str(entry.get("text") or "").strip()
+                    if not text:
+                        continue
+                    self._memory.episodes.append(MemoryRecord(
+                        kind="episode",
+                        salience=round(salience, 3),
+                        content={
+                            "group_id": gid,
+                            "role": entry.get("role", "user"),
+                            "text": text[:120],
+                        },
+                    ))
+                    added += 1
+                    collected += 1
+        except Exception:  # noqa: BLE001 - 水合失败只隔离, 不影响生命
+            logger.exception("memory_engine.hydrate 采样失败, 有界隔离")
+        return added
