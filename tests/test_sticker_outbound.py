@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, ".")
 
-from anima.llm.handler import _build_reply_segments, _split_reply_messages
+from anima.llm.handler import _build_reply_segments, _split_reply_messages, _extract_emotion_tag
 
 
 def _ctx(sticker=None, atm="neutral", reply="嗨"):
@@ -52,6 +52,19 @@ def test_group_no_sticker_calm_atmosphere_no_image():
     segs = _build_reply_segments(ctx, "group", 123, 456, _core())
     assert not any(s["type"] == "image" for s in segs)
 
+
+def test_extract_emotion_tag_pure():
+    emo, left = _extract_emotion_tag("哈哈&&开心&&来了")
+    assert emo == "开心" and left == "哈哈来了"
+    emo2, left2 = _extract_emotion_tag("无标签")
+    assert emo2 is None and left2 == "无标签"
+
+
+def test_emotion_tag_stripped_from_reply_text():
+    ctx = _ctx(reply="哈哈&&开心&&来了", atm="casual")
+    segs = _build_reply_segments(ctx, "private", 123, 456, _core())
+    text = next(s for s in segs if s["type"] == "text")["data"]["text"]
+    assert "&&" not in text and "开心" not in text and "哈哈" in text
 
 def test_group_no_sticker_but_atmosphere_whitelist_auto_picks():
     """被动自动：群聊无 sticker 但氛围命中 always_atmosphere -> 随机带一张。"""

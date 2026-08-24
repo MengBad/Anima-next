@@ -2114,6 +2114,22 @@ def _maybe_append_feedback_ack(segments: "list[dict]", *, detail_type: str,
     return [*segments, {"type": "text", "data": {"text": _FEEDBACK_ACK_SUFFIX}}]
 
 
+
+
+def _extract_emotion_tag(text):
+    """从回复文本剥除 &&情绪&& 标签，返回 (情绪, 去标签文本)；无标签返回 (None, 原文)。"""
+    s = str(text or "")
+    if not s or "&&" not in s:
+        return None, text
+    start = s.find("&&")
+    end = s.find("&&", start + 2)
+    if end < 0:
+        return None, text
+    emo = s[start + 2:end].strip()
+    if not emo or len(emo) > 12:
+        return None, text
+    return emo, s[:start] + s[end + 2:]
+
 def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                           sticker_auto_last: dict | None = None,
                           at_trigger: bool = True) -> "list[dict]":
@@ -2131,6 +2147,11 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     NapCat 不保证以 bot 工作目录解析相对路径，统一传绝对路径。
     """
     segments: list[dict] = []
+    # &&情绪&& 标签：读出并自回复文本剥除（stealer 被动标签，不污染出站文本）
+    _tag_emotion = None
+    if ctx.reply and "&&" in ctx.reply:
+        _tag_emotion, cleaned = _extract_emotion_tag(ctx.reply)
+        ctx.reply = cleaned
     if detail_type == "group" and at_trigger:
         segments.append({"type": "at", "data": {"qq": str(user_id)}})
     segments.append({"type": "text", "data": {"text": ctx.reply}})
@@ -2202,6 +2223,14 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                     _auto = _mgr.pick_by_emotion(
                         _mood_emotion, group_id=group_id,
                         allow_cross_group=bool(getattr(scfg, "share_across_groups", False)))
+                # stealer &&情绪&& 被动标签：回复显式点名要的情绪，直接按它选图（已从回复文本剥离）
+                if _auto is None and _tag_emotion:
+                    try:
+                        _auto = _mgr.pick_by_emotion(
+                            _tag_emotion, group_id=group_id,
+                            allow_cross_group=bool(getattr(scfg, "share_across_groups", False)))
+                    except Exception:
+                        _auto = None
                 # fallback: 文本情绪推断（先走自然语言分析器，再退关键词计票）
                 if _auto is None and by_emotion:
                     _em = ctx.reply
