@@ -24,9 +24,9 @@ logger = logging.getLogger(__name__)
 class SplitConfig:
     """分段 + 延迟配置。"""
     enabled: bool = True
-    max_segments: int = 4
+    max_segments: int = 2
     min_segment_len: int = 40
-    max_segment_len: int = 120
+    max_segment_len: int = 90
     trigger_threshold: int = 80       # 低于此字数不分段
     tail_merge_threshold: int = 15    # 尾段低于此字数合并到前段
     delay_enabled: bool = True

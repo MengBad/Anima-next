@@ -326,7 +326,7 @@ class StickerConfig(BaseModel):
     forget_used_max: int = 2            # 历史使用次数 <= 此值才算"少用/远"
     forget_last_used_days: float = 30.0 # 距上次使用超过该天才算"已凉"（last_used 为 0 视为从未用过）
     # --- 对话中被动自动附带（照 astrbot_plugin_stealer 概率/冷却模式精神）---
-    send_probability: float = 0.35    # LLM 未主动选图时，被动附带表情的概率（0=关，1=必带）
+    send_probability: float = 0.1     # LLM 未主动选图时，被动附带表情的概率（0=关，1=必带）
     send_by_emotion: bool = True      # 被动附带优先按回复情绪匹配；否则随机
     send_cooldown_sec: float = 20.0   # 同群被动带图最小间隔（秒），防连续刷屏
     # --- 意图门控（对标 stealer）：严肃/服务类氛围下不被动附表情，避免嬉皮笑脸 ---
@@ -449,9 +449,9 @@ class ConversationConfig(BaseModel):
 class ReplySplitConfig(BaseModel):
     """拟人分段发送 + 拟真延迟（参考 astrbot_plugin_splitter）。"""
     enabled: bool = True
-    max_segments: int = 4
+    max_segments: int = 2
     min_segment_len: int = 40
-    max_segment_len: int = 120
+    max_segment_len: int = 90
     trigger_threshold: int = 150      # 低于此字数不分段（避免短回复被切成多条）
     tail_merge_threshold: int = 15    # 尾段低于此字数合并到前段
     delay_enabled: bool = True

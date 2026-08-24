@@ -318,7 +318,8 @@ class TestConfig:
         from anima.core.config import load_config
         cfg = load_config()
         assert cfg.reply_split.enabled is True
-        assert cfg.reply_split.max_segments == 4
+        assert cfg.reply_split.max_segments == 2
+        assert cfg.reply_split.max_segment_len == 90
 
     def test_debounce_config(self):
         """debounce 配置。"""

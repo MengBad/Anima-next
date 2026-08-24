@@ -182,9 +182,9 @@ audio:
 
 reply_split:                                 # 拟人分段发送 + 拟真打字延迟
   enabled: true
-  max_segments: 4                            # 单条回复最多拆成几段
+  max_segments: 2                            # 单条回复最多拆成几段
   min_segment_len: 40                        # 单段最小字数
-  max_segment_len: 120                       # 单段最大字数
+  max_segment_len: 90                        # 单段最大字数
   trigger_threshold: 150                     # 低于此字数不分段
   tail_merge_threshold: 15                   # 尾段低于此字数合并到前段
   delay_enabled: true                        # 段间拟真延迟
