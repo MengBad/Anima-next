@@ -29,6 +29,8 @@ class MemoryEngine:
 
     def __init__(self) -> None:
         self._memory = Memory()
+        # opt-in 去重指纹(dedupe=True 时维护)：存已入 episode 的 (kind, group_id, role, text)
+        self._seen: set[tuple] = set()
 
     # --- Memory Authority write surface (explicit, single-writer) -------------
     def ingest_episode(self, content: dict, salience: float = 0.5) -> None:
@@ -52,13 +54,16 @@ class MemoryEngine:
         return self._memory.snapshot()
 
     def hydrate(self, cm=None, *, max_episodes: int = 24,
-                min_salience: float = 0.15, max_salience: float = 0.4) -> int:
+                min_salience: float = 0.15, max_salience: float = 0.4,
+                dedupe: bool = False) -> int:
         """M1.2 — From已持久化经验(chat_memory) 采样水合 Constitution Memory。
 
         单写者语义: 此方法显式被 Memory Authority 调用才采样; 只读现场、
         词汇稳定(kind=episode)、有界(max_episodes)、fail-soft(任一源失败即隔离, 不抛)。
 
         cm: 可注入的 chat_memory 适配(缺省取进程内单例)。测试可传隔离 fake。
+        dedupe: opt-in 内容指纹去重——周期性重复水合时避免重复入同一 (kind,group,role,text)。
+        默认 False 保持既有语义(force 重水合仍会再采样, 既有单测依赖)。
         返回新增 episode 数。
         """
         added = 0
@@ -77,14 +82,17 @@ class MemoryEngine:
                     text = str(entry.get("text") or "").strip()
                     if not text:
                         continue
+                    _role = entry.get("role", "user")
+                    _text = text[:120]
+                    if dedupe:
+                        _fp = ("episode", gid, _role, _text)
+                        if _fp in self._seen:
+                            continue
+                        self._seen.add(_fp)
                     self._memory.episodes.append(MemoryRecord(
                         kind="episode",
                         salience=round(salience, 3),
-                        content={
-                            "group_id": gid,
-                            "role": entry.get("role", "user"),
-                            "text": text[:120],
-                        },
+                        content={"group_id": gid, "role": _role, "text": _text},
                     ))
                     added += 1
                     collected += 1

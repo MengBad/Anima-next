@@ -29,3 +29,21 @@ def test_boot_authority_constructs_even_when_source_raises():
     auth = MemoryAuthority(hydrate_now=True, cm=_BadCM())
     # fail-soft: 构造不抛, 水合隔离为 0
     assert len(auth.snapshot_memory().episodes) == 0
+
+
+def test_periodic_dedupe_no_flood():
+    # 周期重水合(dedupe=True)同一现场, 二次不再重复入 episode
+    detail = []
+
+    class _CM(_FakeCM):
+        def group_recent_ids(self):
+            return ['g1']
+
+        def get_recent_group_context(self, gid, limit):
+            return [{'role': 'user', 'text': '重复的消息'}]
+
+    auth = MemoryAuthority()
+    first = auth.hydrate_from_chat(cm=_CM(), dedupe=True)
+    second = auth.hydrate_from_chat(cm=_CM(), force=True, dedupe=True)
+    assert first == 1 and second == 0
+    assert len(auth.snapshot_memory().episodes) == 1

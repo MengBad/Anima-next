@@ -100,7 +100,8 @@ class MemoryAuthority:
     def hydrate_from_chat(self, cm=None, *, force: bool = False,
                           max_episodes: int = 24,
                           min_salience: float = 0.15,
-                          max_salience: float = 0.4) -> int:
+                          max_salience: float = 0.4,
+                          dedupe: bool = False) -> int:
         """M1.2 — From chat_memory 水合一次(默认懒一次, fail-soft)。
 
         只喂 Memory 读面(f(Memory)); 不触碰派生态/不暴露写面。
@@ -110,6 +111,7 @@ class MemoryAuthority:
             return 0
         added = self.engine.hydrate(cm, max_episodes=max_episodes,
                                     min_salience=min_salience,
-                                    max_salience=max_salience)
+                                    max_salience=max_salience,
+                                    dedupe=dedupe)
         self._hydrated = True
         return added

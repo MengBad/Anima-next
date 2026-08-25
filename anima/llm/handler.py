@@ -74,6 +74,10 @@ class LLMHandler:
         # 同一会话的模型回合必须串行：连续文本/图片/引用在收束窗口之外到达时，
         # 后一回合也要等前一回合完成记忆写入，不能并行抢写上下文。
         self._turn_locks: dict[tuple[str, int | None, int], asyncio.Lock] = {}
+        # 同会话回复在途时, 后续直接@消息先吸收合并, 待上一回复发完再统一回复,
+        # 避免「连续@→机器人连发」的刷屏/重复/上下文割裂。
+        self._reply_inflight: set[tuple] = set()
+        self._coalesced: dict[tuple, list[dict]] = {}
 
         self._assembler = None
         conversation = core.config.conversation
@@ -1174,6 +1178,68 @@ class LLMHandler:
             return None
 
     async def handle(self, event: dict) -> None:
+        """入站消息入口：同会话回复在途时合并后续直接@消息, 单控回复节奏。"""
+        if not hasattr(self, "_reply_inflight"):
+            self._reply_inflight = set()
+            self._coalesced = {}
+        user_id = event.get("user_id")
+        raw = event.get("raw", {}) or {}
+        detail_type = raw.get("message_type", "private")
+        group_id = event.get("group_id")
+        direct = bool(event.get("mentions_self") or event.get("reply_to_self") or detail_type == "private")
+        key = None
+        if user_id is not None:
+            target = int(group_id) if detail_type == "group" and group_id else int(user_id)
+            key = (detail_type, target, int(user_id))
+        if key is not None and direct:
+            if key in self._reply_inflight:
+                self._coalesced.setdefault(key, []).append(dict(event))
+                _n = len(self._coalesced[key])
+                _audit = getattr(self.core, "audit", None)
+                if _audit:
+                    try:
+                        _audit.emit("message_coalesced", user_id=int(user_id),
+                                    group_id=int(group_id) if group_id else None,
+                                    detail_type=detail_type, message_id=event.get("message_id"), n=_n)
+                    except Exception:
+                        pass
+                logger.info("[合并] 会话回复在途, 吸收后续@ (key=%s, n=%d)", key, _n)
+                return
+            self._reply_inflight.add(key)
+        try:
+            await self._handle_inner(event)
+        finally:
+            if key is not None:
+                self._reply_inflight.discard(key)
+                await self._drain_coalesced(key)
+
+    async def _drain_coalesced(self, key: tuple) -> None:
+        """上一回复完成后, 把吸收的后续@合并成一条统一再回复。"""
+        pending = self._coalesced.pop(key, None)
+        if not pending:
+            return
+        texts = [str(e.get("text") or "").strip() for e in pending]
+        texts = [t for t in texts if t]
+        if not texts:
+            return
+        head = texts[-1]
+        extras = [t for t in texts[:-1] if t]
+        merged = head
+        if extras:
+            joined = "；".join(reversed(extras))
+            merged = f"{head}\n（另补充: {joined[:400]}）"
+        synth = dict(pending[-1])
+        synth["text"] = merged[:800]
+        _audit = getattr(self.core, "audit", None)
+        if _audit:
+            try:
+                _audit.emit("message_coalesce_drained", key=str(key), n=len(pending))
+            except Exception:
+                pass
+        logger.info("[合并] 上一回复完成, 统一再回复 %d 条在途消息 (key=%s)", len(pending), key)
+        await self.handle(synth)
+
+    async def _handle_inner(self, event: dict) -> None:
         # 提取事件信息
         text = event.get("text", "").strip()
         user_id = event.get("user_id")
@@ -1597,6 +1663,7 @@ class LLMHandler:
             ctx, detail_type, user_id, group_id, self.core,
             sticker_auto_last=self._sticker_auto_last,
             at_trigger=at_trigger,
+            message_id=event.get("message_id"),
         )
         # §17：安全版反馈自然回话——识别到反馈且开启时，仅私聊+已有主回复文本才在
         # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关，开关读自
@@ -2146,7 +2213,8 @@ def _extract_emotion_tag(text):
 
 def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                           sticker_auto_last: dict | None = None,
-                          at_trigger: bool = True) -> "list[dict]":
+                          at_trigger: bool = True,
+                          message_id=None) -> "list[dict]":
     """构造出站消息段：@ 触发者 + 文本 + （可选）表情图 + （可选）生图。
 
     at_trigger：是否前插 @ 段。仅当对方真正「点到」了 bot（真 @ / 回复引用 /
@@ -2166,6 +2234,10 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     if ctx.reply and "&&" in ctx.reply:
         _tag_emotion, cleaned = _extract_emotion_tag(ctx.reply)
         ctx.reply = cleaned
+    # 引用(quote)优先：仅真有入站点到的消息且给到 message_id 时前插 reply 段,
+    # 让 bot 回复「引用原消息」而不是裸 @(裸 @ 在热群易像乱插话)。
+    if detail_type == "group" and at_trigger and message_id is not None:
+        segments.append({"type": "reply", "data": {"id": str(message_id)}})
     if detail_type == "group" and at_trigger:
         segments.append({"type": "at", "data": {"qq": str(user_id)}})
     segments.append({"type": "text", "data": {"text": ctx.reply}})

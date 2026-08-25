@@ -194,3 +194,13 @@ def test_sticker_manager_returns_absolute_path():
         rel = str(Path(td) / "rel_data")
         mgr2 = get_sticker_manager(rel)
         assert mgr2._dir.is_absolute(), f"相对 data_dir 也应解析为绝对，实际={mgr2._dir}"
+
+
+def test_group_quote_segment_injected_when_direct_trigger():
+    # 直接点到 bot 且有 message_id 时, 出站前插 reply 引用段(不只 @)
+    ctx = _ctx(reply='喵')
+    segs = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=True, message_id=999)
+    assert segs[0]['type'] == 'reply' and segs[0]['data']['id'] == '999'
+    assert 'at' in [s['type'] for s in segs]
+    segs2 = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=True, message_id=None)
+    assert all(s['type'] != 'reply' for s in segs2)

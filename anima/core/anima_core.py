@@ -295,6 +295,12 @@ class AnimaCore:
         except Exception:  # noqa: BLE001 - 水合失败只隔离, 不阻断启动
             self.memory_authority = None
             logger.exception("宪法记忆开机水合失败, 已隔离")
+        # 周期水合: 让宪法记忆随运行持续累积(dedupe), 不依赖冷启动现场
+        try:
+            self._hydrate_loop_task = asyncio.create_task(self._memory_hydrate_loop())
+        except Exception:  # noqa: BLE001 - 周期水合失败只降级, 不阻断启动
+            self._hydrate_loop_task = None
+            logger.exception("周期水合任务启动失败, 降级为仅开机一次")
 
         self._running = True
         self._shutdown_event = asyncio.Event()
@@ -304,12 +310,43 @@ class AnimaCore:
             logger.exception("运行健康初始采样失败")
         logger.info("AnimaCore 已启动，注册模块 %d 个", len(self.modules))
 
+    async def _memory_hydrate_loop(self) -> None:
+        """周期性把实时 chat_memory 水合进宪法记忆(M1.2, dedupe), 随运行累积。"""
+        _cfg = getattr(getattr(self, "config", None), "memory", None)
+        _hours = getattr(_cfg, "hydrate_period_hours", 6.0) or 6.0
+        period = float(_hours) * 3600.0
+        while not self._shutdown_event.is_set():
+            try:
+                await asyncio.wait_for(self._shutdown_event.wait(), timeout=period)
+                break  # shutdown 已置位
+            except asyncio.TimeoutError:
+                pass
+            try:
+                auth = getattr(self, "memory_authority", None)
+                if auth is None:
+                    from anima.constitution.memory_authority import MemoryAuthority
+                    auth = MemoryAuthority(hydrate_now=True)
+                    self.memory_authority = auth
+                _added = auth.hydrate_from_chat(force=True, dedupe=True)
+                if _added:
+                    _a = int(_added)
+                    self.audit.emit("constitution_memory_hydrated", added=_a, source="periodic")
+                    logger.info("宪法记忆周期水合: 新增 %d 条 episode", _a)
+            except Exception:  # noqa: BLE001 - 周期水合失败只隔离, 不影响生命
+                logger.exception("宪法记忆周期水合失败, 已隔离")
+
     async def stop(self) -> None:
         if not self._running:
             return
         self._running = False
         if self._shutdown_event:
             self._shutdown_event.set()
+        _ht = getattr(self, "_hydrate_loop_task", None)
+        if _ht:
+            try:
+                _ht.cancel()
+            except Exception:
+                pass
         if self.heartbeat:
             await self.heartbeat.stop()
             try:
