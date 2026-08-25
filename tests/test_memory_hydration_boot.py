@@ -47,3 +47,22 @@ def test_periodic_dedupe_no_flood():
     second = auth.hydrate_from_chat(cm=_CM(), force=True, dedupe=True)
     assert first == 1 and second == 0
     assert len(auth.snapshot_memory().episodes) == 1
+
+
+def test_dedupe_hydrate_attests_provenance():
+    # 周期水合(dedupe)路径会用 authority_convergence 建模权威绑定
+    class _CM(_FakeCM):
+        def group_recent_ids(self):
+            return ['g1']
+
+        def get_recent_group_context(self, gid, limit):
+            return [{'role': 'user', 'text': '一条可追溯记忆'}]
+
+    auth = MemoryAuthority()
+    added = auth.hydrate_from_chat(cm=_CM(), dedupe=True)
+    assert added == 1
+    eps = auth.snapshot_memory().episodes
+    assert len(eps) == 1
+    c = eps[0].content
+    assert c.get('provenance_bound') is True
+    assert c.get('provenance_source_digest') and len(c['provenance_source_digest']) == 64

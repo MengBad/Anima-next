@@ -295,6 +295,27 @@ class AnimaCore:
         except Exception:  # noqa: BLE001 - 水合失败只隔离, 不阻断启动
             self.memory_authority = None
             logger.exception("宪法记忆开机水合失败, 已隔离")
+        # R-fix: 运行时身份连续性探针 —— 每次开机真实调用 continuity 校验(fail-soft,
+        # 无 identity/memory 工件则诚实验证空转, 让该契约不再是纯死代码)。
+        try:
+            from pathlib import Path as _Path
+            from anima.memory.continuity import verify_continuity as _verify_continuity
+            _did = str(self.config.persistence.data_dir)
+            _files = sorted(_Path(_did).glob("*identity*.json")) + sorted(_Path(_did).glob("*.memory.json"))
+            if _files:
+                _target = _files[0]
+                _vc = _verify_continuity(_target)
+                self.audit.emit("runtime_identity_continuity",
+                                valid=bool(getattr(_vc, "valid", False)),
+                                path=str(_target),
+                                record_count=int(getattr(_vc, "record_count", 0)))
+                logger.info("运行时身份连续性校验: valid=%s records=%s",
+                            getattr(_vc, "valid", None), getattr(_vc, "record_count", 0))
+            else:
+                logger.info("运行时身份: 尚无 identity/memory 工件, continuity 校验空转(fail-open)")
+        except Exception:  # noqa: BLE001 - 连续性校验失败只隔离, 不阻断启动
+            logger.exception("运行时身份连续性校验失败, 已隔离")
+
         # 周期水合: 让宪法记忆随运行持续累积(dedupe), 不依赖冷启动现场
         try:
             self._hydrate_loop_task = asyncio.create_task(self._memory_hydrate_loop())

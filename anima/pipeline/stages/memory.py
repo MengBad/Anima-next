@@ -206,6 +206,26 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
             )
         except Exception:
             logger.exception("情节记忆写入失败")
+
+    # ④b long_term 第三层写入：开启时把用户消息沉淀为长期记忆事件(与读取同门, 默认关)
+    try:
+        _lt_memcfg = getattr(getattr(core, "config", None), "memory", None)
+        _lt_text = (ctx.text or "").strip()
+        if (_lt_memcfg is not None and getattr(_lt_memcfg, "long_term_context", False)
+                and _lt_text and len(_lt_text) >= 2 and not _contains_secret(_lt_text)):
+            _lt = getattr(core, "long_term", None)
+            if _lt is None:
+                from anima.memory.long_term import LongTermMemory
+                _lt_dir = getattr(getattr(core, "config", None), "persistence", None)
+                _lt_dir = getattr(_lt_dir, "data_dir", "data") if _lt_dir else "data"
+                _lt = LongTermMemory(str(_lt_dir))
+                core.long_term = _lt
+            _tags = ["conversation"]
+            if bool(ctx.inbound_images):
+                _tags.append("with_image")
+            getattr(_lt, "record_event")("conversation", _lt_text[:400], tags=_tags)
+    except Exception:  # noqa: BLE001 - 长期记忆写入失败不阻断流水线
+        logger.debug("long_term 写入失败, 隔离")
     ctx.meta["chat_id"] = chat_id
 
     # 写入向量记忆（用户消息）—— Q3: 动态 salience

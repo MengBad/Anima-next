@@ -100,6 +100,12 @@ const capLayerPresent = computed(() => Boolean(capability.value?.layer_present))
 const capPresentCount = computed(() => Object.values(capPresent.value).filter(Boolean).length);
 const security = computed(() => (platform.value?.security as Dict) || {});
 const securityAnomaly = computed(() => Number(security.value?.anomaly_count || 0));
+const RUNTIME_BADGE: Record<string, string> = { running: "good", degraded: "warn", stopped: "bad", restarting: "warn" };
+const CAPABILITY_NAMES = ["rbac", "scopes", "contract", "schema", "resolver", "canonical", "evidence", "isolation"];
+const runtime = computed(() => (platform.value?.runtime as Dict) || {});
+const runtimeRunning = computed(() => Boolean(runtime.value.running));
+const runtimeModules = computed(() => (runtime.value.modules as any[]) || []);
+const capModules = computed(() => CAPABILITY_NAMES.map((n) => ({ name: n, present: Boolean((capPresent.value as Dict)[n]) })));
 const lastCommand = computed(() => commandResult.value);
 const cmd = computed(() => lastCommand.value?.command as Dict | undefined);
 
@@ -260,17 +266,39 @@ const state = computed<"loading" | "error" | "empty" | "ready">(() => {
           <div class="os-card-foot">复用 SkillDraftManager 护栏</div>
         </Card>
 
-        <Card class="os-card" :enter-index="8">
-          <div class="os-card-head"><ShieldCheck :size="17" /><strong>平台收拢 · 底座单一源</strong><Layers :size="14" class="muted" /></div>
-          <div class="os-card-body">
-            <div class="kv"><span>能力层 RFC-0001</span><b :class="capLayerPresent ? 'good' : 'bad'">{{ capLayerPresent ? capPresentCount + '/8 模块就位' : '未清点到' }}</b></div>
-            <div class="kv"><span>安全审计异常</span><b :class="securityAnomaly > 0 ? 'bad' : 'good'">{{ securityAnomaly }}</b></div>
-            <div class="kv"><span>令牌事件</span><b>{{ security.token_events ?? '—' }}</b></div>
-            <div class="kv"><span>权限事件</span><b>{{ security.permission_events ?? '—' }}</b></div>
-            <div class="muted-note small">四横向统一收拢：安全 · 能力 · 运行时 · 设置。只读、可回溯。</div>
-          </div>
-          <div class="os-card-foot">{{ platform?.read_only === false ? '非只读' : '只读投影 · 不授权动作' }}</div>
-        </Card>
+        <div class="platform-row">
+          <div class="platform-sec-title">平台 · 四横 — 安全 / 能力 / 运行时 / 设置（只读投影，不授权动作）</div>
+          <Card class="os-card platform-card">
+            <div class="os-card-head"><Boxes :size="16" /><strong>能力层 RFC-0001</strong><Layers :size="13" class="muted" /></div>
+            <div class="os-card-body">
+              <div class="kv"><span>单一源就位</span><b :class="capLayerPresent ? 'good' : 'bad'">{{ capLayerPresent ? capPresentCount + '/8 模块' : '未清点到' }}</b></div>
+              <div class="cap-chips">
+                <span v-for="m in capModules" :key="m.name" class="cap-chip" :class="m.present ? 'on' : 'off'">{{ m.name }}</span>
+              </div>
+            </div>
+          </Card>
+          <Card class="os-card platform-card">
+            <div class="os-card-head"><ShieldCheck :size="16" /><strong>安全审计</strong><Network :size="13" class="muted" /></div>
+            <div class="os-card-body">
+              <div class="kv"><span>异常</span><b :class="securityAnomaly > 0 ? 'bad' : 'good'">{{ securityAnomaly }}</b></div>
+              <div class="kv"><span>令牌事件</span><b>{{ security.token_events ?? '—' }}</b></div>
+              <div class="kv"><span>权限事件</span><b>{{ security.permission_events ?? '—' }}</b></div>
+              <div class="kv"><span>配置事件</span><b>{{ security.config_events ?? '—' }}</b></div>
+            </div>
+          </Card>
+          <Card class="os-card platform-card">
+            <div class="os-card-head"><Activity :size="16" /><strong>运行时</strong><StatusDot :status="runtimeRunning ? 'running' : 'warn'" :label="runtimeRunning ? '运行中' : '未运行'" /></div>
+            <div class="os-card-body">
+              <div class="kv"><span>模块数</span><b>{{ runtimeModules.length }}</b></div>
+              <div class="mod-list">
+                <span v-for="m in runtimeModules.slice(0, 8)" :key="m.id" class="mod-chip">
+                  <StatusDot :status="(RUNTIME_BADGE[m.status] || 'running') as any" :label="(m.label || m.id) as string" />
+                </span>
+              </div>
+              <div v-if="!runtimeModules.length" class="muted-note">无模块状态（核心未运行或未清点）</div>
+            </div>
+          </Card>
+        </div>
       </div>
     </template>
   </section>
@@ -300,6 +328,14 @@ const state = computed<"loading" | "error" | "empty" | "ready">(() => {
 .command-gated{display:flex;align-items:center;gap:7px;margin-top:9px;font-size:var(--fs-sm);color:var(--amber)}
 .command-json{margin:9px 0 0;background:rgba(0,0,0,.28);border:1px solid var(--line);border-radius:10px;padding:11px;font-size:var(--fs-xs);line-height:1.5;color:var(--ink-soft);max-height:280px;overflow:auto;white-space:pre-wrap;word-break:break-word}
 .os-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:var(--space-grid)}
+.platform-row{display:grid;grid-template-columns:repeat(3,1fr);gap:var(--space-grid);margin-top:var(--space-grid)}
+.platform-sec-title{grid-column:1/-1;font-size:var(--fs-xs);letter-spacing:.4px;color:var(--muted);text-transform:uppercase}
+.cap-chips{display:flex;flex-wrap:wrap;gap:5px}
+.cap-chip{font:500 var(--fs-xs) ui-monospace,monospace;padding:3px 7px;border-radius:6px;border:1px solid var(--line)}
+.cap-chip.on{color:var(--lime);border-color:rgba(196,246,110,.4)}
+.cap-chip.off{color:var(--muted);border-color:var(--line);opacity:.6}
+.mod-list{display:flex;flex-wrap:wrap;gap:6px 10px}
+.mod-chip{display:inline-flex;align-items:center;gap:5px;font-size:var(--fs-xs);color:var(--ink-soft)}
 .os-card{padding:var(--space-card);display:flex;flex-direction:column;gap:10px}
 .os-card.attention{border-left:2px solid var(--amber)}
 .os-card-head{display:flex;align-items:center;gap:8px}

@@ -89,10 +89,44 @@ class MemoryEngine:
                         if _fp in self._seen:
                             continue
                         self._seen.add(_fp)
+                    _content: dict = {"group_id": gid, "role": _role, "text": _text}
+                    if dedupe:
+                        # R-fix: 周期水合(生产累积路径)经 authority_convergence 契约做
+                        # 权威来源绑定(verify_provenance_binding), 让该模块被真正业务调用。
+                        try:
+                            from datetime import datetime as _dt, timezone as _tz
+                            from anima.memory.authority_convergence import (
+                                _digest, MemoryCandidate, Provenance,
+                                verify_provenance_binding,
+                            )
+                            _iso = _dt.now(_tz.utc).isoformat()
+                            _rid = f"{gid}:{_role}:{_text}"
+                            _src = {"source_type": "chat_memory", "source_record_id": _rid,
+                                    "content": _text, "category": "episode",
+                                    "scope": str(gid), "observed_at": _iso}
+                            _snap = {k: _src[k] for k in sorted(_src)}
+                            _dg = _digest(_snap)
+                            _prov = Provenance(
+                                source_path="chat_memory", source_record_id=_rid,
+                                observed_at=_iso, producer="memory_engine",
+                                evidence_refs=("mem_engine_hydrate",),
+                                transformation_chain=("mem_engine_hydrate",),
+                                source_digest=_dg)
+                            _cand = MemoryCandidate(
+                                candidate_id=_rid, source_type=_src["source_type"],
+                                source_record_id=_rid, content=_text, category="episode",
+                                scope=_src["scope"], observed_at=_iso, provenance=_prov,
+                                evidence_refs=("mem_engine_hydrate",), confidence=0.5,
+                                transformation_chain=("mem_engine_hydrate",))
+                            _bound = verify_provenance_binding(_cand, _src)
+                            _content["provenance_bound"] = bool(_bound.bound)
+                            _content["provenance_source_digest"] = str(_bound.source_digest)
+                        except Exception:  # noqa: BLE001 - 绑定失败不阻断水合
+                            logger.debug("provenance 权威绑定失败, 内容保持原文", exc_info=True)
                     self._memory.episodes.append(MemoryRecord(
                         kind="episode",
                         salience=round(salience, 3),
-                        content={"group_id": gid, "role": _role, "text": _text},
+                        content=_content,
                     ))
                     added += 1
                     collected += 1
