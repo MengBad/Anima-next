@@ -290,6 +290,7 @@ const state = computed<"loading" | "error" | "empty" | "ready">(() => {
             <div class="os-card-head"><Activity :size="16" /><strong>运行时</strong><StatusDot :status="runtimeRunning ? 'running' : 'warn'" :label="runtimeRunning ? '运行中' : '未运行'" /></div>
             <div class="os-card-body">
               <div class="kv"><span>模块数</span><b>{{ runtimeModules.length }}</b></div>
+              <div class="kv"><span>每日健康证明</span><b :class="osTone === 'alive' ? 'good' : 'warn'">{{ osTone === 'alive' ? '正常' : '需留意' }}</b></div>
               <div class="mod-list">
                 <span v-for="m in runtimeModules.slice(0, 8)" :key="m.id" class="mod-chip">
                   <StatusDot :status="(RUNTIME_BADGE[m.status] || 'running') as any" :label="(m.label || m.id) as string" />
