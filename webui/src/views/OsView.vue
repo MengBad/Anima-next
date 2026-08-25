@@ -4,7 +4,7 @@ import {
   Activity, ArrowUpRight, Boxes, BrainCircuit, CircleX, Cpu, Database, GitBranch,
   HeartPulse, History, Layers, Lightbulb, Network, RefreshCw, Scale, ShieldCheck, Sparkles
 } from "@lucide/vue";
-import { bestEffort, getOsOverview, postOsCommand, timeAgo, type OsCommandResult } from "../api";
+import { bestEffort, getOsOverview, getPlatformSummary, postOsCommand, timeAgo, type OsCommandResult } from "../api";
 import { navigate } from "../navigation";
 import StatusDot from "../components/StatusDot.vue";
 import Card from "../components/Card.vue";
@@ -15,6 +15,7 @@ import { useCommandHistory } from "../composables/useCommandHistory";
 type Dict = Record<string, any>;
 
 const overview = ref<Dict | null>(null);
+const platform = ref<Dict | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -39,6 +40,7 @@ async function load(): Promise<void> {
   const data = await bestEffort(getOsOverview(), null);
   if (data === null) error.value = "无法读取 ANIMA OS 概览";
   overview.value = data;
+  platform.value = await bestEffort(getPlatformSummary(), null);
   loading.value = false;
 }
 
@@ -92,6 +94,12 @@ const envSignals = computed(() => (environment.value?.signals as any[]) || []);
 const memorySummary = computed(() => (memory.value?.available === false ? null : memory.value));
 const maintenanceProposed = computed(() => ((maintenance.value?.proposals as any[]) || []).filter((p) => p.proposal).length);
 const maintenanceSkipped = computed(() => Number(maintenance.value?.skipped || 0));
+const capability = computed(() => (platform.value?.capability as Dict) || {});
+const capPresent = computed(() => (capability.value?.present as Dict) || {});
+const capLayerPresent = computed(() => Boolean(capability.value?.layer_present));
+const capPresentCount = computed(() => Object.values(capPresent.value).filter(Boolean).length);
+const security = computed(() => (platform.value?.security as Dict) || {});
+const securityAnomaly = computed(() => Number(security.value?.anomaly_count || 0));
 const lastCommand = computed(() => commandResult.value);
 const cmd = computed(() => lastCommand.value?.command as Dict | undefined);
 
@@ -250,6 +258,18 @@ const state = computed<"loading" | "error" | "empty" | "ready">(() => {
             <div v-else class="muted-note">Skill 提案→沙箱→Benchmark→采纳判定。采纳仍须 Owner。</div>
           </div>
           <div class="os-card-foot">复用 SkillDraftManager 护栏</div>
+        </Card>
+
+        <Card class="os-card" :enter-index="8">
+          <div class="os-card-head"><ShieldCheck :size="17" /><strong>平台收拢 · 底座单一源</strong><Layers :size="14" class="muted" /></div>
+          <div class="os-card-body">
+            <div class="kv"><span>能力层 RFC-0001</span><b :class="capLayerPresent ? 'good' : 'bad'">{{ capLayerPresent ? capPresentCount + '/8 模块就位' : '未清点到' }}</b></div>
+            <div class="kv"><span>安全审计异常</span><b :class="securityAnomaly > 0 ? 'bad' : 'good'">{{ securityAnomaly }}</b></div>
+            <div class="kv"><span>令牌事件</span><b>{{ security.token_events ?? '—' }}</b></div>
+            <div class="kv"><span>权限事件</span><b>{{ security.permission_events ?? '—' }}</b></div>
+            <div class="muted-note small">四横向统一收拢：安全 · 能力 · 运行时 · 设置。只读、可回溯。</div>
+          </div>
+          <div class="os-card-foot">{{ platform?.read_only === false ? '非只读' : '只读投影 · 不授权动作' }}</div>
         </Card>
       </div>
     </template>

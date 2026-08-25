@@ -125,6 +125,10 @@ export async function getOsOverview(): Promise<Record<string, unknown>> {
   return api<Record<string, unknown>>("/api/os/overview");
 }
 
+export async function getPlatformSummary(): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/platform/summary");
+}
+
 export async function postOsCommand(command: string): Promise<OsCommandResult> {
   return api<OsCommandResult>("/api/os/command", json("POST", { command }));
 }
