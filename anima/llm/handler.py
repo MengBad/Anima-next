@@ -2360,7 +2360,12 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                         allow_cross_group=bool(getattr(scfg, "share_across_groups", False)))
                 if _auto:
                     sticker_auto_last[str(group_id)] = now
-                    segments.append({"type": "image", "data": {"file": str(Path(_auto).resolve())}})
+                    # 被动带图同样走表情渠道 subType=1（与 LLM 主动选表情一致）
+                    _auto_img = {"file": str(Path(_auto).resolve())}
+                    _auto_emic = scfg is not None and bool(getattr(scfg, "small_emoji_channel", True))
+                    if _auto_emic:
+                        _auto_img["subType"] = "1"
+                    segments.append({"type": "image", "data": _auto_img})
         except Exception:
             logger.exception("被动自动表情选取失败（忽略）")
     for image_path in getattr(ctx, "generated_image_paths", [])[:1]:
