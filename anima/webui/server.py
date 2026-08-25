@@ -28,6 +28,7 @@ if TYPE_CHECKING:
 SPA_PATHS = {
     "/", "/memory", "/cognitive", "/abilities", "/subscriptions",
     "/stickers", "/exploration", "/engineering", "/settings",
+    "/os", "/life",
 }
 
 
