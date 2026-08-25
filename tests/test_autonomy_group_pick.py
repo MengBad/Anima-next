@@ -363,6 +363,9 @@ def test_low_value_active_reply_filter():
     assert _is_low_value_active_reply("群里怎么突然这么安静，是不是都在偷偷背着本喵吃好吃的呢？")
     assert _is_low_value_active_reply("大半夜的怎么突然发这种乱码，是不是键盘被你当枕头睡了喵？")
     assert not _is_low_value_active_reply("刚才那个梗也太好笑了，本喵还在回味喵")
+    # 劝睡(劝人睡觉)类水话：自主总爱劝人去睡觉，不是真接话，拦截
+    assert _is_low_value_active_reply("拯救世界哪有窝着睡觉舒服……特批你赶紧滚去睡大觉喵，明天起不来本喵可要踩你脸了")
+    assert _is_low_value_active_reply("你累得够呛，快去乖乖睡觉喵")
 
 
 def test_clean_active_reply_strips_labels():
