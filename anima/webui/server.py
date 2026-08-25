@@ -2696,6 +2696,64 @@ class WebUIServer:
                 web.HTTPBadRequest(text=out.get("error", "参数错误")) if code == 400 else web.HTTPNotFound(text=out.get("error", "不存在")))
         return web.json_response(out)
 
+    async def apply_snapshot(self, request: web.Request) -> web.Response:
+        """staged->live 生效(fail-closed: SAFE_APPLY_PERSONA 关闭 => 403)；仅 Owner+confirm。"""
+        self._owner_id()
+        try:
+            body = await request.json()
+        except Exception:
+            raise web.HTTPBadRequest(text="需要 JSON body")
+        from anima.webui.life_apply import apply_persona
+        root = Path(__file__).resolve().parents[2]
+        out = apply_persona(self.core.config.persistence.data_dir, root,
+                            str(body.get("snapshot_name") or ""), bool(body.get("confirm")), owner_ok=True)
+        code = out.get("code")
+        if code:
+            status = 500 if code == 500 else (403 if code == 403 else (404 if code == 404 else 400))
+            return web.json_response({"ok": False, "error": out.get("error", "拒绝")}, status=status)
+        self.core.audit.emit("life_snapshot_applied", reviewer=self._owner_id(), snapshot=out.get("name"))
+        return web.json_response(out)
+
+    async def live_rollback(self, request: web.Request) -> web.Response:
+        """把最近一次 live 备份还原回 persona_core.yaml(仅 Owner+confirm)。"""
+        self._owner_id()
+        try:
+            body = await request.json()
+        except Exception:
+            raise web.HTTPBadRequest(text="需要 JSON body")
+        from anima.webui.life_apply import rollback_live
+        root = Path(__file__).resolve().parents[2]
+        out = rollback_live(self.core.config.persistence.data_dir, root, bool(body.get("confirm")), owner_ok=True)
+        code = out.get("code")
+        if code:
+            status = 500 if code == 500 else (403 if code == 403 else (404 if code == 404 else 400))
+            return web.json_response({"ok": False, "error": out.get("error", "拒绝")}, status=status)
+        self.core.audit.emit("life_snapshot_live_rollback", reviewer=self._owner_id())
+        return web.json_response(out)
+
+    async def apply_settings_toggle(self, request: web.Request) -> web.Response:
+        """Owner 显式开关 SAFE_APPLY_PERSONA(持久化 data/life_restore/settings.json，非 config)。"""
+        self._owner_id()
+        try:
+            body = await request.json()
+        except Exception:
+            raise web.HTTPBadRequest(text="需要 JSON body")
+        from anima.webui.life_apply import set_safe_apply
+        out = set_safe_apply(self.core.config.persistence.data_dir,
+                             bool(body.get("enabled")), bool(body.get("confirm")), owner_ok=True)
+        if not out.get("ok"):
+            return web.json_response({"ok": False, "error": out.get("error", "失败")},
+                                     status=403 if out.get("code") == 403 else 400)
+        self.core.audit.emit("life_snapshot_safe_apply_toggled", reviewer=self._owner_id(),
+                             enabled=out.get("safe_apply_persona"))
+        return web.json_response(out)
+
+    async def apply_settings_status(self, request: web.Request) -> web.Response:
+        """只读返回 SAFE_APPLY_PERSONA 当前值。"""
+        from anima.webui.life_apply import get_safe_apply
+        return web.json_response({"safe_apply_persona": get_safe_apply(self.core.config.persistence.data_dir),
+                                  "read_only": True})
+
     async def timeline(self, request: web.Request) -> web.Response:
         raw_limit = request.query.get("limit", "100")
         try:
