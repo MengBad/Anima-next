@@ -330,6 +330,7 @@ class StickerConfig(BaseModel):
     send_by_emotion: bool = True      # 被动附带优先按回复情绪匹配；否则随机
     send_cooldown_sec: float = 20.0   # 同群被动带图最小间隔（秒），防连续刷屏
     # --- 意图门控（对标 stealer）：严肃/服务类氛围下不被动附表情，避免嬉皮笑脸 ---
+    small_emoji_channel: bool = True   # 表情包出站带 image subType=1(NapCat 表情包小图渠道)；False=普通图片显示大图
     intent_gate: bool = True          # 开启后，命中 intent_gate_serious_atmospheres 时跳过被动带图
     intent_gate_serious_atmospheres: list[str] = ["formal", "help", "support"]  # 严肃/服务类氛围
     # 注：被动自动附带不再受 always_atmosphere 门控（stealer 为全局概率模式），

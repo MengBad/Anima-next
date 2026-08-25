@@ -39,6 +39,8 @@ def test_group_with_picked_sticker_sends_image():
     img = [s for s in segs if s["type"] == "image"][0]
     # 跨平台：resolve() 在 Windows 上会把 /opt/... 当相对路径，只比对文件名。
     assert img["data"]["file"].endswith("x.jpg")
+    # 表情走「表情包渠道」: image subType=1, 让 QQ 按小表情渲染而非普通大图
+    assert img["data"].get("subType") == "1"
 
 
 def test_private_with_picked_sticker_sends_image():
@@ -96,9 +98,10 @@ def test_split_text_and_sticker_into_separate_messages():
     assert len(msgs) == 2, f"应拆成 2 条，实际={msgs}"
     # 第一条：@ + 文本
     assert {s["type"] for s in msgs[0]} == {"at", "text"}
-    # 第二条：单独的 image
-    assert msgs[1] == [{"type": "image", "data": {"file": msgs[1][0]["data"]["file"]}}]
+    # 第二条：单独的 image（保留表情渠道 subType=1，拆出后仍按 QQ 表情包小图渲染）
     assert msgs[1][0]["type"] == "image"
+    assert msgs[1][0]["data"]["subType"] == "1"
+    assert msgs[1][0]["data"]["file"].endswith("x.jpg")
 
 
 def test_split_no_image_is_single_message():

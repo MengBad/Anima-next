@@ -2256,7 +2256,13 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     sticker_path = getattr(ctx, "sticker_to_send", None)
     if sticker_path and send_allowed:
         # LLM 主动选了表情 -> 群聊/私聊都发，尊重意图（不受氛围/概率门控）。
-        segments.append({"type": "image", "data": {"file": str(Path(sticker_path).resolve())}})
+        # 表情包走「表情渠道」：image subType=1 让 NapCat 按 QQ 表情包小图渲染，
+        # 而非普通大图。small_emoji_channel=False 时退回普通图片。
+        _img = {"file": str(Path(sticker_path).resolve())}
+        _emic = scfg is not None and bool(getattr(scfg, "small_emoji_channel", True))
+        if _emic:
+            _img["subType"] = "1"
+        segments.append({"type": "image", "data": _img})
     elif detail_type == "group" and send_allowed:
         # 被动自动附带：概率/冷却模式 + 情绪联动（E1/E2）。
         # mood 非中性时优先用 mood label 选图（70%），文本推断作 fallback。
