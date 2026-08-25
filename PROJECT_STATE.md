@@ -1,8 +1,8 @@
 # PROJECT_STATE — ANIMA 当前状态快照
 
 > 维护者：Principal Autonomous Engineering Agent
-> 更新：2026-08-25（C 地基 + B 阶段 + B5-merge + 一生快照恢复闭环 + staged→live 生效端点）
-> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`17f61ae7bab4`
+> 更新：2026-08-25（C 地基 + B 阶段 + B5-merge + 一生快照恢复闭环 + 开机记忆水合 + CI 修复）
+> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`025be71ef17c`
 
 ### B5-merge（底座单一源 16/16 折叠，2026-08-25）
 16 个顶层 `anima/capability_*.py` 实现全部折叠进规范层 `anima/capability/`；顶层仅留 `__getattr__` re-export 兼容 shim，保持 `from anima.capability_xxx import ...` 旧导入兼容，单一源=anima/capability。冻结核 `test_base_freeze`(顶层集==冻结16) 持续绿；治理/边界扫描测试统一按折叠态解析单源；修 `_FakeEmbedder` 用 `ord` 替代进程随机 `hash` 消除跨进程 flake。全量 3339 确定性绿，生产 `8163c38d0b36`。
