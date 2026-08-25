@@ -2234,11 +2234,12 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     if ctx.reply and "&&" in ctx.reply:
         _tag_emotion, cleaned = _extract_emotion_tag(ctx.reply)
         ctx.reply = cleaned
-    # 引用(quote)优先：仅真有入站点到的消息且给到 message_id 时前插 reply 段,
-    # 让 bot 回复「引用原消息」而不是裸 @(裸 @ 在热群易像乱插话)。
-    if detail_type == "group" and at_trigger and message_id is not None:
+    # 引用(quote)优先：凡在回复某条消息(有 message_id)即前插 reply 段——含被动接话，
+    # 让回复锚定上下文、热群不显凭空插话；引用本身会通知被引用者。
+    if detail_type == "group" and message_id is not None:
         segments.append({"type": "reply", "data": {"id": str(message_id)}})
-    if detail_type == "group" and at_trigger:
+    # @ 兜底：仅真点到且拿不到可引用消息时用 @；已有引用时不再重复 @，避免同消息双提醒。
+    if detail_type == "group" and at_trigger and message_id is None:
         segments.append({"type": "at", "data": {"qq": str(user_id)}})
     segments.append({"type": "text", "data": {"text": ctx.reply}})
     scfg = getattr(core.config, "sticker", None)
@@ -2458,10 +2459,14 @@ def _split_reply_messages_with_split(
 
     # 分离文本段和图片段
     at_seg: dict | None = None
+    reply_seg: dict | None = None
     text_content = ""
     image_segs: list[dict] = []
     for seg in segments:
-        if seg.get("type") == "at":
+        if seg.get("type") == "reply":
+            if reply_seg is None:
+                reply_seg = seg
+        elif seg.get("type") == "at":
             at_seg = seg
         elif seg.get("type") == "text":
             text_content += (seg.get("data") or {}).get("text", "")
@@ -2474,6 +2479,9 @@ def _split_reply_messages_with_split(
     messages: list[tuple[list[dict], float]] = []
     for i, (seg_text, delay) in enumerate(zip(result.segments, result.delays)):
         msg_segs: list[dict] = []
+        # 引用段只加在第一段(引用需在正文前, Q<qq>收起通知定位到被引用消息)
+        if i == 0 and reply_seg is not None:
+            msg_segs.append(reply_seg)
         # @ 只加在第一段
         if i == 0 and at_seg is not None:
             msg_segs.append(at_seg)

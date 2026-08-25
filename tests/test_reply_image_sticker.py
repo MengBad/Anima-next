@@ -301,9 +301,10 @@ async def test_group_reply_appends_selected_sticker_image(tmp_path):
 
     await handler.handle(event)
 
-    # 消息与表情分离：正文（at+text）在第一条，表情图在独立第二条
+    # 消息与表情分离：正文（引用+text）在第一条，表情图在独立第二条
+    # 引用优先优化：有 message_id -> 引用锚定而非 @(引用自带通知，避免双提醒)
     body_msg = core.gateway.sent[0].message
-    assert [segment["type"] for segment in body_msg] == ["at", "text"]
+    assert [segment["type"] for segment in body_msg] == ["reply", "text"]
     img_msg = core.gateway.sent[1].message
     assert [segment["type"] for segment in img_msg] == ["image"]
     assert img_msg[0]["data"]["file"] == str(sticker)

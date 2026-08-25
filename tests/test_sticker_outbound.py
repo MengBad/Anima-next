@@ -201,13 +201,29 @@ def test_sticker_manager_returns_absolute_path():
 
 
 def test_group_quote_segment_injected_when_direct_trigger():
-    # 直接点到 bot 且有 message_id 时, 出站前插 reply 引用段(不只 @)
+    # 直接点到 bot 且有 message_id -> 引用优先(引用自带通知), 不再重复 @ 造成双提醒刷屏
     ctx = _ctx(reply='喵')
     segs = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=True, message_id=999)
     assert segs[0]['type'] == 'reply' and segs[0]['data']['id'] == '999'
-    assert 'at' in [s['type'] for s in segs]
+    assert 'at' not in [s['type'] for s in segs], "已有引用时不应再重复 @"
+    # 无 message_id(引用兜不住) -> 退回 @ 保把对方拉到
     segs2 = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=True, message_id=None)
     assert all(s['type'] != 'reply' for s in segs2)
+    assert any(s['type'] == 'at' for s in segs2)
+
+
+def test_group_passive_reply_quotes_but_no_at():
+    # 被动熟人接话: 有 message_id -> 只引用不 @, 避免热群连续 @ 同一个人刷屏
+    ctx = _ctx(reply='喵')
+    segs = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=False, message_id=888)
+    assert any(s['type'] == 'reply' and s['data']['id'] == '888' for s in segs)
+    assert not any(s['type'] == 'at' for s in segs)
+
+
+def test_group_passive_no_message_id_no_anchor_no_at():
+    ctx = _ctx(reply='喵')
+    segs = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=False, message_id=None)
+    assert not any(s['type'] in ('reply', 'at') for s in segs)
 def test_self_review_requires_visual_sticker_verdict():
     # stealer 忠实收口：没有视觉判定(is_sticker None)时，即使有分类/文本标签也绝不自动入库
     m = StickerManager.__new__(StickerManager)

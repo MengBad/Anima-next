@@ -306,10 +306,11 @@ async def test_group_reply_uses_at_segment():
     msg = out.message
     assert isinstance(msg, list), "群回复应为复合消息段列表（含 at 段）"
 
-    at_segs = [s for s in msg if s.get("type") == "at"]
-    assert at_segs, "群回复应含 at 段"
-    assert str(at_segs[0].get("data", {}).get("qq")) == str(uid), \
-        f"at 段应 @ 触发者 {uid}，实际 {at_segs[0]}"
+    # 引用优先优化：有 message_id -> 用 reply 引用段锚定(自带通知)，不再重复 @ 双提醒
+    reply_segs = [s for s in msg if s.get("type") == "reply"]
+    assert reply_segs, "群回复含 message_id 时应前插 reply 引用段"
+    assert str(reply_segs[0].get("data", {}).get("id")) == str(event["message_id"])
+    assert not any(s.get("type") == "at" for s in msg), "已引用消息时不应再重复 @(刷屏)"
 
     # 文本段中不得再出现裸 CQ:at 码
     for s in msg:
