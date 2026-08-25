@@ -129,6 +129,22 @@ export async function getPlatformSummary(): Promise<Record<string, unknown>> {
   return api<Record<string, unknown>>("/api/platform/summary");
 }
 
+export async function getLifeArchive(): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/life");
+}
+
+export async function restoreSnapshot(name: string): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/life/snapshot/restore", json("POST", { snapshot_name: name, confirm: true }));
+}
+
+export async function getStagedSnapshots(): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/life/snapshot/staged");
+}
+
+export async function rollbackSnapshot(name: string): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/life/snapshot/rollback", json("POST", { snapshot_name: name, confirm: true }));
+}
+
 export async function postOsCommand(command: string): Promise<OsCommandResult> {
   return api<OsCommandResult>("/api/os/command", json("POST", { command }));
 }
