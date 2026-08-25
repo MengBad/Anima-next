@@ -20,9 +20,10 @@ def test_self_review_pass_helper():
     assert p([], "unknown", "", None) is False
     assert p([], "unknown", "", True) is False
     assert p(["开心"], "reaction", "", False) is False
-    # None 但有实打实标签/情绪证据（label_pending 补齐后）仍可自过审。
-    assert p(["开心"], "unknown", "", None) is True
-    assert p([], "unknown", "开心", None) is True
+    # 收紧(对标 stealer)：is_sticker=None（视觉未确认）即使有标签/情绪证据也交 Owner，
+    # 防止普通图片被当表情包；只有视觉确认 is_sticker=True 才自过审。
+    assert p(["开心"], "unknown", "", None) is False
+    assert p([], "unknown", "开心", None) is False
 
 
 def test_self_review_keeps_ambiguous_pending(tmp_path):
@@ -59,10 +60,10 @@ def test_label_pending_auto_approves_with_self_review(tmp_path):
     n = asyncio.run(mgr.label_pending(_label_llm()))
     assert n == 1
     item = mgr._read_meta()[key]
-    assert item["status"] == "approved"
-    assert item.get("review_method") == "self"
-    assert item.get("reviewed_at")
-    assert mgr.random_one(group_id=999).endswith(".jpg")
+    # label_pending 只有纯文本标签、无视觉判定(is_sticker None) → 不进可发送库，留给 Owner
+    assert item["status"] == "pending_review"
+    assert item.get("review_method") not in ("self",)
+    assert mgr.random_one(group_id=999) is None
 
 
 def test_natural_forget_removes_old_cold_only(tmp_path):

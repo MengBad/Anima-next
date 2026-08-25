@@ -516,15 +516,14 @@ class StickerManager:
           但若已有实打实的标签或情绪证据（如后续 label_pending 用上下文补齐标签），
           仍判定明确、自动入库可发。
         """
-        if is_sticker is False:
+        # 对标 stealer：只有真正视觉判定为表情包(is_sticker is True)才允许自过审入库；
+        # 视觉未跑/含糊(is_sticker None)一律进审核区交给 Owner，防止普通图片被当成表情包。
+        if is_sticker is not True:
             return False
         labs = [str(x).strip() for x in (labels or []) if str(x).strip()]
         cat = str(category or "").strip()
         emo = str(emotion or "").strip()
-        if is_sticker is True:
-            return bool(labs) or bool(cat and cat != "unknown") or bool(emo)
-        # is_sticker is None：仅分类不算数；必须有一致标签/情绪证据。
-        return bool(labs) or bool(emo)
+        return bool(labs) or bool(cat and cat != "unknown") or bool(emo)
 
     def _initial_status(self, approval_required: bool, labels, category, emotion,
                         is_sticker) -> str:

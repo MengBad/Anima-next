@@ -8,6 +8,7 @@ import pytest
 sys.path.insert(0, ".")
 
 from anima.llm.handler import _build_reply_segments, _split_reply_messages, _extract_emotion_tag
+from anima.cognitive.stickers import StickerManager
 
 
 def _ctx(sticker=None, atm="neutral", reply="嗨"):
@@ -204,3 +205,13 @@ def test_group_quote_segment_injected_when_direct_trigger():
     assert 'at' in [s['type'] for s in segs]
     segs2 = _build_reply_segments(ctx, 'group', 123, 456, _core(), at_trigger=True, message_id=None)
     assert all(s['type'] != 'reply' for s in segs2)
+def test_self_review_requires_visual_sticker_verdict():
+    # stealer 忠实收口：没有视觉判定(is_sticker None)时，即使有分类/文本标签也绝不自动入库
+    m = StickerManager.__new__(StickerManager)
+    m.self_review = True
+    assert m._initial_status(True, ["文字标签"], "screenshot", "", None) == "pending_review"
+    assert m._initial_status(True, ["猜测"], "", "joy", None) == "pending_review"
+    # 明确视觉判定为表情包才自动 approved
+    assert m._initial_status(True, ["贴纸"], "sticker", "joy", True) == "approved"
+    # 明确不是表情包 → 不能进可发送库
+    assert m._initial_status(True, [], "photo", "", False) == "pending_review"
