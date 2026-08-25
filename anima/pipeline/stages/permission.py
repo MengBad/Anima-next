@@ -38,25 +38,32 @@ def _check_permission(
     群维度配置只能**收紧**（banned_groups / readonly_groups），
     永远不能提升权限。
     """
-    # 用户维度权限优先于群维度
+    # 用户维度基础档位（banned 是硬封禁，直接拒绝）
     if user_id in config.permissions.banned:
         return 0, "banned"
     if user_id in config.permissions.readonly:
-        return 1, "readonly"
-    if user_id in config.permissions.owners:
-        return 4, "owner"
-    if user_id in config.permissions.admins:
-        return 3, "admin"
+        level, role = 1, "readonly"
+    elif user_id in config.permissions.owners:
+        level, role = 4, "owner"
+    elif user_id in config.permissions.admins:
+        level, role = 3, "admin"
+    else:
+        level, role = 2, "user"
 
-    # 群维度封禁 / 只读（仅收紧，不提升）
+    # 群维度只能收紧，绝不允许提升；owner/admin 同样受群维度约束
+    #（Q3 拍板：owner 命中禁忌群即收紧，其运维收敛到私聊/白名单群），命中时告警。
     if group_id is not None:
         if group_id in config.permissions.banned_groups:
+            if level >= 3:
+                logger.warning("owner/admin 命中 banned_groups=%s user=%s 已收紧", group_id, user_id)
             return 0, "banned"
         if group_id in config.permissions.readonly_groups:
-            return 1, "readonly"
+            if level >= 3:
+                logger.warning("owner/admin 命中 readonly_groups=%s user=%s 已收紧", group_id, user_id)
+            if level > 1:
+                return 1, "readonly"
 
-    # 未显式授权的 UID 一律为普通用户，无论其 QQ 群角色为何
-    return 2, "user"
+    return level, role
 
 
 def _group_policy_for(

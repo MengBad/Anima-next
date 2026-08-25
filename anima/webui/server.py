@@ -31,6 +31,16 @@ SPA_PATHS = {
     "/os", "/life",
 }
 
+# 免认证白名单。注意：/vnc 及其 WS 曾整段放行（无 token 即获 noVNC 远端桌面，
+# 且生产监听 0.0.0.0:8088），现纳入 _auth 统一走 token。
+_OPEN_AUTH_EXACT = frozenset({"/login", "/source", "/source/archive", "/api/auth/login"})
+_OPEN_AUTH_PREFIXES = ("/assets/",)
+
+
+def _open_auth_routes(path: str) -> bool:
+    """_auth 调用的免认证判定（登录/登录API/公开源码/静态资源）。"""
+    return path in _OPEN_AUTH_EXACT or path.startswith(_OPEN_AUTH_PREFIXES)
+
 
 def _paginate(items, page, limit):
     """服务端分页切片：page(>=1) / limit(1..500)，返回 (切片, 总数, page, limit)。"""
@@ -265,9 +275,7 @@ class WebUIServer:
 
     @web.middleware
     async def _auth(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        if (request.path in {"/login", "/source", "/source/archive", "/api/auth/login"}
-                or request.path.startswith("/assets/")
-                or request.path == "/vnc" or request.path.startswith("/vnc/")):
+        if _open_auth_routes(request.path):
             return await handler(request)
         token = self.config.token.get_secret_value() if self.config.token else ""
         if token:
