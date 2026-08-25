@@ -15,6 +15,7 @@ Acceptance (all GREEN):
 """
 from __future__ import annotations
 
+import os
 import pathlib
 import re
 
@@ -84,7 +85,11 @@ def test_a_provider_write(tmp_path):
 # ---------------------------------------------------------------------------
 def test_b_traversal_block(tmp_path):
     provider = _make_provider(tmp_path)
-    for evil in ("../evil.txt", "..\\evil.txt", str(tmp_path.parent / "escape.txt")):
+    # 反斜杠在非 Windows 是合法文件名字符而非路径分隔符：按平台组候选
+    candidates = ["../evil.txt", str(tmp_path.parent / "escape.txt")]
+    if os.name == "nt":
+        candidates.append("..\\evil.txt")
+    for evil in candidates:
         result = provider.invoke(
             "sandbox.write", {"path": evil, "content": "x"}, ("run-1", "t2", 0)
         )

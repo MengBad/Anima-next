@@ -291,7 +291,7 @@ def test_no_import_leak_runtime_tools():
         [sys.executable, "-c", probe],
         capture_output=True,
         text=True,
-        cwd="G:/Anima-next",
+        cwd=str(Path(__file__).resolve().parents[1]),
     )
     assert out.returncode == 0, out.stderr
     assert out.stdout.strip() == "CLEAN", f"ops 包拖入了 runtime/tools：{out.stdout.strip()}"
