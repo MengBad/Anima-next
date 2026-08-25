@@ -1,8 +1,12 @@
 # PROJECT_STATE — ANIMA 当前状态快照
 
 > 维护者：Principal Autonomous Engineering Agent
-> 更新：2026-08-25（C 地基 + B 阶段全清 + 一生快照闭环 + 记忆水合持续化 + 入站合并门 + QQ引用 + 真缺口补齐：B4四横前端分组/长期记忆写入/provenance绑定/身份连续性探针）
-> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`71447b013004`
+> 更新：2026-08-25（C 地基 + B 阶段全清 + 一生快照 + 记忆水合/合并门/QQ引用 + stealer 表情整顿 + webui 深链修复 + 自主劝睡拦截）
+> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`bb37ccc703b7`
+> 本日要点：
+> - **stealer 收紧**：`_self_review_pass` 仅当视觉判定 `is_sticker=True` 才自动入库；`None` 一律留审核区(产线 5 张无判定 approved 已回退,备份 `stickers.json.bak.20260825184620`,approved 现全带视觉判定)。
+> - **webui 深链**：`/stickers` 改走 Vue 双区 SPA(不再给旧纯HTML页);`/os` 补入 `SPA_PATHS`+页面路由(此前深链 401 无法加载)。
+> - **自主劝睡拦截**：autonomy 主动发言 `_ACTIVE_LOW_VALUE_RE` 增劝睡类水话(睡大觉/去睡觉/快去睡/早点睡/乖乖睡觉/该睡觉了/睡觉舒服);19:04 群552994229 那条系自主主动发言非写死,现此类被丢弃。
 
 ### B5-merge（底座单一源 16/16 折叠，2026-08-25）
 16 个顶层 `anima/capability_*.py` 实现全部折叠进规范层 `anima/capability/`；顶层仅留 `__getattr__` re-export 兼容 shim，保持 `from anima.capability_xxx import ...` 旧导入兼容，单一源=anima/capability。冻结核 `test_base_freeze`(顶层集==冻结16) 持续绿；治理/边界扫描测试统一按折叠态解析单源；修 `_FakeEmbedder` 用 `ord` 替代进程随机 `hash` 消除跨进程 flake。全量 3339 确定性绿，生产 `8163c38d0b36`。
