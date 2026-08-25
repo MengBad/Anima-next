@@ -1,11 +1,14 @@
 # PROJECT_STATE — ANIMA 当前状态快照
 
 > 维护者：Principal Autonomous Engineering Agent
-> 更新：2026-08-25（C 地基 + B 阶段 + B5-merge 16/16 折叠全部完成并部署）
-> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`8163c38d0b36`
+> 更新：2026-08-25（C 地基 + B 阶段 + B5-merge 16/16 折叠 + 一生快照恢复闭环）
+> 分支：`anima-autonomous-evo`（= `master`）· 生产版本：`b30a7815add5`
 
 ### B5-merge（底座单一源 16/16 折叠，2026-08-25）
 16 个顶层 `anima/capability_*.py` 实现全部折叠进规范层 `anima/capability/`；顶层仅留 `__getattr__` re-export 兼容 shim，保持 `from anima.capability_xxx import ...` 旧导入兼容，单一源=anima/capability。冻结核 `test_base_freeze`(顶层集==冻结16) 持续绿；治理/边界扫描测试统一按折叠态解析单源；修 `_FakeEmbedder` 用 `ord` 替代进程随机 `hash` 消除跨进程 flake。全量 3339 确定性绿，生产 `8163c38d0b36`。
+
+### 一生「快照恢复」闭环（Owner 可逆暂存 + 生效设计，2026-08-25）
+纵1 一生视图从「只读清点」升级为可用闭环：`POST /api/life/snapshot/restore`（owner_ok+confirm，fail-closed，恢复产物落到 data/life_restore/ = 自动备份 + 原子替换 + 可回滚，拒绝 chat_memory/穿越/非清单）+ `GET /api/life/snapshot/staged` + `POST /api/life/snapshot/rollback`；LifeView 已接 Owner 恢复/回滚 UI；服务级 9 测。另产出 `docs/LifeSnapshotApply-Design.md`（staged→live 生效域 + SAFE_APPLY_PERSONA 门控 + 审计/回滚），生效写端点默认 OFF、待 Owner 拍板。生产 `b30a7815add5`。
 
 ## B / C 阶段增量（2026-08-24）
 
