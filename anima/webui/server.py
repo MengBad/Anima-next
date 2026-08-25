@@ -2657,6 +2657,45 @@ class WebUIServer:
                 episodic.summary() if episodic and hasattr(episodic, "summary") else None),
         })
 
+    async def restore_snapshot(self, request: web.Request) -> web.Response:
+        """Owner 门控的可逆快照恢复(暂存到 data/life_restore/, 绝不碰 live 身份/记忆/chat_memory)。"""
+        self._owner_id()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            raise web.HTTPBadRequest(text="需要 JSON body")
+        name = str(body.get("snapshot_name") or "")
+        confirm = bool(body.get("confirm"))
+        from anima.webui.life_restore import restore_snapshot
+        out = restore_snapshot(self.core.config.persistence.data_dir, name, confirm, owner_ok=True)
+        code = out.get("code")
+        if code in (403, 400, 404):
+            raise web.HTTPForbidden(text=out.get("error", "拒绝")) if code == 403 else (
+                web.HTTPBadRequest(text=out.get("error", "参数错误")) if code == 400 else web.HTTPNotFound(text=out.get("error", "不存在")))
+        return web.json_response(out)
+
+    async def restore_staged(self, request: web.Request) -> web.Response:
+        """只读列出已暂存待生效的恢复产物。"""
+        from anima.webui.life_restore import list_staged
+        return web.json_response({"staged": list_staged(self.core.config.persistence.data_dir), "read_only": True})
+
+    async def restore_rollback(self, request: web.Request) -> web.Response:
+        """Owner 门控回滚最近一次恢复备份。"""
+        self._owner_id()
+        try:
+            body = await request.json()
+        except Exception:  # noqa: BLE001
+            raise web.HTTPBadRequest(text="需要 JSON body")
+        name = str(body.get("snapshot_name") or "")
+        confirm = bool(body.get("confirm"))
+        from anima.webui.life_restore import rollback_restore
+        out = rollback_restore(self.core.config.persistence.data_dir, name, confirm, owner_ok=True)
+        code = out.get("code")
+        if code in (403, 400, 404):
+            raise web.HTTPForbidden(text=out.get("error", "拒绝")) if code == 403 else (
+                web.HTTPBadRequest(text=out.get("error", "参数错误")) if code == 400 else web.HTTPNotFound(text=out.get("error", "不存在")))
+        return web.json_response(out)
+
     async def timeline(self, request: web.Request) -> web.Response:
         raw_limit = request.query.get("limit", "100")
         try:
