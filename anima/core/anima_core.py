@@ -221,6 +221,16 @@ class AnimaCore:
         logger.info("AnimaCore 启动 …")
         # 初始化认知单例并恢复状态
         self._init_cognitive_state()
+        # C 地基: 开机把已持久化 chat_memory 水合进宪法记忆(M1.2, 只读现场/有界/fail-soft)
+        try:
+            from anima.constitution.memory_authority import MemoryAuthority
+            self.memory_authority = MemoryAuthority(hydrate_now=True)
+            _count = len(self.memory_authority.snapshot_memory().episodes)
+            self.audit.emit("constitution_memory_hydrated", added=_count, source="boot")
+            logger.info("宪法记忆开机水合: 共 %d 条 episode(只读, 有界)", _count)
+        except Exception:  # noqa: BLE001 - 水合失败只隔离, 不阻断启动
+            self.memory_authority = None
+            logger.exception("宪法记忆开机水合失败, 已隔离")
         from anima.cognitive.sylann_adapter import SylannAdapter, EngineSylannAdapter
         sylann_cfg = self.config.sylann
         if sylann_cfg.enabled:
