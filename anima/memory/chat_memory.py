@@ -492,14 +492,22 @@ class ChatMemory:
                         len(stale), ttl / 3600, stale)
 
 
-# 全局单例
+# 全局单例（P2-A：默认落盘路径收口——无参调用不再锚死空路径导致永不落盘）
+_default_persist_path: str = ""
 _chat_memory: Optional[ChatMemory] = None
+
+
+def set_chat_memory_persist_path(path: str) -> None:
+    """把 get_chat_memory() 的默认落盘路径钉到配置目录下的 chat_memory.json。"""
+    global _default_persist_path
+    _default_persist_path = path or ""
 
 
 def get_chat_memory(persist_path: str = "") -> ChatMemory:
     global _chat_memory
+    pp = persist_path or _default_persist_path
     if _chat_memory is None:
-        _chat_memory = ChatMemory(persist_path=persist_path)
+        _chat_memory = ChatMemory(persist_path=pp)
     return _chat_memory
 
 
