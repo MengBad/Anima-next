@@ -313,7 +313,12 @@ class StickerManager:
     # 收集
     # ------------------------------------------------------------------
 
-    async def collect(self, images: list[dict], src_user: Any, src_group: Any,
+    async def collect(self, *args: Any, **kwargs: Any):
+        """M2.3：整批读改写持 asyncio.Lock 串行，防并发 collect/label 覆盖写 stickers.json。"""
+        async with self._lock:
+            return await self._collect_locked(*args, **kwargs)
+
+    async def _collect_locked(self, images: list[dict], src_user: Any, src_group: Any,
                       ctx_text: str = "", resolver=None, approval_required: bool = False,
                       llm=None, pending_capacity: int = 0,
                       default_scope: str = "local") -> int:
@@ -412,7 +417,12 @@ class StickerManager:
             logger.info("表情收集 +%d（库共 %d）", added, len(self._read_meta()))
         return added
 
-    async def import_uploads(self, uploads: list[tuple[str, bytes]], *, category: str = "",
+    async def import_uploads(self, *args: Any, **kwargs: Any):
+        """M2.3：整批读改写持 asyncio.Lock 串行，防并发 collect/label 覆盖写 stickers.json。"""
+        async with self._lock:
+            return await self._import_uploads_locked(*args, **kwargs)
+
+    async def _import_uploads_locked(self, uploads: list[tuple[str, bytes]], *, category: str = "",
                              scope: str = "local", approval_required: bool = True,
                              auto_analyze: bool = True, llm=None) -> dict:
         """Owner WebUI 导入：不经外网 URL，直接存已验证的上传字节。"""
@@ -601,7 +611,12 @@ class StickerManager:
     # 打标（节流）
     # ------------------------------------------------------------------
 
-    async def label_pending(self, llm, label_model: str = "") -> int:
+    async def label_pending(self, *args: Any, **kwargs: Any):
+        """M2.3：整批读改写持 asyncio.Lock 串行，防并发 collect/label 覆盖写 stickers.json。"""
+        async with self._lock:
+            return await self._label_pending_locked(*args, **kwargs)
+
+    async def _label_pending_locked(self, llm, label_model: str = "") -> int:
         """为未打标且有上下文的图批量打标。返回打标数量。
 
         优先级：视觉打标（真·看图，label_by_vision 且模型可用）> 文本推断退化。
@@ -1099,7 +1114,12 @@ class StickerManager:
         return await self.llm_select(llm, "", group_id, allow_cross_group,
                                      context_text, k, model)
 
-    async def reclassify_all(self, llm, model: str = "",
+    async def reclassify_all(self, *args: Any, **kwargs: Any):
+        """M2.3：整批读改写持 asyncio.Lock 串行，防并发 collect/label 覆盖写 stickers.json。"""
+        async with self._lock:
+            return await self._reclassify_all_locked(*args, **kwargs)
+
+    async def _reclassify_all_locked(self, llm, model: str = "",
                              drop_non_stickers: bool = True) -> dict:
         """一次性用 LLM 重新分类整个现有库（清理旧库里的照片/非表情包）。
 
