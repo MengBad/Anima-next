@@ -78,6 +78,24 @@ def _parse_cq_string(s: str) -> list[dict]:
     return segs
 
 
+def _classify_ws_send_result(resp: Any) -> Optional[int]:
+    """把 WS action 回执归为：可用 message_id / 成功占位(1) / 失败(None)。
+
+    - 有 message_id -> 返回该 id（发送确认）；
+    - status=ok 或 retcode=0 但无 id -> 返回 1（成功占位）；
+    - 其它（NapCat status=failed / retcode!=0 / 结构异常）-> 返回 None，
+      表示真的没发出，交由 send_message 走 HTTP 回退/重试，杜绝静默丢消息。
+    """
+    if not isinstance(resp, dict):
+        return None
+    mid = resp.get("message_id") or (resp.get("data") or {}).get("message_id")
+    if mid is not None:
+        return mid
+    if resp.get("status") == "ok" or resp.get("retcode") == 0:
+        return 1
+    return None
+
+
 def build_message_segments(text: str, reply_id: Optional[str] = None) -> list[dict]:
     """将文本（可能含 [CQ:...] 码）解析为 OneBot11 消息段数组。
 
@@ -1234,15 +1252,9 @@ class OneBot11Adapter(Module):
 
         # _handle_message 把回执 data 填给 Future；NapCat send_*_msg 返回
         # {"data":{"message_id":N}}。取不到 id 但状态 ok 时回退 1。
-        if isinstance(resp, dict):
-            mid = resp.get("message_id") or (resp.get("data") or {}).get("message_id")
-            if mid is not None:
-                return mid
-            if resp.get("status") == "ok" or resp.get("retcode") == 0:
-                return 1
-            logger.warning("WS action 回执异常状态（回退 1）: %s", str(resp)[:120])
-            return 1
-        return 1
+        # 真失败(NapCat status=failed / retcode!=0 / 结构异常且无 message_id)
+        # 必须返回 None 让 send_message 走 HTTP 回退，杜绝静默丢消息。
+        return _classify_ws_send_result(resp)
 
     # ------------------------------------------------------------------
     # OneBot11 action 调用（带 echo 回执关联，可同步拿返回值）
