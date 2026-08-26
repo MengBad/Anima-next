@@ -308,7 +308,8 @@ async def test_webui_rejects_control_calls_without_token(tmp_path):
     port = server._site._server.sockets[0].getsockname()[1]
     async with aiohttp.ClientSession() as session:
         async with session.post(f"http://127.0.0.1:{port}/api/skill-drafts/none/approve") as response:
-            assert response.status == 403
+            # P0-D1 fail-closed：token 未配置时中间件先于路由以 503 锁定全接口
+            assert response.status == 503
     await server.close()
 
 

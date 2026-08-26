@@ -278,6 +278,19 @@ class WebUIServer:
         if _open_auth_routes(request.path):
             return await handler(request)
         token = self.config.token.get_secret_value() if self.config.token else ""
+        if not token:
+            # P0-D1 fail-closed：token 未配置时原实现直接放行全部接口——
+            # 监听 0.0.0.0:8088 等于裸奔。改为锁定：仅保留登录页可渲染
+            # （提示 owner 配置 token），其余一律 503。登录接口本身在白名单，
+            # 且 login() 对「未配置」已返回 401（空比空不成立），无绕过。
+            if not getattr(self, "_auth_locked_warned", False):
+                self._auth_locked_warned = True
+                logging.getLogger("anima.webui").warning(
+                    "webui.token 未配置：除登录页外所有接口已锁定(fail-closed)，"
+                    "请在 config.yaml 配置 webui.token 后重启")
+            if request.path in SPA_PATHS:
+                return await self.login_page(request)
+            raise web.HTTPServiceUnavailable(text="webui.token 未配置，接口已锁定")
         if token:
             supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
             if not supplied:
