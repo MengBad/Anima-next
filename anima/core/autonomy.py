@@ -28,6 +28,37 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("anima.core.autonomy")
 
+# P1-C：fire-and-forget 后台任务统一收口（句柄 + 异常留痕 + shutdown cancel）。
+_background_tasks: set[asyncio.Task] = set()
+
+
+def _launch_bg(coro: 'asyncio.Future', name: str) -> asyncio.Task:
+    """安全启动后台任务：存句柄、异常回调留痕(不被静默吞)、纳入 stop 时 cancel。"""
+    task: asyncio.Task = asyncio.ensure_future(coro)
+    task.set_name(f"anima.autonomy.{name}")
+
+    def _done(t: asyncio.Task) -> None:
+        _background_tasks.discard(t)
+        if t.cancelled():
+            return
+        exc = t.exception()
+        if exc is not None:
+            logger.exception("后台任务异常 (%s)", name, exc_info=exc)
+
+    task.add_done_callback(_done)
+    _background_tasks.add(task)
+    return task
+
+
+async def _shutdown_background_tasks() -> None:
+    """停服时取消全部仍挂起的后台任务，避免泄漏。"""
+    pending = [t for t in _background_tasks if not t.done()]
+    for t in pending:
+        t.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    _background_tasks.clear()
+
 
 def is_user_avoided(data_dir: str, user_id: int, now: float | None = None) -> bool:
     """该用户当前是否处于伤痕回避期（供自主发言门控复用）。"""
@@ -399,6 +430,7 @@ class Heartbeat:
             self._task.cancel()
             try: await self._task
             except asyncio.CancelledError: pass
+        await _shutdown_background_tasks()
 
     # ------------------------------------------------------------------
     # 主循环
@@ -646,7 +678,7 @@ class Heartbeat:
                 from anima.cognitive.danger import get_danger_behaviors
                 danger = get_danger_behaviors(core=self.core, cfg=dcfg)
                 if danger is not None:
-                    asyncio.create_task(danger.maybe_self_improvement())
+                    _launch_bg(danger.maybe_self_improvement(), "danger_self_improve")
             except Exception:
                 logger.exception("自升级调度失败")
         try:
@@ -659,7 +691,7 @@ class Heartbeat:
                 if opened:
                     logger.info("受控迭代：新开 %d 个故障工单", len(opened))
                 if iterate.is_auto_repair_enabled(self.core):
-                    asyncio.create_task(iterate.maybe_auto_repair(self.core))
+                    _launch_bg(iterate.maybe_auto_repair(self.core), "controlled_auto_repair")
         except Exception:
             logger.exception("受控迭代调度失败（已隔离）")
 
@@ -669,7 +701,7 @@ class Heartbeat:
             exploration_cfg = getattr(self.core.config, "exploration", None)
             if exploration_cfg and getattr(exploration_cfg, "enabled", False):
                 from anima.cognitive.exploration import get_exploration_manager
-                asyncio.create_task(get_exploration_manager(self.core).maybe_run())
+                _launch_bg(get_exploration_manager(self.core).maybe_run(), "exploration_maybe_run")
         except Exception:
             logger.exception("自主外部探索调度失败（已隔离）")
 
@@ -726,7 +758,7 @@ class Heartbeat:
                 from anima.cognitive.dream_engine import DreamEngine
                 data_dir = str(self.core.config.persistence.data_dir)
                 eng = DreamEngine(data_dir, self.core)
-                asyncio.create_task(eng.maybe_generate_during_sleep(now))
+                _launch_bg(eng.maybe_generate_during_sleep(now), "dream_during_sleep")
             except Exception:
                 logger.debug("梦境生成调度失败（已隔离）", exc_info=True)
             self.persist()
