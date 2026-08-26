@@ -1355,6 +1355,13 @@ class Heartbeat:
             if audit:
                 audit.emit("active_speech_feedback", group_id=int(group_id), outcome="ignored",
                            source=str(pending.get("source") or ""))
+            # S3 冷落信号（蓝图）：真状态计数达阈值 → mood 短暂温和低落；
+            # 不扣 relation 信任、不记 scar。计数仍来自 feedback stats 本体。
+            try:
+                from anima.cognitive.inner_state.neglect import apply_neglect
+                apply_neglect(self.core, group_id, now=now)
+            except Exception:
+                logger.exception("S3 冷落信号施加失败（已隔离）")
 
     def active_acceptance(self, group_id: int) -> dict[str, float | int | bool]:
         stats = self._feedback_stats(group_id)
