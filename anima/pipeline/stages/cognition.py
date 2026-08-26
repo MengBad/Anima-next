@@ -472,6 +472,30 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.exception("内在状态合成失败（不阻塞流水线）")
 
+    # S5 真的纠错（蓝图）：仅管理员(permission_level>=3，权威在 permission 阶段)+宽触发
+    # 窄提取沉淀进硬事实/外部称呼层（不进 learning.add_note，绕开其身份/相似
+    # 闸门；身份锁仍由 system_suffix 铁定——身份改写在提取层已拦）。恒在事实
+    # protected 注入；相关事实按需检索 + 活性老化(touch)。
+    try:
+        from anima.cognitive.inner_state.hard_facts import (
+            HardFactStore, maybe_record_correction)
+        _perm_lv = int(ctx.meta.get("permission_level", 0) or 0)
+        _fact = maybe_record_correction(data_dir, getattr(ctx, "text", ""),
+                                        admin=_perm_lv >= 3)
+        ctx.meta["hard_fact_recorded"] = bool(_fact)
+        _hf_store = HardFactStore(data_dir)
+        _hf_always = _hf_store.always_on_text()
+        if _hf_always:
+            add_system_fragment("hard_facts", _hf_always, 50, protected=True)
+            ctx.meta["hard_facts_on"] = len(_hf_store.active_facts("always_on"))
+        _hf_ctx = _hf_store.contextual_facts(getattr(ctx, "text", ""))
+        if _hf_ctx:
+            add_system_fragment("hard_facts_ctx",
+                                "；".join(f["text"] for f in _hf_ctx), 70)
+            _hf_store.touch(_hf_ctx)
+    except Exception:
+        logger.exception("S5 硬事实读写失败（不阻塞流水线）")
+
     # F2: 发癫模式注入
     try:
         from anima.cognitive.quirk import get_quirk_system
