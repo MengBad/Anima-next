@@ -310,6 +310,8 @@ class Heartbeat:
         self._consecutive_failures = 0
         self._max_failures = 5
         self._degraded = False
+        # M3 防 TOCTOU：串行化主动发言的 token 预算 检查→花费，消除并发越界
+        self._speech_lock = asyncio.Lock()
 
         # 持久化
         self._persist = PersistenceProvider(data_dir)
@@ -1054,6 +1056,15 @@ class Heartbeat:
             return True
 
     async def _speak(self, group_id: int, now: float, intent: str = "") -> bool:
+        """主动发言入口（M3 防 TOCTOU）：锁内串行化 token 预算检查→LLM→扣账，
+        消除并发检查-花费竞态，且保留"成功发送才扣账"的账本语义。"""
+        lock = getattr(self, "_speech_lock", None)
+        if lock is None:
+            lock = self._speech_lock = asyncio.Lock()  # 防御式：测试桩/未构造实例也安全
+        async with lock:
+            return await Heartbeat._speak_locked(self, group_id, now, intent)
+
+    async def _speak_locked(self, group_id: int, now: float, intent: str = "") -> bool:
         """生成并发送主动发言。"""
         if self.core.llm is None:
             return False
