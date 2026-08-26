@@ -224,9 +224,6 @@ def register_all_builtin(registry, core=None) -> None:
     # 不挂载 Provider / 不激活执行 / 不扩展 scope —— 该能力存在但不可执行。
     declare_code_execute_contract(registry)
 
-    # M0.3.1 Pilot：契约先于工具注册（显式 Contract 优先级高于 Tool 派生）
-    declare_pilot_capability_contracts(registry)
-
     # --- 基础工具（无需 core）---
     registry.register(Tool(
         "get_time", "获取当前北京时间",
