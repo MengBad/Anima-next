@@ -15,6 +15,7 @@ import base64
 import hashlib
 import io
 import logging
+import threading
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
@@ -28,6 +29,9 @@ _PREPARE_CACHE_MAX = 64
 _prepare_cache: "OrderedDict[str, list[PreparedImage]]" = OrderedDict()
 _prepare_cache_hits = 0
 _prepare_cache_misses = 0
+# P2-G：prepare_images_for_llm 会被工作线程并发调用，LRU 读写/淘汰/计数器须同锁，
+# 否则 check→insert→popitem 与计数更新存在数据竞争（超上限、计数丢减）。
+_CACHE_LOCK = threading.Lock()
 
 # 默认内联上限；vision 配置可覆盖。2026-07 再压一档，降低 27MB 原图触发 413 后丢视觉的概率。
 DEFAULT_MAX_INLINE_BYTES = 2 * 1024 * 1024
@@ -226,20 +230,22 @@ def _prepare_cache_key(
 
 def prepare_cache_stats() -> dict:
     """进程内转码缓存命中统计（测试 / ops-quality）。"""
-    return {
-        "size": len(_prepare_cache),
-        "max": _PREPARE_CACHE_MAX,
-        "hits": _prepare_cache_hits,
-        "misses": _prepare_cache_misses,
-    }
+    with _CACHE_LOCK:
+        return {
+            "size": len(_prepare_cache),
+            "max": _PREPARE_CACHE_MAX,
+            "hits": _prepare_cache_hits,
+            "misses": _prepare_cache_misses,
+        }
 
 
 def clear_prepare_cache() -> None:
     """测试钩子：清空转码 LRU。"""
     global _prepare_cache_hits, _prepare_cache_misses
-    _prepare_cache.clear()
-    _prepare_cache_hits = 0
-    _prepare_cache_misses = 0
+    with _CACHE_LOCK:
+        _prepare_cache.clear()
+        _prepare_cache_hits = 0
+        _prepare_cache_misses = 0
 
 
 def prepare_images_for_llm(
@@ -261,22 +267,27 @@ def prepare_images_for_llm(
     if not data or max_bytes <= 0:
         return []
     key = _prepare_cache_key(data, max_bytes, max_dimension, max_frames)
-    if use_cache and key in _prepare_cache:
-        _prepare_cache.move_to_end(key)
-        _prepare_cache_hits += 1
-        return list(_prepare_cache[key])
+    if use_cache:
+        with _CACHE_LOCK:
+            cached = _prepare_cache.get(key)
+        if cached is not None:
+            with _CACHE_LOCK:
+                _prepare_cache.move_to_end(key)
+                _prepare_cache_hits += 1
+            return list(cached)
 
     result = _prepare_images_for_llm_uncached(
         data, img, max_bytes=max_bytes, max_dimension=max_dimension, max_frames=max_frames,
     )
-    if use_cache and result:
-        _prepare_cache[key] = list(result)
-        _prepare_cache.move_to_end(key)
-        while len(_prepare_cache) > _PREPARE_CACHE_MAX:
-            _prepare_cache.popitem(last=False)
-        _prepare_cache_misses += 1
-    elif use_cache:
-        _prepare_cache_misses += 1
+    if use_cache:
+        with _CACHE_LOCK:
+            if result:
+                if key not in _prepare_cache:  # P2-G：double-check，不覆盖并发刚算好的结果
+                    _prepare_cache[key] = list(result)
+                _prepare_cache.move_to_end(key)
+                while len(_prepare_cache) > _PREPARE_CACHE_MAX:
+                    _prepare_cache.popitem(last=False)
+            _prepare_cache_misses += 1
     return result
 
 
