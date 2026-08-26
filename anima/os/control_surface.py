@@ -14,9 +14,12 @@
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger("anima.os.control_surface")
 
 
 @dataclass
@@ -381,24 +384,41 @@ class HumanAIControlSurface:
             return {"available": False, "reason": "缺少议题"}
         try:
             import asyncio
+            import threading
             from ..agent.agent_society import run_society_debate
 
             try:
-                loop = asyncio.get_running_loop()
+                asyncio.get_running_loop()
+                in_loop = True
             except RuntimeError:
-                loop = None
-            if loop is not None:
-                # 已有运行 loop（如 WebUI aiohttp）→ 等待协程完成
-                fut = asyncio.ensure_future(run_society_debate(question, context))
-                record, verdict = loop.run_until_complete(fut)
-            else:
+                in_loop = False
+
+            if not in_loop:
                 record, verdict = asyncio.run(run_society_debate(question, context))
+            else:
+                # P1-A：运行中 loop 内 run_until_complete 必抛 RuntimeError（原代码被静默吞）。
+                # 改用独立线程 + 专有循环同步等待结果，并在主线程重抛真实异常以留痕。
+                box: dict[str, Any] = {}
+
+                def _runner() -> None:
+                    try:
+                        box["res"] = asyncio.run(run_society_debate(question, context))
+                    except Exception as exc:  # noqa: BLE001
+                        box["exc"] = exc
+
+                _t = threading.Thread(target=_runner, daemon=True)
+                _t.start()
+                _t.join()
+                if "exc" in box:
+                    raise box["exc"]
+                record, verdict = box["res"]
             return {
                 "question": question,
                 "verdict": verdict.to_dict(),
                 "debate": record.to_dict(),
             }
         except Exception:  # noqa: BLE001 - 辩论失败不阻断控制面
+            logger.exception("society 辩论异常(留痕，不再静默)")
             return {"available": False, "reason": "society 辩论异常"}
 
     def long_term_memory(self, query: str | None = None) -> dict[str, Any]:
