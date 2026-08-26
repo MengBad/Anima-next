@@ -493,6 +493,9 @@ class AnimaCore:
         from anima.crossgroup import configure_crossgroup_manager
         get_time_sense(data_dir)
         get_desire_system(data_dir)
+        from anima.cognitive.mood import get_mood_system, set_mood_data_dir
+        set_mood_data_dir(data_dir)  # M3：get_mood_system() 默认归一到配置目录，消 split-brain
+        get_mood_system(data_dir)
         set_relation_data_dir(data_dir)  # M2.4：get_relation() 默认归一到配置目录，消 split-brain
         get_relation(data_dir)
         configure_crossgroup_manager(data_dir)  # M2.5：跨群数据落到配置目录/crossgroup

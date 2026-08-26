@@ -238,12 +238,22 @@ class MoodSystem:
         self.trigger("boring", 0.4)
 
 
-# 全局单例
+# 全局单例（M3：默认目录收口，消 split-brain——
+# 调用 mix get_mood_system() 与 get_mood_system(配置目录) 时不会再建第二实例到别的目录）
+_default_dir: str = "data"
 _mood_system: Optional[MoodSystem] = None
 
 
-def get_mood_system(data_dir: str = "data") -> MoodSystem:
+def set_mood_data_dir(data_dir: str) -> None:
+    """把 get_mood_system() 的默认目录归一到配置目录。"""
+    global _default_dir
+    _default_dir = data_dir or "data"
+
+
+def get_mood_system(data_dir: Optional[str] = None) -> MoodSystem:
     global _mood_system
+    if data_dir is None:
+        data_dir = _default_dir
     if _mood_system is None:
         _mood_system = MoodSystem(data_dir)
     return _mood_system
