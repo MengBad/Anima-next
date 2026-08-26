@@ -11,6 +11,7 @@
 from .manager_singleton import (
     get_crossgroup_manager,
     close_crossgroup_manager,
+    configure_crossgroup_manager,
 )
 from .memory.manager import CrossGroupManager, MemoryManager
 from .memory.user_memory import UserMemory, UserFact
@@ -26,6 +27,7 @@ from .extraction import extract_user_facts, EXTRACT_TOOLS, EXTRACT_SYSTEM
 __all__ = [
     "get_crossgroup_manager",
     "close_crossgroup_manager",
+    "configure_crossgroup_manager",
     "CrossGroupManager",
     "MemoryManager",
     "UserMemory",

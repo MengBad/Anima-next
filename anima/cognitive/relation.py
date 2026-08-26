@@ -474,10 +474,23 @@ class RelationEngine:
 
 # 全局单例（按 data_dir 隔离，避免跨数据目录串数据）
 _relation_engines: dict[str, RelationEngine] = {}
+_default_dir: str = "data"
 
 
-def get_relation(data_dir: str = "data") -> RelationEngine:
-    global _relation_engines
+def set_relation_data_dir(data_dir: str) -> None:
+    """核心初始化时把默认数据目录钉到配置的 persistence.data_dir。
+
+    修复 M2.4 split-brain：此前 get_relation() 默认相对 "data" 与
+    get_relation(data_dir) 各持一份引擎/relation.json（配置目录 ≠ "data" 时双库分裂）。
+    """
+    global _default_dir
+    _default_dir = data_dir
+
+
+def get_relation(data_dir: Optional[str] = None) -> RelationEngine:
+    global _relation_engines, _default_dir
+    if data_dir is None:
+        data_dir = _default_dir
     if data_dir not in _relation_engines:
         eng = RelationEngine(data_dir)
         eng.restore()
