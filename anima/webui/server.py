@@ -2955,8 +2955,10 @@ class WebUIServer:
         if workflows is None or not workflows.cancel(workflow_id):
             raise web.HTTPNotFound(text="未找到可取消的工作流")
         item = workflows.items[workflow_id]
-        if item.intent_id:
-            self.core.intent_ledger.cancel(item.intent_id, "Owner 从 WebUI 取消工作流")
+        # getattr 防护：core 未挂 intent_ledger(测试桩/旧核)时不得在取消后还抛 500=半完成状态
+        ledger = getattr(self.core, "intent_ledger", None)
+        if item.intent_id and ledger is not None:
+            ledger.cancel(item.intent_id, "Owner 从 WebUI 取消工作流")
             # 同步取消仍 pending 的议程，避免“工作流已取消但议程仍会发言”。
             agenda = getattr(self.core, "agenda", None)
             if agenda is not None:
