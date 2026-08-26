@@ -158,10 +158,33 @@ class Gateway:
             logger.warning("send_file 缺少 file_path")
             return None, None
 
-        return await self.channel.send_file(
+        # P0 纵深防御（P1-B）：caption 同 send() 一样过内心独白过滤；
+        # 若被整体剔除则发文件但清空 caption（不泄漏文本），并留痕。
+        caption = msg.message if isinstance(msg.message, str) else ""
+        if caption:
+            filt_caption = _filter_outbound_message(caption)
+            if not filt_caption:
+                logger.warning("出站文件 caption 被内心独白过滤整体剔除，已以空 caption 发送")
+                caption = ""
+            else:
+                caption = filt_caption
+
+        result = await self.channel.send_file(
             detail_type=msg.detail_type,
             target_id=msg.target_id,
             file_path=file_path,
             name=extra.get("name"),
-            caption=msg.message if isinstance(msg.message, str) else "",
+            caption=caption,
         )
+        audit = getattr(self.core, "audit", None)
+        if audit:
+            sent_id = result[0] if isinstance(result, tuple) else result
+            audit.emit(
+                "file_sent",
+                detail_type=msg.detail_type,
+                target_id=msg.target_id,
+                file_path=file_path,
+                ok=sent_id is not None,
+                caption_length=len(caption),
+            )
+        return result
