@@ -486,9 +486,11 @@ class AnimaCore:
 
     def _init_cognitive_state(self) -> None:
         """确保认知单例使用正确的数据目录并恢复。"""
-        data_dir = self.config.persistence.data_dir
+        from anima.core import paths
+        paths.set_data_dir(self.config.persistence.data_dir)  # P2-B：中央路径门面唯一接线点
+        data_dir = str(paths.data_dir())
         from anima.memory.chat_memory import get_chat_memory, set_chat_memory_persist_path
-        set_chat_memory_persist_path(f"{data_dir}/chat_memory.json")  # P2-A：无参 get_chat_memory() 也落盘
+        set_chat_memory_persist_path(str(paths.child("chat_memory.json")))  # P2-A+P2-B：无参也落盘
         get_chat_memory()
         from anima.cognitive.time_sense import get_time_sense, set_time_sense_data_dir
         set_time_sense_data_dir(data_dir)  # M3：get_time_sense() 默认归一到配置目录，消 split-brain
