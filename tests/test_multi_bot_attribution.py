@@ -4,12 +4,18 @@
 - build_title_change_note：群专属头衔变更且目标是自己时生成 self_notes 文本；
 - 集成：群消息发信人标记 sender_is_bot；group_title_update 事件写 self_notes。
 """
+from types import SimpleNamespace
+
 import pytest
 
 from anima.channels.onebot11 import (
     OneBot11Adapter,
     is_bot_member,
-    build_title_change_note,
+)
+# P2-D：build_title_change_note 由信道迁入认知层 event.notice 消费者（social_reactions）
+from anima.cognitive.social_reactions import (
+    SocialReactions,
+    _build_title_change_note as build_title_change_note,
 )
 
 
@@ -67,31 +73,18 @@ async def test_title_change_writes_self_notes(monkeypatch, tmp_path):
         "anima.cognitive.learning.get_learning", lambda *_a, **_k: _FakeLearning()
     )
 
-    adapter = OneBot11Adapter()
+    class _Channel:
+        def _known_bot_ids(self):
+            return set()
 
-    class _EventBus:
-        async def publish(self, topic, event):
-            return None
+    core = SimpleNamespace(
+        config=SimpleNamespace(persistence=SimpleNamespace(data_dir=str(tmp_path)), social=None),
+        gateway=SimpleNamespace(channel=_Channel()),
+    )
+    obj = SocialReactions(core)
 
-    class _Gateway:
-        async def on_event(self, event):
-            return None
-
-    class _Cfg:
-        class qq:
-            known_bot_ids = []
-
-        persistence = type("P", (), {"data_dir": str(tmp_path)})()
-
-    class _Core:
-        config = _Cfg()
-        event_bus = _EventBus()
-        gateway = _Gateway()
-
-    adapter.core = _Core()
-    adapter.self_id = 123
-
-    raw = {
+    # P2-D：头衔变更写入由信道内联迁入认知层 event.notice 消费者
+    ev = {
         "post_type": "notice",
         "notice_type": "group_title_update",
         "group_id": 727631526,
@@ -101,7 +94,7 @@ async def test_title_change_writes_self_notes(monkeypatch, tmp_path):
         "self_id": 123,
         "time": 1,
     }
-    await adapter._dispatch_event_inner(raw)
+    await obj.handle_notice(ev)
     assert any("头衔被QQ 456改为【群宠】" in c for c in captured)
 
 

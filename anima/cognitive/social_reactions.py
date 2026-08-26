@@ -141,6 +141,38 @@ def _parse_poke_custom(event: dict) -> tuple[Optional[str], Optional[str]]:
     return action, suffix
 
 
+def _build_title_change_note(event, self_id) -> "Optional[str]":
+    """群专属头衔变更且目标是自己时，生成一条 self_notes 文本；否则返回 None。
+
+    P2-D：由信道 on_event 内联迁入认知层（event.notice 订阅消费者）。
+    OneBot11 的 group_title_update：user_id/target_id 为被改头衔成员，operator_id 为操作者。
+    """
+    if not isinstance(event, dict):
+        return None
+    if event.get("notice_type") != "group_title_update":
+        return None
+    try:
+        target = int(event.get("user_id") or event.get("target_id") or 0)
+    except (TypeError, ValueError):
+        target = 0
+    try:
+        sid = int(self_id) if self_id is not None else 0
+    except (TypeError, ValueError):
+        sid = 0
+    if target != sid or sid == 0:
+        return None
+    new_title = (event.get("title") or (event.get("raw") or {}).get("title") or "").strip()
+    operator = event.get("operator_id")
+    try:
+        operator = int(operator) if operator is not None else None
+    except (TypeError, ValueError):
+        operator = None
+    operator_desc = f"QQ {operator}" if operator else "有人"
+    if new_title:
+        return f"头衔被{operator_desc}改为【{new_title}】"
+    return f"头衔被{operator_desc}清空了"
+
+
 class SocialReactions:
     """自主社交行为管理器。"""
 
@@ -221,6 +253,12 @@ class SocialReactions:
 
     async def handle_notice(self, event: dict) -> None:
         """处理 notice 事件。"""
+        # P2-D：头衔变更写入 self_notes/竞争度——由信道 on_event 迁入本消费者，
+        # 独立于社交反应配置（始终记录，行为与旧内联一致）。
+        if event.get("notice_type") == "group_title_update":
+            await self._on_group_title_update(event)
+            return
+
         cfg = self._config
         if cfg is None:
             return
@@ -253,6 +291,40 @@ class SocialReactions:
             # 部分实现直接以 poke 作为 notice_type，同样视为戳一戳。
             if cfg.poke_back and self._is_poke_to_self(event, notice_type):
                 await self._on_poke(group_id, user_id, event)
+
+    async def _on_group_title_update(self, event: dict) -> None:
+        """P2-D：头衔被改且目标是自己 → 写 self_notes(self_correction)；操作者是
+        其他已知 Bot → 记竞争事件(rivalry)。由 event.notice 订阅触发，信道不再直写。"""
+        sid = self._resolve_self_id(event)
+        note = _build_title_change_note(event, sid)
+        if note:
+            try:
+                from anima.cognitive.learning import get_learning
+                data_dir = str(self.core.config.persistence.data_dir)
+                get_learning(data_dir).add_note(note, delta=0.05, category="self_correction")
+                logger.info("[头衔变更] %s", note)
+            except Exception:
+                logger.exception("头衔变更写入 self_notes 失败")
+        try:
+            from anima.cognitive import bot_social
+            data_dir = str(self.core.config.persistence.data_dir)
+            op = event.get("operator_id")
+            try:
+                op = int(op) if op is not None else None
+            except (TypeError, ValueError):
+                op = None
+            if op is not None:
+                ch = getattr(getattr(self.core, "gateway", None), "channel", None)
+                known = set()
+                if ch is not None and callable(getattr(ch, "_known_bot_ids", None)):
+                    known = ch._known_bot_ids()
+                if bot_social.is_bot_uid(op, known):
+                    bot_social.BotRelationStore(data_dir).record_interaction(
+                        str(op), None, "rivalry", time.time(),
+                    )
+                    logger.info("[多Bot] 头衔被其他 Bot(%s)改动，竞争度+0.3", op)
+        except Exception:
+            logger.exception("多 Bot 头衔冲突关系更新失败（已隔离）")
 
     async def _on_member_join(self, group_id: Optional[int], user_id: Optional[int],
                                event: dict) -> None:

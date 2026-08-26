@@ -569,36 +569,6 @@ def is_bot_message(
     return bool(event.get("_is_bot_sender") or event.get("sender_is_bot"))
 
 
-def build_title_change_note(event: "dict | None", self_id: "int | None") -> "str | None":
-    """群专属头衔变更且目标是自己时，生成一条 self_notes 文本；否则返回 None。
-
-    OneBot11 的 group_title_update 事件：user_id/target_id 为被改头衔的成员，
-    operator_id 为操作者。只有目标是本 bot 才需要记录（含操作者归因）。
-    """
-    if not isinstance(event, dict):
-        return None
-    if event.get("notice_type") != "group_title_update":
-        return None
-    try:
-        target = int(event.get("user_id") or event.get("target_id") or 0)
-    except (TypeError, ValueError):
-        target = 0
-    try:
-        sid = int(self_id) if self_id is not None else 0
-    except (TypeError, ValueError):
-        sid = 0
-    if target != sid or sid == 0:
-        return None
-    new_title = (event.get("title") or (event.get("raw") or {}).get("title") or "").strip()
-    operator = event.get("operator_id")
-    try:
-        operator = int(operator) if operator is not None else None
-    except (TypeError, ValueError):
-        operator = None
-    operator_desc = f"QQ {operator}" if operator else "有人"
-    if new_title:
-        return f"头衔被{operator_desc}改为【{new_title}】"
-    return f"头衔被{operator_desc}清空了"
 
 
 # ---------------------------------------------------------------------------
@@ -979,29 +949,6 @@ class OneBot11Adapter(Module):
 
         # 同时通过 Gateway 记录
         await self.core.gateway.on_event(event)
-
-        # 群头衔（专属头衔）变更且目标是自己 → 写入 self_notes（多 bot 环境归属）
-        if event["post_type"] == "notice" and event.get("notice_type") == "group_title_update":
-            note = build_title_change_note(event, self.self_id)
-            if note:
-                try:
-                    from anima.cognitive.learning import get_learning
-                    data_dir = str(self.core.config.persistence.data_dir)
-                    get_learning(data_dir).add_note(note, delta=0.05, category="self_correction")
-                    logger.info("[头衔变更] %s", note)
-                except Exception:
-                    logger.exception("头衔变更写入 self_notes 失败")
-                # 多 Bot 社交：若操作者是其他已知 Bot（如改我头衔/禁言），记为竞争事件
-                try:
-                    from anima.cognitive import bot_social
-                    op = event.get("operator_id")
-                    if op is not None and bot_social.is_bot_uid(op, self._known_bot_ids()):
-                        bot_social.BotRelationStore(data_dir).record_interaction(
-                            str(op), None, "rivalry", time.time(),
-                        )
-                        logger.info("[多Bot] 头衔被其他 Bot(%s)改动，竞争度+0.3", op)
-                except Exception:
-                    logger.exception("多 Bot 头衔冲突关系更新失败（已隔离）")
 
     # ------------------------------------------------------------------
     # 出站：优先 HTTP API；HTTP 不可用时回退 WS action
