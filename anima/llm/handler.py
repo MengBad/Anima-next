@@ -2233,7 +2233,14 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     _tag_emotion = None
     if ctx.reply and "&&" in ctx.reply:
         _tag_emotion, cleaned = _extract_emotion_tag(ctx.reply)
-        ctx.reply = cleaned
+        if (cleaned or "").strip():
+            ctx.reply = cleaned
+        else:
+            # M2.2：整条回复只是 &&标签&&（stealer 被动标签），剥净后为空。
+            # 别静默不发送（否则 should_reply 又不落任何 trace）——发一句轻量兜底
+            # 并在日志留痕，热群不显凭空不响应。
+            logger.warning("回复剥标签后为空(M2.2): emotion=%r，发轻量兜底", _tag_emotion)
+            ctx.reply = "喵"
     # 引用(quote)优先：凡在回复某条消息(有 message_id)即前插 reply 段——含被动接话，
     # 让回复锚定上下文、热群不显凭空插话；引用本身会通知被引用者。
     if detail_type == "group" and message_id is not None:
