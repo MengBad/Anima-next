@@ -253,6 +253,8 @@ class VectorMemory:
         self.embedding_dim = embedding_dim
         self.reranker = reranker
         self._ready = False
+        # P0-B2：遗忘导出分页轮转偏移——保证超 limit 行后仍能覆盖全体，而非反复评同一批
+        self._dump_offset = 0
 
     async def _init_db(self) -> None:
         if self._ready:
@@ -285,12 +287,30 @@ class VectorMemory:
                     )
                     row = await cur.fetchone()
                     if row and row[0] and f"float[{self.embedding_dim}]" not in row[0]:
+                        # P0-B3：维度不匹配不再静默 DROP+DELETE 清空全部长期记忆。
+                        # 改为把旧 meta 整表改名备份，向量表重建；owner 可事后决定恢复或清理。
+                        import time as _t
+                        suffix = _t.strftime("%Y%m%d%H%M%S")
                         logger.warning(
-                            "向量表维度不匹配 (%s)，重建 memories 表并清空孤儿 meta",
-                            row[0],
+                            "向量表维度不匹配 (%s)：旧记忆 meta 备份为 memory_meta_dim_backup_%s 后重建向量表",
+                            row[0], suffix,
                         )
                         await db.execute("DROP TABLE IF EXISTS memories")
-                        await db.execute("DELETE FROM memory_meta")
+                        await db.execute(
+                            f"ALTER TABLE memory_meta RENAME TO memory_meta_dim_backup_{suffix}"
+                        )
+                        # 以原名建空表，运行时继续可用；旧数据完整保留在备份表中
+                        await db.execute(
+                            """CREATE TABLE IF NOT EXISTS memory_meta (
+                                rowid INTEGER PRIMARY KEY,
+                                text TEXT NOT NULL,
+                                meta TEXT,
+                                ts REAL,
+                                salience REAL,
+                                source_uin INTEGER,
+                                source_gid INTEGER
+                            )"""
+                        )
                     await db.execute(
                         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories USING vec0(embedding float[{self.embedding_dim}])"
                     )
@@ -310,6 +330,16 @@ class VectorMemory:
         await self._init_db()
         if not text.strip():
             return False
+
+        # P0-B2：精确文本去重——同一全文已存在则跳过（原实现每条消息无脑入库，
+        # 长期记忆被重复项稀释且无上限）。近重复仍允许入库（交由遗忘机制衰减）。
+        async with aiosqlite.connect(self.db_path) as db:
+            cur = await db.execute(
+                "SELECT 1 FROM memory_meta WHERE text = ? LIMIT 1", (text,)
+            )
+            if await cur.fetchone():
+                logger.debug("向量记忆去重跳过（相同全文已存在）")
+                return True
 
         vec = None
         if self.embedding:
@@ -511,14 +541,25 @@ class VectorMemory:
         ]
 
     async def dump_for_forgetting(self, limit: int = 5000) -> list[dict[str, Any]]:
-        """导出所有记忆用于遗忘评分。"""
+        """按 rowid 分页导出记忆供遗忘评分。
+
+        P0-B2：原实现固定 LIMIT 无排序无偏移——行数超过 limit 时每次都评估同
+        一批最新/最旧行，其余永不进入遗忘流程。改为 rowid 排序 + 实例级偏移
+        轮转：每次调用返回下一页；不足一页说明已到末尾，下一轮回绕从头覆盖。
+        """
         await self._init_db()
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
-                "SELECT rowid, text, meta, ts, salience FROM memory_meta LIMIT ?",
-                (limit,),
+                "SELECT rowid, text, meta, ts, salience FROM memory_meta "
+                "ORDER BY rowid LIMIT ? OFFSET ?",
+                (limit, max(0, int(getattr(self, "_dump_offset", 0)))),
             )
             rows = await cursor.fetchall()
+        fetched = len(rows)
+        if fetched < limit:
+            self._dump_offset = 0          # 已到末尾，下轮从头再覆盖
+        else:
+            self._dump_offset = getattr(self, "_dump_offset", 0) + fetched
         return [
             {
                 "rowid": rowid,
