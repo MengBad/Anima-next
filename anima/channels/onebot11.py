@@ -1475,30 +1475,42 @@ class OneBot11Adapter(Module):
         )
         return resp is not None
 
+    @staticmethod
+    async def _read_body(resp, max_bytes: int = 0) -> Optional[bytes]:
+        """从 aiohttp 响应流读取字节；非 200 / 超 max_bytes 即中止返回 None。"""
+        if resp.status != 200:
+            return None
+        if max_bytes and resp.content_length and resp.content_length > max_bytes:
+            logger.debug("下载 Content-Length 超限跳过: %s bytes", resp.content_length)
+            return None
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await resp.content.read(64 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if max_bytes and total > max_bytes:
+                logger.debug("下载流式超限跳过: %d bytes", total)
+                return None
+            chunks.append(chunk)
+        return b"".join(chunks) if total else None
+
     async def _download(self, url: str, max_bytes: int = 0) -> Optional[bytes]:
-        """下载一个 URL 的字节（可选大小上限）。失败返回 None。"""
+        """下载一个 URL 的字节（可选大小上限）。失败返回 None。
+
+        M4(resolve_image)：复用进程级 _http_session，不再每次新建 ClientSession。
+        """
         if not url:
             return None
         try:
+            if self._http_session is not None and not self._http_session.closed:
+                async with self._http_session.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
+                    return await self._read_body(r, max_bytes)
+            # 会话未建（极早期）时临时兜底
             async with aiohttp.ClientSession() as s:
                 async with s.get(url, timeout=aiohttp.ClientTimeout(total=20)) as r:
-                    if r.status != 200:
-                        return None
-                    if max_bytes and r.content_length and r.content_length > max_bytes:
-                        logger.debug("下载 Content-Length 超限跳过: %s (%d bytes)", url[:60], r.content_length)
-                        return None
-                    chunks: list[bytes] = []
-                    total = 0
-                    while True:
-                        chunk = await r.content.read(64 * 1024)
-                        if not chunk:
-                            break
-                        total += len(chunk)
-                        if max_bytes and total > max_bytes:
-                            logger.debug("下载流式超限跳过: %s (%d bytes)", url[:60], total)
-                            return None
-                        chunks.append(chunk)
-                    return b"".join(chunks) if total else None
+                    return await self._read_body(r, max_bytes)
         except Exception:
             logger.debug("下载异常: %s", url[:60])
             return None
