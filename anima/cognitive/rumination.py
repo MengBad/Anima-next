@@ -100,9 +100,18 @@ class RuminationEngine:
         from anima.memory.chat_memory import get_chat_memory
         memory = get_chat_memory()
 
-        # 收集最近所有对话片段
+        # 收集最近对话片段。P0-B1：默认仅群聊桶、最多 max_sessions 个会话——
+        # 群内是共享语境可反思；私聊是一对一信任语境，不卷入跨上下文反思；
+        # 同防单个热门会话独占 1500 字预算。
         recent_text = ""
-        for key in list(memory._store.keys()):
+        _rcfg = getattr(self.core.config, "rumination", None)
+        _scope = str(getattr(_rcfg, "scope", "group_only") or "group_only")
+        _max_sessions = max(1, int(getattr(_rcfg, "max_sessions", 6) or 6))
+        session_keys = [
+            k for k in list(memory._store.keys())
+            if _scope == "all" or str(k).startswith("group_")
+        ][-_max_sessions:]
+        for key in session_keys:
             od = memory._store[key]
             for _, entries in list(od.items())[-2:]:
                 for e in entries:

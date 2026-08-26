@@ -286,6 +286,18 @@ class NotesCompactConfig(BaseModel):
     compact_model: str = ""          # 压缩所用模型；空=复用 llm.model
 
 
+class RuminationConfig(BaseModel):
+    """反刍取样范围（P0-B1：跨用户隐私串扰收口）。
+
+    - scope="group_only"（默认）：只从群聊会话桶取样——群内本就是共享语境，
+      bot 作为群成员的共同经历可反思；私聊是一对一信任语境，不卷入跨上下文。
+    - scope="all"：旧行为（全库所有桶），仅供 owner 显式选择。
+    - max_sessions：最多取样最近活跃的 N 个会话桶，防止热门群独占 1500 字预算。
+    """
+    scope: str = "group_only"        # group_only | all
+    max_sessions: int = 6
+
+
 class StickerConfig(BaseModel):
     """表情包自收集系统：从群消息自动捡图存库，回复时由 LLM 选图附带。"""
     enabled: bool = True             # 总开关
@@ -738,6 +750,7 @@ class AnimaConfig(BaseModel):
     # RFC-0001 Capability Layer 治理开关（与上一行 capabilities 语义无关，勿混用）
     capability_layer: CapabilityLayerConfig = Field(default_factory=CapabilityLayerConfig)
     notes_compact: NotesCompactConfig = Field(default_factory=NotesCompactConfig)
+    rumination: RuminationConfig = Field(default_factory=RuminationConfig)
     sticker: StickerConfig = Field(default_factory=StickerConfig)
     bilibili_read: BilibiliReadConfig = Field(default_factory=BilibiliReadConfig)
     self_code: SelfCodeConfig = Field(default_factory=SelfCodeConfig)
