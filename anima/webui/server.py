@@ -3639,9 +3639,10 @@ class WebUIServer:
                     stderr=subprocess.DEVNULL,
                 )
             except Exception:  # noqa: BLE001
+                # 精确重启回退（M3）：systemctl→systemd 向单元进程发 TERM，绝不模糊 pkill -f 进程名（可误杀操作者 shell 等非目标）。
                 try:
                     subprocess.Popen(
-                        ["pkill", "-f", "anima start"],
+                        ["systemctl", "kill", "-s", "TERM", "anima"],
                         start_new_session=True,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
