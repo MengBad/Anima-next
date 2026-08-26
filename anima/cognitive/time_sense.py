@@ -188,12 +188,22 @@ class TimeSense:
             self.hourly_distribution.pop(uid, None)  # P3: 同步清理
 
 
-# 全局单例
+# 全局单例（M3：默认目录收口，消 split-brain——
+# 调用 mix get_time_sense() 与 get_time_sense(配置目录) 时不会再建到别的目录）
+_default_dir: str = "data"
 _time_sense: TimeSense | None = None
 
 
-def get_time_sense(data_dir: str = "data") -> TimeSense:
+def set_time_sense_data_dir(data_dir: str) -> None:
+    """把 get_time_sense() 的默认目录归一到配置目录。"""
+    global _default_dir
+    _default_dir = data_dir or "data"
+
+
+def get_time_sense(data_dir: Optional[str] = None) -> TimeSense:
     global _time_sense
+    if data_dir is None:
+        data_dir = _default_dir
     if _time_sense is None:
         _time_sense = TimeSense(data_dir)
         _time_sense.restore()

@@ -487,7 +487,9 @@ class AnimaCore:
     def _init_cognitive_state(self) -> None:
         """确保认知单例使用正确的数据目录并恢复。"""
         data_dir = self.config.persistence.data_dir
-        from anima.cognitive.time_sense import get_time_sense
+        from anima.cognitive.time_sense import get_time_sense, set_time_sense_data_dir
+        set_time_sense_data_dir(data_dir)  # M3：get_time_sense() 默认归一到配置目录，消 split-brain
+        get_time_sense(data_dir)
         from anima.cognitive.desire import get_desire_system
         from anima.cognitive.relation import get_relation, set_relation_data_dir
         from anima.crossgroup import configure_crossgroup_manager
