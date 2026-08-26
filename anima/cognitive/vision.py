@@ -56,12 +56,10 @@ LABEL_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-# 表情包情绪分类固定词表（与 stickers.EMOTION_SYNONYMS 的 canonical 保持一致）。
+# 表情包情绪分类固定词表——单源取自 stickers.EMOTION_TAXONOMY（M3 归并，
+# 消除与 stickers 的重复字面量，避免一处增删情绪词导致词表漂移）。
 # 收集时由视觉模型直接判定 emotion；发送时据此做情绪匹配。
-STICKER_EMOTIONS = [
-    "开心", "无语", "嘲讽", "生气", "震惊",
-    "撒娇", "委屈", "赞同", "吃瓜", "安慰", "害羞", "得意",
-]
+from anima.cognitive.stickers import EMOTION_TAXONOMY as STICKER_EMOTIONS
 
 CLASSIFY_SYSTEM = (
     "你是表情包审查员。判断这张图属于哪一类，并（若是表情包）给出中文标签与情绪。\n"

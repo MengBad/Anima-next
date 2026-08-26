@@ -35,7 +35,8 @@ _BM25_B: float = 0.75
 _EPSILON: float = 0.25
 
 # 否定词集合（语义反转检测）。
-_NEGATION_WORDS = frozenset("不没别无非未莫休勿非")
+# 否定字符集单源：取自 stickers._NEGATION_CHARS（M3 归并重复字面量）
+from anima.cognitive.stickers import _NEGATION_CHARS as _NEGATION_WORDS
 
 
 def configure_similarity(
