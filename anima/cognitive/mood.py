@@ -48,16 +48,28 @@ class MoodState:
         )
 
 
+# 情绪象限边界（M3：魔法数命名化，无行为变更）
+_VALENCE_POSITIVE = 0.15   # 正价态阈值（负向取其相反数）
+_VALENCE_LIMIT = 1.01      # 价态坐标上限（开区间）
+_AROUSAL_HIGH = 0.5        # 高唤起下界
+_AROUSAL_LIMIT = 1.01      # 唤起坐标上限（开区间）
+# 昼夜节律基础情绪调整（valence_delta, arousal_delta；M3 命名化，无行为变更）
+_DELTA_DEEP_NIGHT = (-0.1, -0.2)
+_DELTA_MORNING = (0.0, -0.1)
+_DELTA_AFTERNOON = (0.05, -0.15)
+_DELTA_EVENING = (0.1, 0.1)
+_DELTA_LATE_NIGHT = (-0.05, -0.1)
+
 # 情绪标签映射（valence, arousal 象限）
 # 阈值设计：单次中等强度事件（intensity≈0.8）即可跨越标签边界
 _MOOD_LABELS = {
     # (valence_range, arousal_range): label
-    ((0.15, 1.01), (0.5, 1.01)): "excited",    # 高兴+兴奋
-    ((0.15, 1.01), (0.0, 0.5)): "happy",        # 高兴+平静
-    ((-0.15, 0.15), (0.5, 1.01)): "curious",    # 中性+兴奋 → 好奇
-    ((-0.15, 0.15), (0.0, 0.5)): "neutral",     # 中性+平静
-    ((-1.01, -0.15), (0.5, 1.01)): "annoyed",   # 不悦+兴奋 → 烦躁
-    ((-1.01, -0.15), (0.0, 0.5)): "tired",      # 不悦+低迷 → 疲惫/无聊
+    ((_VALENCE_POSITIVE, _VALENCE_LIMIT), (_AROUSAL_HIGH, _AROUSAL_LIMIT)): "excited",    # 高兴+兴奋
+    ((_VALENCE_POSITIVE, _VALENCE_LIMIT), (0.0, _AROUSAL_HIGH)): "happy",                  # 高兴+平静
+    ((-_VALENCE_POSITIVE, _VALENCE_POSITIVE), (_AROUSAL_HIGH, _AROUSAL_LIMIT)): "curious", # 中性+兴奋 → 好奇
+    ((-_VALENCE_POSITIVE, _VALENCE_POSITIVE), (0.0, _AROUSAL_HIGH)): "neutral",            # 中性+平静
+    ((-_VALENCE_LIMIT, -_VALENCE_POSITIVE), (_AROUSAL_HIGH, _AROUSAL_LIMIT)): "annoyed",   # 不悦+兴奋 → 烦躁
+    ((-_VALENCE_LIMIT, -_VALENCE_POSITIVE), (0.0, _AROUSAL_HIGH)): "tired",                # 不悦+低迷 → 疲惫/无聊
 }
 
 # 情绪标签 → 中文描述（注入 prompt，含具体表达指导）
@@ -84,15 +96,15 @@ def _time_based_adjustment() -> tuple[float, float]:
     """根据时间段返回基础情绪调整（valence_delta, arousal_delta）。"""
     hour = datetime.now(TZ).hour
     if 0 <= hour < 6:      # 深夜：疲惫
-        return -0.1, -0.2
+        return _DELTA_DEEP_NIGHT
     elif 6 <= hour < 9:    # 早晨：刚醒，略低迷
-        return 0.0, -0.1
+        return _DELTA_MORNING
     elif 12 <= hour < 14:  # 午后：慵懒
-        return 0.05, -0.15
+        return _DELTA_AFTERNOON
     elif 18 <= hour < 22:  # 傍晚：精神好
-        return 0.1, 0.1
+        return _DELTA_EVENING
     elif 22 <= hour < 24:  # 深夜渐入
-        return -0.05, -0.1
+        return _DELTA_LATE_NIGHT
     return 0.0, 0.0
 
 
