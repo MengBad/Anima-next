@@ -2653,7 +2653,7 @@ class WebUIServer:
             "notes_tail": notes[-2000:],
             "scar_count": len(getattr(scars, "_scars", [])),
             "world_entry_count": len(getattr(world, "_entries", [])),
-            "agenda_pending": len(self.core.agenda.pending()),
+            "agenda_pending": len(self.core.agenda.pending()) if getattr(self.core, "agenda", None) else 0,
             "episodic_memory": getattr(self.core, "episodes", None).summary() if getattr(self.core, "episodes", None) else {},
             "open_commitments": [
                 self._plain(item)
@@ -2927,7 +2927,10 @@ class WebUIServer:
     async def agenda(self, request: web.Request) -> web.Response:
         # 默认只返回待执行；?all=1 才含历史 consumed/cancelled，避免 WebUI 把旧议程当待办。
         include_all = str(request.query.get("all") or "").strip().lower() in {"1", "true", "yes"}
-        items = list(self.core.agenda.items)
+        agenda = getattr(self.core, "agenda", None)
+        if agenda is None:
+            return web.json_response({"items": [], "summary": {}})
+        items = list(agenda.items)
         if not include_all:
             items = [item for item in items if getattr(item, "status", "") == "pending"]
         return web.json_response({"items": [self._plain(item) for item in items]})
@@ -2992,11 +2995,14 @@ class WebUIServer:
     async def cancel_agenda(self, request: web.Request) -> web.Response:
         self._owner_id()
         agenda_id = request.match_info["agenda_id"]
-        if not self.core.agenda.cancel(agenda_id):
+        agenda = getattr(self.core, "agenda", None)
+        if agenda is None or not agenda.cancel(agenda_id):
             raise web.HTTPNotFound(text="未找到待执行议程")
-        item = next((row for row in self.core.agenda.items if row.id == agenda_id), None)
+        item = next((row for row in agenda.items if row.id == agenda_id), None)
         if item and getattr(item, "intent_id", ""):
-            self.core.intent_ledger.cancel(item.intent_id, "Owner 从 WebUI 取消")
+            ledger = getattr(self.core, "intent_ledger", None)
+            if ledger is not None:
+                ledger.cancel(item.intent_id, "Owner 从 WebUI 取消")
         audit = getattr(self.core, "audit", None)
         if audit:
             audit.emit("agenda_cancelled_from_webui", agenda_id=agenda_id)
