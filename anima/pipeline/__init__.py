@@ -7,7 +7,7 @@
   4. Generation  — LLM 生成回复
   5. Guardrail   — 输出护栏
 
-每个阶段故障隔离，单个阶段异常不影响后续阶段（除 Generation 失败外）。
+每个阶段故障隔离：非生成阶段异常跳过继续；Generation 失败显式标记 generation_failed 如实降级。
 """
 
 from __future__ import annotations
@@ -76,7 +76,16 @@ class Pipeline:
         return self
 
     async def run(self, ctx: PipelineContext) -> PipelineContext:
-        """按序执行所有阶段，支持短路。"""
+        """按序执行所有阶段，支持短路。
+
+        故障隔离契约：非生成阶段异常记录后跳过，流水线继续执行后续阶段。
+        P0-A4：Generation（generation_stage）失败不再被无条件吞掉——原实现与
+        模块 docstring「除 Generation 失败外」自相矛盾，崩溃后走静默空回，
+        谁也说不清为什么没回。改为显式如实降级：标记
+        ctx.meta["generation_failed"]=True、置 stop_reason、中止后续阶段，
+        交给 handler 空回复分支既有的诚实遥测（reply_unavailable 审计 +
+        reply_quality 计数）——不伪造成功，也不再无迹可寻。
+        """
         for i, stage in enumerate(self.stages):
             try:
                 result = await stage(ctx)
@@ -88,5 +97,12 @@ class Pipeline:
                     ctx.should_reply = False
                     logger.debug("Pipeline 阶段 %d(%s) 跳过回复", i, stage.__name__)
             except Exception:
+                if getattr(stage, "__name__", "") == "generation_stage":
+                    logger.exception(
+                        "Pipeline 生成阶段失败，如实降级（不伪造回复，stop_reason=generation_failed）")
+                    ctx.should_reply = False
+                    ctx.stop_reason = "generation_failed"
+                    ctx.meta["generation_failed"] = True
+                    break
                 logger.exception("Pipeline 阶段 %d(%s) 异常，跳过", i, stage.__name__)
         return ctx
