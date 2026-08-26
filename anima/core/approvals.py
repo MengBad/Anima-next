@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields as _dc_fields
 from typing import Any
 
 from anima.core.persistence import PersistenceProvider
+
+logger = logging.getLogger("anima.core.approvals")
 
 
 @dataclass
@@ -39,11 +42,21 @@ class ApprovalStore:
         self._load()
 
     def _load(self) -> None:
+        # 容错加载（M4/扫描 P1）：只喂类声明的字段——
+        # 未来 schema 新增字段(前向兼容)不导致 TypeError 整条丢弃；损坏项落 warning 留痕而非静默丢审批。
+        known = {f.name for f in _dc_fields(PendingApproval)}
         for raw in self.persistence.read_json("pending_approvals.json", []) or []:
             try:
-                item = PendingApproval(**raw)
+                if not isinstance(raw, dict):
+                    logger.warning("pending_approvals 含非对象项，跳过: %r", str(raw)[:80])
+                    continue
+                extra = set(raw) - known
+                if extra:
+                    logger.debug("审批项含未知字段(前向兼容忽略): %s", sorted(extra)[:5])
+                item = PendingApproval(**{k: v for k, v in raw.items() if k in known})
                 self.items[item.id] = item
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                logger.warning("pending_approvals 加载跳过(字段损坏): %s", exc)
                 continue
         self._expire()
 
