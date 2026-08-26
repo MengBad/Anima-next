@@ -50,6 +50,14 @@ from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable
 
 # ---------------------------------------------------------------------------
+# P2-C 接线状态（契约测试锁死，见 tests/test_scan_p2c_permission_authority.py）
+# ---------------------------------------------------------------------------
+# 运行时权限判定唯一权威 = anima.pipeline.stages.permission._check_permission。
+# 本模块是 R6.3 企业级 RBAC 的**规格蓝本**，尚未被运行时路径接线；任何绕开
+# _check_permission 直接消费本模块的路径都会触发契约测试失败。
+RUNTIME_WIRED: bool = False
+
+# ---------------------------------------------------------------------------
 # 常量词表（与 R6.2 event_chain / tools 权限命名对齐）
 # ---------------------------------------------------------------------------
 DECISION_ALLOWED = "allowed"
