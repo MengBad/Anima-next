@@ -457,24 +457,20 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.debug("情绪注入失败，已隔离")
 
-    # S1 内在状态可感知蓝图：此刻底色——唯一合成点 cognitive.inner_state，
-    # 第一人称一句话（J2 边界包装），protected 必注入，不再被预算裁成摆设。
+    # S1/S2 内在状态可感知蓝图：唯一合成点 cognitive.inner_state 分流——
+    # 被问自述(高权展开)压掉此刻底色(J2 大小关系判断)；否则一句话底色。
+    # 均 protected 必注入、meta 可查，fail-closed 不阻塞流水线。
     try:
-        _rel_stage_s1 = ""
-        try:
-            from anima.cognitive.relation import get_relation_engine as _gre_s1
-            _rel_s1 = _gre_s1(data_dir).get(int(ctx.user_id))
-            _rel_stage_s1 = getattr(getattr(_rel_s1, "stage", None), "name", "") or ""
-        except Exception:
-            _rel_stage_s1 = ""
-        from anima.cognitive.inner_state import build_current_state_fragment as _bcsf
-        _inner_frag = _bcsf(data_dir, user_id=int(ctx.user_id),
-                            relation_stage=_rel_stage_s1)
-        if _inner_frag:
-            add_system_fragment("inner_state", _inner_frag, 55, protected=True)
+        from anima.cognitive.inner_state import decide_injection as _decide_is
+        _is_mode, _is_frag = _decide_is(data_dir, getattr(ctx, "text", ""),
+                                        user_id=int(ctx.user_id))
+        if _is_frag:
+            _is_key = ("inner_state_self_tell" if _is_mode == "self_tell" else "inner_state")
+            add_system_fragment(_is_key, _is_frag, 55, protected=True)
             ctx.meta["mood_provided"] = True
+            ctx.meta["inner_state_mode"] = _is_mode
     except Exception:
-        logger.exception("S1 此刻状态合成失败（不阻塞流水线）")
+        logger.exception("内在状态合成失败（不阻塞流水线）")
 
     # F2: 发癫模式注入
     try:

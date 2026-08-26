@@ -56,6 +56,7 @@ def test_build_fragment_reads_real_sources(tmp_path):
 def test_cognition_wired_to_inner_state():
     """契约：认知阶段必须经唯一合成点注入，不得各自拼装。"""
     src = io.open("anima/pipeline/stages/cognition.py", encoding="utf-8").read()
-    assert "from anima.cognitive.inner_state import build_current_state_fragment" in src
-    assert 'add_system_fragment("inner_state"' in src
+    # S2 落地后接线升级为 decide_injection 分流（底色/自述同 protected 待遇）
+    assert "from anima.cognitive.inner_state import decide_injection" in src
+    assert 'add_system_fragment(_is_key, _is_frag, 55, protected=True)' in src
     assert "protected=True" in src

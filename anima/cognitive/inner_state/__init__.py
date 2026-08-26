@@ -86,3 +86,29 @@ def build_current_state_fragment(data_dir, user_id=None,
         except Exception:
             stage = ""
     return wrap_boundary(current_state_line(valence, arousal, label, stage=stage)) or None
+from anima.cognitive.inner_state.self_tell import (  # noqa: E402,F401
+    build_self_narrative_fragment,
+    detect_self_inquiry,
+    narrative_line,
+    self_narrative_snapshot,
+)
+
+
+def decide_injection(data_dir, text, user_id=None):
+    """S1/S2 分流唯一入口（J2 大小关系）：被问自述压掉此刻底色。
+
+    返回 (mode, fragment)：mode in {"self_tell", "baseline"}；
+    自述不可得时安全落回底色(fail-closed)，两者都不会是 None 之外还抛错。
+    """
+    try:
+        from anima.cognitive.inner_state.self_tell import (
+            build_self_narrative_fragment,
+            detect_self_inquiry,
+        )
+        if detect_self_inquiry(text or ""):
+            frag = build_self_narrative_fragment(data_dir, user_id)
+            if frag:
+                return "self_tell", frag
+    except Exception:
+        pass
+    return "baseline", build_current_state_fragment(data_dir, user_id=user_id)
