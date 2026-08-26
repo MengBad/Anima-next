@@ -87,11 +87,16 @@ def estimate_message_tokens(message: dict[str, Any], image_token_estimate: int =
 
 @dataclass(frozen=True)
 class PromptFragment:
-    """可选 system 片段；数值越小，超预算时越先被删除。"""
+    """可选 system 片段；数值越小，超预算时越先被删除。
+
+    S1（内在状态可感知蓝图）：protected=True 的片段与 base/suffix 同等待遇，
+    超预算裁剪时跳过不删（如「此刻内在状态」底色，必注入）。
+    """
 
     key: str
     content: str
     priority: int
+    protected: bool = False
 
 
 @dataclass(frozen=True)
@@ -153,9 +158,12 @@ class ContextComposer:
         total = required + sum(estimate_text_tokens(item.content) for item in kept)
 
         # 同优先级时优先删除更早注入的片段，保留本轮更靠后的/更相关的信息。
+        # protected 片段（S1 此刻状态等）不可裁，直接跳过。
         for _, item in sorted(enumerate(items), key=lambda pair: (pair[1].priority, pair[0])):
             if total <= self.system_token_budget:
                 break
+            if item.protected:
+                continue
             kept.remove(item)
             total -= estimate_text_tokens(item.content)
             dropped.append(item.key)

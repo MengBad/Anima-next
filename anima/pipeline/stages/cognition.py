@@ -295,12 +295,14 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     composer = ContextComposer.from_config(context_cfg)
     system_fragments: list[PromptFragment] = []
 
-    def add_system_fragment(key: str, content: str, priority: int) -> None:
+    def add_system_fragment(key: str, content: str, priority: int,
+                            protected: bool = False) -> None:
         if content and content.strip():
             system_fragments.append(PromptFragment(
                 key=key,
                 content=f"\n\n{content.strip()}",
                 priority=priority,
+                protected=protected,
             ))
 
     # A1: 伤痕触发提示
@@ -454,6 +456,25 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             add_system_fragment("mood", mood_frag, 90)
     except Exception:
         logger.debug("情绪注入失败，已隔离")
+
+    # S1 内在状态可感知蓝图：此刻底色——唯一合成点 cognitive.inner_state，
+    # 第一人称一句话（J2 边界包装），protected 必注入，不再被预算裁成摆设。
+    try:
+        _rel_stage_s1 = ""
+        try:
+            from anima.cognitive.relation import get_relation_engine as _gre_s1
+            _rel_s1 = _gre_s1(data_dir).get(int(ctx.user_id))
+            _rel_stage_s1 = getattr(getattr(_rel_s1, "stage", None), "name", "") or ""
+        except Exception:
+            _rel_stage_s1 = ""
+        from anima.cognitive.inner_state import build_current_state_fragment as _bcsf
+        _inner_frag = _bcsf(data_dir, user_id=int(ctx.user_id),
+                            relation_stage=_rel_stage_s1)
+        if _inner_frag:
+            add_system_fragment("inner_state", _inner_frag, 55, protected=True)
+            ctx.meta["mood_provided"] = True
+    except Exception:
+        logger.exception("S1 此刻状态合成失败（不阻塞流水线）")
 
     # F2: 发癫模式注入
     try:
@@ -788,6 +809,10 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         ctx.system_prompt, system_fragments, system_suffix,
     )
     ctx.meta["context_system"] = system_stats.as_dict()
+    ctx.meta["system_dropped_keys"] = list(system_stats.dropped_keys)
+    ctx.meta["inner_state_injected"] = any(
+        getattr(fr, "key", "") == "inner_state" for fr in system_fragments
+    ) and "inner_state" not in system_stats.dropped_keys
     if system_stats.dropped_keys:
         logger.info(
             "Context system budget: dropped=%s tokens=%d/%d",
