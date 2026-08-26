@@ -167,6 +167,12 @@ class LLMHandler:
         """停止尚在等待的私聊收束任务，供核心生命周期对称关闭。"""
         if self._assembler is not None:
             await self._assembler.close()
+        _db = getattr(self, "_group_debouncer", None)
+        if _db is not None:
+            try:
+                await _db.close()
+            except Exception:
+                logger.exception("群防抖器关闭异常")
 
     def _is_owner(self, user_id: int) -> bool:
         # 防御式访问：测试桩 core 可能没有 permissions 配置段。

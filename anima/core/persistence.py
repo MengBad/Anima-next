@@ -68,7 +68,10 @@ class PersistenceProvider:
                 self.write_json(rel_path, obj)
                 count += 1
             except Exception:
-                logger.exception("延迟写落盘失败: %s", rel_path)
+                # 失败项写回延迟队列，留待下次 flush 重试（此前会静默丢失该键）
+                logger.exception("延迟写落盘失败(已留待重试): %s", rel_path)
+                with self._deferred_lock:
+                    self._deferred[rel_path] = obj
         return count
 
     @property
