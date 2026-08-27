@@ -99,13 +99,13 @@ COLD_RESPONSES = [
 ]
 
 
-def _resolve_bullying_reply(recent_count: int) -> Optional[str]:
-    """霸凌场景下的回复决策。
+def _resolve_bullying_reply(recent_count: int, severity: int = 0) -> Optional[str]:
+    """霸凌场景下的回复决策（#7 统一：单一判据 recent>=3 或 severity>=3）。
 
-    - 连骂 >= 3 次：完全沉默（返回 None，由调用方置 should_reply=False）
+    - 连骂 >= 3 次 或 单句重度辱骂（severity>=3）：完全沉默（返回 None，由调用方置 should_reply=False）
     - 否则：从 COLD_RESPONSES 随机选一条简短冷回（不调 LLM，避免长篇辩解）
     """
-    if recent_count >= 3:
+    if recent_count >= 3 or severity >= 3:
         return None
     return random.choice(COLD_RESPONSES)
 
@@ -470,15 +470,17 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     # ── 自我保护协议：霸凌 / 回避场景下闭嘴，不辩解、不分段 ──
     # 关键原则：bot 不需要「更聪明地辩解」，它需要在被攻击时知道闭嘴。
     _bully_recent = int(ctx.meta.get("bullying_recent_count", 0) or 0)
+    _bully_sev = int(ctx.meta.get("bullying_severity", 0) or 0)
     if ctx.meta.get("bullying_detected"):
-        if _bully_recent >= 3:
-            logger.info("[霸凌] 用户连续攻击 %d 次，完全沉默", _bully_recent)
+        # #7 统一判据：recent>=3 或 severity>=3 → 完全沉默（一句重伤也沉默，不再只看 count）
+        if _bully_recent >= 3 or _bully_sev >= 3:
+            logger.info("[霸凌] 用户攻击 recent=%d sev=%d，完全沉默", _bully_recent, _bully_sev)
             ctx.reply = None
             ctx.should_reply = False
             return StageResult.SKIP_REPLY
-        _cold = _resolve_bullying_reply(_bully_recent)
+        _cold = _resolve_bullying_reply(_bully_recent, _bully_sev)
         if _cold:
-            logger.info("[霸凌] 简短冷回 recent=%d", _bully_recent)
+            logger.info("[霸凌] 简短冷回 recent=%d sev=%d", _bully_recent, _bully_sev)
             ctx.reply = _cold
             return StageResult.CONTINUE
     else:

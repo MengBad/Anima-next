@@ -1619,20 +1619,36 @@ class LLMHandler:
                                  _cm.get_context("private", int(user_id), recent_rounds=8, user_id=int(user_id))
                                  if m.get("role") == "user"]
             _bully = detect_bullying(int(user_id), text, _recent_texts[-8:])
+            # #7 霸凌统一（2026-08-28）：①playful 抵消（复用 _detect_hurtful 的
+            # playful_markers 单源）——有戏派玩笑「滚，别烦本喵」不算霸凌；②单点分级
+            # 喂 feel + generation（severity/recent_count 合并为轻/重）。
+            _severity = int(_bully["severity"])
+            _recent = int(_bully["recent_count"])
+            if _bully["is_bullying"] and _severity > 0:
+                try:
+                    from anima.pipeline.stages._shared import _detect_hurtful
+                    if not _detect_hurtful(text):
+                        # 玩笑着说（playful 抵消）→ 压到轻级，不误判霸凌
+                        _severity = 1
+                        logger.info("[霸凌] playful 抵消 user=%s", user_id)
+                except Exception:
+                    logger.debug("playful 抵消检查失败（已隔离）", exc_info=True)
             if _bully["is_bullying"]:
+                from anima.cognitive.inner_state.bullying_feel import classify as _bully_classify
+                _level = _bully_classify(_severity, _recent)
                 ctx.meta["bullying_detected"] = True
-                ctx.meta["bullying_recent_count"] = _bully["recent_count"]
-                ctx.meta["bullying_severity"] = _bully["severity"]
-                logger.info("[霸凌检测] user=%s is_bullying recent=%d sev=%d",
-                            user_id, _bully["recent_count"], _bully["severity"])
+                ctx.meta["bullying_recent_count"] = _recent
+                ctx.meta["bullying_severity"] = _severity
+                ctx.meta["bullying_level"] = _level   # 统一分级：mild / severe（单点）
+                logger.info("[霸凌检测] user=%s level=%s recent=%d sev=%d",
+                            user_id, _level, _recent, _severity)
                 # L5 霸凌分级接内在（2026-08-28 点亮）：轻度只 mood 低落；
                 # 严重/连续 → mood + relation 轻微降 + 记 scar。不报复不外泄。
                 try:
                     from anima.cognitive.inner_state.bullying_feel import apply_bullying_signal
                     _dd_l5 = getattr(getattr(self.core.config, "persistence", None),
                                      "data_dir", "data")
-                    _l5 = apply_bullying_signal(_dd_l5, int(user_id),
-                                                _bully["severity"], _bully["recent_count"])
+                    _l5 = apply_bullying_signal(_dd_l5, int(user_id), _severity, _recent)
                     ctx.meta["bullying_feel"] = _l5["level"]
                 except Exception:
                     logger.debug("霸凌分级施加失败（已隔离）", exc_info=True)
