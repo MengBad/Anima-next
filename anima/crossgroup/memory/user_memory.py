@@ -60,6 +60,17 @@ class UserMemory:
         public = [f for f in self.facts if f.source_group != "private"]
         return sorted(public, key=lambda f: f.timestamp, reverse=True)[:k]
 
+    def recall_in_group(self, group_id: str, k: int = 3) -> list[UserFact]:
+        """#5 跨群群隐私（2026-08-28 乙·温和版）：仅召回「本群来源」的事实。
+
+        用于会「暴露/回望」给他人的场景（关系总结、成员事实回顾、被问到跨群画像）：
+        按 source_group == 当前群 过滤，别的群/私聊来源不进入本群暴露场景。
+        非敏感的「认得你」（别名/外号/风格/话题）仍走 recall() 跨群带连贯。
+        """
+        gid = str(group_id)
+        in_group = [f for f in self.facts if str(f.source_group) == gid]
+        return sorted(in_group, key=lambda f: f.timestamp, reverse=True)[:k]
+
     def summary(self, max_facts: int = 3, per_fact_chars: int = 80) -> str:
         if not self.facts:
             return "（暂无已知信息）"

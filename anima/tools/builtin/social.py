@@ -248,7 +248,13 @@ def make_get_user_relations(core):
                     lines.append(f"- 外号（别人称呼）：{'、'.join(um.nicknames[:8])}")
                 if um.facts:
                     # ANM-004：关系总结会暴露给他人，必须排除私聊私密事实
-                    fl = [f"- {f.content}" for f in um.recall_public(k=3)]
+                    # #5 跨群群隐私：群场景进一步按当前群隔离（只回望本群事实）
+                    _ctx = get_call_context()
+                    _gid = _ctx.get("group_id") if _ctx else None
+                    if _gid:
+                        fl = [f"- {f.content}" for f in um.recall_in_group(_gid, k=3)]
+                    else:
+                        fl = [f"- {f.content}" for f in um.recall_public(k=3)]
                     lines.append("已知事实：\n" + "\n".join(fl))
         except Exception:
             pass
@@ -375,7 +381,10 @@ def make_get_member_facts(core):
             if not um or not um.facts:
                 return f"关于「{name}」暂无已知事实"
             # 隐私过滤：排除私聊产生的 fact（ANM-004 统一收敛到 recall_public）
-            facts = um.recall_public(limit)
+            # #5 跨群群隐私：群场景按当前群隔离（只回望本群事实）
+            _ctx = get_call_context()
+            _gid = _ctx.get("group_id") if _ctx else None
+            facts = um.recall_in_group(_gid, limit) if _gid else um.recall_public(limit)
             if not facts:
                 return f"关于「{name}」只有私聊记忆，不便公开"
             lines = [f"关于「{name}」（QQ {uid}）的已知事实："]
