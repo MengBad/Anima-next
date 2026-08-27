@@ -193,3 +193,53 @@ async def test_handler_skips_yue_ma_in_familiar_group(tmp_path, monkeypatch):
     await handler.handle({**base, "text": "哈基米约吗"})
     assert calls == ["哈基米约吗"]
     assert len(_Core.gateway.sent) == 1
+
+
+def test_end_signal_detection():
+    """对方示意结束的信号应被识别，以免 bot 连环追说。"""
+    from anima.llm.group_gate import is_conversation_end_signal
+    assert is_conversation_end_signal("别回了 睡觉了")
+    assert is_conversation_end_signal("不聊了 晚安喵")
+    assert is_conversation_end_signal("睡了啊 关了")
+    assert is_conversation_end_signal("都说了别回复了 烦")
+    assert is_conversation_end_signal("明天再说吧")
+    assert is_conversation_end_signal("[CQ:reply,id=123] 行了不跟你斗嘴了 真关机睡了喵")
+    # 非收尾内容不应误判
+    assert not is_conversation_end_signal("左转右转比较合适吗")
+    assert not is_conversation_end_signal("大家晚上吃什么")
+    assert not is_conversation_end_signal("帮我看看这个代码")
+
+
+def test_end_signal_gate_stops_chase_in_wake_window():
+    """唤醒窗内（session_active）群友示意结束 → 仍应跳过，避免追着说。"""
+    from anima.llm.group_gate import classify_group_reply_skip
+    autonomy = types.SimpleNamespace(
+        reply_only_when_mentioned=True,
+        familiar_reply_min=0.35,
+        other_bot_names=["沙琪玛", "aki"],
+    )
+    policy = {"reply_mode": "familiar", "familiar_min": 0.35}
+    reason = classify_group_reply_skip(
+        {"group_id": 20001}, "行了 不跟你说了 睡了 晚安",
+        user_id=10001, group_policy=policy, autonomy=autonomy,
+        data_dir="data", session_active=True,
+    )
+    assert reason == "end_signal"
+
+
+def test_end_signal_still_allows_direct_call_ack():
+    """对方点名 bot 说晚安：仍放行一条简短回应，不用硬静默。"""
+    from anima.llm.group_gate import classify_group_reply_skip
+    autonomy = types.SimpleNamespace(
+        reply_only_when_mentioned=True,
+        familiar_reply_min=0.35,
+        other_bot_names=["沙琪玛", "aki"],
+    )
+    policy = {"reply_mode": "familiar", "familiar_min": 0.35}
+    reason = classify_group_reply_skip(
+        {"group_id": 20001, "mentions_self": True}, "哈基米 我睡了 晚安",
+        user_id=10001, group_policy=policy, autonomy=autonomy,
+        data_dir="data", session_active=True,
+    )
+    assert reason is None
+

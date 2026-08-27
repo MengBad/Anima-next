@@ -40,6 +40,8 @@ def _empty() -> dict[str, int]:
         "gate_skip_idle": 0,
         "gate_skip_mention_only": 0,
         "gate_skip_unfamiliar": 0,
+        "gate_skip_end_signal": 0,
+        "gate_skip_passive_cooldown": 0,
         "gate_skip_other": 0,
         "guard_fixation_rewrite": 0,
         # 上下文预算（只记 token 估算与裁剪计数，不保存任何正文）
@@ -131,12 +133,14 @@ class ReplyQuality:
         self._save()
 
     def record_gate_skip(self, reason: str) -> None:
-        """记录群回复闸门跳过原因（other_bot / idle / mention_only / unfamiliar / other）。"""
+        """记录群回复闸门跳过原因（other_bot / idle / mention_only / unfamiliar / end_signal / other）。"""
         key = {
             "other_bot": "gate_skip_other_bot",
             "idle": "gate_skip_idle",
             "mention_only": "gate_skip_mention_only",
             "unfamiliar": "gate_skip_unfamiliar",
+            "end_signal": "gate_skip_end_signal",
+            "passive_cooldown": "gate_skip_passive_cooldown",
         }.get(str(reason or ""), "gate_skip_other")
         metrics = self._metrics()
         metrics[key] = int(metrics.get(key, 0) or 0) + 1

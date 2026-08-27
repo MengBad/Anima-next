@@ -59,6 +59,38 @@ _FAMILIAR_IDLE_PHRASES = frozenset({
 })
 # 熟人未点名时：超过此长度才考虑插话（原 4 字太松，导致乱接闲聊）。
 _FAMILIAR_IDLE_MAX_CHARS = 12
+# 对方示意对话结束的信号：命中后 bot 不再连环追着说。
+# 规则：硬缺口——若群友已明示「不聊/睡了/别再回复/下线/晚安/收工」等收尾，
+# bot 除非被直接点名需要实际回应，否则不接不追，避免把聊天拖成一串互怼。
+_END_SIGNAL_PATTERNS = (
+    "不聊了", "别回了", "别再回", "别回复", "别理", "消停", "闭嘴", "收工",
+    "下线", "去睡了", "睡了", "晚安", "睡了喵", "关了", "关机", "撤了", "走了",
+    "先这样", "就到这", "到此为止", "不跟你聊", "不想说话", "不喜欢说了",
+    "禁言", "别刷了", "别发了", "少说点", "慢走", "回聊", "明天再说", "改天聊",
+)
+
+_ENDSIG_RE = None
+
+
+def _end_signal_pats() -> list[str]:
+    global _ENDSIG_RE
+    if _ENDSIG_RE is None:
+        _ENDSIG_RE = tuple(sorted(_END_SIGNAL_PATTERNS, key=len, reverse=True))
+    return _ENDSIG_RE
+
+
+def is_conversation_end_signal(text: str) -> bool:
+    """对方是否示意对话结束/收尾（用于 bot 停止连环追说的硬闸门）。"""
+    plain = _plain_group_text(text or "")
+    if not plain:
+        return False
+    compact = re.sub(r"[\s\W_]+", "", plain, flags=re.UNICODE)
+    for sig in _end_signal_pats():
+        if sig in plain or sig in compact:
+            return True
+    return False
+
+
 # 群内其它 bot / 常被点名的同伴；句首点到他们且未叫本喵时不抢话。
 _DEFAULT_OTHER_BOT_NAMES = (
     "沙琪玛", "沙其玛", "莎琪玛", "sakima", "Sakima", "SAKIMA",
@@ -246,6 +278,10 @@ def classify_group_reply_skip(
     mode = resolve_group_reply_mode(group_policy, autonomy)
     if is_addressed_to_other_bot(event, text, group_policy=group_policy, autonomy=autonomy):
         return "other_bot"
+    # 对方示意结束即停：群友已明示「不聊/睡了/别回/晚安/下线」等收尾 → 不追不接，
+    # 避免把聊天拖成一串连环互怼。除非被直接点名需要实际回应，仍放行。
+    if is_conversation_end_signal(text) and not is_direct_group_call(event, text):
+        return "end_signal"
     # 唤醒会话窗：窗内非刷屏即可自然接续（等效于放宽到可接话，但不刷屏）。
     if session_active:
         if _is_session_thread_idle(event, text):

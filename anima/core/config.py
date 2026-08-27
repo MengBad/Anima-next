@@ -111,6 +111,13 @@ class AutonomyConfig(BaseModel):
     other_bot_names: list[str] = Field(
         default_factory=lambda: ["沙琪玛", "沙其玛", "莎琪玛", "aki", "阿基"],
     )
+    # 唤醒会话窗：被 @/回复/喊名后，窗内非刷屏消息可自然接续的时长（秒）。
+    # 调短可显著降低「被叫一次后连续接很多句」的连环刷屏。默认 240→改为 60。
+    wake_session_ttl_sec: float = 60.0
+    # 每用户被动回复冷却（秒）：对同一用户，距上次 bot 已回复 < 该秒数时，
+    # 若这次消息未被 @/回复（纯被动接话）则跳过，避免对熟人逐条抢答。
+    # 0 = 关闭。这个不阻断被 @ 的直接呼叫。
+    passive_reply_cooldown_sec: float = 45.0
 
     # —— 主动发言（自主心跳 speak）策略 ——
     # 通过全部主动发言门控后的实际开口概率。默认保守，避免群里突然刷屏。

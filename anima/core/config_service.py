@@ -87,6 +87,8 @@ MANIFEST: list[dict[str, Any]] = [
     {"path": "autonomy.daily_max_per_group", "label": "单群每日总上限（含议程）", "type": "number", "min": 0, "max": 1000, "risk": "green", "restart": False, "impact": ["群策略"]},
     {"path": "autonomy.reply_only_when_mentioned", "label": "仅被呼叫时回复", "type": "boolean", "risk": "green", "restart": False, "impact": ["回复门控"]},
     {"path": "autonomy.familiar_reply_min", "label": "熟人模式亲密度门槛", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "autonomy.wake_session_ttl_sec", "label": "唤醒会话窗（秒）", "type": "number", "min": 5, "max": 600, "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "autonomy.passive_reply_cooldown_sec", "label": "每用户被动回复冷却（秒）", "type": "number", "min": 0, "max": 600, "risk": "green", "restart": False, "impact": ["回复门控"]},
     {"path": "permissions.group_policies", "label": "逐群策略", "type": "group_policies", "risk": "green", "restart": False, "impact": ["群策略", "回复门控", "工具与表情"]},
     # 心跳对象是在启动阶段按该开关装配的；切换开关必须受控重启，
     # 否则仅替换 Pydantic 配置并不会创建/销毁运行中的任务。

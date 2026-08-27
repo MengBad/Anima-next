@@ -214,7 +214,7 @@ class LLMHandler:
         logger.info("[ignore] owner=%s 于群 %s 持久化忽略 %s（共 %d）", uid, gid, targets, got)
 
     # ── 唤醒会话窗：被 keyword「哈基米」/ @ / 引用唤醒后，窗内可自然接续 ──
-    WAKE_SESSION_TTL = 240.0  # 秒；可经 autonomy.wake_session_ttl_sec 覆盖
+    WAKE_SESSION_TTL = 60.0  # 秒；可经 autonomy.wake_session_ttl_sec 覆盖
 
     def _wake_session_ttl(self) -> float:
         try:
@@ -224,6 +224,42 @@ class LLMHandler:
         except Exception:
             pass
         return float(self.WAKE_SESSION_TTL)
+
+    # ── 每用户被动回复冷却：同一用户刚回完，未 @ 的被动接话先冷一冷 ──
+    def _passive_cooldown_sec(self) -> float:
+        try:
+            v = float(getattr(self.core.config.autonomy, "passive_reply_cooldown_sec", 0))
+            return max(0.0, v)
+        except Exception:
+            return 0.0
+
+    def _passive_should_cooldown(self, group_id: Any, user_id: Any) -> bool:
+        """麻该用户最近已回复且本次是非直接呼叫的被动接话 → True(跳过)。"""
+        cd = self._passive_cooldown_sec()
+        if cd <= 0:
+            return False
+        reg = getattr(self, "_passive_last_reply", None)
+        if not reg:
+            return False
+        try:
+            last = reg.get((str(int(group_id)), str(int(user_id))))
+            if last is None:
+                return False
+            return (time.time() - last) < cd
+        except Exception:
+            return False
+
+    def _mark_passive_replied(self, group_id: Any, user_id: Any) -> None:
+        cd = self._passive_cooldown_sec()
+        if cd <= 0:
+            return
+        try:
+            reg = getattr(self, "_passive_last_reply", None)
+            if reg is None:
+                reg = self._passive_last_reply = {}
+            reg[(str(int(group_id)), str(int(user_id)))] = time.time()
+        except Exception:
+            pass
 
     def _mark_wake(self, gid: int) -> None:
         try:
@@ -1543,6 +1579,19 @@ class LLMHandler:
                         logger.debug("gate skip telemetry failed", exc_info=True)
                 return
 
+            # 每用户被动回复冷却：同一用户刚回过、这次又非直接点名时，跳过避免逐条抢答。
+            # 被 @ / 回复 / 喊名（直接呼叫）不受此限制。
+            if detail_type == "group" and self._passive_should_cooldown(group_id, user_id):
+                try:
+                    from anima.llm.group_gate import is_direct_group_call
+                    _direct = bool(is_direct_group_call(event, text))
+                except Exception:
+                    _direct = False
+                if not _direct:
+                    logger.info("[回复闸门][trace=%s] skip reason=passive_cooldown gid=%s uid=%s",
+                                trace, group_id, user_id)
+                    return
+
         # 小文本附件理解：只经 OneBot get_file 读取受信任的本地/base64 返回，
         # 不跟随 URL，避免附件段成为 SSRF 或大文件读取入口。
         if event.get("files"):
@@ -1680,6 +1729,13 @@ class LLMHandler:
             return
 
         target_id = group_id if detail_type == "group" else user_id
+
+        # 记录该用户已回复（供被动回复冷却判定）。
+        if detail_type == "group":
+            try:
+                self._mark_passive_replied(group_id, user_id)
+            except Exception:
+                logger.debug("mark passive replied failed", exc_info=True)
 
         # 出站消息段：@ 触发者 + 文本 + （可选）表情图 + （可选）生图，
         # 抽成纯函数以便单测（逻辑见 _build_reply_segments）。

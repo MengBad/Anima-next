@@ -61,6 +61,8 @@ autonomy:
   active_daily_max_per_group: 5          # 每群每天最多几次非议程主动发言
   active_context_score_threshold: 0.40    # 近期上下文有明确接话点才调用 LLM
   familiar_reply_min: 0.35                # familiar 群策略下的亲密度门槛
+  wake_session_ttl_sec: 60                 # 被@/回复/喊名后窗内可自然续话的时长（秒），调短可降连环刷屏
+  passive_reply_cooldown_sec: 45           # 每用户被动回复冷却（秒）：刚回过又未点名时跳过，0=关
   active_intent_max_attempts: 5           # 主动意图连续失败后标记 failed
   active_feedback_window_sec: 900         # 主动消息后 15 分钟内有人继续互动视为获得反馈
   active_feedback_min_samples: 4          # 至少积累这些样本才自动按接受度降频
