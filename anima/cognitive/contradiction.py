@@ -169,6 +169,15 @@ class ContradictionDetector:
             "矛盾检测：发现矛盾 user=%d group=%s desc_len=%d",
             user_id, group_id, len(desc),
         )
+        # S8 矛盾感知（蓝图选A）：私人记录已落，这里经脊做 relation 轻微负向扰动，
+        # 让矛盾成为「它心里的感知」而非界面摆设。轻微一档内，触底 REL_FLOOR。
+        try:
+            from anima.cognitive.inner_state.contradiction_feel import (
+                feel_user_contradiction,
+            )
+            feel_user_contradiction(self._persist.data_dir if hasattr(self._persist, "data_dir") else self._persist.root, int(user_id) if user_id is not None else -1)
+        except Exception:
+            logger.debug("S8 relation 轻微扰动失败（已隔离）", exc_info=True)
         return desc
 
 
