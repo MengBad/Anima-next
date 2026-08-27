@@ -168,6 +168,21 @@ def decide_reactive_injection(data_dir, text, user_id=None, rng=None):
             return "inner_state_insight", _insight, "insight"
     except Exception:
         pass
+    # 5a) #2+#3 情绪连续性 + 遗忘可感知（2026-08-28 路P+甲 同族）：低频偶带
+    #     「最近提不起劲/挺活跃」或「有件事有点淡了」；经脊、fail-closed。
+    try:
+        from anima.cognitive.inner_state.emotional_continuity import (
+            continuity_fragment,
+            fading_fragment,
+        )
+        _cont = continuity_fragment(data_dir, uid, rng=rng)
+        if _cont:
+            return "inner_state_continuity", _cont, "continuity"
+        _fade = fading_fragment(data_dir, uid, rng=rng)
+        if _fade:
+            return "inner_state_fading", _fade, "fading"
+    except Exception:
+        pass
     # 5) L6 乙层挂载（owner 拍板 2026-08-28「挂」）：底色落定后，深关系 + 偶发
     #    经脊带出「还惦记着别人」一角；低频受 rng 控制，不每轮塞，fail-closed。
     try:
