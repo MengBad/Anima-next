@@ -1075,7 +1075,7 @@ class Heartbeat:
             d["gate_ok"] = _drive_gate_ok(d)
         return d
     def _active_hook_present(self, group_id: int, now: float) -> bool:
-        """是否存在值得主动接住的近期群语接话点（短时上下文评分 >= 0.24）。"""
+        """是否存在值得主动接住的近期群语接话点（短时上下文评分 >= 0.35，2026-08-28 收紧）。"""
         try:
             from anima.memory.chat_memory import get_chat_memory
             memory = get_chat_memory()
@@ -1083,7 +1083,7 @@ class Heartbeat:
             history = recent_context(group_id, limit=12) if callable(recent_context) else []
             if not history:
                 return False
-            return score_active_context(history) >= 0.24
+            return score_active_context(history) >= 0.35
         except Exception:
             # 评分失败保守放行：回退给原模型 [skip] 判断，不削弱主动发言。
             return True
@@ -1176,13 +1176,14 @@ class Heartbeat:
             user_request = f"（明确议程）请用自然、日常的语气完成这项表达：\n{intent[:500]}"
         else:
             speaking_rules = """你现在可以考虑在群里说一句话，但「不打扰」优先于开口。
+开口前先自问一句：现在这句是不是真的非说不可、确实接得住？不是就闭嘴。
 只有最近对话有明确、还没接住的梗、问题、情绪或自然收尾时才说。
 - 必须具体接住最近一两句人类内容（可点名梗/问题），禁止空转刷存在感
 - 禁止：感叹群里安静、骂乱码/问号、梦游键盘、催人买罐头、喊名字没下文类水话
 - 1-2 句短接话，别说教、别长文、别替群友互相回答
 - 不要用「作为 AI」开头，也别自称 Anima / Antigravity
 - 只输出正文；绝不输出「[你]:」「[哈基米]:」等说话人标签
-- 拿不准、上下文太旧、没有明确接话点时，一律只输出「[skip]」"""
+- 拿不准、上下文太旧、没有明确接话点、觉得不值当开口时，一律只输出「[skip]」"""
             # 把最近人类句子摘要进请求，降低“瞎接旧话题/空转”概率。
             hooks = []
             for message in reversed(history or []):
