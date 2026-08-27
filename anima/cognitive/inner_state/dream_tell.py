@@ -52,29 +52,27 @@ def get_recent_dream(data_dir: str) -> Optional[dict]:
         return None
 
 
-def build_dream_tell_fragment(data_dir: str, user_id: int) -> Optional[str]:
-    """亲近的人问梦 → 讲最近梦+感悟（可荒诞），第一人称短段。"""
-    if not detect_dream_inquiry_text(data_dir, user_id):
-        return None
+def build_dream_tell_fragment(data_dir: str, user_id: int, text: str = "") -> Optional[str]:
+    """L3 亲疏分层：被问梦 → 亲近(FRIEND/CLOSE)如实讲最近梦+感悟；路人含糊一句带过。
+
+    真判定由调用方 detect_dream_inquiry(text) 完成（不再用占位 detect_dream_inquiry_text）。
+    """
     dream = get_recent_dream(data_dir)
     if not dream:
         return None
     scene = str(dream.get("scene") or dream.get("content") or "").strip()
     insight = str(dream.get("insight") or "").strip()
-    mood = str(dream.get("mood_tag") or "").strip() or "calm"
     if not scene:
         return None
-    head = "（亲近的人问你昨晚做了什么梦。如实讲最近这场梦，可以有点荒诞，第一人称讲。）"
-    tail = "讲完自然收住，别长篇大论。"
-    parts = [f"梦里的画面：{scene[:180]}"]
-    if insight:
-        parts.append(f"醒来后的感觉：{insight[:80]}")
-    return head + "第一人称讲。）" + "；".join(parts) + tail
-
-
-def detect_dream_inquiry_text(data_dir: str, user_id: int) -> bool:
-    # 近似占位：调用方先自行判文本；这里只复用亲近度门槛
-    return relation_is_close(data_dir, user_id)
+    if relation_is_close(data_dir, user_id):
+        head = "（亲近的人问你昨晚做了什么梦。如实讲最近这场梦，可以有点荒诞，第一人称讲。）"
+        tail = "讲完自然收住，别长篇大论。"
+        parts = [f"梦里的画面：{scene[:180]}"]
+        if insight:
+            parts.append(f"醒来后的感觉：{insight[:80]}")
+        return head + "；".join(parts) + tail
+    # 路人被问 → 含糊一句带过，不展开
+    return "（有人随口问你昨晚做了什么梦。你含糊地一句带过：）唔…梦见吃小鱼干，记不清啦。"
 
 
 def apply_dream_mood(data_dir: str, dream: Optional[dict] = None) -> bool:

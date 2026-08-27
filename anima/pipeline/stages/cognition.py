@@ -457,20 +457,35 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.debug("情绪注入失败，已隔离")
 
-    # S1/S2 内在状态可感知蓝图：唯一合成点 cognitive.inner_state 分流——
-    # 被问自述(高权展开)压掉此刻底色(J2 大小关系判断)；否则一句话底色。
+    # S1/S2 内在状态可感知蓝图 + L1/L3 被问分流（2026-08-28 点亮）：
+    # 唯一合成点 cognitive.inner_state，decide_reactive_injection 协调
+    # 梦(S2A) > 秘密(S7) > 自述(S2) > 意外交心(L1) > 底色(S1)，同轮只注入一段。
     # 均 protected 必注入、meta 可查，fail-closed 不阻塞流水线。
     try:
-        from anima.cognitive.inner_state import decide_injection as _decide_is
-        _is_mode, _is_frag = _decide_is(data_dir, getattr(ctx, "text", ""),
-                                        user_id=int(ctx.user_id))
+        from anima.cognitive.inner_state import decide_reactive_injection as _decide_is
+        _is_key, _is_frag, _is_mode = _decide_is(data_dir, getattr(ctx, "text", ""),
+                                                 user_id=int(ctx.user_id))
         if _is_frag:
-            _is_key = ("inner_state_self_tell" if _is_mode == "self_tell" else "inner_state")
             add_system_fragment(_is_key, _is_frag, 55, protected=True)
             ctx.meta["mood_provided"] = True
             ctx.meta["inner_state_mode"] = _is_mode
     except Exception:
         logger.exception("内在状态合成失败（不阻塞流水线）")
+
+    # L2 S6 接 loop（2026-08-28 点亮）：每轮喂 ctx.text 捕获「想学XX」意图入档；
+    # 越权/窄提取闸门在 capture 内部，宁漏不误记；表达走脊(intent_fragment)。
+    try:
+        from anima.cognitive.inner_state.self_learn_intent import SelfLearnIntentRegistry
+        from anima.cognitive.mood import get_mood_system as _get_mood_l2
+        _valence_l2 = None
+        try:
+            _valence_l2 = _get_mood_l2(data_dir).get_state().valence
+        except Exception:
+            _valence_l2 = None
+        SelfLearnIntentRegistry(data_dir).capture(
+            getattr(ctx, "text", ""), valence=_valence_l2)
+    except Exception:
+        logger.debug("S6 学习意图捕获失败（已隔离）")
 
     # S5 真的纠错（蓝图）：仅管理员(permission_level>=3，权威在 permission 阶段)+宽触发
     # 窄提取沉淀进硬事实/外部称呼层（不进 learning.add_note，绕开其身份/相似

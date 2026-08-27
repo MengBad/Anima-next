@@ -64,6 +64,7 @@ def test_decide_injection_modes(tmp_path):
 def test_cognition_wired_to_decide_injection():
     import io
     src = io.open("anima/pipeline/stages/cognition.py", encoding="utf-8").read()
-    assert "decide_injection" in src
+    # L1/L2/L3 落地后接线升级为 decide_reactive_injection（其内部仍回落到 decide_injection）
+    assert "decide_reactive_injection" in src
     assert 'add_system_fragment(_is_key, _is_frag, 55, protected=True)' in src
     assert 'ctx.meta["inner_state_mode"]' in src

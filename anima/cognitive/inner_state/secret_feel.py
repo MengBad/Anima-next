@@ -77,3 +77,64 @@ def build_secret_feel_fragment(data_dir: str, user_id: int, text: str):
     targeted = "这个人正是秘密里的主角" if secret["targeted"] else "这是你自己藏着的一件小事"
     head = "（亲近的人轻声问起了你的心事。可以流露一条真实的小秘密，第一人称、点到为止、说完就收。）"
     return head + targeted + "：" + safe[:160]
+
+
+# ---------------------------------------------------------------------------
+# L1 意外交心（2026-08-28 点亮）：未被问时，亲近日久 + 气氛自然 + 低频概率
+# → 自然带出一句「无归属轻微秘密」。语气羞赧、点到就收。绝不外泄针对他人。
+# ---------------------------------------------------------------------------
+_SPONTANEOUS_PROB = 0.02       # ~2% 触发概率
+_SPONTANEOUS_DAILY_MAX = 1     # 日上限 1 次
+_last_spontaneous: dict[str, int] = {}   # {date_str: count}，进程内即可(不新增存储)
+
+
+def pick_unattributed_secret(data_dir: str, user_id: int) -> Optional[dict]:
+    """只取「无明确归属」的轻微秘密（意外交心专用）。
+
+    针对他人的秘密（target_uid 非空）一律跳过——绝不外泄。
+    """
+    try:
+        from anima.memory.secrets import SecretsStore
+        store = SecretsStore(data_dir)
+        light = [s for s in store.all()
+                if not getattr(s, "revealed", False)
+                and not str(getattr(s, "target_uid", "") or "").strip()
+                and str(getattr(s, "influence", "")) in ("subtle", "轻微", "")]
+        if light:
+            s = light[0]
+            return {"content": getattr(s, "content", ""), "targeted": False}
+    except Exception:
+        logger.debug("选无归属秘密失败", exc_info=True)
+    return None
+
+
+def maybe_spontaneous_confide(data_dir: str, user_id: int, rng=None):
+    """意外交心被动层：返回一句自然流露片段，或 None。
+
+    - FRIEND/CLOSE 才可能触发；
+    - 概率 ~2%（rng 可注入便于测试）；
+    - 日上限 1 次（进程内计数，日期切换自动归零）；
+    - 只取无归属轻微秘密，语气羞赧点到就收。
+    """
+    import datetime
+    import random
+    stage = _relation_stage(data_dir, user_id)
+    if stage not in _CLOSE_STAGES:
+        return None
+    rng = rng or random
+    if rng.random() >= _SPONTANEOUS_PROB:
+        return None
+    today = datetime.date.today().isoformat()
+    if _last_spontaneous.get(today, 0) >= _SPONTANEOUS_DAILY_MAX:
+        return None
+    secret = pick_unattributed_secret(data_dir, user_id)
+    if not secret or not (secret.get("content") or "").strip():
+        return None
+    from anima.cognitive.inner_state.qzone_life import sanitize_for_public
+    safe, ok = sanitize_for_public(str(secret["content"]))
+    if not ok:
+        return None
+    _last_spontaneous[today] = _last_spontaneous.get(today, 0) + 1
+    logger.info("意外交心: user=%s 自然带出一句无归属秘密", user_id)
+    head = "（你们已经聊得很熟。你突然有点没忍住，轻声说了一件自己藏着的小事，说完有点不好意思地收住。）"
+    return head + safe[:160]

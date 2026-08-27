@@ -112,3 +112,50 @@ def decide_injection(data_dir, text, user_id=None):
     except Exception:
         pass
     return "baseline", build_current_state_fragment(data_dir, user_id=user_id)
+
+
+def decide_reactive_injection(data_dir, text, user_id=None, rng=None):
+    """L1/L3 被问分流协调（2026-08-28 点亮）：梦 > 秘密 > 自述 > 意外交心 > 底色。
+
+    返回 (key, fragment, mode)：
+      key     = 注入的系统片段键（inner_state_dream / inner_state_secret /
+                inner_state_self_tell / inner_state）
+      mode    = dream / secret / self_tell / spontaneous / baseline
+    同轮只注入一段（优先级保证互斥），守 inner_state 唯一合成点。
+    任一步失败回落底色(fail-closed)，不抛错。
+    """
+    txt = text or ""
+    uid = int(user_id) if user_id is not None else None
+    # 1) 被问梦（S2A，亲疏分层）
+    try:
+        from anima.cognitive.inner_state.dream_tell import (
+            build_dream_tell_fragment,
+            detect_dream_inquiry,
+        )
+        if detect_dream_inquiry(txt):
+            frag = build_dream_tell_fragment(data_dir, uid, txt)
+            if frag:
+                return "inner_state_dream", frag, "dream"
+    except Exception:
+        pass
+    # 2) 被问秘密（S7，深关系门槛 + 只无归属轻微）
+    try:
+        from anima.cognitive.inner_state.secret_feel import build_secret_feel_fragment
+        frag = build_secret_feel_fragment(data_dir, uid, txt)
+        if frag:
+            return "inner_state_secret", frag, "secret"
+    except Exception:
+        pass
+    # 3) 被问自述（S2）压底色 / 否则底色（S1）——沿用已部署 decide_injection
+    mode, frag = decide_injection(data_dir, txt, user_id=uid)
+    if mode == "self_tell" and frag:
+        return "inner_state_self_tell", frag, "self_tell"
+    # 4) 未被问 → 意外交心偶发（L1）；不中则底色
+    try:
+        from anima.cognitive.inner_state.secret_feel import maybe_spontaneous_confide
+        frag = maybe_spontaneous_confide(data_dir, uid, rng=rng)
+        if frag:
+            return "inner_state_secret", frag, "spontaneous"
+    except Exception:
+        pass
+    return "inner_state", frag, "baseline"
