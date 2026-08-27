@@ -185,7 +185,7 @@ async def test_speak_system_is_hakimi(monkeypatch):
         def get_recent_group_context(self, gid, limit=12):
             return [{"role": "user", "name": "小明", "content": "今天这局怎么打比较好？"}]
 
-        def add_group_bot_reply(self, gid, reply):
+        def observe_group_bot_reply(self, gid, reply):
             pass
 
     monkeypatch.setattr(cm_mod, "get_chat_memory", lambda: _Mem())
@@ -243,7 +243,7 @@ async def test_explicit_agenda_uses_committed_prompt_not_random_skip_gate(monkey
         def get_group_context(self, *args, **kwargs):
             raise AssertionError("明确议程不应回捞过期持久化群聊")
 
-        def add_group_bot_reply(self, gid, reply):
+        def observe_group_bot_reply(self, gid, reply):
             pass
 
     monkeypatch.setattr(cm_mod, "get_chat_memory", lambda: _Mem())
@@ -302,7 +302,7 @@ async def test_speak_strips_context_label_and_deduplicates(monkeypatch):
         def get_recent_group_context(self, gid, limit=12):
             return [{"role": "user", "name": "你", "content": "要不要一起下水玩啊？"}]
 
-        def add_group_bot_reply(self, gid, reply):
+        def observe_group_bot_reply(self, gid, reply):
             self.replies.append(reply)
 
     memory = _Mem()

@@ -1326,8 +1326,9 @@ class Heartbeat:
         }
         logger.info("自主发言成功 group=%d text_len=%d", group_id, len(reply))
 
-        # 记录到记忆
-        memory.add_group_bot_reply(group_id, reply)
+        # 记录到记忆：主动发言是群级可见的，只写入短时群上下文（15min TTL），
+        # 不广播进每个用户的个人持久桶——个人桶只应存一对一交互，避免跨用户污染与 N 倍存储冗余。
+        memory.observe_group_bot_reply(group_id, reply)
         return True
 
     # ------------------------------------------------------------------

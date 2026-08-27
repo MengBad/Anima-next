@@ -67,3 +67,31 @@ async def test_guardrail_rewrite_is_stored_as_final_reply(tmp_path, monkeypatch)
     assert own_history[-1]["content"].endswith("（这条回复被护栏拦截了）")
     assert group_history[-1]["role"] == "assistant"
     assert "护栏拦截" in group_history[-1]["content"]
+
+
+def test_active_speak_does_not_pollute_personal_buckets(tmp_path):
+    """主动发言（群级可见）只进短时群上下文，不广播进每个用户的个人持久桶。
+
+    回归背景：旧 add_group_bot_reply 把一条主动发言写入该群所有 (群,用户) 桶，
+    造成 N 倍存储冗余 + 跨用户个人上下文污染（个人桶混入群公开发言）。
+    """
+    memory = ChatMemory(persist_path=str(tmp_path / "chat.json"))
+
+    # 两个用户各自有个人桶（各自发过一条消息，形成独立 (群,用户) 桶）
+    memory.observe_group_message(100, 1, "甲", "甲的消息", 1)
+    memory.observe_group_message(100, 2, "乙", "乙的消息", 2)
+
+    # 主动发言：群级可见，走短时群上下文
+    memory.observe_group_bot_reply(100, "本喵的主动发言")
+
+    # 短时群上下文应包含主动发言
+    recent = memory.get_recent_group_context(100)
+    assert any("主动发言" in m["content"] for m in recent),         "主动发言应进入短时群上下文"
+
+    # 个人持久桶不应被广播写入主动发言
+    for uid in (1, 2):
+        own = memory.get_context("group", 100, user_id=uid)
+        texts = [m["content"] for m in own]
+        assert all("主动发言" not in t for t in texts),             f"用户 {uid} 的个人桶不应混入群级主动发言"
+        # 个人桶只保留该用户自己的一对一消息
+        assert any(("甲的消息" if uid == 1 else "乙的消息") in t for t in texts),             f"用户 {uid} 的个人桶应保留自己的消息"

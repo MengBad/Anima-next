@@ -456,25 +456,6 @@ class ChatMemory:
         # 粗略裁剪到 recent_rounds * 4 条，控制 token
         return collected[: recent_rounds * 4]
 
-    def add_group_bot_reply(self, group_id: int, reply: str) -> None:
-        """将群级可见的 bot 回复写入该群所有已知用户的桶。
-
-        保证每位成员在自己的 (群,用户) 上下文中都能看到 bot 的群发言，
-        同时不污染源数据（每个桶独立）。
-        """
-        for key in self._group_user_keys(group_id):
-            # 从 key 反解 user_id
-            parts = key.split("_")
-            # key 形如 group_{chat_id}_{user_id}
-            if len(parts) >= 3:
-                try:
-                    uid = int(parts[2])
-                except ValueError:
-                    uid = None
-            else:
-                uid = None
-            self.add("group", group_id, "bot", "Anima", reply, user_id=uid)
-
     def _cleanup(self, ttl: float) -> None:
         now = time.time()
         stale = []
