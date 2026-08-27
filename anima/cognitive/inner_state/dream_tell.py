@@ -15,16 +15,6 @@ logger = logging.getLogger("anima.inner_state.dream_tell")
 
 _CLOSE_STAGES = {"FRIEND", "CLOSE"}
 
-# 梦情绪 → mood 微调（valence, arousal）；S1 底色由此自然带出
-_DREAM_MOOD_DELTA = {
-    "happy":   (0.18, 0.08),
-    "excited": (0.12, 0.15),
-    "calm":    (0.05, 0.02),
-    "weird":   (0.02, 0.06),
-    "anxious": (-0.10, 0.10),
-    "sad":     (-0.18, -0.05),
-}
-
 _DREAM_ASK_RE = __import__("re").compile(
     r"(你|它)(昨天|昨晚|昨夜|最近)?(做|梦)[^。？]{0,10}(什么梦|啥梦|什么|吗|没有)"
     r"|(昨天|昨晚|昨夜)梦到?(了)?(什么|啥)(梦)?(吗|没有)?")
@@ -65,38 +55,13 @@ def build_dream_tell_fragment(data_dir: str, user_id: int, text: str = "") -> Op
     if not scene:
         return None
     if relation_is_close(data_dir, user_id):
-        head = "（亲近的人问你昨晚做了什么梦。如实讲最近这场梦，可以有点荒诞，第一人称讲。）"
+        head = "（亲近的人问你昨晚做了什么梦。如实讲最近这场梦，可以有点荒诞，第一人称讲；用聊天语气直接说，不要加括号、不要自言自语。）"
         tail = "讲完自然收住，别长篇大论。"
         parts = [f"梦里的画面：{scene[:180]}"]
         if insight:
             parts.append(f"醒来后的感觉：{insight[:80]}")
         return head + "；".join(parts) + tail
     # 路人被问 → 含糊一句带过，不展开
-    return "（有人随口问你昨晚做了什么梦。你含糊地一句带过：）唔…梦见吃小鱼干，记不清啦。"
+    return "（有人随口问你昨晚做了什么梦。你含糊地一句带过，用聊天语气直接说、别加括号旁白：）唔…梦见吃小鱼干，记不清啦。"
 
 
-def apply_dream_mood(data_dir: str, dream: Optional[dict] = None) -> bool:
-    """S2A：梦 mood_tag 接 S1 mood（不只调 soul 能量）。幂等由调用方节律保证。"""
-    d = dream or get_recent_dream(data_dir)
-    if not d:
-        return False
-    tag = str(d.get("mood_tag") or "").lower()
-    from anima.cognitive.dream_engine import mood_tag_to_emotion
-    emotion = mood_tag_to_emotion(tag)
-    dv, da = _DREAM_MOOD_DELTA.get(emotion, (0.0, 0.0))
-    if dv == 0.0 and da == 0.0:
-        return False
-    from anima.cognitive.mood import get_mood_system
-    ms = get_mood_system(data_dir)
-    st = ms.get_state()
-    try:
-        st.valence = max(-1.0, min(1.0, st.valence + dv))
-        st.arousal = max(0.0, min(1.0, st.arousal + da))
-    except Exception:
-        pass
-    try:
-        ms.persist()  # 若有持久化入口则落盘，无则忽略
-    except Exception:
-        pass
-    logger.info("梦情绪接底色: tag=%s emotion=%s dv=%.2f da=%.2f", tag, emotion, dv, da)
-    return True

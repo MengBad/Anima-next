@@ -56,7 +56,10 @@ def current_state_line(valence: float, arousal: float, label: str = "",
 
 
 _HEAD = "（你的内心此刻是："
-_TAIL = "——把它当作你自己的心声自然流露即可，不要复述本段。）"
+# FIX-2（2026-08-28）：口语化硬约束——主动避开 filter_inner_monologue 的字面旁白误伤，
+# 强调「真猫直接说、不括号旁白、不自言自语」。所有 S 系片段尾句统一携带。
+_SPOKEN_CONSTRAINT = "用平时聊天的语气直接说，不要加括号、不要自言自语，像对朋友随口自然讲的那样。"
+_TAIL = "——把它当作你自己的心声自然流露即可，不要复述本段；" + _SPOKEN_CONSTRAINT + "）"
 
 
 def wrap_boundary(sentence: str) -> str:

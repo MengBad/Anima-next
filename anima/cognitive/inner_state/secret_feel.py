@@ -75,7 +75,7 @@ def build_secret_feel_fragment(data_dir: str, user_id: int, text: str):
     if not ok:
         return None
     targeted = "这个人正是秘密里的主角" if secret["targeted"] else "这是你自己藏着的一件小事"
-    head = "（亲近的人轻声问起了你的心事。可以流露一条真实的小秘密，第一人称、点到为止、说完就收。）"
+    head = "（亲近的人轻声问起了你的心事。可以流露一条真实的小秘密，第一人称、点到为止、说完就收；用聊天语气直接说，不要加括号、不要自言自语。）"
     return head + targeted + "：" + safe[:160]
 
 
@@ -136,5 +136,5 @@ def maybe_spontaneous_confide(data_dir: str, user_id: int, rng=None):
         return None
     _last_spontaneous[today] = _last_spontaneous.get(today, 0) + 1
     logger.info("意外交心: user=%s 自然带出一句无归属秘密", user_id)
-    head = "（你们已经聊得很熟。你突然有点没忍住，轻声说了一件自己藏着的小事，说完有点不好意思地收住。）"
+    head = "（你们已经聊得很熟。你突然有点没忍住，轻声说了一件自己藏着的小事，说完有点不好意思地收住；用聊天语气直接说，不要加括号、不要自言自语。）"
     return head + safe[:160]

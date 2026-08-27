@@ -3,7 +3,6 @@
 from types import SimpleNamespace
 
 from anima.cognitive.inner_state.dream_tell import (
-    apply_dream_mood,
     build_dream_tell_fragment,
     detect_dream_inquiry,
     relation_is_close,
@@ -50,15 +49,26 @@ def test_build_fragment_requires_dream_and_close(tmp_path, monkeypatch):
     assert frag and "鱼干海洋" in frag and "醒来有点饿" in frag
 
 
-def test_apply_dream_mood_adjusts_s1_baseline(tmp_path, monkeypatch):
+def test_apply_dream_sweep_unifies_soul_and_mood(tmp_path, monkeypatch):
+    """FIX-1：梦情绪回灌统一——同 mood_tag 一次调用同时动 soul 与 mood。"""
     import anima.cognitive.mood as mood_mod
+    from anima.cognitive.dream_engine import DreamEngine
     st = SimpleNamespace(valence=0.0, arousal=0.3)
     ms = SimpleNamespace(get_state=lambda: st)
     monkeypatch.setattr(mood_mod, "get_mood_system", lambda dd: ms)
+    eng = DreamEngine(str(tmp_path))
+    # soul 注入（不依赖真实 soul.json）
+    soul_state = SimpleNamespace(creativity=0.0, social_appetite=0.0,
+                                 expression_desire=0.0, memory_depth=0.0)
+    soul = SimpleNamespace(state=soul_state, save=lambda: None)
     before = st.valence
-    ok = apply_dream_mood(str(tmp_path), {"mood_tag": "sad"})
-    assert ok is True and st.valence < before          # 难过的梦压低底色
+    ok = eng.apply_dream_sweep("sad", soul=soul, mood=ms)
+    assert ok is True
+    assert st.valence < before                       # mood 底色被压低
+    assert soul_state.social_appetite < 0.0          # soul 能量也被动（sad 想独处）
+    # happy → 抬高
     mid = st.valence
-    ok2 = apply_dream_mood(str(tmp_path), {"mood_tag": "happy"})
-    assert ok2 is True and st.valence > mid            # 开心的梦抬高底色
-    assert apply_dream_mood(str(tmp_path), None) is False
+    ok2 = eng.apply_dream_sweep("happy", soul=soul, mood=ms)
+    assert ok2 is True and st.valence > mid
+    # 未知 tag → False（fail-closed）
+    assert eng.apply_dream_sweep("nonsense", soul=soul, mood=ms) is False

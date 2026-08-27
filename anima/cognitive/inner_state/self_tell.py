@@ -120,12 +120,21 @@ _HEAD_S2 = "（你被问到你自己的心情/想法了。如实以真状态回�
 _TAIL_S2 = "用你自己的口吻自然说出来即可。）"
 
 
+def _spoken_tail() -> str:
+    """FIX-2：延迟取共享口语约束（避免 self_tell↔__init__ 循环 import）。"""
+    try:
+        from anima.cognitive.inner_state import _SPOKEN_CONSTRAINT
+        return "用你自己的口吻自然说出来即可；" + _SPOKEN_CONSTRAINT + "）"
+    except Exception:
+        return _TAIL_S2
+
+
 def build_self_narrative_fragment(data_dir: str, user_id: Optional[int] = None):
     snap = self_narrative_snapshot(data_dir, user_id)
     line = narrative_line(snap)
     if not line:
         return None
-    return _HEAD_S2 + line + _TAIL_S2
+    return _HEAD_S2 + line + _spoken_tail()
 
 
 _POS_PATTERNS = [

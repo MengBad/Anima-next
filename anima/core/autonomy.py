@@ -781,7 +781,8 @@ class Heartbeat:
                             f"（抖耳朵）"
                         )
                         await self._speak(gid, now, _share)
-                        eng.apply_dream_mood_to_soul(dream.get("mood_tag", "calm"))
+                        # FIX-1：梦境情绪回灌统一入口（soul 能量 + mood 底色一起）
+                        eng.apply_dream_sweep(dream.get("mood_tag", "calm"))
                         logger.info("[梦境] 早晨主动分享梦境 mood_tag=%s", dream.get("mood_tag"))
                         self._last_morning_dream_date = _bj_date_str(now)
                         self._group_last_speak[gid] = now

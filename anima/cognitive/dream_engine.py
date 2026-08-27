@@ -39,6 +39,9 @@ def mood_tag_to_emotion(mood_tag: str) -> str:
 # A3：梦境 mood 对 4 维灵魂能量的微调（覆盖次日初始状态）。
 # soul.json 实际用的是 4 维能量 state（见 anima.cognitive.soul.SoulState），
 # 没有 emotion 字段，所以必须微调能量而非写不存在的字段。
+# FIX-1（2026-08-28 双头统一）：单表同时承载「能量微调(soul)」+「底色微调(mood)」，
+# 梦域正主在 dream_engine；dream_tell 不再持有自己的 deltas。
+# mood_delta 沿用原 dream_tell 量级但 clamp 更保守（×0.6，梦只做底色微扰不主导一天情绪）。
 _MOOD_STATE_DELTA: dict[str, dict[str, float]] = {
     "weird":   {"creativity": +0.20, "expression_desire": +0.10},  # 怪梦→脑洞大、想多说
     "happy":   {"social_appetite": +0.20, "expression_desire": +0.15},  # 开心→想聊、话多
@@ -46,6 +49,20 @@ _MOOD_STATE_DELTA: dict[str, dict[str, float]] = {
     "sad":     {"social_appetite": -0.25, "expression_desire": -0.10},  # 难过→不想说话
     "calm":    {"creativity": +0.05, "memory_depth": +0.10},      # 平静→略发散、记性好
     "excited": {"expression_desire": +0.20, "social_appetite": +0.15},  # 兴奋→话多、想聊
+}
+
+# FIX-1 单表：mood_tag → {soul_deltas, mood_delta}
+_DREAM_SWEEP: dict[str, dict] = {
+    tag: {"soul": soul_delta,
+          "mood": tuple(round(v * 0.6, 3) for v in mood_delta)}
+    for tag, (soul_delta, mood_delta) in {
+        "weird":   ({"creativity": +0.20, "expression_desire": +0.10}, (0.02, 0.06)),
+        "happy":   ({"social_appetite": +0.20, "expression_desire": +0.15}, (0.18, 0.08)),
+        "anxious": ({"social_appetite": -0.20, "creativity": +0.05}, (-0.10, 0.10)),
+        "sad":     ({"social_appetite": -0.25, "expression_desire": -0.10}, (-0.18, -0.05)),
+        "calm":    ({"creativity": +0.05, "memory_depth": +0.10}, (0.05, 0.02)),
+        "excited": ({"expression_desire": +0.20, "social_appetite": +0.15}, (0.12, 0.15)),
+    }.items()
 }
 
 
@@ -232,7 +249,8 @@ class DreamEngine:
             except Exception:
                 logger.debug("梦境情绪：加载 SoulSystem 失败", exc_info=True)
                 return False
-        deltas = _MOOD_STATE_DELTA.get((mood_tag or "").lower(), {})
+        sweep = _DREAM_SWEEP.get((mood_tag or "").lower(), {})
+        deltas = sweep.get("soul", {}) or _MOOD_STATE_DELTA.get((mood_tag or "").lower(), {})
         state = soul.state
         for dim, delta in deltas.items():
             cur = getattr(state, dim, 0.0)
@@ -244,6 +262,56 @@ class DreamEngine:
         except Exception:
             logger.debug("梦境情绪写入 soul.json 失败", exc_info=True)
             return False
+
+    def apply_dream_sweep(self, mood_tag: str, soul=None, mood=None) -> bool:
+        """FIX-1 统一入口：一次调用同时更新 soul 能量 + mood 2维（S1 底色）。
+
+        梦只是底色微扰（mood_delta 已 ×0.6 保守），不主导一天情绪。
+        soul/mood 可注入（测试用）；缺省取各自单例。soul.json 不存在时跳过 soul 部分
+        （安全返回是否至少施加了一处）。
+        """
+        tag = (mood_tag or "").lower()
+        sweep = _DREAM_SWEEP.get(tag)
+        if not sweep:
+            return False
+        applied = False
+        # soul 能量（兼容原 apply_dream_mood_to_soul，soul.json 存在才动）
+        soul_path = self.data_dir / "soul.json"
+        if soul_path.exists() or soul is not None:
+            if soul is None:
+                try:
+                    from anima.cognitive.soul import get_soul_system
+                    soul = get_soul_system(str(self.data_dir))
+                except Exception:
+                    soul = None
+            if soul is not None:
+                state = soul.state
+                for dim, delta in (sweep.get("soul") or {}).items():
+                    cur = getattr(state, dim, 0.0)
+                    setattr(state, dim, _clamp1(cur + delta))
+                try:
+                    soul.save()
+                    applied = True
+                except Exception:
+                    logger.debug("梦境 sweep 写 soul.json 失败", exc_info=True)
+        # mood 2维（S1 底色；S2A 生活连续性真正可见）
+        if mood is None:
+            try:
+                from anima.cognitive.mood import get_mood_system
+                mood = get_mood_system(str(self.data_dir))
+            except Exception:
+                mood = None
+        if mood is not None:
+            dv, da = sweep.get("mood", (0.0, 0.0))
+            try:
+                st = mood.get_state()
+                st.valence = _clamp1(float(st.valence) + dv)
+                st.arousal = max(0.0, min(1.0, float(st.arousal) + da))
+                applied = True
+            except Exception:
+                logger.debug("梦境 sweep 写 mood 失败", exc_info=True)
+        logger.info("梦境情绪 sweep mood_tag=%s applied=%s", tag, applied)
+        return applied
 
     def _last_dream_date(self) -> str | None:
         d = self.get_last_dream()
