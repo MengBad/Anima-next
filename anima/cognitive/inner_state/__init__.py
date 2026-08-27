@@ -150,12 +150,19 @@ def decide_reactive_injection(data_dir, text, user_id=None, rng=None):
     mode, frag = decide_injection(data_dir, txt, user_id=uid)
     if mode == "self_tell" and frag:
         return "inner_state_self_tell", frag, "self_tell"
-    # 4) 未被问 → 意外交心偶发（L1）；不中则底色
+    # 4) 未被问 → 意外交心偶发（L1）；不中则 L4 会想偶发（脊轻读）；再落底色
     try:
         from anima.cognitive.inner_state.secret_feel import maybe_spontaneous_confide
         frag = maybe_spontaneous_confide(data_dir, uid, rng=rng)
         if frag:
             return "inner_state_secret", frag, "spontaneous"
+    except Exception:
+        pass
+    try:
+        from anima.cognitive.inner_state.self_tell import occasional_insight_fragment
+        frag = occasional_insight_fragment(data_dir, uid, rng=rng)
+        if frag:
+            return "inner_state_insight", frag, "insight"
     except Exception:
         pass
     return "inner_state", frag, "baseline"

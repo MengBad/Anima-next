@@ -17,7 +17,8 @@ def self_narrative_snapshot(data_dir: str, user_id: Optional[int] = None) -> dic
     """只读快照：各源尽力读取、失败给中性默认值，绝不抛错。"""
     snap = {"valence": 0.0, "arousal": 0.3, "label": "",
             "stage": "", "trust": None, "interactions": 0,
-            "scars": 0, "top_desire": ""}
+            "scars": 0, "top_desire": "", "top_intense_desire": "",
+            "latest_rel_note": ""}
     try:
         from anima.cognitive.mood import get_mood_system
         st = get_mood_system(data_dir).get_state()
@@ -43,12 +44,32 @@ def self_narrative_snapshot(data_dir: str, user_id: Optional[int] = None) -> dic
             pass
     try:
         from anima.cognitive.desire import get_desire_system
-        asp = getattr(get_desire_system(data_dir), "aspirations", []) or []
+        ds = get_desire_system(data_dir)
+        asp = getattr(ds, "aspirations", []) or []
         if asp:
-            first = asp[0]
-            snap["top_desire"] = str(getattr(first, "content", "") or "")[:24]
+            snap["top_desire"] = str(getattr(asp[0], "content", "") or "")[:24]
+        # L4：top 高强度欲望（非首个，而是 intensity 最高、未 resolved 者）
+        desires = getattr(ds, "desires", None) or []
+        if desires:
+            active = [d for d in desires if not getattr(d, "resolved", False)]
+            if active:
+                top = max(active, key=lambda d: float(getattr(d, "intensity", 0.0) or 0.0))
+                if float(getattr(top, "intensity", 0.0) or 0.0) >= 0.6:
+                    snap["top_intense_desire"] = str(getattr(top, "content", "") or "")[:24]
     except Exception:
         pass
+    if user_id is not None:
+        # L4：最新关系观察（rel.notes 末尾一条，取最后一行）
+        try:
+            from anima.cognitive.relation import get_relation_engine
+            rel = get_relation_engine(data_dir).get(int(user_id))
+            notes = str(getattr(rel, "notes", "") or "").strip()
+            if notes:
+                last = notes.splitlines()[-1].strip()
+                if last:
+                    snap["latest_rel_note"] = last[:60]
+        except Exception:
+            pass
     return snap
 
 
@@ -131,3 +152,31 @@ def detect_self_inquiry(text: str) -> bool:
     if not re.search(r"[你您]|自己|本人", t):
         return False
     return any(pat.search(t) for pat in _POS_PATTERNS)
+
+
+# ---------------------------------------------------------------------------
+# L4 danger「会想的」→ 脊轻读（2026-08-28 点亮）：偶发自然带出 top 高强度欲望 /
+# 最新关系观察，默认不每轮塞。
+# ---------------------------------------------------------------------------
+_INSIGHT_PROB = 0.03   # 偶发概率（低频，避免刷屏）
+
+
+def occasional_insight_fragment(data_dir, user_id=None, rng=None):
+    """脊轻读：存在 top 高强度欲望或最新关系观察时，偶发带出一句；否则 None(fail-closed)。"""
+    import random
+    rng = rng or random
+    if rng.random() >= _INSIGHT_PROB:
+        return None
+    snap = self_narrative_snapshot(data_dir, user_id)
+    desire = (snap.get("top_intense_desire") or "").strip()
+    note = (snap.get("latest_rel_note") or "").strip()
+    if not desire and not note:
+        return None
+    bits = []
+    if desire:
+        bits.append("最近老想着「" + desire + "」这点事")
+    if note:
+        bits.append("对和你相处的方式，心里有了一点新想法：" + note)
+    if not bits:
+        return None
+    return "（你心里有件事没说出来，只是偶尔流露一下：" + "；".join(bits) + "。）"

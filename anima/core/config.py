@@ -623,8 +623,8 @@ class DangerConfig(BaseModel):
     """
     enabled: bool = False                           # danger 层总开关
 
-    active_info_collection: bool = False            # 主动信息收集：生成自然提问存入欲望
-    relationship_inference: bool = False            # 关系图谱推断：从对话抽取人际关系笔记
+    active_info_collection: bool = True             # 主动信息收集：生成自然提问存入欲望（L4 释放「会想」）
+    relationship_inference: bool = True             # 关系图谱推断：从对话抽取人际关系笔记（L4 释放「会想」）
     stance_propagation: bool = False                # 立场自主传播：高强度外向欲望触发主动发言
     stance_propagation_confirm: bool = False        # 主动发言二次开关（发声风险）
     identity_crisis: bool = False                   # 身份危机：维护身份稳定度并注入人格

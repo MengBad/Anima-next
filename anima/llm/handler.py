@@ -1625,6 +1625,17 @@ class LLMHandler:
                 ctx.meta["bullying_severity"] = _bully["severity"]
                 logger.info("[霸凌检测] user=%s is_bullying recent=%d sev=%d",
                             user_id, _bully["recent_count"], _bully["severity"])
+                # L5 霸凌分级接内在（2026-08-28 点亮）：轻度只 mood 低落；
+                # 严重/连续 → mood + relation 轻微降 + 记 scar。不报复不外泄。
+                try:
+                    from anima.cognitive.inner_state.bullying_feel import apply_bullying_signal
+                    _dd_l5 = getattr(getattr(self.core.config, "persistence", None),
+                                     "data_dir", "data")
+                    _l5 = apply_bullying_signal(_dd_l5, int(user_id),
+                                                _bully["severity"], _bully["recent_count"])
+                    ctx.meta["bullying_feel"] = _l5["level"]
+                except Exception:
+                    logger.debug("霸凌分级施加失败（已隔离）", exc_info=True)
         except Exception:
             logger.exception("霸凌检测异常（已隔离，不阻塞回复）")
 
