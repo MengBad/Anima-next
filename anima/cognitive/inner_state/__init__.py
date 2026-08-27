@@ -153,16 +153,28 @@ def decide_reactive_injection(data_dir, text, user_id=None, rng=None):
     # 4) 未被问 → 意外交心偶发（L1）；不中则 L4 会想偶发（脊轻读）；再落底色
     try:
         from anima.cognitive.inner_state.secret_feel import maybe_spontaneous_confide
-        frag = maybe_spontaneous_confide(data_dir, uid, rng=rng)
-        if frag:
-            return "inner_state_secret", frag, "spontaneous"
+        _spont = maybe_spontaneous_confide(data_dir, uid, rng=rng)
+        if _spont:
+            return "inner_state_secret", _spont, "spontaneous"
     except Exception:
         pass
     try:
         from anima.cognitive.inner_state.self_tell import occasional_insight_fragment
-        frag = occasional_insight_fragment(data_dir, uid, rng=rng)
-        if frag:
-            return "inner_state_insight", frag, "insight"
+        _insight = occasional_insight_fragment(data_dir, uid, rng=rng)
+        if _insight:
+            return "inner_state_insight", _insight, "insight"
+    except Exception:
+        pass
+    # 5) L6 乙层挂载（owner 拍板 2026-08-28「挂」）：底色落定后，深关系 + 偶发
+    #    经脊带出「还惦记着别人」一角；低频受 rng 控制，不每轮塞，fail-closed。
+    try:
+        from anima.cognitive.inner_state.relation_overview import people_corner
+        import random as _random_l6
+        _rng_l6 = rng or _random_l6
+        if frag and _rng_l6.random() < 0.05:
+            corner = people_corner(data_dir, uid)
+            if corner:
+                frag = frag + corner
     except Exception:
         pass
     return "inner_state", frag, "baseline"

@@ -88,3 +88,36 @@ def test_readonly_no_write(tmp_path, monkeypatch):
     for name in ("relation.json", "bot_relations.json", "user_relations.json",
                 "social_graph.json"):
         assert not os.path.exists(os.path.join(str(tmp_path), name)), name
+
+
+def test_decide_reactive_corner_hooked_deep_only(tmp_path, monkeypatch):
+    """拍板2「挂」：深关系 + 偶发 rng → 底色带人际一角；浅关系不带。"""
+    import anima.cognitive.inner_state as ii
+    import anima.cognitive.relation as rr
+    import anima.cognitive.inner_state.relation_overview as ro
+    from types import SimpleNamespace
+    class _Rel:
+        def __init__(self, stage):
+            self.stage = SimpleNamespace(name=stage)
+            self.trust = 0.7
+    class _Eng:
+        def __init__(self, s):
+            self._s = s
+        def get(self, uid):
+            return _Rel(self._s)
+    fake_store = SimpleNamespace(query=lambda name: [{"a": "7", "b": "小明", "relation": "同学", "updated": 1.0}])
+    import anima.crossgroup.memory.user_relations as ur
+    monkeypatch.setattr(ur, "get_user_relation_store", lambda dd: fake_store)
+    class _Rng:
+        def __init__(self, v):
+            self.v = v
+        def random(self):
+            return self.v
+    # 深关系 + rng 命中 0.05 → 带「惦记」
+    monkeypatch.setattr(rr, "get_relation_engine", lambda dd: _Eng("CLOSE"))
+    key, frag, mode = ii.decide_reactive_injection(str(tmp_path), "今天天气不错", 7, rng=_Rng(0.0))
+    assert mode == "baseline" and "惦记" in frag and "小明" in frag
+    # 浅关系 → 不带（即使 rng 命中）
+    monkeypatch.setattr(rr, "get_relation_engine", lambda dd: _Eng("STRANGER"))
+    key2, frag2, mode2 = ii.decide_reactive_injection(str(tmp_path), "今天天气不错", 7, rng=_Rng(0.0))
+    assert "惦记" not in frag2
