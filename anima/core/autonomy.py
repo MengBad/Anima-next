@@ -780,13 +780,27 @@ class Heartbeat:
                             f"昨晚本喵做了一个好奇怪的梦…{dream['dream']}"
                             f"（抖耳朵）"
                         )
-                        await self._speak(gid, now, _share)
+                        # #6 早晨统一（2026-08-28）：梦境分享改走 agenda（与早安同纪律轨道），
+                        # 消除绕过 30min 全局冷却的旁路；not_before_at=次日 8 点。
+                        _now_bj = datetime.fromtimestamp(now, _BJ)
+                        _next8 = (_now_bj + timedelta(days=1)).replace(
+                            hour=8, minute=0, second=0, microsecond=0)
+                        _next8_ts = _next8.timestamp()
+                        if hasattr(self.core, "propose_agenda"):
+                            self.core.propose_agenda(
+                                int(gid), f"梦境分享：{_share}",
+                                priority=0.35, not_before_at=_next8_ts,
+                                expires_at=_next8_ts + 3600,
+                                source="morning_dream_share",
+                            )
+                            logger.info("[梦境] 梦境分享已入 agenda group=%s not_before=次日8点 mood_tag=%s",
+                                        gid, dream.get("mood_tag"))
+                        else:
+                            # 无 agenda 能力时 fail-closed：静默跳过，不改生成本身
+                            logger.debug("[梦境] propose_agenda 不可用，跳过梦境分享")
                         # FIX-1：梦境情绪回灌统一入口（soul 能量 + mood 底色一起）
                         eng.apply_dream_sweep(dream.get("mood_tag", "calm"))
-                        logger.info("[梦境] 早晨主动分享梦境 mood_tag=%s", dream.get("mood_tag"))
                         self._last_morning_dream_date = _bj_date_str(now)
-                        self._group_last_speak[gid] = now
-                        self._last_active_speak = now
                         self.persist()
                         return
         except Exception:
