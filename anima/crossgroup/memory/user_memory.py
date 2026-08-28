@@ -82,6 +82,25 @@ class UserMemory:
         ]
         return "\n".join(lines)
 
+    def summary_in_group(self, group_id, max_facts: int = 3,
+                         per_fact_chars: int = 80) -> str:
+        """分层记忆·事实层：仅召回「本群来源」的事实。
+
+        用于 bot 当前所在群的默认记忆注入——在 A 群既认识一个老熟人、
+        又不默认带着 TA 在 B 群的私人细节。别的群/私聊来源不进入本群默认上下文。
+        「认得你」层（别名/外号/风格/话题/群成员身份）仍由调用方跨群共享。
+        """
+        if not self.facts:
+            return "（暂无已知信息）"
+        facts = self.recall_in_group(group_id, k=max_facts)
+        if not facts:
+            return "（本群暂无已知细节）"
+        lines = [
+            f"- {f.content[:per_fact_chars]}（来源群：{f.source_group}）"
+            for f in facts
+        ]
+        return "\n".join(lines)
+
     def update_topic(self, topic: str) -> None:
         """E2: 记录用户话题偏好。"""
         if not topic or len(topic) < 2:

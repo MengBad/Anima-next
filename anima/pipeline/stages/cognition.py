@@ -623,7 +623,10 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             except Exception:
                 pass
             add_system_fragment(
-                "crossgroup", build_crossgroup_fragment(atmosphere, user_mem), 70,
+                "crossgroup", build_crossgroup_fragment(
+                    atmosphere, user_mem,
+                    group_id=str(ctx.group_id) if ctx.group_id is not None else None,
+                ), 70,
             )
             ctx.atmosphere_style = atmosphere.style.value
             # E1: 群内社交图谱注入

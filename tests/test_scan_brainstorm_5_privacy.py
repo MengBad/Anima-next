@@ -33,9 +33,20 @@ def test_recall_public_still_excludes_private():
     assert len(got) == 3
 
 
-def test_social_wiring_uses_recall_in_group():
+def test_social_wiring_layered_memory():
+    """分层记忆接线：默认注入按群隔离，按需查询跨群公开。
+
+    - 被动上下文注入（summary_in_group / build_crossgroup_fragment）→ recall_in_group，只本群
+    - 显式"问他信息"的查询工具（social query/summarize）→ recall_public，跨群公开（排除私聊）
+      → 在别的群问一个老熟人也能答，而非一问三不知
+    """
     import io
     src = io.open("anima/tools/builtin/social.py", encoding="utf-8").read()
-    assert "recall_in_group" in src
-    assert "get_call_context()" in src
-    assert "recall_public" in src
+    # 被动注入：分层仍走 group 作用域
+    um_src = io.open("anima/crossgroup/memory/user_memory.py", encoding="utf-8").read()
+    assert "def recall_in_group" in um_src
+    assert "def summary_in_group" in um_src
+    # 查询工具转跨群公开（显式询问不再只回本群）
+    assert "um.recall_public" in src
+    # 不再仅靠 recall_in_group（显式查询已放开）
+    assert "recall_in_group" not in src

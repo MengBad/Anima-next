@@ -57,12 +57,17 @@ class _FakeCore:
 
 @pytest.mark.asyncio
 async def test_injects_crossgroup_and_single_system(crossgroup_tmp, monkeypatch):
-    """跨群氛围 + 跨群记忆注入 system_prompt，且仍为单一 system 消息。"""
+    """跨群氛围 + 跨群记忆注入 system_prompt，且仍为单一 system 消息。
+
+    分层记忆语义：本群(222)默认注入仅本群来源的事实；外部群(111)学的事实
+    **不进入** 222 的默认上下文（防止私人细节跨群外泄），但仍可由召回查询。
+    """
     _stub_cognitive(monkeypatch)
     cgm = crossgroup_tmp
-    # 游戏群氛围 + Alice 在技术群学的 Rust 事实（跨群）
+    # 游戏群氛围 + Alice 在技术群(111)学的 Rust 事实 + 在游戏群(222)本身的事实
     cgm.observe_group("222", ["开黑上分666", "菜鸡卧槽", "carry yyds"])
     cgm.add_user_fact("888", "正在学 Rust", source_group="111", name="Alice")
+    cgm.add_user_fact("888", "最近沉迷收购游戏皮肤", source_group="222", name="Alice")
 
     ctx = PipelineContext(
         event={}, text="有啥推荐吗", user_id=888, group_id=222,
@@ -81,7 +86,10 @@ async def test_injects_crossgroup_and_single_system(crossgroup_tmp, monkeypatch)
     assert "哈基米" in sp                      # 人格仍在
     assert "当前群氛围" in sp                   # 氛围块
     assert "跨群记忆" in sp                     # 跨群记忆块
-    assert "Rust" in sp                         # 跨群召回的事实
+    # 分层：本群(222)事实进入默认上下文
+    assert "游戏皮肤" in sp
+    # 外部群(111)学的事实不进入本群默认上下文
+    assert "Rust" not in sp
     assert "humorous" in sp                     # 游戏群氛围
     assert "身份锁定" in sp                     # 身份锁定仍在
 

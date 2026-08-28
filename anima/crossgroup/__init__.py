@@ -5,7 +5,7 @@
 
 - ``get_crossgroup_manager()`` / ``close_crossgroup_manager()``：进程级单例
 - ``CrossGroupManager``：跨群记忆 + 群氛围画像 + 持久化
-- ``build_crossgroup_fragment(atmosphere, user_memory)``：拼到 system_prompt 末尾的追加块
+- ``build_crossgroup_fragment(atmosphere, user_memory, group_id=None)``：拼到 system_prompt 末尾的追加块；群消息传入 group_id 时默认注入本群来源事实（分层记忆）
 - ``extract_user_facts(llm, text, ...)``：每条消息 LLM 结构化事实抽取（见 extraction.py）
 """
 from .manager_singleton import (

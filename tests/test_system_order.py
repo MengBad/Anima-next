@@ -56,7 +56,7 @@ def patch_cognitive(monkeypatch):
     monkeypatch.setattr(scar_mod, "get_scar_system", lambda: _Stub())
 
     # 跨群片段注入可识别标记，用于断言顺序
-    def _frag(atmosphere, user_memory):
+    def _frag(atmosphere, user_memory, group_id=None):
         return "\n\n## 当前群氛围\n风格：humorous；特征：中性。"
 
     class _Mgr:

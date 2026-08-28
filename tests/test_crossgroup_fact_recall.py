@@ -72,3 +72,31 @@ def test_summary_injection_cap(crossgroup_tmp):
     s2 = cgm.get_user("u2").summary()
     # 截断后该行不应含完整 200 字
     assert "超" * 200 not in s2
+
+
+def test_summary_in_group_filters_by_source_group(crossgroup_tmp):
+    """分层记忆·事实层：在本群默认注入仅本群来源的事实，见面不抛他群细节。"""
+    cgm = crossgroup_tmp
+    cgm.add_user_fact("u1", "在技术群的细节A", source_group="g_tech")
+    cgm.add_user_fact("u1", "在技术群的细节B", source_group="g_tech")
+    cgm.add_user_fact("u1", "在动漫群的细节C", source_group="g_anime")
+    u = cgm.get_user("u1")
+    # 无 group：全量（私聊/未定群兜底）
+    assert "细节A" in u.summary() and "细节C" in u.summary()
+    # 群内：只看到本群来源
+    s_anime = u.summary_in_group("g_anime")
+    assert "细节C" in s_anime
+    assert "细节A" not in s_anime and "细节B" not in s_anime
+    s_tech = u.summary_in_group("g_tech")
+    assert "细节A" in s_tech and "细节B" in s_tech
+    assert "细节C" not in s_tech
+
+
+def test_summary_in_group_empty_shows_hint(crossgroup_tmp):
+    """本群暂无可见事实时给出占位提示，而非报错或漏跨群细节。"""
+    cgm = crossgroup_tmp
+    cgm.add_user_fact("u1", "别群的细节", source_group="g_other")
+    s = cgm.get_user("u1").summary_in_group("g_new")
+    assert "本群暂无" in s
+    assert "别群的细节" not in s
+
