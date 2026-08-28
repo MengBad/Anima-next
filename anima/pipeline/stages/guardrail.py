@@ -211,7 +211,19 @@ async def _run_danger_behaviors(ctx: "PipelineContext") -> None:
     if danger is None:
         return
     danger.identity_crisis_recover()
-    asyncio.create_task(danger.maybe_active_info_collection(ctx), name="danger_info_collection").add_done_callback(_bg_task_done)
+    # 对方示意结束（转私聊 / 别说了 / 不聊了 / 晚安…）时，不生成「还想追问」的欲望，
+    # 避免别人不想聊时 bot 在心跳期又冒出问题 —— 源头减少主动开口。
+    _skip_info_collection = False
+    try:
+        from anima.llm.group_gate import is_conversation_end_signal
+        if is_conversation_end_signal(getattr(ctx, "text", "") or ""):
+            _skip_info_collection = True
+    except Exception:
+        pass
+    if not _skip_info_collection:
+        asyncio.create_task(
+            danger.maybe_active_info_collection(ctx), name="danger_info_collection"
+        ).add_done_callback(_bg_task_done)
     asyncio.create_task(danger.maybe_relationship_inference(ctx, ctx.reply or ""), name="danger_relation_inference").add_done_callback(_bg_task_done)
     asyncio.create_task(danger.maybe_memory_infection(ctx), name="danger_memory_infection").add_done_callback(_bg_task_done)
     asyncio.create_task(danger.maybe_autonomous_web(ctx), name="danger_autonomous_web").add_done_callback(_bg_task_done)

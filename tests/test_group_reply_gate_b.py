@@ -204,6 +204,10 @@ def test_end_signal_detection():
     assert is_conversation_end_signal("都说了别回复了 烦")
     assert is_conversation_end_signal("明天再说吧")
     assert is_conversation_end_signal("[CQ:reply,id=123] 行了不跟你斗嘴了 真关机睡了喵")
+    assert is_conversation_end_signal("先不回了")
+    assert is_conversation_end_signal("转私聊了")
+    assert is_conversation_end_signal("别跟了 我不想说话")
+    assert is_conversation_end_signal("真不回了 别烦了")
     # 非收尾内容不应误判
     assert not is_conversation_end_signal("左转右转比较合适吗")
     assert not is_conversation_end_signal("大家晚上吃什么")

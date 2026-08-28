@@ -489,7 +489,20 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             from anima.cognitive.scar import get_scar_system
             _persist = getattr(getattr(core, "config", None), "persistence", None)
             _dd = getattr(_persist, "data_dir", "data") if _persist else "data"
-            if get_scar_system(_dd).is_avoiding(int(ctx.user_id)):
+            _avoiding = get_scar_system(_dd).is_avoiding(int(ctx.user_id))
+            if _avoiding:
+                # 对方示意结束（转私聊 / 别说了 / 不聊了 / 晚安…）→ 彻底沉默，不再补冷话收尾。
+                # 只有明确示意结束才静默；未示意结束的回避期仍极短冷回（保留原防长篇辩解意图）。
+                try:
+                    from anima.llm.group_gate import is_conversation_end_signal
+                    _ending = bool(is_conversation_end_signal(ctx.text or ""))
+                except Exception:
+                    _ending = False
+                if _ending:
+                    logger.info("[回避] 用户 %s 示意结束，彻底沉默不补刀", ctx.user_id)
+                    ctx.reply = None
+                    ctx.should_reply = False
+                    return StageResult.SKIP_REPLY
                 _cold = _resolve_bullying_reply(0)
                 if _cold:
                     logger.info("[回避] 用户 %s 处于回避期，简短回复", ctx.user_id)
