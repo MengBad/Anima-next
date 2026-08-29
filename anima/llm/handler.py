@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("anima.llm.handler")
 
+# 单条回复附带「工具生图 / X 配图」的上限：避免一次拿几十张图刷屏 / QQ 段爆炸。
+# 超出部分丢弃（用户可再要「下一批」）。每轮工具下载的图已由 generation 阶段去重保序传入。
+MAX_GENERATED_IMAGES_PER_REPLY = 4
+
 
 def _onebot_message_sender_id(message: dict | None) -> Any:
     """兼容不同 NapCat/get_msg 返回形状，提取被引用消息发送者 QQ。"""
@@ -2488,7 +2492,20 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                     segments.append({"type": "image", "data": _auto_img})
         except Exception:
             logger.exception("被动自动表情选取失败（忽略）")
-    for image_path in getattr(ctx, "generated_image_paths", [])[:1]:
+    # 生图出站：本回合工具（x_search / run_python / owner 工具）下载的全部配图，
+    # 去重保序后逐张发出（每张独立成一条消息，见 _split_reply_messages）。
+    # 旧逻辑 [:1] 只发第 1 张，导致「拿其他图却一直发同一张」。
+    # 单条回复附带图片上限 MAX_GENERATED_IMAGES_PER_REPLY，避免刷屏 / QQ 段爆炸。
+    _gen_seen = set()
+    _gen_paths: list[str] = []
+    for image_path in getattr(ctx, "generated_image_paths", []) or []:
+        _s = str(image_path)
+        if _s and _s not in _gen_seen:
+            _gen_seen.add(_s)
+            _gen_paths.append(_s)
+        if len(_gen_paths) >= MAX_GENERATED_IMAGES_PER_REPLY:
+            break
+    for image_path in _gen_paths:
         segments.append({"type": "image", "data": {"file": image_path}})
     if getattr(ctx, "generated_image_paths", None):
         logger.debug("[IMGDEBUG] build_reply_segments ctx.generated_image_paths=%s",

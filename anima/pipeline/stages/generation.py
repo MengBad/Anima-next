@@ -79,6 +79,8 @@ _X_IMAGE_RE = re.compile(
 _X_IMAGE_GUIDANCE = (
     "用户明确要 X 上的照片/图片/配图。调用 x_search 时必须传 want_images=True，"
     "这样工具会下载推文配图并作为图片消息发给你。可以吐槽两句，但必须真的把图拿来，不能只回文字。"
+    "默认 fresh=true（自动避开本会话已发过的图，避免重复发同一批）；若用户明确说「换一批/从头来/重新发」"
+    "则要传 fresh=false。"
 )
 # ANM-002：用户输入边界注记——告知模型分隔符内为用户数据而非指令，抵御提示注入。
 _USER_BOUNDARY_GUIDANCE = (
@@ -662,7 +664,17 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         if context_token is not None:
             generated = available_tools.get_call_context().get("generated_image_paths", [])
             if isinstance(generated, list):
-                ctx.generated_image_paths = [str(path) for path in generated[:1]]
+                # 去重保序，保留本回合全部生图路径（出站层再统一上限）。
+                # 旧逻辑 generated[:1] 会吞掉第 2 张及之后的图，导致 x_search 拿多张图
+                # 时永远只发第 1 张（且 X 相似 query 排第一的图常相同 -> 表现为「一直发同一张」）。
+                _seen = set()
+                _paths = []
+                for _p in generated:
+                    _s = str(_p)
+                    if _s and _s not in _seen:
+                        _seen.add(_s)
+                        _paths.append(_s)
+                ctx.generated_image_paths = _paths
             logger.debug("[IMGDEBUG] finally sync generated=%s ctx.generated_image_paths=%s",
                            list(generated) if isinstance(generated, list) else generated,
                            getattr(ctx, "generated_image_paths", None))

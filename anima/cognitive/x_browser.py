@@ -74,6 +74,8 @@ class XBrowserSession:
         self._lock = asyncio.Lock()
         self._last_used = 0.0
         self._daily = {"date": "", "search": 0, "timeline": 0}
+        # 会话级「已发配图」URL 集合：fresh 去重用，避免「拿其他的」反复发同一批。
+        self._seen_image_urls: set[str] = set()
 
     # -- 限流 --
     def _day_key(self) -> str:
@@ -198,12 +200,27 @@ class XBrowserSession:
                             return out
         return out
 
-    async def search(self, query: str, limit: int = 5) -> dict:
-        """搜索 X。返回 {ok, logged_in, tweets, tweet_images, note}。"""
+    async def search(self, query: str, limit: int = 5, *, fresh: bool = True) -> dict:
+        """搜索 X。返回 {ok, logged_in, tweets, tweet_images, fresh_images, note}。
+
+        fresh=True（默认）：tweet_images 仍返回全部命中的媒体 URL；额外给出
+        fresh_images = tweet_images 中排除「本会话已发过」的图，供工具下载时优先取
+        未发过的。fresh=False（用户说「从头/重来」时）：fresh_images 等同 tweet_images，
+        并清空本会话 seen 集合，允许重新发同一批。
+        """
         if not self.enabled:
             return {"ok": False, "logged_in": False, "tweets": [], "note": "x_browser 未启用"}
         if not self._within_limit("search"):
             return {"ok": False, "logged_in": False, "tweets": [], "note": "今日搜索额度已用尽"}
+
+        # 候选池放大：实际抓取 max(limit*4, 20) 张图，过滤掉已发图后仍有余量可选，
+        # 避免「拿其他的」总是取到最前面那几张同样的图。
+        img_limit = max(limit * 4, 20)
+
+        if not fresh:
+            # 用户要求「从头/重来」：清掉已 seen，允许重复
+            self._seen_image_urls.clear()
+
         async with self._lock:
             try:
                 page = await self._get_page()
@@ -214,7 +231,7 @@ class XBrowserSession:
                 await asyncio.sleep(3)
                 await self._ensure_logged_in(page)   # 仍失败则自动重登
                 await self._human_pause()
-                for _ in range(2):
+                for _ in range(3):  # 多滚几屏，扩大候选面
                     try:
                         await page.mouse.wheel(0, 1200)
                     except Exception:
@@ -222,7 +239,14 @@ class XBrowserSession:
                     await self._human_pause(0.8)
                 logged_in = await self._is_logged_in(page)
                 tweets = await self._collect_tweets(page, limit)
-                tweet_images = await self._collect_tweet_images(page, limit)
+                tweet_images = await self._collect_tweet_images(page, img_limit)
+                # fresh 过滤：排除本会话已发过的图
+                fresh_images = self._filter_fresh(tweet_images)
+                # 兜底：fresh 全被已发图覆盖 -> 自动 reset 再取一批，保证永远有图可发
+                if fresh and tweet_images and not fresh_images:
+                    logger.info("X 搜索 fresh 过滤后为空，自动 reset seen 再取一批")
+                    self._seen_image_urls.clear()
+                    fresh_images = list(tweet_images)
                 await page.close()
                 self._bump("search")
                 return {
@@ -230,11 +254,29 @@ class XBrowserSession:
                     "logged_in": logged_in,
                     "tweets": tweets,
                     "tweet_images": tweet_images,
+                    "fresh_images": fresh_images,
                     "note": "" if logged_in else "未登录态（结果可能受限，请先人工登录保存 profile）",
                 }
             except Exception as e:  # noqa: BLE001
                 logger.warning("X 搜索失败（已隔离）: %s", e)
-                return {"ok": False, "logged_in": False, "tweets": [], "tweet_images": [], "note": f"X 搜索异常: {e}"}
+                return {"ok": False, "logged_in": False, "tweets": [], "tweet_images": [], "fresh_images": [], "note": f"X 搜索异常: {e}"}
+
+    def _filter_fresh(self, urls: list[str]) -> list[str]:
+        """去掉本会话已发过（self._seen_image_urls）的图，并在列表内也去重，保持保序。"""
+        seen = self._seen_image_urls
+        local: set[str] = set()
+        out: list[str] = []
+        for u in urls:
+            if u and u not in seen and u not in local:
+                local.add(u)
+                out.append(u)
+        return out
+
+    def mark_images_seen(self, urls: list[str]) -> None:
+        """下载成功后记录这些 URL 已发过（fresh 去重用）。"""
+        for u in urls:
+            if u:
+                self._seen_image_urls.add(u)
 
     async def home_timeline(self, limit: int = 10) -> dict:
         """滚时间线/关注流。返回 {ok, logged_in, tweets, note}。"""

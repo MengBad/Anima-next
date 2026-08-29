@@ -19,8 +19,13 @@ logger = logging.getLogger("anima.tools.x_search")
 
 
 async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) -> str | None:
-    """经代理下载单张图片到本地，返回本地路径；失败返回 None。"""
+    """经代理下载单张图片到本地，返回本地路径；失败返回 None。
+
+    文件名基于 URL 内容 hash 稳定生成：同一张图重复下载会覆盖已有文件，
+    不再每次堆积带时间戳的新文件。
+    """
     import aiohttp
+    import hashlib
 
     headers = {
         "User-Agent": (
@@ -45,7 +50,9 @@ async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) ->
                 ext = Path(base).suffix.lower()
                 if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                     ext = ".jpg"
-                fname = f"x_{int(time.time() * 1000)}_{len(data)}.{ext.lstrip('.')}"
+                # 稳定文件名：同 URL 内容 hash -> 同图覆盖，避免堆积
+                digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
+                fname = f"x_{digest}.{ext.lstrip('.')}"
                 dest = dest_dir / fname
                 dest.write_bytes(data)
                 return str(dest.resolve())
@@ -68,7 +75,8 @@ def _write_image_paths(paths: list[str]) -> None:
         logger.warning("写入 generated_image_paths 失败（忽略）: %s", e)
 
 
-async def tool_x_search(query: str, limit: int = 5, want_images: bool = False) -> str:
+async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
+                       fresh: bool = True) -> str:
     """在 X（Twitter）上搜索内容并返回摘要；want_images=True 时同时返回推文配图。
 
     适用于：需要 X 平台实时/专属信息（如某账号动态、某话题讨论、用户要求
@@ -80,6 +88,8 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False) -
         limit: 返回条数，默认 5，范围 1-10。
         want_images: 用户要「照片/图片/拿图」时为 True；工具会下载推文配图并
             放入出站图片段（回复时会作为图片消息发送）。
+        fresh: 是否避开本会话已发过的图（默认 True）。用户说「换一批/从头来」
+            时传 False，允许重新发同一批。
     """
     query = str(query or "").strip()
     if not query:
@@ -92,11 +102,12 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False) -
 
     limit = max(1, min(10, int(limit or 5)))
     want_images = bool(want_images)
+    fresh = bool(fresh)
     try:
         session = get_x_browser()
         if session is None or not session.enabled:
             return "X 浏览器未启用（config.x_browser.enabled=false）。"
-        res = await session.search(query, limit=limit)
+        res = await session.search(query, limit=limit, fresh=fresh)
     except Exception as e:  # noqa: BLE001
         logger.warning("x_search 调用失败（已隔离）: %s", e)
         return f"X 搜索失败：{e}"
@@ -107,19 +118,26 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False) -
 
     tweets = res.get("tweets", [])
     tweet_images = res.get("tweet_images", [])
+    # 优先发未发过的图；fresh=False 时 fresh_images == tweet_images（已 reset）
+    fresh_images = res.get("fresh_images", []) or tweet_images
 
     # 用户要照片：下载推文配图并写入出站图片段
     downloaded: list[str] = []
-    if want_images and tweet_images:
+    if want_images and fresh_images:
         proxy = getattr(session, "proxy", "") or None
         dest_dir = Path(getattr(session, "data_dir", "data/x_browser")) / "downloaded"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        for url in tweet_images[: limit]:
+        for url in fresh_images[: limit]:
             p = await _download_image(url, dest_dir, proxy)
             if p:
                 downloaded.append(p)
         if downloaded:
             _write_image_paths(downloaded)
+            # 记录这些 URL 已发过（会话内去重，下次自动避开）
+            try:
+                session.mark_images_seen(fresh_images[: limit])
+            except Exception:  # noqa: BLE001
+                logger.debug("mark_images_seen 失败（忽略）")
 
     # 构造文本摘要
     lines = []

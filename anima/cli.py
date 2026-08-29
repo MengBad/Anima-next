@@ -493,6 +493,43 @@ def ops_cleanup_cmd(data_dir, keep_running):
     click.echo(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
 
 
+@cli.command("x-diag")
+@click.option("--config", "config_path", default="config.yaml", help="配置文件路径")
+@click.option("--live", is_flag=True, help="真实启动受管浏览器探一次登录态（会触碰 X 账号，较慢）")
+def x_diag(config_path, live):
+    """诊断 X（Twitter）搬图模块：启用 / 引擎 / 代理 / 登录态 / 额度。"""
+    cfg = _load_config_silent(config_path)
+    if cfg is None:
+        click.echo(f"X 未找到配置文件: {config_path}（先运行 anima init 生成）", err=True)
+        sys.exit(1)
+
+    d = _x_diag_checks(cfg, live=live)
+
+    def _b(level):
+        return {"ok": "OK", "warn": "~", "fail": "X"}[level]
+
+    click.echo("--- X 搬图模块诊断 ---")
+    click.echo(f"{_b('ok' if d['enabled'] else 'fail')} x_browser.enabled = {d['enabled']}")
+    click.echo(f"{_b('ok' if d['patchright_ok'] else 'fail')} patchright 引擎 = {d['patchright_ok']}")
+    click.echo(f"{'OK' if d['proxy'] else '~'} proxy = {d['proxy'] or '(未配置)'}")
+    if d["proxy"]:
+        click.echo(f"   └ 代理可达性 = {_fmt_none(d['proxy_reachable'])}")
+    click.echo(f"{'OK' if d['cookies_file'] else '~'} cookies.json = {d['cookies_file']} "
+               f"(含 {d['x_cookie_count']} 个 x.com cookie)")
+    click.echo(f"{'OK' if d['profile_dir'] else '~'} profile 目录 = {d['profile_dir']}")
+    click.echo(f"~ 每日额度: search={d['search_limit']} timeline={d['timeline_limit']} "
+               f"(warmup_days={d['warmup_days']}, 养号期未强制)")
+    if d["live_logged_in"] is not None:
+        click.echo(f"{'OK' if d['live_logged_in'] else '~'} 真实登录态探测 = "
+                   f"{'已登录' if d['live_logged_in'] else '未登录'}")
+    click.echo("")
+    click.echo(f"{_b(d['level'])} 结论: {d['verdict']}")
+    for r in d["reasons"]:
+        click.echo(f"   - {r}")
+
+    sys.exit(0 if d["level"] in ("ok", "warn") else 1)
+
+
 @cli.command()
 @click.option("--config", "config_path", default="config.yaml", help="用于连通性检查的配置文件")
 def doctor(config_path):
@@ -571,6 +608,18 @@ def doctor(config_path):
             click.echo("OK 向量记忆后端正常")
         else:
             click.echo("~ 向量记忆后端不可用（将降级为 BM25/无语义召回）")
+
+        # X 搬图模块（紧凑结论；详细用 `anima x-diag`）
+        try:
+            xd = _x_diag_checks(cfg)
+            _sym = {"ok": "OK", "warn": "~", "fail": "X"}[xd["level"]]
+            click.echo(f"{_sym} X 搬图: {xd['verdict']}")
+            if xd["reasons"]:
+                click.echo("   └ " + xd["reasons"][0])
+                if len(xd["reasons"]) > 1:
+                    click.echo(f"   └ 其余 {len(xd['reasons']) - 1} 项: anima x-diag")
+        except Exception as _e:  # 诊断本身不应破坏 doctor
+            click.echo(f"~ X 搬图诊断失败（已隔离）: {_e}")
     else:
         click.echo("~ 未找到配置文件，跳过连通性检查（运行 anima init 生成）")
 
@@ -660,6 +709,190 @@ def _check_vector_health(cfg) -> bool:
         return asyncio.run(_probe())
     except Exception:
         return False
+
+
+# ---------------------------------------------------------------------------
+# X（Twitter）搬图模块诊断
+# ---------------------------------------------------------------------------
+def _probe_proxy(proxy_url: str, timeout: float = 5.0):
+    """best-effort：经代理探 x.com 是否可达。
+
+    返回 True=收到任意响应（代理把请求转发到了 X）、False=连接失败、
+    None=未配置代理或缺少依赖。任何 HTTP 响应（含 403/429/301）都算代理通。
+    """
+    if not proxy_url:
+        return None
+    try:
+        import aiohttp
+    except ImportError:
+        # 退化：用标准库 urllib 经代理探一次
+        try:
+            import urllib.request
+
+            handler = urllib.request.ProxyHandler({"https": proxy_url, "http": proxy_url})
+            opener = urllib.request.build_opener(handler)
+            opener.open("https://x.com", timeout=timeout)
+            return True
+        except Exception:
+            return False
+    import asyncio
+
+    async def _probe():
+        to = aiohttp.ClientTimeout(total=timeout)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+            )
+        }
+        async with aiohttp.ClientSession(timeout=to) as s:
+            async with s.get(
+                "https://x.com", proxy=proxy_url, headers=headers, allow_redirects=False
+            ) as _r:
+                return True
+
+    try:
+        return asyncio.run(_probe())
+    except Exception:
+        return False
+
+
+async def _x_live_login_once(cfg):
+    """真实启动受管浏览器打开 x.com，粗判登录态（会触碰 X 账号）。"""
+    try:
+        from anima.cognitive.x_browser import XBrowserSession
+    except Exception:
+        return None
+    if not getattr(getattr(cfg, "x_browser", None), "enabled", False):
+        return None
+    sess = XBrowserSession(cfg.x_browser)
+    try:
+        async with sess._lock:
+            await sess._ensure_browser()
+            page = await sess._get_page()
+            await sess._inject_cookies(page)
+            await page.goto("https://x.com/", timeout=30000, wait_until="commit")
+            await asyncio.sleep(2)
+            logged = await sess._is_logged_in(page)
+            await page.close()
+        return logged
+    except Exception:
+        return False
+    finally:
+        try:
+            await sess.close()
+        except Exception:
+            pass
+
+
+def _fmt_none(v: object) -> str:
+    if v is None:
+        return "(未配置/不适用)"
+    return "可达" if v else "不可达"
+
+
+def _x_diag_checks(cfg, *, live: bool = False) -> dict:
+    """一次性诊断 X 搬图模块：启用 / 引擎 / 代理 / 登录态 / 额度。
+
+    返回结构化 dict，供 `x-diag` 命令与 `doctor` 复用。level ∈ {ok, warn, fail}。
+    """
+    xb = getattr(cfg, "x_browser", None)
+    enabled = bool(getattr(xb, "enabled", False))
+    proxy = str(getattr(xb, "proxy", "") or "").strip()
+    data_dir = Path(getattr(xb, "data_dir", "data/x_browser") or "data/x_browser")
+
+    # 浏览器引擎
+    patchright_ok = True
+    try:
+        import patchright  # noqa: F401
+    except Exception:
+        patchright_ok = False
+
+    # cookie / profile 文件系统态
+    cookies_file = (data_dir / "cookies.json").exists()
+    x_cookie_count = 0
+    if cookies_file:
+        try:
+            import json
+
+            cs = json.loads((data_dir / "cookies.json").read_text(encoding="utf-8"))
+            x_cookie_count = len([c for c in cs if "x.com" in c.get("domain", "")])
+        except Exception:
+            x_cookie_count = -1  # 解析失败
+    profile_dir = (data_dir / "profile").exists()
+
+    # 代理可达性（best-effort，不致命）
+    proxy_reachable = _probe_proxy(proxy) if proxy else None
+
+    search_limit = int(getattr(xb, "search_daily_limit", 0) or 0)
+    timeline_limit = int(getattr(xb, "timeline_daily_limit", 0) or 0)
+    warmup_days = int(getattr(xb, "warmup_days", 0) or 0)
+
+    live_logged_in = None
+    if live and enabled:
+        try:
+            live_logged_in = asyncio.run(_x_live_login_once(cfg))
+        except Exception:
+            live_logged_in = False
+
+    # 决策树：为什么搬不动
+    reasons: list[str] = []
+    level = "ok"
+    if not enabled:
+        reasons.append("config.x_browser.enabled=false（X 浏览器未启用，x_search 直接返回『未启用』）")
+        level = "fail"
+    else:
+        if not patchright_ok:
+            reasons.append("patchright 未安装（浏览器引擎缺失，无法启动受管浏览器）")
+            level = "fail"
+        if not cookies_file:
+            reasons.append("缺少 data/x_browser/cookies.json（无持久登录态；search 仍可跑但结果受限/可能需重登）")
+            if level == "ok":
+                level = "warn"
+        elif x_cookie_count <= 0:
+            reasons.append("cookies.json 存在但无 x.com cookie（登录态无效）")
+            level = "warn"
+        if not profile_dir:
+            reasons.append("data/x_browser/profile 不存在（首次运行会自动创建，但尚无稳定指纹/登录态）")
+            if level == "ok":
+                level = "warn"
+        if not proxy:
+            reasons.append("未配置专用代理（数据中心 IP 易被 X 风控；建议配 x_browser.proxy 家宽出口）")
+            if level == "ok":
+                level = "warn"
+        elif proxy_reachable is False:
+            reasons.append(f"代理不可达：{proxy}（检查 mihomo/监听端口是否存活）")
+            level = "fail"
+        elif proxy_reachable is True:
+            reasons.append(f"代理可达：{proxy}")
+        if warmup_days > 0:
+            reasons.append(
+                f"warmup_days={warmup_days} 已配置，但当前代码未强制养号期（已知缺口，仅作记录）"
+            )
+
+    verdict = {
+        "fail": "X 搬图功能不可用",
+        "warn": "X 搬图功能可用但存在风险/限制",
+        "ok": "X 搬图功能就绪",
+    }[level]
+
+    return {
+        "enabled": enabled,
+        "patchright_ok": patchright_ok,
+        "proxy": proxy,
+        "proxy_reachable": proxy_reachable,
+        "cookies_file": cookies_file,
+        "x_cookie_count": x_cookie_count,
+        "profile_dir": profile_dir,
+        "search_limit": search_limit,
+        "timeline_limit": timeline_limit,
+        "warmup_days": warmup_days,
+        "warmup_enforced": False,
+        "live_logged_in": live_logged_in,
+        "level": level,
+        "verdict": verdict,
+        "reasons": reasons,
+    }
 
 
 def main():
