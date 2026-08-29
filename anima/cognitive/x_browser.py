@@ -207,10 +207,12 @@ class XBrowserSession:
         async with self._lock:
             try:
                 page = await self._get_page()
+                # goto 之前注入持久 cookie（cookies.json），让首次请求即带登录态
+                await self._inject_cookies(page)
                 url = "https://x.com/search?q=" + urllib.parse.quote(query) + "&f=live"
                 await page.goto(url, timeout=30000, wait_until="commit")
                 await asyncio.sleep(3)
-                await self._ensure_logged_in(page)   # 会话失效时自动重登
+                await self._ensure_logged_in(page)   # 仍失败则自动重登
                 await self._human_pause()
                 for _ in range(2):
                     try:
@@ -243,6 +245,8 @@ class XBrowserSession:
         async with self._lock:
             try:
                 page = await self._get_page()
+                # goto 之前注入持久 cookie（cookies.json），让首次请求即带登录态
+                await self._inject_cookies(page)
                 await page.goto("https://x.com/home", timeout=30000, wait_until="commit")
                 await asyncio.sleep(3)
                 await self._ensure_logged_in(page)   # 会话失效时自动重登
@@ -289,8 +293,26 @@ class XBrowserSession:
         logger.warning("X 登录：找不到 %s 输入框（选择器 %s）", label, selectors)
         return False
 
+    async def _click_button(self, page, text: str) -> bool:
+        """按可见文本点击按钮（X 登录页 Continue / Log in 等无稳定 name）。"""
+        try:
+            btn = page.get_by_role("button", name=text, exact=False)
+            await btn.first.wait_for(state="visible", timeout=4000)
+            await btn.first.click()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
+    async def _safe_body(page) -> str:
+        try:
+            return (await page.inner_text("body", timeout=8000)) or ""
+        except Exception:
+            return ""
+
     async def _do_login(self, page) -> bool:
-        """在登录页自动填入账号密码。返回是否提交成功（不保证最终登录成功）。"""
+        """在登录页自动填入账号密码（适配 X 新登录流：用户名→Continue→密码→Log in）。
+        返回是否提交成功（不保证最终登录成功；若需二次验证则返回 False 交人工）。"""
         user = getattr(self.config, "username", "") or ""
         pwd = getattr(self.config, "password", "") or ""
         if not user or not pwd:
@@ -299,24 +321,67 @@ class XBrowserSession:
             if "i/flow/login" not in page.url:
                 await page.goto("https://x.com/i/flow/login", timeout=30000, wait_until="commit")
             await asyncio.sleep(2)
-            ok = await self._try_fill(page, ['input[autocomplete="username"]', 'input[name="text"]', 'input[type="text"]'], user, "用户名")
-            if ok:
+            # 步骤1:用户名/邮箱（X 新表单 name=username_or_email）
+            ok = await self._try_fill(page, [
+                'input[name="username_or_email"]',
+                'input[autocomplete="username"]',
+                'input[name="text"]',
+            ], user, "用户名")
+            if not ok:
+                return False
+            # 点 Continue（无稳定 name，按文本）
+            if not await self._click_button(page, "Continue"):
                 await page.keyboard.press("Enter")
-                await asyncio.sleep(3)
+            # 密码框在 Continue 之后才渲染，显式等待
+            try:
+                await page.locator('input[name="password"]').first.wait_for(state="visible", timeout=15000)
+            except Exception:
+                logger.warning("X 登录：Continue 后未出现密码框（可能需二次验证或流程变更）")
+                return False
+            # 步骤2:密码
             await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'], pwd, "密码")
-            await page.keyboard.press("Enter")
-            await asyncio.sleep(4)
+            if not await self._click_button(page, "Log in"):
+                await page.keyboard.press("Enter")
+            await asyncio.sleep(6)
+            # 检测是否进入二次验证（邮箱/手机）
+            body = await self._safe_body(page)
+            if any(k in body for k in ["Enter the code", "确认码", "Verify", "验证", "验证码", "unusual activity", "suspicious"]):
+                logger.warning("X 登录：需要二次验证，暂停自动登录，等待人工提供验证码")
+                return False
             logger.info("X 自动重登已提交（会话失效自愈）")
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning("X 自动重登失败: %s", e)
             return False
 
+    async def _inject_cookies(self, page) -> bool:
+        """若 data_dir/cookies.json 存在（从已登录浏览器导出的 X cookie），
+        注入到上下文以维持登录态。绕开 Playwright 对 X HttpOnly cookie 的落盘问题。"""
+        try:
+            cf = self.data_dir / "cookies.json"
+            if not cf.exists():
+                return False
+            import json
+            cookies = json.loads(cf.read_text(encoding="utf-8"))
+            if not cookies:
+                return False
+            xs = [c for c in cookies if "x.com" in c.get("domain", "")]
+            if not xs:
+                return False
+            await page.context.add_cookies(xs)
+            logger.info("X cookie 注入成功（%d 个 x.com cookie）", len(xs))
+            return True
+        except Exception as e:  # noqa: BLE001
+            logger.warning("X cookie 注入失败: %s", e)
+            return False
+
     async def _ensure_logged_in(self, page) -> None:
-        """若当前在登录页，尝试用配置凭据自动重登（保号自愈）。"""
+        """若当前在登录页：先尝试 cookie 文件注入（持久登录态），再自动重登（保号自愈）。"""
         try:
             if not await self._is_logged_in(page):
-                await self._do_login(page)
+                await self._inject_cookies(page)
+                if not await self._is_logged_in(page):
+                    await self._do_login(page)
         except Exception:  # noqa: BLE001
             logger.warning("X _ensure_logged_in 异常，已隔离")
 
