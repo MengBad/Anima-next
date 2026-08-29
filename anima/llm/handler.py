@@ -1671,8 +1671,31 @@ class LLMHandler:
             # #7 霸凌统一（2026-08-28）：①playful 抵消（复用 _detect_hurtful 的
             # playful_markers 单源）——有戏派玩笑「滚，别烦本喵」不算霸凌；②单点分级
             # 喂 feel + generation（severity/recent_count 合并为轻/重）。
+            # ③ 目标判定 + 主人豁免（2026-08-29 修复误判）：私聊/群里「提到骂人词但
+            # 不是骂本喵」不能触发沉默（如「是不是觉得群里的人太傻逼了」是问 bot 看法，
+            # 不是攻击 bot）；owner 绝不因霸凌检测被静默。
             _severity = int(_bully["severity"])
             _recent = int(_bully["recent_count"])
+            # 主人豁免：owner 不会被霸凌沉默（ta 可以说狠话，是 bot 的主人）。
+            _is_owner = self._is_owner(int(user_id))
+            if _is_owner:
+                _bully = {"is_bullying": False, "severity": 0, "recent_count": 0}
+                _severity = 0
+                _recent = 0
+                logger.info("[霸凌] 主人豁免 user=%s 不触发沉默", user_id)
+            elif _bully["is_bullying"] and _severity > 0:
+                # 目标判定：问句 / 谈论第三方 / 指代别人 → 非对 bot 的攻击
+                _q = (text or "").strip()
+                _mention_other = re.search(
+                    r"(群里的人|群里的|别人|他们|那些人|大家|某位|那个谁|你说.*(?:是不是|吗|[?？]))",
+                    _q,
+                )
+                _is_question = bool(_q.endswith(("？", "?", "吗", "嘛")))
+                if _is_question or _mention_other:
+                    _bully = {"is_bullying": False, "severity": 0, "recent_count": 0}
+                    _severity = 0
+                    _recent = 0
+                    logger.info("[霸凌] 非对 bot 攻击（问句/谈他者）user=%s 不沉默", user_id)
             if _bully["is_bullying"] and _severity > 0:
                 try:
                     from anima.pipeline.stages._shared import _detect_hurtful
