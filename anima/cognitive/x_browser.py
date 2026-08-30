@@ -95,24 +95,39 @@ class XBrowserSession:
     # -- 浏览器生命周期 --
     async def _ensure_browser(self):
         """创建持久化 profile 会话。调用方必须已持有 self._lock（防并发双开）。
-        profile 绑定稳定指纹/localStorage，登录态跨启动存活（X 保号关键）。"""
+        profile 绑定稳定指纹/localStorage，登录态跨启动存活（X 保号关键）。
+
+        引擎由 config.x_browser.browser_engine 决定：
+        - chromium（默认）：patchright stealth 版，抗检测强但 X 近期对其返回空白壳；
+        - firefox：gecko 指纹，X 认真正 Firefox，对无头脚本化访问更宽容，适合被
+          chromium 风控拦截时切换。需对应 playwright firefox 二进制已安装。
+        """
         if self._context is not None:
             return
         from patchright.async_api import async_playwright
         pw = await async_playwright().start()
-        args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
-        if self.proxy:
-            args.append(f"--proxy-server={self.proxy}")
-        ctx = await pw.chromium.launch_persistent_context(
-            str(self.profile_dir),
-            headless=True,
-            args=args,
-            viewport={"width": 1280, "height": 900},
-            user_agent=(
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-            ),
-        )
+        engine = str(getattr(self.config, "browser_engine", "chromium") or "chromium").strip().lower()
+        if engine == "firefox":
+            # gecko 持久上下文：X 对 Firefox 指纹放行。无头模式在服务器更稳。
+            ctx = await pw.firefox.launch_persistent_context(
+                str(self.profile_dir / "firefox"),
+                headless=True,
+                viewport={"width": 1280, "height": 900},
+            )
+        else:
+            args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
+            if self.proxy:
+                args.append(f"--proxy-server={self.proxy}")
+            ctx = await pw.chromium.launch_persistent_context(
+                str(self.profile_dir),
+                headless=True,
+                args=args,
+                viewport={"width": 1280, "height": 900},
+                user_agent=(
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                ),
+            )
         self._playwright = pw
         self._context = ctx
 

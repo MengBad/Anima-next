@@ -592,6 +592,9 @@ class XBrowserConfig(BaseModel):
     # 专用家宽代理出口（mihomo 独立监听端口，如 http://127.0.0.1:10810），
     # 与维基/BBC 通用代理隔离，降低 X 风控。留空则走系统默认出口。
     proxy: str = ""
+    # 浏览器引擎：chromium（patchright stealth，默认）或 firefox（gecko 指纹，
+    # 对 X 风控更友好——X 认真 Firefox 但挡 chromium 自动化）。切换需对应 playwright 二进制已安装。
+    browser_engine: str = Field(default="chromium", pattern="^(chromium|firefox)$")
     # 账号凭据（用于会话失效时自动重登，保号自愈）。生产 config 中配置。
     username: str = ""
     password: str = ""
