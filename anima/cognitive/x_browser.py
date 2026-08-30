@@ -76,6 +76,11 @@ class XBrowserSession:
         self._daily = {"date": "", "search": 0, "timeline": 0}
         # 会话级「已发配图」URL 集合：fresh 去重用，避免「拿其他的」反复发同一批。
         self._seen_image_urls: set[str] = set()
+        # X 风控退避：detected 空壳（页面能开但抽不到图）视为被 X 临时风控，标记一段
+        # 「不可用窗口」，期间快速失败不硬撞浏览器；窗口过后自动恢复重试。
+        self._x_blocked_until = 0.0
+        self._x_blocked_reason = ""
+        self._x_block_count = 0
 
     # -- 限流 --
     def _day_key(self) -> str:
@@ -215,18 +220,55 @@ class XBrowserSession:
                             return out
         return out
 
+    # X 风控退避参数：单次调用内对「空壳」短重试；判定被挡后标记一段不可用窗口。
+    X_BLOCK_WINDOW_SEC = 30 * 60          # 检测到被挡后，30 分钟内快速失败不硬撞
+    X_IN_CALL_RETRIES = 2                 # 单次调用内，空壳时等几秒重抓的次数
+    X_IN_CALL_RETRY_WAIT = 8.0            # 每次重抓前的等待秒数
+
+    async def _collect_search_once(self, page, limit: int, img_limit: int) -> tuple[list, list]:
+        """在已打开的搜索页上抽一次推文+配图。返回 (tweets, tweet_images)。"""
+        await asyncio.sleep(3)
+        await self._ensure_logged_in(page)   # 仍失败则自动重登
+        await self._human_pause()
+        for _ in range(3):  # 多滚几屏，扩大候选面
+            try:
+                await page.mouse.wheel(0, 1200)
+            except Exception:
+                pass
+            await self._human_pause(0.8)
+        tweets = await self._collect_tweets(page, limit)
+        tweet_images = await self._collect_tweet_images(page, img_limit)
+        return tweets, tweet_images
+
     async def search(self, query: str, limit: int = 5, *, fresh: bool = True) -> dict:
-        """搜索 X。返回 {ok, logged_in, tweets, tweet_images, fresh_images, note}。
+        """搜索 X。返回 {ok, logged_in, tweets, tweet_images, fresh_images, note, blocked}。
 
         fresh=True（默认）：tweet_images 仍返回全部命中的媒体 URL；额外给出
         fresh_images = tweet_images 中排除「本会话已发过」的图，供工具下载时优先取
         未发过的。fresh=False（用户说「从头/重来」时）：fresh_images 等同 tweet_images，
         并清空本会话 seen 集合，允许重新发同一批。
+
+        风控退避：X 对自动化浏览器是间歇性放行的（某些时段返回空壳）。本方法：
+        - 若当前处于「被挡窗口」内，直接快速失败（blocked=True），不硬撞浏览器；
+        - 页面能开但抽到 0 图（典型空壳）→ 视为被挡，标记窗口 + 同次内短重试 1-2 次
+          （X 挑战常为瞬时，重抓可能恢复）；仍空则记窗口、返回空。
+        - 任意一次成功抽到图 → 清除被挡标记（恢复）。
+        所有失败均 fail-soft，不影响 happy path。
         """
         if not self.enabled:
-            return {"ok": False, "logged_in": False, "tweets": [], "note": "x_browser 未启用"}
+            return {"ok": False, "logged_in": False, "tweets": [], "note": "x_browser 未启用", "blocked": False}
         if not self._within_limit("search"):
-            return {"ok": False, "logged_in": False, "tweets": [], "note": "今日搜索额度已用尽"}
+            return {"ok": False, "logged_in": False, "tweets": [], "note": "今日搜索额度已用尽", "blocked": False}
+
+        # 被挡窗口内：快速失败，避免反复硬撞浏览器（X 风控常持续数分钟~半小时）。
+        if self._x_blocked_until and time.time() < self._x_blocked_until:
+            remain = int(self._x_blocked_until - time.time())
+            logger.info("X 处于风控窗口内（剩余 %ds），快速失败不硬撞", remain)
+            return {
+                "ok": False, "logged_in": False, "tweets": [],
+                "note": f"X 暂被风控拦截，约 {remain}s 后恢复（会话级退避）",
+                "blocked": True,
+            }
 
         # 候选池放大：实际抓取 max(limit*4, 20) 张图，过滤掉已发图后仍有余量可选，
         # 避免「拿其他的」总是取到最前面那几张同样的图。
@@ -243,18 +285,39 @@ class XBrowserSession:
                 await self._inject_cookies(page)
                 url = "https://x.com/search?q=" + urllib.parse.quote(query) + "&f=live"
                 await page.goto(url, timeout=30000, wait_until="commit")
-                await asyncio.sleep(3)
-                await self._ensure_logged_in(page)   # 仍失败则自动重登
-                await self._human_pause()
-                for _ in range(3):  # 多滚几屏，扩大候选面
-                    try:
-                        await page.mouse.wheel(0, 1200)
-                    except Exception:
-                        pass
-                    await self._human_pause(0.8)
-                logged_in = await self._is_logged_in(page)
-                tweets = await self._collect_tweets(page, limit)
-                tweet_images = await self._collect_tweet_images(page, img_limit)
+                tweets, tweet_images = await self._collect_search_once(page, limit, img_limit)
+
+                # 空壳检测：页面能开但抽到 0 图 -> 疑似被 X 风控。短重试 1-2 次。
+                if not tweet_images:
+                    self._x_block_count += 1
+                    for _ in range(self.X_IN_CALL_RETRIES):
+                        logger.info("X 搜索抽到 0 图（疑似风控空壳），%ss 后重抓 (retry %d)",
+                                    int(self.X_IN_CALL_RETRY_WAIT), _ + 1)
+                        await asyncio.sleep(self.X_IN_CALL_RETRY_WAIT)
+                        # 重新 goto 触发一次新加载，规避瞬时挑战
+                        await page.goto(url, timeout=30000, wait_until="commit")
+                        tweets, tweet_images = await self._collect_search_once(page, limit, img_limit)
+                        if tweet_images:
+                            break
+                    if not tweet_images:
+                        # 确认被挡：标记窗口，后续快速失败
+                        self._x_blocked_until = time.time() + self.X_BLOCK_WINDOW_SEC
+                        self._x_blocked_reason = "空壳(抽到0图)"
+                        logger.warning("X 搜索连续空壳，标记风控窗口 %ds", self.X_BLOCK_WINDOW_SEC)
+                        await page.close()
+                        return {
+                            "ok": False, "logged_in": False, "tweets": [],
+                            "note": "X 暂被风控拦截（页面空壳），稍后重试",
+                            "blocked": True,
+                        }
+
+                # 正常路径：抽到图 -> 清被挡标记（恢复）
+                if self._x_blocked_until:
+                    logger.info("X 搜索恢复正常，清除风控窗口（连续空壳 %d 次）", self._x_block_count)
+                self._x_blocked_until = 0.0
+                self._x_block_count = 0
+                self._x_blocked_reason = ""
+
                 # fresh 过滤：排除本会话已发过的图
                 fresh_images = self._filter_fresh(tweet_images)
                 # 兜底：fresh 全被已发图覆盖 -> 自动 reset 再取一批，保证永远有图可发
@@ -266,15 +329,19 @@ class XBrowserSession:
                 self._bump("search")
                 return {
                     "ok": True,
-                    "logged_in": logged_in,
+                    "logged_in": True,
                     "tweets": tweets,
                     "tweet_images": tweet_images,
                     "fresh_images": fresh_images,
-                    "note": "" if logged_in else "未登录态（结果可能受限，请先人工登录保存 profile）",
+                    "note": "",
+                    "blocked": False,
                 }
             except Exception as e:  # noqa: BLE001
                 logger.warning("X 搜索失败（已隔离）: %s", e)
-                return {"ok": False, "logged_in": False, "tweets": [], "tweet_images": [], "fresh_images": [], "note": f"X 搜索异常: {e}"}
+                # 浏览器级异常（启动/导航崩）也计入风控窗口，避免反复硬撞
+                self._x_blocked_until = time.time() + self.X_BLOCK_WINDOW_SEC
+                self._x_blocked_reason = f"异常:{e}"
+                return {"ok": False, "logged_in": False, "tweets": [], "tweet_images": [], "fresh_images": [], "note": f"X 搜索异常: {e}", "blocked": True}
 
     def _filter_fresh(self, urls: list[str]) -> list[str]:
         """去掉本会话已发过（self._seen_image_urls）的图，并在列表内也去重，保持保序。"""
