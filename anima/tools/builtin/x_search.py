@@ -10,10 +10,13 @@ Agent 在需要实时、X 平台专属、或用户明确要求「去 X 查/在 X
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 from pathlib import Path
+
+from anima.media import build_multimodal_user_content
 
 logger = logging.getLogger("anima.tools.x_search")
 
@@ -108,6 +111,107 @@ def _write_image_paths(paths: list[str]) -> None:
         logger.warning("[IMGDBG] 写入 generated_image_paths 失败（忽略）: %s", e)
 
 
+# Gemini 看图判断「图与搜索主题是否相关」的多选过滤。
+# 输入：候选本地图路径 + 查询词；输出：过滤后（保持原顺序）的路径列表。
+# 任何异常 fail-soft 返回空表（调用方回退为全发，不因视觉失败而空手）。
+_RELEVANCE_SYSTEM = (
+    "你是一名配图相关性审校员。下面给出若干张候选图片（已按 0..N-1 编号），"
+    "以及用户搜索/想要的主题。请判断每张图的内容是否与主题相关，"
+    "只保留真正相关的图（画面内容贴合主题，不是模糊/截图/无关/广告/头像）。"
+    "用 choose_relevant 工具返回相关图片的编号列表；都不相关返回空列表。"
+)
+_RELEVANCE_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "choose_relevant",
+            "description": "返回与主题相关的图片编号列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "indices": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "与主题相关的图片编号（0 基）。",
+                    }
+                },
+                "required": ["indices"],
+            },
+        },
+    }
+]
+
+
+async def _filter_images_by_relevance(session, query: str,
+                                      candidates: list[str]) -> list[str]:
+    """用 Gemini 判断候选图哪些与 query 主题相关，返回相关路径（保持原顺序）。
+
+    session._core.llm 不可用/视觉失败 -> 返回 []，由调用方回退全发。
+    """
+    core = getattr(session, "_core", None)
+    llm = getattr(core, "llm", None) if core is not None else None
+    if llm is None or not candidates:
+        return []
+    try:
+        from anima.cognitive.vision import get_vision_manager
+        vmgr = get_vision_manager()
+        # 逐张读图并准备 URIs；超预算/失败的单张跳过（保留 index 映射）
+        uris: list[str] = []
+        valid: list[int] = []
+        per_budget = max(64 * 1024, 8 * 1024 * 1024 // max(1, len(candidates)))
+        for i, path in enumerate(candidates):
+            try:
+                data = Path(path).read_bytes()
+            except Exception:
+                continue
+            try:
+                prep = await vmgr._prepared_uris(data, {"path": path}, max_bytes=per_budget, max_frames=1)
+            except Exception:
+                continue
+            if prep:
+                uris.append(prep[0])
+                valid.append(i)
+        if not uris:
+            return []
+        numbered = "\n".join(f"[{i}] 图片 {i}" for i in valid)
+        prompt = f"候选图片（编号）：\n{numbered}\n\n用户搜索/想要的主题：{query or ''}\n请返回与主题相关的图片编号。"
+        messages = [
+            {"role": "system", "content": _RELEVANCE_SYSTEM},
+            {"role": "user", "content": build_multimodal_user_content(prompt, uris)},
+        ]
+        resp = await llm.chat_structured(
+            messages=messages, tools=_RELEVANCE_TOOLS,
+            temperature=0.0, max_tokens=128,
+        )
+        sel: list[int] = []
+        if isinstance(resp, dict):
+            for tc in (resp.get("tool_calls") or []):
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                if fn.get("name") != "choose_relevant":
+                    continue
+                args = fn.get("arguments", "{}")
+                try:
+                    data = json.loads(args) if isinstance(args, str) else args
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    for x in (data.get("indices") or []):
+                        try:
+                            sel.append(int(x))
+                        except (TypeError, ValueError):
+                            pass
+        valid_set = set(valid)
+        picked = [i for i in sel if i in valid_set]
+        # 保持原候选顺序
+        ordered = [candidates[i] for i in valid if i in picked]
+        logger.info("[IMGDBG] 视觉相关性过滤: %d 候选 -> %d 相关 (query=%s)",
+                    len(candidates), len(ordered), query[:20])
+        return ordered
+    except Exception as e:  # noqa: BLE001
+        logger.warning("[IMGDBG] 视觉相关性过滤失败（回退全发）: %s", e)
+        return []
+
+
 async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                        fresh: bool = True) -> str:
     """在 X（Twitter）上搜索内容并返回摘要；want_images=True 时同时返回推文配图。
@@ -162,15 +266,25 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
         proxy = getattr(session, "proxy", "") or None
         dest_dir = Path(getattr(session, "data_dir", "data/x_browser")) / "downloaded"
         dest_dir.mkdir(parents=True, exist_ok=True)
-        for url in fresh_images[: limit]:
+        # 候选池放大：多下载一些，视觉相关性过滤后仍有余量可选。
+        _candidate_urls = fresh_images[: max(limit * 2, limit + 2)]
+        _cand_paths: list[str] = []
+        for url in _candidate_urls:
             p = await _download_image(url, dest_dir, proxy)
             if p:
-                downloaded.append(p)
+                _cand_paths.append(p)
+            if len(_cand_paths) >= limit * 2:
+                break
+        # 视觉相关性过滤：用 Gemini 看图判断是否与 query 相关，只发相关图。
+        if _cand_paths:
+            _filtered = await _filter_images_by_relevance(session, query, _cand_paths)
+            # 保底：过滤后为空则退回候选（视觉误判/失败不应导致空手）
+            downloaded = _filtered or _cand_paths[: limit]
         if downloaded:
-            _write_image_paths(downloaded)
+            _write_image_paths(downloaded[: limit])
             # 记录这些 URL 已发过（会话内去重，下次自动避开）
             try:
-                session.mark_images_seen(fresh_images[: limit])
+                session.mark_images_seen(_candidate_urls[: limit])
             except Exception:  # noqa: BLE001
                 logger.debug("mark_images_seen 失败（忽略）")
 

@@ -17,7 +17,11 @@ import pytest
 
 from anima.cognitive.x_browser import XBrowserSession
 from anima.pipeline.stages.generation import _X_IMAGE_GUIDANCE, _X_IMAGE_RE, _X_SEARCH_RE
-from anima.tools.builtin.x_search import _download_image, _write_image_paths
+from anima.tools.builtin.x_search import (
+    _download_image,
+    _filter_images_by_relevance,
+    _write_image_paths,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -285,3 +289,85 @@ def test_x_image_guidance_mentions_want_images():
     assert "照片" in _X_IMAGE_GUIDANCE
     # 行为契约：抱怨图发不出也应触发重新抓图（A 项修复）
     assert "发不出" in _X_IMAGE_GUIDANCE or "没收到" in _X_IMAGE_GUIDANCE
+
+
+# ---------------------------------------------------------------------------
+# 6. Gemini 视觉相关性过滤 _filter_images_by_relevance
+# ---------------------------------------------------------------------------
+def _mk_core(llm):
+    class _Core:
+        pass
+    c = _Core()
+    c.llm = llm
+    return c
+
+
+def _mk_session(core):
+    class _S:
+        pass
+    s = _S()
+    s._core = core
+    return s
+
+
+@pytest.mark.asyncio
+async def test_relevance_filter_selects_matching(tmp_path, monkeypatch):
+    """Gemini 返回 [0,2] -> 只保留第 0、2 张（保持原顺序）。"""
+    import asyncio
+
+    async def chat_structured(*args, **kwargs):
+        return {
+            "tool_calls": [{
+                "function": {"name": "choose_relevant", "arguments": '{"indices":[0,2]}'},
+            }]
+        }
+
+    llm = type("LLM", (), {"chat_structured": chat_structured})()
+    session = _mk_session(_mk_core(llm))
+    cand = [str(tmp_path / f"c{i}.jpg") for i in range(3)]
+    for p in cand:
+        (tmp_path / f"c{p[-5]}.jpg").write_bytes(b"\xff\xd8\xff" + b"x" * 50)
+        # 路径是 tmp_path/cX.jpg，直接确保文件存在
+        Path(p).write_bytes(b"\xff\xd8\xff" + b"x" * 50)
+
+    from anima.cognitive import vision as vision_mod
+
+    class _VM:
+        async def _prepared_uris(self, data, img, *, max_bytes, max_frames):
+            return ["data:image/jpeg;base64,AAAA"]
+
+    monkeypatch.setattr(vision_mod, "get_vision_manager", lambda: _VM())
+    got = await _filter_images_by_relevance(session, "二次元萌图", cand)
+    assert got == [cand[0], cand[2]]
+
+
+@pytest.mark.asyncio
+async def test_relevance_filter_no_llm_returns_empty(monkeypatch, tmp_path):
+    """session 无 core/llm -> 返回 []（fail-soft，调用方回退全发）。"""
+    class _S:
+        _core = None
+    session = _S()
+    cand = [str(tmp_path / f"c{i}.jpg") for i in range(2)]
+    got = await _filter_images_by_relevance(session, "男娘", cand)
+    assert got == []
+
+
+@pytest.mark.asyncio
+async def test_relevance_filter_llm_raises_returns_empty(monkeypatch, tmp_path):
+    """视觉调用异常 -> 返回 []（fail-soft）。"""
+    async def boom(**kwargs):
+        raise RuntimeError("vision down")
+    llm = type("LLM", (), {"chat_structured": boom})()
+    session = _mk_session(_mk_core(llm))
+    from anima.cognitive import vision as vision_mod
+
+    class _VM:
+        async def _prepared_uris(self, data, img, *, max_bytes, max_frames):
+            return ["data:image/jpeg;base64,AAAA"]
+
+    monkeypatch.setattr(vision_mod, "get_vision_manager", lambda: _VM())
+    cand = [str(tmp_path / f"c{i}.jpg") for i in range(2)]
+    for p in cand:
+        Path(p).write_bytes(b"\xff\xd8\xff" + b"x" * 50)
+    got = await _filter_images_by_relevance(session, "男娘", cand)
+    assert got == []

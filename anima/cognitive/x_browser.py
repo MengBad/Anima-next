@@ -81,6 +81,8 @@ class XBrowserSession:
         self._x_blocked_until = 0.0
         self._x_blocked_reason = ""
         self._x_block_count = 0
+        # core 引用（set_x_browser 注入）：供 x_search 拿 llm 做「图内容相关性」视觉过滤。
+        self._core = None
 
     # -- 限流 --
     def _day_key(self) -> str:
@@ -288,9 +290,11 @@ class XBrowserSession:
                 page = await self._get_page()
                 # goto 之前注入持久 cookie（cookies.json），让首次请求即带登录态
                 await self._inject_cookies(page)
-                # 用户要图时追加 filter:images：只返回含配图推文，提升相关性。
+                # 用户要图时追加 filter:images：只返回含配图推文。
+                # f=top 用「热门/相关」排序（X 默认 tab），比 f=live(最新) 相关性高得多——
+                # 搜'二次元萌图/男娘图'时，热门结果更贴主题，避免最新但不相关的图刷屏。
                 _q = query + (" filter:images" if images_only else "")
-                url = "https://x.com/search?q=" + urllib.parse.quote(_q) + "&f=live"
+                url = "https://x.com/search?q=" + urllib.parse.quote(_q) + "&f=top"
                 await page.goto(url, timeout=30000, wait_until="commit")
                 tweets, tweet_images = await self._collect_search_once(page, limit, img_limit)
 
@@ -558,6 +562,8 @@ def set_x_browser(core) -> Optional[XBrowserSession]:
         from anima.core.config import XBrowserConfig
         cfg = XBrowserConfig()
     _x_browser = XBrowserSession(cfg)
+    # 保留 core 引用：供 x_search 拿 llm 做「图内容相关性」视觉过滤。
+    _x_browser._core = core
     return _x_browser
 
 
