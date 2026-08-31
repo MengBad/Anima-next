@@ -275,6 +275,127 @@ async def _filter_images_by_relevance(session, query: str,
         return False, []
 
 
+# ---------------------------------------------------------------------------
+# P3-2: X 搬图内容分级（二次元 vs 三次元）。
+# 当查询里带有明确的风格信号时，视觉分级只保留匹配该风格的图；
+# 无信号或视觉失败时 fail-soft（不动原结果），绝不因分级空手。
+# ---------------------------------------------------------------------------
+
+def _detect_style_hint(query: str) -> str | None:
+    """从查询词识别期望的画风：'anime'（二次元）/ 'realistic'（三次元），无则 None。"""
+    q = str(query or "").lower()
+    anime_markers = ("二次元", "动漫", "动画", "anime", "萌", "漫画", "卡通", "猫娘", "男娘", "壁纸",
+                     "插画", "手绘", "立绘", "老婆", "galgame", "cos", "纸片人")
+    realistic_markers = ("三次元", "真人", "写实", "realistic", "照片", "摄影", "现实", "真实",
+                         "实拍", "人像", "肉", "真人女", "写真")
+    hit_a = any(m in q for m in anime_markers)
+    hit_r = any(m in q for m in realistic_markers)
+    if hit_a and not hit_r:
+        return "anime"
+    if hit_r and not hit_a:
+        return "realistic"
+    return None  # 无明确风格 / 冲突 → 不强制分级
+
+
+_STYLE_SYSTEM = (
+    "你是一名画风审校员。用户想要特定风格的图片，下面给出若干张候选图（按 0..N-1 编号）。"
+    "请只保留画风明确符合目标风格的图，剔除不符合（如截图/照片/混入的其他风格）。"
+    "用 choose_style 工具返回符合风格的图片编号列表；都不符合返回空列表。"
+)
+_STYLE_TOOLS: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "choose_style",
+            "description": "返回画风符合目标风格的图片编号列表。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "indices": {
+                        "type": "array",
+                        "items": {"type": "integer"},
+                        "description": "画风符合的图片编号（0 基）。",
+                    }
+                },
+                "required": ["indices"],
+            },
+        },
+    }
+]
+
+
+async def _grade_images_by_style(session, style: str,
+                                 candidates: list[str]) -> tuple[bool, list[str]]:
+    """视觉分级：只保留画风匹配 style（anime/realistic）的图。
+
+    返回 (ok, filtered)：ok=True 信任分级；ok=False 视觉不可用/失败 → 调用方保底全发。
+    """
+    core = getattr(session, "_core", None)
+    llm = getattr(core, "llm", None) if core is not None else None
+    if llm is None or not candidates:
+        return False, []
+    style_desc = "二次元/动漫风（anime illustration）" if style == "anime" else "三次元/真人写实"
+
+    async def _do():
+        from anima.cognitive.vision import get_vision_manager
+        vmgr = get_vision_manager()
+        uris: list[str] = []
+        valid: list[int] = []
+        per_budget = max(64 * 1024, 8 * 1024 * 1024 // max(1, len(candidates)))
+        for i, path in enumerate(candidates):
+            try:
+                data = Path(path).read_bytes()
+            except Exception:
+                continue
+            try:
+                prep = await vmgr._prepared_uris(data, {"path": path}, max_bytes=per_budget, max_frames=1)
+            except Exception:
+                continue
+            if prep:
+                uris.append(prep[0])
+                valid.append(i)
+        if not uris:
+            return False, []
+        numbered = "\n".join(f"[{i}] 图片 {i}" for i in valid)
+        prompt = (f"目标风格：{style_desc}\n\n候选图片（编号）：\n{numbered}\n"
+                  f"请只保留画风符合「{style_desc}」的图片编号。")
+        messages = [
+            {"role": "system", "content": _STYLE_SYSTEM},
+            {"role": "user", "content": build_multimodal_user_content(prompt, uris)},
+        ]
+        resp = await llm.chat_structured(
+            messages=messages, tools=_STYLE_TOOLS, temperature=0.0, max_tokens=128,
+        )
+        sel: list[int] = []
+        if isinstance(resp, dict):
+            for tc in (resp.get("tool_calls") or []):
+                fn = tc.get("function", {}) if isinstance(tc, dict) else {}
+                if fn.get("name") != "choose_style":
+                    continue
+                args = fn.get("arguments", "{}")
+                try:
+                    data = json.loads(args) if isinstance(args, str) else args
+                except Exception:
+                    continue
+                if isinstance(data, dict):
+                    for x in (data.get("indices") or []):
+                        try:
+                            sel.append(int(x))
+                        except (TypeError, ValueError):
+                            pass
+        valid_set = set(valid)
+        picked = [i for i in sel if i in valid_set]
+        ordered = [candidates[i] for i in valid if i in picked]
+        logger.debug("[IMGDBG] 内容分级(%s): %d 候选 -> %d 匹配", style, len(candidates), len(ordered))
+        return True, ordered
+
+    try:
+        return await asyncio.wait_for(_do(), timeout=_RELEVANCE_TIMEOUT)
+    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - 分级失败保底全发
+        logger.warning("[IMGDBG] 内容分级(%s)失败/超时，回退全发", style)
+        return False, []
+
+
 async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                        fresh: bool = True) -> str:
     """在 X（Twitter）上搜索内容并返回摘要；want_images=True 时同时返回推文配图。
@@ -363,6 +484,14 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                 if _ok:
                     # 视觉成功：信任判定。filtered 可能为空（都不相关）——宁可不发，也不发无关图。
                     downloaded = _filtered[: limit]
+                    # P3-2 内容分级：查询带明确风格信号时，再只保留匹配该风格的图。
+                    _style = _detect_style_hint(query)
+                    if _style and downloaded:
+                        _sok, _styled = await _grade_images_by_style(session, _style, downloaded)
+                        if _sok:
+                            # 分级成功：信任。可能为空（都不匹配风格）——宁可不发，不发错风格。
+                            downloaded = _styled[: limit]
+                        # 分级失败/超时：保底全发（保持 relevance 结果），不因分级空手
                 else:
                     # 视觉不可用/失败/超时：保底全发，不因视觉问题空手。
                     downloaded = _cand_paths[: limit]

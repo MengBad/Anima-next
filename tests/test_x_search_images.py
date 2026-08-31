@@ -18,6 +18,7 @@ import pytest
 from anima.cognitive.x_browser import XBrowserSession
 from anima.pipeline.stages.generation import _X_IMAGE_GUIDANCE, _X_IMAGE_RE, _X_SEARCH_RE
 from anima.tools.builtin.x_search import (
+    _detect_style_hint,
     _download_image,
     _existing_gen_paths,
     _filter_images_by_relevance,
@@ -463,3 +464,21 @@ async def test_relevance_filter_returns_empty_when_all_irrelevant(monkeypatch, t
     ok, got = await _filter_images_by_relevance(session, "男娘", cand)
     assert ok is True
     assert got == []
+
+
+# ---------------------------------------------------------------------------
+# P3-2: X 搬图内容分级——风格信号识别
+# ---------------------------------------------------------------------------
+def test_detect_style_hint_anime():
+    for q in ["二次元萌图", "来点动漫壁纸", "男娘图", "猫娘", "动画截图", "卡通人物"]:
+        assert _detect_style_hint(q) == "anime", q
+
+
+def test_detect_style_hint_realistic():
+    for q in ["三次元写真", "真人照片", "写实风景", "摄影作品", "真人女"]:
+        assert _detect_style_hint(q) == "realistic", q
+
+
+def test_detect_style_hint_none_without_signal():
+    for q in ["今天天气怎么样", "随便来点", "推荐好看的东西"]:
+        assert _detect_style_hint(q) is None, q
