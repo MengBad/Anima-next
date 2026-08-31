@@ -2345,6 +2345,8 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     NapCat 不保证以 bot 工作目录解析相对路径，统一传绝对路径。
     """
     segments: list[dict] = []
+    logger.info("[IMGDBG] _build_reply_segments 进入 detail_type=%s gen_paths=%d",
+                detail_type, len(getattr(ctx, "generated_image_paths", None) or []))
     # &&情绪&& 标签：读出并自回复文本剥除（stealer 被动标签，不污染出站文本）
     _tag_emotion = None
     if ctx.reply and "&&" in ctx.reply:
@@ -2398,6 +2400,8 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
             ig = bool(getattr(scfg, "intent_gate", False))
             ig_serious = set(getattr(scfg, "intent_gate_serious_atmospheres", []) or [])
             if ig and str(getattr(ctx, "atmosphere_style", "")).strip() in ig_serious:
+                logger.info("[IMGDBG] 表情 intent_gate 提前 return（氛围=%s）生图段将被跳过",
+                            getattr(ctx, "atmosphere_style", ""))
                 return segments
             sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
             now = time.time()
