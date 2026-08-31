@@ -2,9 +2,9 @@
 import { computed, onMounted, ref } from "vue";
 import {
   Activity, ArrowUpRight, Boxes, BrainCircuit, CircleX, Cpu, Database, GitBranch,
-  HeartPulse, History, Layers, Lightbulb, Network, RefreshCw, Scale, ShieldCheck, Sparkles
+  HeartPulse, History, Image, Layers, Lightbulb, Network, RefreshCw, Scale, ShieldCheck, Sparkles
 } from "@lucide/vue";
-import { bestEffort, getOsOverview, getPlatformSummary, postOsCommand, timeAgo, type OsCommandResult } from "../api";
+import { bestEffort, getOsOverview, getPlatformSummary, getXBrowserStats, postOsCommand, timeAgo, type OsCommandResult } from "../api";
 import { navigate } from "../navigation";
 import StatusDot from "../components/StatusDot.vue";
 import Card from "../components/Card.vue";
@@ -16,6 +16,7 @@ type Dict = Record<string, any>;
 
 const overview = ref<Dict | null>(null);
 const platform = ref<Dict | null>(null);
+const xStats = ref<Dict | null>(null);
 const loading = ref(true);
 const error = ref<string | null>(null);
 
@@ -41,6 +42,7 @@ async function load(): Promise<void> {
   if (data === null) error.value = "无法读取 ANIMA OS 概览";
   overview.value = data;
   platform.value = await bestEffort(getPlatformSummary(), null);
+  xStats.value = await bestEffort(getXBrowserStats(), null);
   loading.value = false;
 }
 
@@ -70,6 +72,18 @@ const impact = computed(() => (overview.value?.impact as Dict) || {});
 const memory = computed(() => (overview.value?.memory as Dict) || {});
 const maintenance = computed(() => (overview.value?.maintenance as Dict) || {});
 const skill = computed(() => (overview.value?.skill as Dict) || {});
+
+// X 搬图失败可视化（P2-2）
+const xAvail = computed(() => Boolean(xStats.value?.available));
+const xSearches = computed(() => Number(xStats.value?.searches || 0));
+const xOk = computed(() => Number(xStats.value?.search_ok || 0));
+const xFailed = computed(() => Number(xStats.value?.search_failed || 0));
+const xSuccessRate = computed(() => Number(xStats.value?.success_rate || 0));
+const xBlocked = computed(() => Boolean(xStats.value?.blocked));
+const xBlockReason = computed(() => String(xStats.value?.blocked_reason || ""));
+const xBlockRemain = computed(() => Number(xStats.value?.blocked_remaining_sec || 0));
+const xDownloaded = computed(() => Number(xStats.value?.images_downloaded || 0));
+const xDownloadFailed = computed(() => Number(xStats.value?.images_failed || 0));
 
 const osTone = computed(() => (ov.value?.degraded ? "attention" : "alive"));
 const osCopy = computed(() => (osTone.value === "attention" ? "有治理层需要留意" : "运行、观察、自治、进化链路就绪"));
@@ -264,6 +278,18 @@ const state = computed<"loading" | "error" | "empty" | "ready">(() => {
             <div v-else class="muted-note">Skill 提案→沙箱→Benchmark→采纳判定。采纳仍须 Owner。</div>
           </div>
           <div class="os-card-foot">复用 SkillDraftManager 护栏</div>
+        </Card>
+
+        <Card class="os-card" :enter-index="8" :class="xBlocked ? 'attention' : ''">
+          <div class="os-card-head"><Image :size="17" /><strong>X 搬图</strong><StatusDot :status="xBlocked ? 'warn' : 'running'" :label="xBlocked ? '风控中' : '正常'" /></div>
+          <div class="os-card-body compact">
+            <div class="kv"><span>搜索</span><b>{{ xSearches }}</b></div>
+            <div class="kv"><span>成功率</span><b :class="xSuccessRate >= 0.5 ? 'good' : 'bad'">{{ (xSuccessRate * 100).toFixed(0) }}%</b></div>
+            <div class="kv"><span>成功/失败</span><b>{{ xOk }}/{{ xFailed }}</b></div>
+            <div class="kv"><span>下载 成功/失败</span><b>{{ xDownloaded }}/{{ xDownloadFailed }}</b></div>
+            <div v-if="xBlocked" class="kv"><span>风控原因</span><b class="bad">{{ xBlockReason || '未知' }}</b></div>
+          </div>
+          <div class="os-card-foot">{{ xAvail ? (xBlocked ? `风控中，约 ${xBlockRemain}s 后恢复` : "抓图链路正常") : '统计暂不可用（x_browser 未加载）' }}</div>
         </Card>
 
         <div class="platform-row">

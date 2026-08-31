@@ -129,6 +129,10 @@ export async function getPlatformSummary(): Promise<Record<string, unknown>> {
   return api<Record<string, unknown>>("/api/platform/summary");
 }
 
+export async function getXBrowserStats(): Promise<Record<string, unknown>> {
+  return api<Record<string, unknown>>("/api/x-browser/stats");
+}
+
 export async function getLifeArchive(): Promise<Record<string, unknown>> {
   return api<Record<string, unknown>>("/api/life");
 }
