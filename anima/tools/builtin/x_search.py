@@ -19,7 +19,13 @@ logger = logging.getLogger("anima.tools.x_search")
 
 
 async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) -> str | None:
-    """经代理下载单张图片到本地，返回本地路径；失败返回 None。
+    """下载单张图片到本地，返回本地路径；失败返回 None。
+
+    下载顺序（针对 X 风控下的真实情况）：
+    1. 若配置了代理，先走代理（X 要求代理出口）；
+    2. 代理失败/异常时**回退直连** —— pbs.twimg.com 图片 CDN 对 VPS 直连出口
+       通常放行（TCP/HTTPS 直连可通），而家宽代理节点转发时反而常被 CDN 拒或断连。
+    这样在代理节点异常时仍能从直连拿到图，提高抓取成功率。
 
     文件名基于 URL 内容 hash 稳定生成：同一张图重复下载会覆盖已有文件，
     不再每次堆积带时间戳的新文件。
@@ -34,28 +40,49 @@ async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) ->
         ),
         "Referer": "https://x.com/",
     }
-    try:
+
+    async def _one_attempt(use_proxy: bool) -> str | None:
+        # 返回 (本地路径 | None, 是否应继续尝试下一种)
+        kw = dict(headers=headers)
+        if use_proxy and proxy:
+            kw["proxy"] = proxy
         async with aiohttp.ClientSession(
             timeout=aiohttp.ClientTimeout(total=25, sock_connect=10)
         ) as sess:
-            async with sess.get(url, headers=headers, proxy=proxy) as resp:
+            async with sess.get(url, **kw) as resp:
                 if resp.status != 200:
-                    logger.warning("X 图片下载 HTTP %s: %s", resp.status, url[:80])
+                    # 代理 404/403 可能是节点被 CDN 挡，值得回退直连；直连非200则终局
+                    logger.warning("X 图片下载 HTTP %s (%s): %s",
+                                   resp.status, "proxy" if use_proxy else "direct", url[:80])
                     return None
                 data = await resp.read()
                 if not data:
                     return None
-                # 从 URL 猜扩展名；fallback jpg
                 base = os.path.basename(url.split("?")[0])
                 ext = Path(base).suffix.lower()
                 if ext not in (".jpg", ".jpeg", ".png", ".gif", ".webp"):
                     ext = ".jpg"
-                # 稳定文件名：同 URL 内容 hash -> 同图覆盖，避免堆积
                 digest = hashlib.sha1(url.encode("utf-8")).hexdigest()[:16]
                 fname = f"x_{digest}.{ext.lstrip('.')}"
                 dest = dest_dir / fname
                 dest.write_bytes(data)
                 return str(dest.resolve())
+
+    try:
+        if proxy:
+            try:
+                got = await _one_attempt(use_proxy=True)
+                if got:
+                    return got
+            except Exception as e:  # noqa: BLE001
+                logger.warning("X 图片下载走代理失败，回退直连: %s", e)
+            # 代理路径失败/异常 -> 回退直连
+            got = await _one_attempt(use_proxy=False)
+            if got:
+                return got
+            return None
+        # 无代理：直连
+        return await _one_attempt(use_proxy=False)
     except Exception as e:  # noqa: BLE001
         logger.warning("X 图片下载失败（已隔离）: %s", e)
         return None

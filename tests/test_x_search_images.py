@@ -155,6 +155,98 @@ async def test_download_image_success(tmp_path, monkeypatch):
     assert data.startswith(bytes([255, 216, 255, 224]))
 
 
+@pytest.mark.asyncio
+async def test_download_image_proxy_fails_then_direct_fallback(tmp_path, monkeypatch):
+    """代理路径异常 -> 回退直连 -> 仍成功（图片 CDN 直连放行场景）。"""
+    import aiohttp
+
+    dest = tmp_path / "dl"
+    dest.mkdir()
+    calls = {"n": 0}
+
+    class _SeqResp:
+        def __init__(self, status):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def read(self):
+            return bytes([255, 216, 255, 224]) + b"directdata"
+
+    class _SeqSess:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                # 第一次（代理）抛异常
+                raise ConnectionError("Cannot connect to host pbs.twimg.com:443")
+            return _SeqResp(200)
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _SeqSess)
+    result = await _download_image(
+        "https://pbs.twimg.com/media/x.jpg", dest, proxy="http://p:1"
+    )
+    assert result is not None
+    assert calls["n"] == 2, "应先走代理失败，再回退直连"
+    assert Path(result).read_bytes().startswith(bytes([255, 216, 255, 224]))
+
+
+@pytest.mark.asyncio
+async def test_download_image_proxy_404_then_direct(tmp_path, monkeypatch):
+    """代理返回 404（节点被 CDN 挡）-> 回退直连 -> 成功。"""
+    import aiohttp
+
+    dest = tmp_path / "dl"
+    dest.mkdir()
+    calls = {"n": 0}
+
+    class _R:
+        def __init__(self, status):
+            self.status = status
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def read(self):
+            return b"ok"
+
+    class _S:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        def get(self, *a, **k):
+            calls["n"] += 1
+            return _R(200 if calls["n"] == 2 else 404)
+
+    monkeypatch.setattr(aiohttp, "ClientSession", _S)
+    result = await _download_image(
+        "https://pbs.twimg.com/media/x.jpg", dest, proxy="http://p:1"
+    )
+    assert result is not None
+    assert calls["n"] == 2
+
+
 # ---------------------------------------------------------------------------
 # 4. _write_image_paths 写入 call_context
 # ---------------------------------------------------------------------------
