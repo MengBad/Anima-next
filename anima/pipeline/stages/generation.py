@@ -686,7 +686,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                         _seen.add(_s)
                         _paths.append(_s)
                 ctx.generated_image_paths = _paths
-            logger.info("[IMGDBG] generation finally 同步 generated_image_paths=%d -> ctx.generated_image_paths=%d",
+            logger.debug("[IMGDBG] generation finally 同步 generated_image_paths=%d -> ctx.generated_image_paths=%d",
                         len(list(generated)) if isinstance(generated, list) else -1,
                         len(getattr(ctx, "generated_image_paths", None) or []))
             available_tools.reset_call_context(context_token)
