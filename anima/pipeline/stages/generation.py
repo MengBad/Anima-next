@@ -680,9 +680,9 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                         _seen.add(_s)
                         _paths.append(_s)
                 ctx.generated_image_paths = _paths
-            logger.debug("[IMGDEBUG] finally sync generated=%s ctx.generated_image_paths=%s",
-                           list(generated) if isinstance(generated, list) else generated,
-                           getattr(ctx, "generated_image_paths", None))
+            logger.info("[IMGDBG] generation finally 同步 generated_image_paths=%d -> ctx.generated_image_paths=%d",
+                        len(list(generated)) if isinstance(generated, list) else -1,
+                        len(getattr(ctx, "generated_image_paths", None) or []))
             available_tools.reset_call_context(context_token)
 
     # 提供器身份泄漏纠偏

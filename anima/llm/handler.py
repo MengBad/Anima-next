@@ -2498,7 +2498,9 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     # 单条回复附带图片上限 MAX_GENERATED_IMAGES_PER_REPLY，避免刷屏 / QQ 段爆炸。
     _gen_seen = set()
     _gen_paths: list[str] = []
-    for image_path in getattr(ctx, "generated_image_paths", []) or []:
+    _ctx_gen = getattr(ctx, "generated_image_paths", None) or []
+    logger.info("[IMGDBG] build_reply_segments 读取 ctx.generated_image_paths=%d 条", len(_ctx_gen))
+    for image_path in _ctx_gen:
         _s = str(image_path)
         if _s and _s not in _gen_seen:
             _gen_seen.add(_s)

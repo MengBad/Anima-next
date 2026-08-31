@@ -98,8 +98,14 @@ def _write_image_paths(paths: list[str]) -> None:
             for p in paths:
                 if p not in existing:
                     existing.append(p)
+            logger.info("[IMGDBG] _write_image_paths 写入 %d 条 -> generated_image_paths(len=%d) first=%s",
+                        len(paths), len(existing),
+                        existing[0] if existing else None)
+        else:
+            logger.warning("[IMGDBG] _write_image_paths: call_context.generated_image_paths 非 list，跳过 (%s)",
+                           type(existing).__name__)
     except Exception as e:  # noqa: BLE001
-        logger.warning("写入 generated_image_paths 失败（忽略）: %s", e)
+        logger.warning("[IMGDBG] 写入 generated_image_paths 失败（忽略）: %s", e)
 
 
 async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
