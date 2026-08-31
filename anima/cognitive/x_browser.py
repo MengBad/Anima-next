@@ -431,7 +431,15 @@ class XBrowserSession:
 
     @staticmethod
     async def _is_logged_in(page) -> bool:
-        """粗判登录态：URL 跳 login 即未登录；或正文头部含 Sign in/登录 也判未登录。"""
+        """判断登录态：优先查会话 cookie（auth_token/ct0）——权威；URL/正文粗判兜底。"""
+        # 权威判据：context 里有 X 登录凭据 cookie
+        try:
+            cookies = await page.context.cookies()
+            names = {c.get("name", "") for c in cookies if "x.com" in c.get("domain", "") or "twitter" in c.get("domain", "")}
+            if names & {"auth_token", "auth_multi", "ct0"}:
+                return True
+        except Exception:
+            pass
         try:
             if "i/flow/login" in page.url or "/login" in page.url or "onboarding" in page.url:
                 return False
@@ -473,48 +481,89 @@ class XBrowserSession:
             return ""
 
     async def _do_login(self, page) -> bool:
-        """在登录页自动填入账号密码（适配 X 新登录流：用户名→Continue→密码→Log in）。
-        返回是否提交成功（不保证最终登录成功；若需二次验证则返回 False 交人工）。"""
+        """在登录页自动填入账号密码（适配 X 当前 jf onboarding：可能单页/两步）。
+
+        鲁棒性：
+        - 用户名框是 JS 渲染，等待至多 15s（而非固定 sleep），避免 SPA 未就绪漏判；
+        - 兼容「单页 jf（用户名+密码同页）」与「经典两步（用户名→Continue→密码）」；
+        - 登录后校验是否真拿到 auth_token，拿不到则返回 False（交人工/自愈重试）。
+        返回是否登录成功（提交成功且检测到会话凭据）；需二次验证返回 False。
+        """
         user = getattr(self.config, "username", "") or ""
         pwd = getattr(self.config, "password", "") or ""
         if not user or not pwd:
             return False
         try:
-            if "i/flow/login" not in page.url:
-                await page.goto("https://x.com/i/flow/login", timeout=30000, wait_until="commit")
-            await asyncio.sleep(2)
-            # 步骤1:用户名/邮箱（X 新表单 name=username_or_email）
-            ok = await self._try_fill(page, [
-                'input[name="username_or_email"]',
-                'input[autocomplete="username"]',
-                'input[name="text"]',
-            ], user, "用户名")
-            if not ok:
+            # 确保停在登录流；jf onboarding URL 也算
+            if "i/flow/login" not in page.url and "onboarding/web" not in page.url:
+                await page.goto("https://x.com/i/flow/login", timeout=30000, wait_until="domcontentloaded")
+            # 用户名框等待至多 15s（JS 渲染，先前固定 sleep2 常因 SPA 未就绪而漏判）
+            user_sel = None
+            for sel in ('input[name="username_or_email"]', 'input[name="text"]', 'input[autocomplete="username"]'):
+                try:
+                    loc = page.locator(sel).first
+                    await loc.wait_for(state="visible", timeout=15000)
+                    await loc.fill(user)
+                    user_sel = sel
+                    break
+                except Exception:
+                    continue
+            if not user_sel:
+                logger.warning("X 登录：等待 15s 仍未找到用户名框（选择器 %s），可能挑战页/风控",
+                               ['input[name="username_or_email"]', 'input[name="text"]', 'input[autocomplete="username"]'])
                 return False
-            # 点 Continue（无稳定 name，按文本）
-            if not await self._click_button(page, "Continue"):
-                await page.keyboard.press("Enter")
-            # 密码框在 Continue 之后才渲染，显式等待
+
+            # 判断密码框是否已同页出现（单页 jf 形态）
+            password_on_page = False
             try:
-                await page.locator('input[name="password"]').first.wait_for(state="visible", timeout=15000)
+                await page.locator('input[name="password"]').first.wait_for(state="visible", timeout=2000)
+                password_on_page = True
             except Exception:
-                logger.warning("X 登录：Continue 后未出现密码框（可能需二次验证或流程变更）")
+                pass
+            if not password_on_page:
+                # 经典两步：点 Continue / Next 进到密码步
+                clicked = await self._click_button(page, "Continue") or await self._click_button(page, "Next")
+                if not clicked:
+                    await page.keyboard.press("Enter")
+                try:
+                    await page.locator('input[name="password"]').first.wait_for(state="visible", timeout=15000)
+                except Exception:
+                    logger.warning("X 登录：Continue 后未出现密码框（可能需二次验证或流程变更）")
+                    return False
+            # 填密码
+            pwd_ok = await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'], pwd, "密码")
+            if not pwd_ok:
                 return False
-            # 步骤2:密码
-            await self._try_fill(page, ['input[name="password"]', 'input[type="password"]'], pwd, "密码")
-            if not await self._click_button(page, "Log in"):
+            # 提交：优先 Log in / 登录 按钮，其次 Next，再退 Enter
+            submitted = await self._click_button(page, "Log in") or await self._click_button(page, "登录")
+            if not submitted:
                 await page.keyboard.press("Enter")
-            await asyncio.sleep(6)
-            # 检测是否进入二次验证（邮箱/手机）
+            await asyncio.sleep(8)
+            # 检测二次验证 / 风控拦截
             body = await self._safe_body(page)
-            if any(k in body for k in ["Enter the code", "确认码", "Verify", "验证", "验证码", "unusual activity", "suspicious"]):
-                logger.warning("X 登录：需要二次验证，暂停自动登录，等待人工提供验证码")
+            if any(k in body for k in ["Enter the code", "确认码", "Verify", "验证", "验证码", "unusual activity", "suspicious", "确认你是"]):
+                logger.warning("X 登录：需要二次验证或疑似风控，暂停自动登录（等待人工/稍后自愈）")
                 return False
-            logger.info("X 自动重登已提交（会话失效自愈）")
+            # 关键：校验是否真拿到会话凭据（auth_token / auth_multi），否则视为未登录
+            if not self._has_auth_cookie(page):
+                logger.warning("X 登录：表单已提交但未检测到 auth_token（可能被风控拒绝），仍视为未登录")
+                return False
+            logger.info("X 自动重登成功（检测到会话凭据）")
             return True
         except Exception as e:  # noqa: BLE001
             logger.warning("X 自动重登失败: %s", e)
             return False
+
+    @staticmethod
+    async def _has_auth_cookie(page) -> bool:
+        """通过当前 context 的 cookie 判断是否已有 X 登录会话凭据。"""
+        try:
+            cookies = await page.context.cookies()
+            names = {c.get("name", "") for c in cookies if "x.com" in c.get("domain", "") or "twitter" in c.get("domain", "")}
+            return bool(names & {"auth_token", "auth_multi", "ct0"})
+        except Exception:  # noqa: BLE001
+            return False
+
 
     async def _inject_cookies(self, page) -> bool:
         """若 data_dir/cookies.json 存在（从已登录浏览器导出的 X cookie），
