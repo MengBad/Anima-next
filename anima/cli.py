@@ -300,6 +300,13 @@ def start(config_path, once, identity_attestation):
 
     core = AnimaCore(cfg, identity_context=identity_context)
     core.config_path = str(config_path)
+    # P2-3：启用大图转码结果磁盘缓存（跨重启命中，省重复 Pillow 压缩）。
+    # 幂等、落盘失败静默降级，不阻塞启动。
+    try:
+        from anima import media
+        media.enable_prepare_disk_cache(cfg.persistence.data_dir)
+    except Exception:  # noqa: BLE001
+        click.echo("媒体磁盘缓存启用失败（忽略）")
     if recovery_status == "rolled_back":
         marker_change = "自动回滚（启动健康检查失败）"
         core.audit.emit("config_auto_rolled_back", reason=marker_change)

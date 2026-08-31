@@ -14,6 +14,7 @@ import asyncio
 import base64
 import hashlib
 import io
+import json
 import logging
 import threading
 import time
@@ -32,6 +33,111 @@ _prepare_cache_misses = 0
 # P2-G：prepare_images_for_llm 会被工作线程并发调用，LRU 读写/淘汰/计数器须同锁，
 # 否则 check→insert→popitem 与计数更新存在数据竞争（超上限、计数丢减）。
 _CACHE_LOCK = threading.Lock()
+
+# P2-3：磁盘持久化缓存层（可选）。跨重启命中同内容哈希，避免重复 Pillow 压缩。
+# 默认关闭（None）——启用需 enable_prepare_disk_cache(data_dir)。磁盘缓存按 key 存
+# 单帧字节，总占用超上限时清空（保守：宁可清空不占盘）。
+_DISK_CACHE_DIR: "Path | None" = None
+_DISK_CACHE_MAX_BYTES = 128 * 1024 * 1024  # 128MB 上限
+_DISK_CACHE_EST_BYTES = 0
+
+
+def enable_prepare_disk_cache(data_dir: str | Path, max_bytes: int = 128 * 1024 * 1024) -> None:
+    """启用转码结果磁盘缓存（P2-3）。data_dir 下建 media_prepare_cache/ 子目录。"""
+    global _DISK_CACHE_DIR, _DISK_CACHE_MAX_BYTES, _DISK_CACHE_EST_BYTES
+    with _CACHE_LOCK:
+        root = Path(data_dir) / "media_prepare_cache"
+        root.mkdir(parents=True, exist_ok=True)
+        _DISK_CACHE_DIR = root
+        _DISK_CACHE_MAX_BYTES = int(max_bytes) if max_bytes > 0 else _DISK_CACHE_MAX_BYTES
+        # 估算现有缓存占用（用于淘汰）
+        total = 0
+        for p in root.rglob("*"):
+            if p.is_file():
+                try:
+                    total += p.stat().st_size
+                except OSError:
+                    pass
+        _DISK_CACHE_EST_BYTES = total
+        logger.info("media 转码磁盘缓存已启用: %s (占用 %d 字节)", root, total)
+
+
+def disable_prepare_disk_cache() -> None:
+    """停用磁盘缓存（保留已落盘数据，仅不再读写）。"""
+    global _DISK_CACHE_DIR
+    with _CACHE_LOCK:
+        _DISK_CACHE_DIR = None
+
+
+def _disk_key_path(key: str) -> Path | None:
+    """缓存 key -> 磁盘目录（把含 ':' 的 key 哈希为合法文件名）。"""
+    if _DISK_CACHE_DIR is None:
+        return None
+    h = hashlib.sha256(key.encode("utf-8")).hexdigest()[:20]
+    return _DISK_CACHE_DIR / h
+
+
+def _disk_cache_load(key: str) -> list[PreparedImage] | None:
+    """从磁盘缓存加载转码结果（key 命中则返回 PreparedImage 列表，否则 None）。"""
+    global _DISK_CACHE_EST_BYTES
+    d = _disk_key_path(key)
+    if d is None or not d.is_dir():
+        return None
+    meta_p = d / "meta.json"
+    try:
+        with meta_p.open("r", encoding="utf-8") as fh:
+            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        frames = meta["frames"]
+        out: list[PreparedImage] = []
+        for fr in frames:
+            fp = d / fr["file"]
+            data = fp.read_bytes()
+            out.append(PreparedImage(
+                data=data, ext=fr["ext"], original_bytes=int(fr["original_bytes"]),
+                frame_index=int(fr.get("frame_index", 0)), frame_count=int(fr.get("frame_count", 1)),
+            ))
+        return out
+    except Exception:  # noqa: BLE001 - 坏缓存不阻塞，回退重算
+        return None
+
+
+def _disk_cache_store(key: str, result: list[PreparedImage]) -> None:
+    """把转码结果写进磁盘缓存；总占用超上限则清空（保守不占盘）。"""
+    global _DISK_CACHE_EST_BYTES
+    d = _disk_key_path(key)
+    if d is None or not result:
+        return
+    try:
+        d.mkdir(parents=True, exist_ok=True)
+        frames_meta = []
+        for i, fr in enumerate(result):
+            fname = f"frame_{i}.{fr.ext.lstrip('.') or 'bin'}"
+            fp = d / fname
+            fp.write_bytes(fr.data)
+            frames_meta.append({
+                "file": fname, "ext": fr.ext,
+                "original_bytes": fr.original_bytes,
+                "frame_index": fr.frame_index, "frame_count": fr.frame_count,
+            })
+        (d / "meta.json").write_text(
+            json.dumps({"key": key, "frames": frames_meta}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        _DISK_CACHE_EST_BYTES += sum(len(fr.data) for fr in result)
+        if _DISK_CACHE_EST_BYTES > _DISK_CACHE_MAX_BYTES:
+            # 超限：保守清空全部磁盘缓存（简单可靠，避免逐条淘汰的复杂度/风险）
+            try:
+                for p in _DISK_CACHE_DIR.rglob("*"):
+                    if p.is_file():
+                        p.unlink()
+                for p in sorted(_DISK_CACHE_DIR.rglob("*"), reverse=True):
+                    if p.is_dir():
+                        p.rmdir()
+                _DISK_CACHE_EST_BYTES = 0
+            except OSError:
+                pass
+    except Exception:  # noqa: BLE001 - 写缓存失败不阻塞主流程
+        logger.debug("media 磁盘缓存写入失败（忽略）")
 
 # 默认内联上限；vision 配置可覆盖。2026-07 再压一档，降低 27MB 原图触发 413 后丢视觉的概率。
 DEFAULT_MAX_INLINE_BYTES = 2 * 1024 * 1024
@@ -275,6 +381,14 @@ def prepare_images_for_llm(
                 _prepare_cache.move_to_end(key)
                 _prepare_cache_hits += 1
             return list(cached)
+        # P2-3：进程内 miss 时查磁盘缓存（跨重启命中，省 Pillow 压缩）
+        from_disk = _disk_cache_load(key)
+        if from_disk:
+            with _CACHE_LOCK:
+                _prepare_cache[key] = list(from_disk)
+                _prepare_cache.move_to_end(key)
+                _prepare_cache_hits += 1
+            return list(from_disk)
 
     result = _prepare_images_for_llm_uncached(
         data, img, max_bytes=max_bytes, max_dimension=max_dimension, max_frames=max_frames,
@@ -288,6 +402,8 @@ def prepare_images_for_llm(
                 while len(_prepare_cache) > _PREPARE_CACHE_MAX:
                     _prepare_cache.popitem(last=False)
             _prepare_cache_misses += 1
+        # P2-3：计算结果落盘（可选磁盘缓存）
+        _disk_cache_store(key, result)
     return result
 
 
