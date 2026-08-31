@@ -142,7 +142,7 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
         session = get_x_browser()
         if session is None or not session.enabled:
             return "X 浏览器未启用（config.x_browser.enabled=false）。"
-        res = await session.search(query, limit=limit, fresh=fresh)
+        res = await session.search(query, limit=limit, fresh=fresh, images_only=want_images)
     except Exception as e:  # noqa: BLE001
         logger.warning("x_search 调用失败（已隔离）: %s", e)
         return f"X 搜索失败：{e}"

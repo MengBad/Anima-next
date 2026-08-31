@@ -240,8 +240,13 @@ class XBrowserSession:
         tweet_images = await self._collect_tweet_images(page, img_limit)
         return tweets, tweet_images
 
-    async def search(self, query: str, limit: int = 5, *, fresh: bool = True) -> dict:
+    async def search(self, query: str, limit: int = 5, *, fresh: bool = True,
+                     images_only: bool = False) -> dict:
         """搜索 X。返回 {ok, logged_in, tweets, tweet_images, fresh_images, note, blocked}。
+
+        images_only=True：搜索 URL 追加 X 语法 filter:images，只返回含配图的推文。
+        用户明确要「图/照片」时传 True，能显著提高「结果里有图」的比例与相关性
+        （尤其搜「二次元萌图/男娘图」这类，直接命中含图推文而非混杂文字）。
 
         fresh=True（默认）：tweet_images 仍返回全部命中的媒体 URL；额外给出
         fresh_images = tweet_images 中排除「本会话已发过」的图，供工具下载时优先取
@@ -283,7 +288,9 @@ class XBrowserSession:
                 page = await self._get_page()
                 # goto 之前注入持久 cookie（cookies.json），让首次请求即带登录态
                 await self._inject_cookies(page)
-                url = "https://x.com/search?q=" + urllib.parse.quote(query) + "&f=live"
+                # 用户要图时追加 filter:images：只返回含配图推文，提升相关性。
+                _q = query + (" filter:images" if images_only else "")
+                url = "https://x.com/search?q=" + urllib.parse.quote(_q) + "&f=live"
                 await page.goto(url, timeout=30000, wait_until="commit")
                 tweets, tweet_images = await self._collect_search_once(page, limit, img_limit)
 

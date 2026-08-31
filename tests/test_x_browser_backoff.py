@@ -29,8 +29,12 @@ def _fake_session(monkeypatch, *, articles_factory, logs_in=True, raises=None):
     async def _ensure():
         pass
 
+    _fake_page = _FakePage(articles_factory)
+
     async def _get_page():
-        return _FakePage(articles_factory)
+        return _fake_page
+
+    s._test_fake_page = _fake_page
 
     async def _inject_cookies(page):
         pass
@@ -84,6 +88,7 @@ class _FakePage:
     def __init__(self, articles_factory):
         self._articles_factory = articles_factory
         self._attempt = 0
+        self.goto_urls: list[str] = []
 
     async def query_selector_all(self, sel):
         assert sel == "article"
@@ -91,7 +96,8 @@ class _FakePage:
         self._attempt += 1
         return arts
 
-    async def goto(self, *a, **k):
+    async def goto(self, url, *a, **k):
+        self.goto_urls.append(url)
         return None
 
     async def close(self):
@@ -149,3 +155,28 @@ async def test_browser_exception_marks_blocked(monkeypatch):
     assert r["ok"] is False
     assert r["blocked"] is True
     assert s._x_blocked_until > 0
+
+
+@pytest.mark.asyncio
+async def test_search_images_only_appends_filter(monkeypatch):
+    """images_only=True -> 搜索 URL 追加 filter:images（提升要图相关性）。"""
+    s = _fake_session(monkeypatch, articles_factory=lambda a: [
+        _FakeArticle([f"https://pbs.twimg.com/media/{i}.jpg" for i in range(3)])
+    ])
+    # images_only=False（默认）：URL 不加 filter
+    r = await s.search("二次元萌图", limit=3, fresh=True)
+    assert r["ok"] is True
+    first_url = s._test_fake_page.goto_urls[0]
+    assert "filter%3Aimages" not in first_url and "filter:images" not in first_url, first_url
+
+    # images_only=True：URL 追加 filter:images
+    s2 = _fake_session(monkeypatch, articles_factory=lambda a: [
+        _FakeArticle([f"https://pbs.twimg.com/media/{i}.jpg" for i in range(3)])
+    ])
+    r2 = await s2.search("二次元萌图", limit=3, fresh=True, images_only=True)
+    assert r2["ok"] is True
+    url2 = s2._test_fake_page.goto_urls[0]
+    assert "filter%3Aimages" in url2 or "filter:images" in url2, url2
+    # 关键词本身也在 URL 里
+    import urllib.parse
+    assert urllib.parse.quote("二次元萌图") in url2
