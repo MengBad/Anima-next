@@ -173,6 +173,17 @@ def test_sandbox_rejection_is_not_recorded_as_tool_success():
     assert _tool_result_ok("[stderr] unshare: Operation not permitted") is False
 
 
+def test_x_search_failures_not_recorded_as_success():
+    """X 搜索各失败返回必须判定为失败（否则 ReAct 记为 ok=True，
+    误导 LLM 以为搜到结果没图，擅自降级生图替代——X 风控时尤其关键）。"""
+    assert _tool_result_ok("X 搜索失败：Page.goto: net::ERR_CONNECTION_CLOSED") is False
+    assert _tool_result_ok("X 搜索未完成：X 暂被风控拦截（页面空壳）") is False
+    assert _tool_result_ok("X 搜索模块不可用（x_browser 未加载）。") is False
+    assert _tool_result_ok("X 浏览器未启用（config.x_browser.enabled=false）。") is False
+    # 成功结果仍判定成功
+    assert _tool_result_ok("X 搜索结果（已过滤政治/违法内容）：") is True
+
+
 @pytest.mark.asyncio
 async def test_registry_normalizes_internal_tool_failure_details():
     registry = ToolRegistry()

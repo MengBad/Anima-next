@@ -26,6 +26,9 @@ _CALL_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("
 _TOOL_FAILURE_PREFIXES = (
     "工具执行错误", "错误:", "[沙箱]", "联网搜索失败", "天气查询失败",
     "查询失败", "暂时不可用", "工具暂时不可用",
+    # X 搜索失败前缀：不标记会误判成功，导致 LLM 以为搜到结果没图、
+    # 擅自降级生图替代（X 风控时尤其关键）。
+    "X 搜索失败", "X 搜索未完成", "X 搜索模块不可用", "X 浏览器未启用",
 )
 _TOOL_INTERNAL_MARKERS = (
     "[stderr]", "Traceback", "Operation not permitted", "Permission denied", "unshare failed",
