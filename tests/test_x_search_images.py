@@ -38,6 +38,20 @@ def test_x_image_re_matches(text: str):
 
 
 @pytest.mark.parametrize("text", [
+    # 抱怨-索图：用户说图发不出/没收到，也应命中索图正则（触发 want_images 引导）
+    "推特图发不出来",
+    "X 上的图发不出来了",
+    "你之前发的推特图没收到",
+    "推特的图怎么发不出",
+    "男娘色图的图挂了再发",
+    "X 图呢",
+])
+def test_x_image_re_complaint_matches(text: str):
+    # 抱怨是「索图」意图，image 正则必须命中（此为 want_images 引导的开关）
+    assert _X_IMAGE_RE.search(text)
+
+
+@pytest.mark.parametrize("text", [
     "今天天气怎么样",
     "帮我查一下 AI 最新进展",
     "在 X 上搜下这个事（只要文字）",
@@ -269,3 +283,5 @@ def test_write_image_paths_pushes_to_context(monkeypatch):
 def test_x_image_guidance_mentions_want_images():
     assert "want_images" in _X_IMAGE_GUIDANCE
     assert "照片" in _X_IMAGE_GUIDANCE
+    # 行为契约：抱怨图发不出也应触发重新抓图（A 项修复）
+    assert "发不出" in _X_IMAGE_GUIDANCE or "没收到" in _X_IMAGE_GUIDANCE
