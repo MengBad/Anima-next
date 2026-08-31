@@ -337,24 +337,26 @@ async def test_relevance_filter_selects_matching(tmp_path, monkeypatch):
             return ["data:image/jpeg;base64,AAAA"]
 
     monkeypatch.setattr(vision_mod, "get_vision_manager", lambda: _VM())
-    got = await _filter_images_by_relevance(session, "二次元萌图", cand)
+    ok, got = await _filter_images_by_relevance(session, "二次元萌图", cand)
+    assert ok is True
     assert got == [cand[0], cand[2]]
 
 
 @pytest.mark.asyncio
 async def test_relevance_filter_no_llm_returns_empty(monkeypatch, tmp_path):
-    """session 无 core/llm -> 返回 []（fail-soft，调用方回退全发）。"""
+    """session 无 core/llm -> (False, [])（fail-soft，调用方回退全发）。"""
     class _S:
         _core = None
     session = _S()
     cand = [str(tmp_path / f"c{i}.jpg") for i in range(2)]
-    got = await _filter_images_by_relevance(session, "男娘", cand)
+    ok, got = await _filter_images_by_relevance(session, "男娘", cand)
+    assert ok is False
     assert got == []
 
 
 @pytest.mark.asyncio
 async def test_relevance_filter_llm_raises_returns_empty(monkeypatch, tmp_path):
-    """视觉调用异常 -> 返回 []（fail-soft）。"""
+    """视觉调用异常 -> (False, [])（fail-soft）。"""
     async def boom(**kwargs):
         raise RuntimeError("vision down")
     llm = type("LLM", (), {"chat_structured": boom})()
@@ -369,5 +371,28 @@ async def test_relevance_filter_llm_raises_returns_empty(monkeypatch, tmp_path):
     cand = [str(tmp_path / f"c{i}.jpg") for i in range(2)]
     for p in cand:
         Path(p).write_bytes(b"\xff\xd8\xff" + b"x" * 50)
-    got = await _filter_images_by_relevance(session, "男娘", cand)
+    ok, got = await _filter_images_by_relevance(session, "男娘", cand)
+    assert ok is False
+    assert got == []
+
+
+@pytest.mark.asyncio
+async def test_relevance_filter_returns_empty_when_all_irrelevant(monkeypatch, tmp_path):
+    """视觉成功但判定全不相关 -> (True, [])，调用方据此不发（不退回无关图）。"""
+    async def chat_structured(*args, **kwargs):
+        return {"tool_calls": [{"function": {"name": "choose_relevant", "arguments": '{"indices":[]}'}}]}
+    llm = type("LLM", (), {"chat_structured": chat_structured})()
+    session = _mk_session(_mk_core(llm))
+    from anima.cognitive import vision as vision_mod
+
+    class _VM:
+        async def _prepared_uris(self, data, img, *, max_bytes, max_frames):
+            return ["data:image/jpeg;base64,AAAA"]
+
+    monkeypatch.setattr(vision_mod, "get_vision_manager", lambda: _VM())
+    cand = [str(tmp_path / f"c{i}.jpg") for i in range(2)]
+    for p in cand:
+        Path(p).write_bytes(b"\xff\xd8\xff" + b"x" * 50)
+    ok, got = await _filter_images_by_relevance(session, "男娘", cand)
+    assert ok is True
     assert got == []

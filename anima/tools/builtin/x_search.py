@@ -10,6 +10,7 @@ Agent 在需要实时、X 平台专属、或用户明确要求「去 X 查/在 X
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -19,6 +20,9 @@ from pathlib import Path
 from anima.media import build_multimodal_user_content
 
 logger = logging.getLogger("anima.tools.x_search")
+
+# 视觉相关性过滤总超时（秒）：视觉慢/网关挂不阻塞拿图流程，超时即回退全发。
+_RELEVANCE_TIMEOUT = 20.0
 
 
 async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) -> str | None:
@@ -143,16 +147,22 @@ _RELEVANCE_TOOLS: list[dict[str, Any]] = [
 
 
 async def _filter_images_by_relevance(session, query: str,
-                                      candidates: list[str]) -> list[str]:
+                                      candidates: list[str]) -> tuple[bool, list[str]]:
     """用 Gemini 判断候选图哪些与 query 主题相关，返回相关路径（保持原顺序）。
 
-    session._core.llm 不可用/视觉失败 -> 返回 []，由调用方回退全发。
+    返回 (ok, filtered)：
+    - ok=True,  filtered=[相关图]：视觉成功，filtered 即判定相关（可能为空=都不相关）。
+    - ok=False, filtered=[]：视觉不可用/失败/超时。调用方据此**保底全发**，
+      不能因视觉问题而空手，但也不能把「判定都不相关」当成失败去全发。
+
+    鲁棒性：全程加总超时（_RELEVANCE_TIMEOUT），视觉慢/挂不阻塞整个拿图流程。
     """
     core = getattr(session, "_core", None)
     llm = getattr(core, "llm", None) if core is not None else None
     if llm is None or not candidates:
-        return []
-    try:
+        return False, []
+
+    async def _do():
         from anima.cognitive.vision import get_vision_manager
         vmgr = get_vision_manager()
         # 逐张读图并准备 URIs；超预算/失败的单张跳过（保留 index 映射）
@@ -172,7 +182,7 @@ async def _filter_images_by_relevance(session, query: str,
                 uris.append(prep[0])
                 valid.append(i)
         if not uris:
-            return []
+            return False, []
         numbered = "\n".join(f"[{i}] 图片 {i}" for i in valid)
         prompt = f"候选图片（编号）：\n{numbered}\n\n用户搜索/想要的主题：{query or ''}\n请返回与主题相关的图片编号。"
         messages = [
@@ -206,10 +216,16 @@ async def _filter_images_by_relevance(session, query: str,
         ordered = [candidates[i] for i in valid if i in picked]
         logger.info("[IMGDBG] 视觉相关性过滤: %d 候选 -> %d 相关 (query=%s)",
                     len(candidates), len(ordered), query[:20])
-        return ordered
+        return True, ordered
+
+    try:
+        return await asyncio.wait_for(_do(), timeout=_RELEVANCE_TIMEOUT)
+    except asyncio.TimeoutError:
+        logger.warning("[IMGDBG] 视觉相关性过滤超时(%ds)，回退全发", _RELEVANCE_TIMEOUT)
+        return False, []
     except Exception as e:  # noqa: BLE001
         logger.warning("[IMGDBG] 视觉相关性过滤失败（回退全发）: %s", e)
-        return []
+        return False, []
 
 
 async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
@@ -277,9 +293,13 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                 break
         # 视觉相关性过滤：用 Gemini 看图判断是否与 query 相关，只发相关图。
         if _cand_paths:
-            _filtered = await _filter_images_by_relevance(session, query, _cand_paths)
-            # 保底：过滤后为空则退回候选（视觉误判/失败不应导致空手）
-            downloaded = _filtered or _cand_paths[: limit]
+            _ok, _filtered = await _filter_images_by_relevance(session, query, _cand_paths)
+            if _ok:
+                # 视觉成功：信任判定。filtered 可能为空（都不相关）——宁可不发，也不发无关图。
+                downloaded = _filtered[: limit]
+            else:
+                # 视觉不可用/失败/超时：保底全发，不因视觉问题空手。
+                downloaded = _cand_paths[: limit]
         if downloaded:
             _write_image_paths(downloaded[: limit])
             # 记录这些 URL 已发过（会话内去重，下次自动避开）
