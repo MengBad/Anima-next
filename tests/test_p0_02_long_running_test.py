@@ -159,3 +159,41 @@ class _FakeCoreP0:
     def __init__(self, admins):
         from functools import partial
         self.permission_store = type("P", (), {"admins": staticmethod(lambda: sorted(admins))})()
+
+
+# ---------------------------------------------------------------------------
+# P2-1: health_proof 主动告警 detect_alerts
+# ---------------------------------------------------------------------------
+def _rec(**kw):
+    base = dict(
+        window_days=7, generated_at=0.0, proofs_total=7, days_covered=7,
+        uptime_ratio=1.0, anomaly_total=0, degraded_days=0,
+        permission_drift_count=0, recovery_count=1, evolution_count=0,
+        data_complete=True,
+    )
+    base.update(kw)
+    return lr.StabilityRecord(**base)
+
+
+def test_detect_alerts_stable_returns_empty():
+    assert lr.detect_alerts(_rec()) == []
+
+
+def test_detect_alerts_degraded_and_drift_warn():
+    rec = _rec(degraded_days=2, permission_drift_count=2, anomaly_total=5)
+    alerts = lr.detect_alerts(rec)
+    types = {a["type"] for a in alerts}
+    assert {"degraded", "permission_drift", "anomaly_spike"} <= types
+    # warn 级（触发 owner 待办）
+    assert all(a["severity"] == "warn" for a in alerts if a["type"] != "recovery_spike")
+
+
+def test_detect_alerts_recovery_spike_info():
+    alerts = lr.detect_alerts(_rec(recovery_count=8))
+    spike = [a for a in alerts if a["type"] == "recovery_spike"]
+    assert len(spike) == 1 and spike[0]["severity"] == "info"
+
+
+def test_detect_alerts_incomplete_source():
+    alerts = lr.detect_alerts(_rec(data_complete=False))
+    assert any(a["type"] == "incomplete" for a in alerts)

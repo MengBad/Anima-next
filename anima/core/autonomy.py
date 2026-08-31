@@ -527,6 +527,40 @@ class Heartbeat:
         except Exception:
             logger.exception("config drift check failed, isolated")
 
+    # P2-1: health_proof 主动告警冷却（秒）——避免每个 tick 重复生成同一条 owner 待办。
+    _HEALTH_ALERT_COOLDOWN_SEC = 6 * 3600.0
+    _health_alert_last_run: float = 0.0
+
+    def _health_alerts_tick(self) -> None:
+        # 冷却：距上次运行不足冷却期则跳过（防刷屏 owner_tasks）。
+        now = time.time()
+        if now - self._health_alert_last_run < self._HEALTH_ALERT_COOLDOWN_SEC:
+            return
+        self._health_alert_last_run = now
+        cs = getattr(self.core, "control_surface", None)
+        if cs is None:
+            try:
+                from anima.os.control_surface import HumanAIControlSurface
+                cs = HumanAIControlSurface(self.core)
+            except Exception:
+                logger.exception("control_surface 初始化失败，跳过健康告警")
+                return
+        owner_id = 0
+        try:
+            _owners = getattr(getattr(getattr(self.core, "config", None), "permissions", None), "owners", None) or []
+            if _owners:
+                owner_id = int(_owners[0])
+        except (TypeError, ValueError, IndexError):
+            owner_id = 0
+        try:
+            made = cs.health_alerts_to_owner(window_days=7, owner_id=owner_id)
+        except Exception:
+            logger.exception("health_alerts_to_owner 失败，已隔离")
+            return
+        if made:
+            logger.info("[health_alerts] 已生成 %d 条 owner 健康待办: %s",
+                        len(made), [a.get("type") for a in made])
+
     async def _tick(self) -> None:
 
         self._expire_active_feedback(time.time())
@@ -544,6 +578,12 @@ class Heartbeat:
             self._config_drift_check()
         except Exception:
             logger.exception("心跳配置漂移自检失败，已隔离")
+        # P2-1: health_proof 主动告警——周期把稳定性异常信号转成 owner 待办。
+        # 带冷却，避免每个 tick 重复生成同一条待办。
+        try:
+            self._health_alerts_tick()
+        except Exception:
+            logger.exception("心跳健康告警检查失败，已隔离")
         try:
             backups = getattr(self.core, "backups", None)
             if backups is not None:

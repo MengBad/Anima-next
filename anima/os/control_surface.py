@@ -181,15 +181,59 @@ class HumanAIControlSurface:
         data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
         root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
         try:
-            from .long_running import collect_stability, latest_stability
+            from .long_running import collect_stability, latest_stability, detect_alerts
             cached = latest_stability(root, window_days)
             if cached is not None:
-                return cached.to_dict()
-            audit = getattr(self._core, "audit", None)
-            rec = collect_stability(root, window_days=window_days, audit=audit)
-            return rec.to_dict()
+                rec = cached
+            else:
+                audit = getattr(self._core, "audit", None)
+                rec = collect_stability(root, window_days=window_days, audit=audit)
+            out = rec.to_dict()
+            # P2-1：附上主动告警信号（漂移/降级/异常/恢复尖峰/覆盖率）
+            out["alerts"] = detect_alerts(rec)
+            return out
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "stability 聚合异常"}
+
+    def health_alerts_to_owner(self, window_days: int = 7,
+                               owner_id: int = 0) -> list[dict[str, Any]]:
+        """P2-1：把 health_proof 异常信号转成 owner 待办（warn 级触发）。
+
+        只生成 owner 待办，不执行任何系统动作（通知-only）。
+        无核心/无 tasks 存储/无异常时返回空列表（fail-closed）。
+        """
+        if self._core is None:
+            return []
+        tasks = getattr(self._core, "tasks", None)
+        if tasks is None or not hasattr(tasks, "create"):
+            return []
+        data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
+        root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
+        try:
+            from .long_running import collect_stability, latest_stability, detect_alerts
+            cached = latest_stability(root, window_days)
+            rec = cached
+            if rec is None:
+                audit = getattr(self._core, "audit", None)
+                rec = collect_stability(root, window_days=window_days, audit=audit)
+            # 只对 warn 级异常生成待办；info 级仅出现在 stability_summary 的 alerts 供观测。
+            made: list[dict[str, Any]] = []
+            for a in detect_alerts(rec):
+                if a.get("severity") != "warn":
+                    continue
+                try:
+                    tasks.create(
+                        request=f"[health_alerts] {a['message']}",
+                        creator=int(owner_id or 0),
+                        plan=[f"类型={a['type']}", f"值={a.get('value')}", "核查根因并处置"],
+                        kind="diagnostic",
+                    )
+                    made.append(a)
+                except Exception:
+                    continue
+            return made
+        except Exception:  # noqa: BLE001
+            return []
 
     def environment_report(self, *, github: Any = None, performance: bool = True,
                            window_sec: int = 86400) -> dict[str, Any]:

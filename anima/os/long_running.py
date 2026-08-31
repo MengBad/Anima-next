@@ -249,3 +249,68 @@ def latest_stability(data_dir: str, window_days: int) -> Optional[StabilityRecor
         data_complete=last["data_complete"],
         proof_sha256=last.get("proof_sha256", ""),
     )
+
+
+# ---------------------------------------------------------------------------
+# health_proof 主动告警：把稳定性异常信号转成 owner 可读的提示（P2-1）。
+# 纯函数，只识别信号不执行任何动作；接入方（control_surface / 心跳）决定如何提示。
+# ---------------------------------------------------------------------------
+
+# 触发告警的阈值（收敛自 uncovered_items 对「漂移/版本一致/权限/审计」的关切）
+_ALERT_DRIFT_THRESHOLD = 1        # 权限漂移事件数 >= 此值即告警
+_ALERT_DEGRADED_THRESHOLD = 1     # 降级天数 >= 此值即告警
+_ALERT_ANOMALY_THRESHOLD = 3      # 异常累计 >= 此值即告警
+_ALERT_RECOVERY_SPIKE = 5         # 窗口内恢复事件 >= 此值视为恢复异常（频繁自愈）
+_ALERT_LOW_COVERAGE = 0.5         # 证明覆盖率 < 此比例视为健康证明缺失
+
+
+def detect_alerts(rec: StabilityRecord) -> list[dict[str, Any]]:
+    """基于稳定性记录识别需要 owner 关注的异常信号，返回告警列表（可能为空）。
+
+    每项: {"severity": "warn"|"info", "type": str, "message": str, "value": ...}
+    不做任何副作用——由调用方决定提示渠道（owner_tasks / WebUI / 主动发言）。
+    """
+    alerts: list[dict[str, Any]] = []
+    if rec.degraded_days >= _ALERT_DEGRADED_THRESHOLD:
+        alerts.append({
+            "severity": "warn",
+            "type": "degraded",
+            "message": f"近 {rec.window_days} 天有 {rec.degraded_days} 天健康证明判定为降级",
+            "value": rec.degraded_days,
+        })
+    if rec.permission_drift_count >= _ALERT_DRIFT_THRESHOLD:
+        alerts.append({
+            "severity": "warn",
+            "type": "permission_drift",
+            "message": f"窗口内检测到 {rec.permission_drift_count} 次权限漂移事件（安全关注）",
+            "value": rec.permission_drift_count,
+        })
+    if rec.anomaly_total >= _ALERT_ANOMALY_THRESHOLD:
+        alerts.append({
+            "severity": "warn",
+            "type": "anomaly_spike",
+            "message": f"窗口内健康证明累计 {rec.anomaly_total} 条异常检查项",
+            "value": rec.anomaly_total,
+        })
+    if rec.recovery_count >= _ALERT_RECOVERY_SPIKE:
+        alerts.append({
+            "severity": "info",
+            "type": "recovery_spike",
+            "message": f"窗口内 {rec.recovery_count} 次恢复事件——自愈机制频繁动作，建议核查根因",
+            "value": rec.recovery_count,
+        })
+    if rec.proofs_total > 0 and rec.window_days > 0 and rec.uptime_ratio < _ALERT_LOW_COVERAGE:
+        alerts.append({
+            "severity": "info",
+            "type": "low_coverage",
+            "message": f"健康证明覆盖率仅 {rec.uptime_ratio:.0%}（近 {rec.window_days} 天 {rec.days_covered} 天有证明）",
+            "value": round(rec.uptime_ratio, 3),
+        })
+    if not rec.data_complete:
+        alerts.append({
+            "severity": "info",
+            "type": "incomplete",
+            "message": "稳定性记录数据源不完整（审计不可用），告警统计可能偏少",
+            "value": 0,
+        })
+    return alerts
