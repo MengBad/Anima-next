@@ -1,4 +1,4 @@
-﻿"""x_search 工具：让 Agent 随时调用 X（Twitter）搜索/查内容，不依赖特定触发词。
+"""x_search 工具：让 Agent 随时调用 X（Twitter）搜索/查内容，不依赖特定触发词。
 
 Agent 在需要实时、X 平台专属、或用户明确要求「去 X 查/在 X 上搜」的信息时使用。
 结果经 x_browser 的合规闸门（政治拒、违法R18 拒）后返回文本摘要。
@@ -350,6 +350,13 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                     _cand_paths.append(p)
                 if len(_cand_paths) >= limit * 2:
                     break
+            # 更新会话级下载统计（P2-2 失败可视化）
+            try:
+                s = session._stats
+                s["images_downloaded"] = s.get("images_downloaded", 0) + len(_cand_paths)
+                s["images_failed"] = s.get("images_failed", 0) + max(0, len(_candidate_urls) - len(_cand_paths))
+            except Exception:  # noqa: BLE001
+                pass
             # 视觉相关性过滤：用 Gemini 看图判断是否与 query 相关，只发相关图。
             if _cand_paths:
                 _ok, _filtered = await _filter_images_by_relevance(session, query, _cand_paths)

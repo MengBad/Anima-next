@@ -2460,6 +2460,31 @@ class WebUIServer:
             "skill": skill,
         })
 
+    async def x_browser_stats(self, request: web.Request) -> web.Response:
+        """P2-2 —— X 搬图运行统计（成功率 / 风控窗口 / 失败原因），只读。
+
+        读 XBrowserSession 会话级统计（进程内存，重启清零）。session 未注入/不可用时
+        返回 available=False（fail-closed，不编造）。
+        """
+        self._owner_id()  # 鉴权前置
+        try:
+            from anima.cognitive.x_browser import get_x_browser
+            session = get_x_browser()
+        except Exception:  # noqa: BLE001
+            session = None
+        if session is None:
+            return web.json_response({"available": False, "reason": "x_browser 未加载"})
+        try:
+            stats = session.stats()
+            total = int(stats.get("searches", 0))
+            ok = int(stats.get("search_ok", 0))
+            stats["success_rate"] = round(ok / total, 3) if total > 0 else 0.0
+            if self.core.audit:
+                self.core.audit.emit("webui_x_browser_stats", reviewer=self._owner_id())
+            return web.json_response({"available": True, **stats})
+        except Exception as exc:  # noqa: BLE001
+            return web.json_response({"available": False, "reason": str(exc)[:160]})
+
     async def os_self_evaluation(self, request: web.Request) -> web.Response:
         """R18 —— 只读聚合一份诚实的多轴自我评估（Self Evaluation）。
 

@@ -10,6 +10,7 @@ search() 现应：
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -180,3 +181,32 @@ async def test_search_images_only_appends_filter(monkeypatch):
     # 关键词本身也在 URL 里
     import urllib.parse
     assert urllib.parse.quote("二次元萌图") in url2
+
+
+async def test_stats_reflects_search_counters(monkeypatch):
+    """stats() 反映搜索计数与成功/失败分布（P2-2 失败可视化数据源）。"""
+    s = _fake_session(monkeypatch, articles_factory=lambda a: [
+        _FakeArticle([f"https://pbs.twimg.com/media/{i}.jpg" for i in range(3)])
+    ])
+    st0 = s.stats()
+    assert st0["searches"] == 0 and st0["search_ok"] == 0
+    r = await s.search("萌图", limit=2, fresh=True, images_only=True)
+    assert r["ok"] is True
+    st1 = s.stats()
+    assert st1["searches"] == 1
+    assert st1["search_ok"] == 1
+    assert st1["blocked"] is False
+    assert "daily" in st1 and st1["daily"].get("search", 0) >= 1
+
+
+async def test_stats_blocked_window(monkeypatch):
+    """处于风控窗口时 stats() 报告 blocked + 剩余秒 + 原因（P2-2）。"""
+    s = _fake_session(monkeypatch, articles_factory=lambda a: [])
+    s._x_blocked_until = time.time() + 500
+    s._x_blocked_reason = "空壳(抽到0图)"
+    s._x_block_count = 2
+    st = s.stats()
+    assert st["blocked"] is True
+    assert 0 < st["blocked_remaining_sec"] <= 500
+    assert st["blocked_reason"] == "空壳(抽到0图)"
+    assert st["consecutive_empty"] == 2

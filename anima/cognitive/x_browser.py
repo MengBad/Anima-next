@@ -81,6 +81,11 @@ class XBrowserSession:
         self._x_blocked_until = 0.0
         self._x_blocked_reason = ""
         self._x_block_count = 0
+        # 会话级运行统计（P2-2 X 搬图失败可视化用）：进程内存计数，重启清零。
+        self._stats = {
+            "searches": 0, "search_ok": 0, "search_failed": 0,
+            "blocked_events": 0, "images_downloaded": 0, "images_failed": 0,
+        }
         # core 引用（set_x_browser 注入）：供 x_search 拿 llm 做「图内容相关性」视觉过滤。
         self._core = None
 
@@ -98,6 +103,23 @@ class XBrowserSession:
 
     def _bump(self, kind: str) -> None:
         self._daily[kind] = self._daily.get(kind, 0) + 1
+
+    def stats(self) -> dict[str, Any]:
+        """会话级 X 搬图运行统计（P2-2 失败可视化用，只读）。"""
+        now = time.time()
+        blocked_remain = 0
+        if self._x_blocked_until and now < self._x_blocked_until:
+            blocked_remain = int(self._x_blocked_until - now)
+        stats = dict(self._stats)
+        stats.update({
+            "blocked": blocked_remain > 0,
+            "blocked_remaining_sec": blocked_remain,
+            "blocked_reason": self._x_blocked_reason,
+            "consecutive_empty": self._x_block_count,
+            "seen_images": len(self._seen_image_urls),
+            "daily": dict(self._daily),
+        })
+        return stats
 
     # -- 浏览器生命周期 --
     async def _ensure_browser(self):
@@ -262,6 +284,7 @@ class XBrowserSession:
         - 任意一次成功抽到图 → 清除被挡标记（恢复）。
         所有失败均 fail-soft，不影响 happy path。
         """
+        self._stats["searches"] = self._stats.get("searches", 0) + 1
         if not self.enabled:
             return {"ok": False, "logged_in": False, "tweets": [], "note": "x_browser 未启用", "blocked": False}
         if not self._within_limit("search"):
@@ -271,6 +294,7 @@ class XBrowserSession:
         if self._x_blocked_until and time.time() < self._x_blocked_until:
             remain = int(self._x_blocked_until - time.time())
             logger.info("X 处于风控窗口内（剩余 %ds），快速失败不硬撞", remain)
+            self._stats["search_failed"] = self._stats.get("search_failed", 0) + 1
             return {
                 "ok": False, "logged_in": False, "tweets": [],
                 "note": f"X 暂被风控拦截，约 {remain}s 后恢复（会话级退避）",
@@ -315,6 +339,8 @@ class XBrowserSession:
                         self._x_blocked_until = time.time() + self.X_BLOCK_WINDOW_SEC
                         self._x_blocked_reason = "空壳(抽到0图)"
                         logger.warning("X 搜索连续空壳，标记风控窗口 %ds", self.X_BLOCK_WINDOW_SEC)
+                        self._stats["blocked_events"] = self._stats.get("blocked_events", 0) + 1
+                        self._stats["search_failed"] = self._stats.get("search_failed", 0) + 1
                         await page.close()
                         return {
                             "ok": False, "logged_in": False, "tweets": [],
@@ -328,6 +354,7 @@ class XBrowserSession:
                 self._x_blocked_until = 0.0
                 self._x_block_count = 0
                 self._x_blocked_reason = ""
+                self._stats["search_ok"] = self._stats.get("search_ok", 0) + 1
 
                 # fresh 过滤：排除本会话已发过的图
                 fresh_images = self._filter_fresh(tweet_images)

@@ -95,6 +95,8 @@ def _register_health(app: web.Application, s: "WebUIServer") -> None:
         web.post("/api/replays/run", s.run_replay),
         web.get("/api/weekly-digest", s.weekly_digest),
         web.post("/api/weekly-digest", s.weekly_digest_generate),
+        # P2-2: X 搬图运行统计（成功率/风控窗口/失败原因）
+        web.get("/api/x-browser/stats", s.x_browser_stats),
     ])
 
 
