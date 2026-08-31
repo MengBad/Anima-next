@@ -266,3 +266,25 @@ def test_register_respects_independent_flag(tmp_path):
     cap = {"id": "cap_c", "name": "能力C", "description": "x",
            "how_to_use": "x", "register_as_independent_tool": False}
     assert register_capability_as_tool(core, cap, mgr) is False  # 不愿被独立调用
+
+
+def test_promote_top_k_registers_into_react_surface(tmp_path):
+    """S6：promote_top_k 把 register_as_independent_tool=True 的能力推进 ReAct 工具面。"""
+    registry = ToolRegistry()
+    llm = FakeLLM(chat_responses=["EXEC"])
+    core = _fake_core(registry, llm)
+    mgr = CapabilityManager(str(tmp_path), dynamic_daily_quota=5)
+    # 入库两条：一条愿意独立注册（应进工具面），一条不愿（不应进）
+    mgr._data.setdefault("capabilities", []).extend([
+        {"id": "cap_s6_a", "name": "情绪回顾", "description": "梳理情绪",
+         "how_to_use": "回顾心情", "register_as_independent_tool": True,
+         "confidence": 0.9, "usage_count": 3},
+        {"id": "cap_s6_b", "name": "脑内沙盘", "description": "推演",
+         "how_to_use": "推演", "register_as_independent_tool": False,
+         "confidence": 0.9, "usage_count": 3},
+    ])
+    n = mgr.promote_top_k(core, k=3)
+    assert n == 1  # 只注册愿被独立调用的那条
+    names = [s["function"]["name"] for s in registry.get_schemas(LEVEL_USER)]
+    assert "my_cap_s6_a" in names
+    assert "my_cap_s6_b" not in names

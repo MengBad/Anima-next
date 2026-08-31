@@ -377,6 +377,20 @@ def start(config_path, once, identity_attestation):
         # 工具注册表
         from anima.tools import create_default_registry
         core.tools = create_default_registry(core)
+        # S6 内生能力暴露给 LLM：启动即把 Top-K 已批准能力注册进 ReAct 工具面，
+        # 不必等反刍调度才可见，闭环「自生长能力→实际被 LLM 调用」。
+        try:
+            from anima.cognitive.capabilities import (
+                get_capability_manager, capability_cfg_dict,
+            )
+            mgr = get_capability_manager(
+                cfg.persistence.data_dir, **capability_cfg_dict(cfg)
+            )
+            n = mgr.promote_top_k(core, k=3)
+            if n:
+                click.echo(f"内生能力: 启动注册 {n} 个到工具面")
+        except Exception:  # noqa: BLE001 - 能力注册失败不阻断启动
+            click.echo("内生能力启动注册失败（忽略）")
         if cfg.skills.enabled:
             from anima.skills import SkillRegistry
             root = Path(cfg.persistence.data_dir) / cfg.skills.dir
