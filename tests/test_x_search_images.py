@@ -56,6 +56,25 @@ def test_x_image_re_complaint_matches(text: str):
 
 
 @pytest.mark.parametrize("text", [
+    # 通用索图表达（鲁棒性兜底）：这些此前不命中导致不注入 want_images
+    "三次元男娘图",
+    "二次元萌图",
+    "发发推特男娘图你排查一下",
+    "找找有没有三次元的可爱男娘图",
+    "发点二次元图",
+    "男娘图给我看看",
+    "来个男娘图",
+    "推荐好看的图",
+    "来个壁纸图",
+    "整点男娘图",
+    "求几张猫娘图",
+    "发张可爱壁纸图",
+])
+def test_x_image_re_generic_solicit_matches(text: str):
+    assert _X_IMAGE_RE.search(text), f"通用索图应命中 image 正则: {text}"
+
+
+@pytest.mark.parametrize("text", [
     "今天天气怎么样",
     "帮我查一下 AI 最新进展",
     "在 X 上搜下这个事（只要文字）",

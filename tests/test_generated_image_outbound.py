@@ -137,38 +137,60 @@ def _core():
     )
 
 
-def test_outbound_emits_all_distinct_images():
+def _real_paths(tmp_path, names):
+    """在 tmp_path 创建真实存在的 .jpg 文件，返回绝对路径列表（用于出站存在性检查）。"""
+    out = []
+    for n in names:
+        p = tmp_path / f"{n}.jpg"
+        p.write_bytes(b"\xff\xd8\xff" + b"x" * 20)
+        out.append(str(p))
+    return out
+
+
+def test_outbound_emits_all_distinct_images(tmp_path):
     """3 张不同图（< 上限）-> 出站带 3 个 image 段，全发不丢。"""
-    paths = [f"/data/gen/{c}.jpg" for c in "abc"]
+    paths = _real_paths(tmp_path, ["a", "b", "c"])
     ctx = _ctx_with_gen(paths)
     segs = _build_reply_segments(ctx, "group", 200, 727631526, _core(), at_trigger=False)
     imgs = [s for s in segs if s["type"] == "image"]
     assert len(imgs) == 3, f"应发 3 张，实际={len(imgs)}"
 
 
-def test_outbound_caps_at_max():
+def test_outbound_caps_at_max(tmp_path):
     """超过上限 -> 只发 MAX_GENERATED_IMAGES_PER_REPLY 张。"""
-    many = [f"/data/gen/{i}.jpg" for i in range(20)]
+    many = _real_paths(tmp_path, [f"m{i}" for i in range(20)])
     ctx = _ctx_with_gen(many)
     segs = _build_reply_segments(ctx, "group", 200, 727631526, _core(), at_trigger=False)
     imgs = [s for s in segs if s["type"] == "image"]
     assert len(imgs) == MAX_GENERATED_IMAGES_PER_REPLY, len(imgs)
 
 
-def test_outbound_dedupes_repeats():
+def test_outbound_dedupes_repeats(tmp_path):
     """同一张图重复出现多次 -> 只发一次（修「一直发同一张」）。"""
-    repeated = ["/data/gen/same.jpg"] * 5
+    p = tmp_path / "same.jpg"
+    p.write_bytes(b"\xff\xd8\xff" + b"x" * 20)
+    repeated = [str(p)] * 5
     ctx = _ctx_with_gen(repeated)
     segs = _build_reply_segments(ctx, "group", 200, 727631526, _core(), at_trigger=False)
     imgs = [s for s in segs if s["type"] == "image"]
-    assert len(imgs) == 1 and imgs[0]["data"]["file"] == "/data/gen/same.jpg"
+    assert len(imgs) == 1 and imgs[0]["data"]["file"] == str(p)
 
 
-def test_outbound_generated_images_split_separate_messages():
+def test_outbound_skips_missing_files(tmp_path):
+    """失效图片路径（文件不存在）-> 跳过不发，不因坏路径报错。"""
+    good = _real_paths(tmp_path, ["good"])
+    missing = str(tmp_path / "gone.jpg")  # 未创建
+    ctx = _ctx_with_gen([missing, good[0]])
+    segs = _build_reply_segments(ctx, "group", 200, 727631526, _core(), at_trigger=False)
+    imgs = [s for s in segs if s["type"] == "image"]
+    assert [i["data"]["file"] for i in imgs] == [good[0]]
+
+
+def test_outbound_generated_images_split_separate_messages(tmp_path):
     """多张生图各自独立成条消息（与表情一致）。"""
     from anima.llm.handler import _split_reply_messages
 
-    paths = [f"/data/gen/{c}.jpg" for c in "ab"]
+    paths = _real_paths(tmp_path, ["a", "b"])
     ctx = _ctx_with_gen(paths)
     segs = _build_reply_segments(ctx, "group", 200, 727631526, _core(), at_trigger=False)
     msgs = _split_reply_messages(segs)
@@ -177,13 +199,13 @@ def test_outbound_generated_images_split_separate_messages():
     assert all(len(m) == 1 and m[0]["type"] == "image" for m in msgs[1:])
 
 
-def test_outbound_formal_intent_gate_keeps_generated_images():
+def test_outbound_formal_intent_gate_keeps_generated_images(tmp_path):
     """formal 氛围 + intent_gate 命中：仅跳过被动表情，生图段必须保留。
 
     回归：曾因「formal 氛围 return 整个函数」吞掉用户明确要的 x_search 抓图，
     只发文本。生图（generated_image_paths）不受表情意图门控影响。
     """
-    paths = [f"/data/gen/{c}.jpg" for c in "abc"]
+    paths = _real_paths(tmp_path, ["a", "b", "c"])
     ctx = _ctx_with_gen(paths, atm="formal")
     core = SimpleNamespace(
         config=SimpleNamespace(
@@ -200,4 +222,4 @@ def test_outbound_formal_intent_gate_keeps_generated_images():
     imgs = [s for s in segs if s["type"] == "image"]
     assert len(imgs) == 3, f"formal 氛围下生图段应保留 3 张，实际={imgs}"
     # 且不能附带被动表情（intent_gate 命中应跳过一次）
-    assert imgs[0]["data"]["file"] == "/data/gen/a.jpg"
+    assert imgs[0]["data"]["file"] == str(tmp_path / "a.jpg")

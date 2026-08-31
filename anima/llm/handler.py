@@ -2522,6 +2522,15 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
         if len(_gen_paths) >= MAX_GENERATED_IMAGES_PER_REPLY:
             break
     for image_path in _gen_paths:
+        # 鲁棒性：文件可能已不存在（磁盘清理/进程切换），失效路径跳过，不硬发。
+        try:
+            if not Path(image_path).is_file():
+                logger.warning("[IMGDBG] 生图路径失效已跳过（文件不存在）: %s", image_path)
+                continue
+        except Exception:
+            # 路径异常（含非法字符等）同样跳过，避免发送层因坏路径报错
+            logger.warning("[IMGDBG] 生图路径异常已跳过: %s", image_path)
+            continue
         segments.append({"type": "image", "data": {"file": image_path}})
     if getattr(ctx, "generated_image_paths", None):
         logger.debug("[IMGDEBUG] build_reply_segments ctx.generated_image_paths=%s",
