@@ -54,6 +54,12 @@ autonomy:
   daily_max_per_group: 20                 # 每日自主条数/群（含议程）
   ratio_max: 0.30                         # 占群发言比上限
   token_budget_per_day: 0   # 0 = 不限额
+  # —— quiet_hours 免打扰时段（通用，独立于 sleep 睡眠模式）——
+  # 命中时段时非点名/非@被动消息静默跳过；点名/@/私聊默认豁免仍回。
+  quiet_hours_enabled: false
+  quiet_hours_start_hour: 23              # 含，跨午夜窗口（默认 23:00-07:00）
+  quiet_hours_end_hour: 7                 # 不含
+  quiet_hours_allow_direct: true          # 点名/@/私聊是否豁免（默认豁免=仍回）
   active_reply_prob: 0.08                 # 通过全部门控后实际主动开口的概率
   active_silence_min_sec: 300             # 人类消息沉默多久后才考虑插话
   active_global_cooldown_sec: 900         # 两次主动发言的全局最小间隔，防止复读刷屏

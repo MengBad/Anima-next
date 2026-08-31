@@ -1,4 +1,4 @@
-"""x_search 工具：让 Agent 随时调用 X（Twitter）搜索/查内容，不依赖特定触发词。
+﻿"""x_search 工具：让 Agent 随时调用 X（Twitter）搜索/查内容，不依赖特定触发词。
 
 Agent 在需要实时、X 平台专属、或用户明确要求「去 X 查/在 X 上搜」的信息时使用。
 结果经 x_browser 的合规闸门（政治拒、违法R18 拒）后返回文本摘要。
@@ -95,6 +95,53 @@ async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) ->
         return None
 
 
+# 同回复节流：同一回复内（同一 call context）对相同 query 的重复抓图不重复下载/视觉过滤。
+# 观测到 LLM 一次回复内对相同 X 查询调两次 x_search，第二次走 text 分支即可，省视觉+下载成本。
+_SAME_REPLY_THROTTLE_SEC = 30.0
+
+
+def _normalize_fetch_query(query: str) -> str:
+    """归一化 query 作节流键：去空白/大小写，避免细微差异导致漏节流。"""
+    return " ".join(str(query or "").strip().split()).lower()[:80]
+
+
+def _record_reply_fetch(query: str) -> None:
+    """记录本次回复已抓取的 query + 时间。"""
+    try:
+        from anima.tools import get_call_context
+        ctx = get_call_context()
+        recs = ctx.setdefault("x_fetch_throttle", {})
+        if isinstance(recs, dict):
+            recs[_normalize_fetch_query(query)] = time.time()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _existing_gen_paths() -> list[str]:
+    """返回调用上下文里已写入的 generated_image_paths（去重保序）。"""
+    try:
+        from anima.tools import get_call_context
+        ctx = get_call_context()
+        paths = ctx.get("generated_image_paths") or []
+        return [str(p) for p in paths] if isinstance(paths, list) else []
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _is_reply_fetch_duplicate(query: str) -> bool:
+    """同回复内是否已抓取过该 query（节流命中）。"""
+    try:
+        from anima.tools import get_call_context
+        ctx = get_call_context()
+        recs = ctx.get("x_fetch_throttle") or {}
+        if not isinstance(recs, dict):
+            return False
+        last = recs.get(_normalize_fetch_query(query))
+        return bool(last) and (time.time() - last) < _SAME_REPLY_THROTTLE_SEC
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _write_image_paths(paths: list[str]) -> None:
     """把已下载图片路径写入调用上下文 generated_image_paths，供出站发送。"""
     try:
@@ -105,7 +152,7 @@ def _write_image_paths(paths: list[str]) -> None:
             for p in paths:
                 if p not in existing:
                     existing.append(p)
-            logger.info("[IMGDBG] _write_image_paths 写入 %d 条 -> generated_image_paths(len=%d) first=%s",
+            logger.debug("[IMGDBG] _write_image_paths 写入 %d 条 -> generated_image_paths(len=%d) first=%s",
                         len(paths), len(existing),
                         existing[0] if existing else None)
         else:
@@ -214,7 +261,7 @@ async def _filter_images_by_relevance(session, query: str,
         picked = [i for i in sel if i in valid_set]
         # 保持原候选顺序
         ordered = [candidates[i] for i in valid if i in picked]
-        logger.info("[IMGDBG] 视觉相关性过滤: %d 候选 -> %d 相关 (query=%s)",
+        logger.debug("[IMGDBG] 视觉相关性过滤: %d 候选 -> %d 相关 (query=%s)",
                     len(candidates), len(ordered), query[:20])
         return True, ordered
 
@@ -279,27 +326,39 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
     # 用户要照片：下载推文配图并写入出站图片段
     downloaded: list[str] = []
     if want_images and fresh_images:
-        proxy = getattr(session, "proxy", "") or None
-        dest_dir = Path(getattr(session, "data_dir", "data/x_browser")) / "downloaded"
-        dest_dir.mkdir(parents=True, exist_ok=True)
-        # 候选池放大：多下载一些，视觉相关性过滤后仍有余量可选。
-        _candidate_urls = fresh_images[: max(limit * 2, limit + 2)]
-        _cand_paths: list[str] = []
-        for url in _candidate_urls:
-            p = await _download_image(url, dest_dir, proxy)
-            if p:
-                _cand_paths.append(p)
-            if len(_cand_paths) >= limit * 2:
-                break
-        # 视觉相关性过滤：用 Gemini 看图判断是否与 query 相关，只发相关图。
-        if _cand_paths:
-            _ok, _filtered = await _filter_images_by_relevance(session, query, _cand_paths)
-            if _ok:
-                # 视觉成功：信任判定。filtered 可能为空（都不相关）——宁可不发，也不发无关图。
-                downloaded = _filtered[: limit]
+        # 同回复节流：同一回复内已抓取过相同 query 则不再重复下载/视觉过滤
+        # （复用已写入 generated_image_paths 的图）。省视觉调用+下载成本。
+        if _is_reply_fetch_duplicate(query):
+            logger.debug("[IMGDBG] 同回复节流命中（query 已抓过），跳过重复下载/视觉过滤: %s", query[:30])
+            _ctx_paths = _existing_gen_paths()
+            if _ctx_paths:
+                downloaded = _ctx_paths
+                _record_reply_fetch(query)  # 刷新节流时间窗
             else:
-                # 视觉不可用/失败/超时：保底全发，不因视觉问题空手。
-                downloaded = _cand_paths[: limit]
+                # 上下文中没有图（可能未下载成功），不节流，正常走下载
+                downloaded = []
+        else:
+            proxy = getattr(session, "proxy", "") or None
+            dest_dir = Path(getattr(session, "data_dir", "data/x_browser")) / "downloaded"
+            dest_dir.mkdir(parents=True, exist_ok=True)
+            # 候选池放大：多下载一些，视觉相关性过滤后仍有余量可选。
+            _candidate_urls = fresh_images[: max(limit * 2, limit + 2)]
+            _cand_paths: list[str] = []
+            for url in _candidate_urls:
+                p = await _download_image(url, dest_dir, proxy)
+                if p:
+                    _cand_paths.append(p)
+                if len(_cand_paths) >= limit * 2:
+                    break
+            # 视觉相关性过滤：用 Gemini 看图判断是否与 query 相关，只发相关图。
+            if _cand_paths:
+                _ok, _filtered = await _filter_images_by_relevance(session, query, _cand_paths)
+                if _ok:
+                    # 视觉成功：信任判定。filtered 可能为空（都不相关）——宁可不发，也不发无关图。
+                    downloaded = _filtered[: limit]
+                else:
+                    # 视觉不可用/失败/超时：保底全发，不因视觉问题空手。
+                    downloaded = _cand_paths[: limit]
         if downloaded:
             _write_image_paths(downloaded[: limit])
             # 记录这些 URL 已发过（会话内去重，下次自动避开）
@@ -307,6 +366,8 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                 session.mark_images_seen(_candidate_urls[: limit])
             except Exception:  # noqa: BLE001
                 logger.debug("mark_images_seen 失败（忽略）")
+        # 同回复节流：记录本次已抓取的 query，后续同回复内重复调用不再重复下载/视觉过滤
+        _record_reply_fetch(query)
 
     # 构造文本摘要
     lines = []

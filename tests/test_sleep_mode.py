@@ -58,3 +58,23 @@ def test_should_sleep_silent_distribution():
 
 def test_sleep_reply_prob_complement():
     assert abs(sleep_reply_prob(0.8) - 0.2) < 1e-9
+
+
+def test_quiet_hours_default_window_cross_midnight():
+    """quiet_hours 默认窗口 23:00-07:00（跨午夜）：23/00/06 在窗，07 出窗。"""
+    from anima.core.config import AutonomyConfig
+    cfg = AutonomyConfig()
+    # 默认 23-7 跨午夜
+    assert is_sleep_time(_dt(23), cfg.quiet_hours_start_hour, cfg.quiet_hours_end_hour) is True
+    assert is_sleep_time(_dt(0), cfg.quiet_hours_start_hour, cfg.quiet_hours_end_hour) is True
+    assert is_sleep_time(_dt(6, 59), cfg.quiet_hours_start_hour, cfg.quiet_hours_end_hour) is True
+    assert is_sleep_time(_dt(7), cfg.quiet_hours_start_hour, cfg.quiet_hours_end_hour) is False
+    assert is_sleep_time(_dt(12), cfg.quiet_hours_start_hour, cfg.quiet_hours_end_hour) is False
+
+
+def test_quiet_hours_defaults_disabled():
+    """quiet_hours 默认关闭（不打扰既有行为），allow_direct 默认豁免点名。"""
+    from anima.core.config import AutonomyConfig
+    cfg = AutonomyConfig()
+    assert cfg.quiet_hours_enabled is False
+    assert cfg.quiet_hours_allow_direct is True

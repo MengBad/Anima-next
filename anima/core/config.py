@@ -156,6 +156,16 @@ class AutonomyConfig(BaseModel):
     sleepy_max_tokens: int = 20        # 迷糊回复长度上限
     sleepy_temperature: float = 0.4     # 迷糊回复随机度（偏低，含糊）
     sleepy_llm_enabled: bool = True    # 用 LLM 生成迷糊回复；关闭则只用模板
+
+    # —— quiet_hours 免打扰时段（通用，独立于 sleep 睡眠模式）——
+    # 命中该时段时，非点名/非 @ 的被动消息一律静默跳过（不回复）；点名/@/私聊仍正常回。
+    # 与 sleep 睡眠模式区别：sleep 处理「凌晨被 @ 时装睡」；quiet_hours 是用户自定义的
+    # 通用免打扰窗口，只拦非点名被动回复，不影响主动发言与点名应答。
+    quiet_hours_enabled: bool = False
+    quiet_hours_start_hour: int = 23    # 含，跨午夜窗口
+    quiet_hours_end_hour: int = 7       # 不含
+    quiet_hours_allow_direct: bool = True  # 点名/@/私聊是否豁免（默认豁免=仍回）
+
     secret_auto_enabled: bool = True   # 心跳每日根据群观察自动生成秘密（B2）
     # 模板式主动发言开关（默认开启，可关掉避免突兀）。二者均只影响
     # 「主动问候/分享」这类与对话无关的定时插话，不涉及被动回复。

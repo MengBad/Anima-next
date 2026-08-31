@@ -19,7 +19,10 @@ from anima.cognitive.x_browser import XBrowserSession
 from anima.pipeline.stages.generation import _X_IMAGE_GUIDANCE, _X_IMAGE_RE, _X_SEARCH_RE
 from anima.tools.builtin.x_search import (
     _download_image,
+    _existing_gen_paths,
     _filter_images_by_relevance,
+    _is_reply_fetch_duplicate,
+    _record_reply_fetch,
     _write_image_paths,
 )
 
@@ -298,6 +301,51 @@ def test_write_image_paths_pushes_to_context(monkeypatch):
     monkeypatch.setattr(tools_mod, "get_call_context", fake_get_call_context)
     _write_image_paths(["/tmp/a.jpg", "/tmp/b.jpg"])
     assert ctx["generated_image_paths"] == ["/tmp/a.jpg", "/tmp/b.jpg"]
+
+
+# ---------------------------------------------------------------------------
+# 4b. 同回复节流：相同 query 重复抓图不重复下载/视觉过滤
+# ---------------------------------------------------------------------------
+def test_reply_fetch_throttle_hits_duplicate_query(monkeypatch):
+    import anima.tools as tools_mod
+
+    ctx = {}
+    monkeypatch.setattr(tools_mod, "get_call_context", lambda: ctx)
+    # 先记录一次抓取
+    _record_reply_fetch("男の娘 可愛い")
+    assert _is_reply_fetch_duplicate("男の娘 可愛い") is True
+    # 归一化后仍命中（大小写/空白差异）
+    assert _is_reply_fetch_duplicate("  男の娘 可愛い  ") is True
+
+
+def test_reply_fetch_throttle_miss_unknown_query(monkeypatch):
+    import anima.tools as tools_mod
+
+    ctx = {}
+    monkeypatch.setattr(tools_mod, "get_call_context", lambda: ctx)
+    _record_reply_fetch("男の娘 可愛い")
+    assert _is_reply_fetch_duplicate("猫娘") is False
+
+
+def test_reply_fetch_throttle_respects_window(monkeypatch):
+    import anima.tools as tools_mod
+    import anima.tools.builtin.x_search as xs
+
+    ctx = {}
+    monkeypatch.setattr(tools_mod, "get_call_context", lambda: ctx)
+    _record_reply_fetch("猫")
+    # 过期时间窗
+    ctx["x_fetch_throttle"]["猫"] = 0.0  # epoch 起点，早已过期
+    assert _is_reply_fetch_duplicate("猫") is False
+
+
+def test_existing_gen_paths_reads_context(monkeypatch):
+    import anima.tools as tools_mod
+
+    ctx = {"generated_image_paths": ["/tmp/a.jpg", "/tmp/a.jpg", "/tmp/b.jpg"]}
+    monkeypatch.setattr(tools_mod, "get_call_context", lambda: ctx)
+    assert _existing_gen_paths() == ["/tmp/a.jpg", "/tmp/a.jpg", "/tmp/b.jpg"]
+    assert _existing_gen_paths() is not ctx["generated_image_paths"]
 
 
 # ---------------------------------------------------------------------------

@@ -1527,6 +1527,30 @@ class LLMHandler:
         except Exception:
             logger.exception("[睡眠] 模式判定异常（已隔离，退回正常流程）")
 
+        # quiet_hours 免打扰：命中时段且为群聊非点名被动消息时静默跳过。
+        # 与 sleep 区分：quiet_hours 只拦非点名被动回复；点名/@/私聊默认豁免仍回。
+        try:
+            acfg = self.core.config.autonomy
+            if getattr(acfg, "quiet_hours_enabled", False) and detail_type == "group" and group_id:
+                from anima.cognitive.sleep_state import is_sleep_time
+                if is_sleep_time(
+                    start_hour=getattr(acfg, "quiet_hours_start_hour", 23),
+                    end_hour=getattr(acfg, "quiet_hours_end_hour", 7),
+                ):
+                    _direct = False
+                    try:
+                        from anima.llm.group_gate import is_direct_group_call
+                        _direct = bool(is_direct_group_call(event, text))
+                    except Exception:
+                        _direct = bool(event.get("mentions_self") or event.get("reply_to_self"))
+                    _allow_direct = getattr(acfg, "quiet_hours_allow_direct", True)
+                    if not (_allow_direct and _direct):
+                        logger.info("[quiet_hours][trace=%s] 免打扰时段，非点名被动消息静默跳过 gid=%s",
+                                    trace, group_id)
+                        return
+        except Exception:
+            logger.exception("[quiet_hours] 判定异常（已隔离，退回正常流程）")
+
         # 群聊回复闸门：仅当被 @、被回复或文字喊「哈基米」时才回复；私聊始终回复。
         # owner 命令已在上方 _handle_command 处理，不受此闸门影响。
         group_policy = {}
@@ -2345,7 +2369,7 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     NapCat 不保证以 bot 工作目录解析相对路径，统一传绝对路径。
     """
     segments: list[dict] = []
-    logger.info("[IMGDBG] _build_reply_segments 进入 detail_type=%s gen_paths=%d",
+    logger.debug("[IMGDBG] _build_reply_segments 进入 detail_type=%s gen_paths=%d",
                 detail_type, len(getattr(ctx, "generated_image_paths", None) or []))
     # &&情绪&& 标签：读出并自回复文本剥除（stealer 被动标签，不污染出站文本）
     _tag_emotion = None
@@ -2403,7 +2427,7 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                 str(getattr(ctx, "atmosphere_style", "")).strip() in set(
                     getattr(scfg, "intent_gate_serious_atmospheres", []) or [])
             if _ig_gate:
-                logger.info("[IMGDBG] 表情 intent_gate 命中（氛围=%s），仅跳过被动表情，生图段保留",
+                logger.debug("[IMGDBG] 表情 intent_gate 命中（氛围=%s），仅跳过被动表情，生图段保留",
                             getattr(ctx, "atmosphere_style", ""))
                 # 确保后续 E2/R3 引用的变量已定义且不会触发选图（probability=0）
                 sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
@@ -2513,7 +2537,7 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     _gen_seen = set()
     _gen_paths: list[str] = []
     _ctx_gen = getattr(ctx, "generated_image_paths", None) or []
-    logger.info("[IMGDBG] build_reply_segments 读取 ctx.generated_image_paths=%d 条", len(_ctx_gen))
+    logger.debug("[IMGDBG] build_reply_segments 读取 ctx.generated_image_paths=%d 条", len(_ctx_gen))
     for image_path in _ctx_gen:
         _s = str(image_path)
         if _s and _s not in _gen_seen:
