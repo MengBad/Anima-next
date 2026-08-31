@@ -424,6 +424,13 @@ class ImageGenerationConfig(BaseModel):
     """图像生成；默认关闭以避免意外成本。daily_limit=0 表示不限制每日张数。"""
     enabled: bool = False
     model: str = "gemini-3.1-flash-image"
+    # 图像模型 fallback 容灾：主模型(model)遇上游 429/500 等可重试状态时，依次尝试
+    # 这些模型。支持两种端点格式：
+    #   - chat 端点（gemini-* 类，走 /chat/completions，message.images[].image_url）
+    #   - images 端点（含 imagine 类，走 /images/generations，data[].b64_json）
+    # 网关下可用的图像模型示例：gemini-3.1-flash-image / grok-imagine-image /
+    #   grok-imagine-image-quality / grok-imagine-image-2.0
+    fallback_models: list[str] = []
     daily_limit: int = 0  # 0 = 不限每日张数
     max_output_bytes: int = 16 * 1024 * 1024  # 0 = 不限制单图体积（建议保留上限防 OOM）
 

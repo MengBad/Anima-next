@@ -361,6 +361,7 @@ def start(config_path, once, identity_attestation):
             provider=cfg.llm.active_provider,
             module_models=cfg.llm.module_models,
             usage_ledger=UsageLedger(cfg.persistence.data_dir),
+            image_fallback_models=list(getattr(cfg.image_generation, "fallback_models", []) or []),
         )
         core.llm = llm
         core.usage_ledger = llm.usage_ledger

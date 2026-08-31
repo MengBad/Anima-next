@@ -173,6 +173,9 @@ image_generation:
   enabled: false                            # 仅 owner 调用；启用前确认网关 images/generations 可用
   model: "gemini-3.1-flash-image"           # 生图模型。优先级：llm.module_models.image_generation > 此字段。
                                             # 两者皆配时模块路由优先；此字段留空则回落模块路由或 llm.model（需为图像模型）
+  fallback_models: []                       # 生图跨模型容灾：主模型遇 429/500 等可重试状态时依次尝试。
+                                            # 支持两种格式：gemini-*（chat 端点）与含 imagine 的模型（/images/generations 端点）。
+                                            # 示例：["grok-imagine-image", "grok-imagine-image-quality"]
   daily_limit: 0                            # 当日成功生成图片上限；0 = 不限制，仍受权限/审批约束
   max_output_bytes: 16777216                # 单张图片最大 16MB
 

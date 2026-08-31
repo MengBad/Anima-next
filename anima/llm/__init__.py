@@ -33,6 +33,7 @@ class LLMClient:
         provider: str = "default",
         module_models: dict[str, str] | None = None,
         usage_ledger: UsageLedger | None = None,
+        image_fallback_models: list[str] | None = None,
     ):
         self.base_endpoint = endpoint.rstrip("/")
         self.endpoint = self.base_endpoint + "/chat/completions"
@@ -55,6 +56,12 @@ class LLMClient:
             str(item).strip() for item in (fallback_models or [])
             if str(item).strip() and str(item).strip() != model
         ][:4]
+        # 图像模型 fallback（跨模型容灾）：主图像模型遇 429/500 等可重试状态时
+        # 依次尝试。与文本 fallback_models 独立——文本模型不能用于生图。
+        self.image_fallback_models = [
+            str(item).strip() for item in (image_fallback_models or [])
+            if str(item).strip() and str(item).strip() != self.model
+        ][:3]
         self.circuit_failure_threshold = max(1, min(int(circuit_failure_threshold), 20))
         self.circuit_cooldown_sec = max(1.0, min(float(circuit_cooldown_sec), 600.0))
         self.request_count = 0
@@ -158,16 +165,109 @@ class LLMClient:
         CLI Proxy 网关的 /images/generations 只认 OpenAI 兼容图像模型（gpt-image/grok-imagine），
         不认 gemini 图像模型；实测 gemini-3.1-flash-image 需走 chat 端点，返回
         choices[].message.images[].image_url.url（base64）。任何非图片响应都视为失败。
+
+        主模型失败（429/500 等可重试状态）时依次尝试 image_fallback_models：
+        gemini 类走 chat 端点，imagine 类走 /images/generations 端点。
         """
-        return await self._request_image_via_chat(
+        return await self._request_image_with_fallback(
             prompt, model=model, max_bytes=max_bytes, input_image_b64=None,
         )
 
     async def edit_image(self, prompt: str, *, model: str, input_image_b64: str, max_bytes: int) -> bytes | None:
         """经 /v1/chat/completions 用 Gemini 图像模型修改已有图片（多模态输入图 + 指令）。"""
+        return await self._request_image_with_fallback(
+            prompt, model=model, max_bytes=max_bytes, input_image_b64=input_image_b64,
+        )
+
+    async def _request_image_with_fallback(
+        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+    ) -> bytes | None:
+        """生图跨模型容灾：主模型失败且状态可重试时，依次尝试图像 fallback 模型。"""
+        requested = self.model_for(current_call_info().module, model)
+        candidates = [requested, *[m for m in self.image_fallback_models if m != requested]]
+        for pos, cand in enumerate(candidates):
+            image = await self._request_image_one(
+                prompt, model=cand, max_bytes=max_bytes, input_image_b64=input_image_b64,
+            )
+            if image is not None:
+                if pos:
+                    logger.warning("生图模型 %s 失败，已 failover 到 %s", candidates[0], cand)
+                    self._record_failover(candidates[0], cand)
+                return image
+            # 非可重试状态（如 401/400 参数错）切模型没有意义，直接终止。
+            if self.last_status is not None and not self._is_failoverable_status(self.last_status):
+                break
+        return None
+
+    async def _request_image_one(
+        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+    ) -> bytes | None:
+        """按模型类型路由：gemini 类走 chat 端点，imagine/grok 类走 /images/generations。"""
+        if "imagine" in model.lower():
+            return await self._request_image_via_generations(
+                prompt, model=model, max_bytes=max_bytes, input_image_b64=input_image_b64,
+            )
         return await self._request_image_via_chat(
             prompt, model=model, max_bytes=max_bytes, input_image_b64=input_image_b64,
         )
+
+    async def _request_image_via_generations(
+        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+    ) -> bytes | None:
+        """经 /images/generations 调用 OpenAI 兼容图像模型（grok-imagine-*），返回 data[].b64_json。
+
+        gemini 图像模型走 chat 端点；grok-imagine 走 images/generations（503 拒绝走 chat）。
+        """
+        if self._session is None:
+            await self.start()
+        payload: dict[str, Any] = {"model": model, "prompt": prompt[:4000], "n": 1, "size": "1024x1024"}
+        if input_image_b64:
+            payload["image"] = input_image_b64  # edits：OpenAI 兼容传 base64 图
+        headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        self.request_count += 1
+        started = time.perf_counter()
+        retry_start = self.retry_count
+        img_timeout = aiohttp.ClientTimeout(total=240, sock_connect=min(60.0, 10.0))
+        try:
+            async with self._session.post(self.images_endpoint, json=payload, headers=headers, timeout=img_timeout) as response:  # type: ignore[union-attr]
+                self.last_status = response.status
+                if response.status != 200:
+                    body = await response.text()
+                    self._set_error(f"image_http_{response.status}:{body[:160]}")
+                    self.failure_count += 1
+                    await self._record_usage(payload, None, started, retry_start, "error")
+                    return None
+                data = await response.json(content_type=None)
+        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
+            self.last_status = None
+            self._set_error(f"image_transport:{type(exc).__name__}")
+            self.failure_count += 1
+            await self._record_usage(payload, None, started, retry_start, "error")
+            return None
+        except Exception:
+            self.last_status = None
+            self._set_error("image_unexpected")
+            self.failure_count += 1
+            logger.exception("生图请求异常")
+            await self._record_usage(payload, None, started, retry_start, "error")
+            return None
+        try:
+            items = (data.get("data") or [])
+            b64 = (items[0].get("b64_json") or "") if items else ""
+            if not b64:
+                raise ValueError("missing_b64_json")
+            image = base64.b64decode(b64, validate=True)
+            if not image or (max_bytes > 0 and len(image) > max_bytes):
+                raise ValueError("invalid_image_size")
+        except (ValueError, TypeError, KeyError, IndexError, binascii.Error) as exc:
+            self._set_error(f"image_response:{type(exc).__name__}")
+            self.failure_count += 1
+            await self._record_usage(payload, data, started, retry_start, "error")
+            return None
+        self.last_error = ""
+        self.last_success_at = time.time()
+        await self._record_usage(payload, data, started, retry_start, "ok")
+        return image
 
     async def _request_image_via_chat(
         self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,

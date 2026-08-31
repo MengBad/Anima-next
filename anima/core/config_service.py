@@ -97,6 +97,7 @@ MANIFEST: list[dict[str, Any]] = [
     {"path": "sticker.label_model", "label": "表情审核模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["表情资产"]},
     {"path": "sticker.select_model", "label": "表情选图模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["表情发送"]},
     {"path": "image_generation.model", "label": "生图模型", "type": "text", "risk": "yellow", "restart": True, "impact": ["图片生成"]},
+    {"path": "image_generation.fallback_models", "label": "生图 fallback 模型(逗号分隔)", "type": "text", "risk": "yellow", "restart": True, "impact": ["图片生成容灾"]},
     {"path": "sylann.mode", "label": "Sylann 模式", "type": "select", "options": ["disabled", "shadow", "active"], "risk": "red", "restart": True, "impact": ["Sylann 认知"]},
     {"path": "crossgroup.enabled", "label": "跨群记忆共享", "type": "boolean", "risk": "red", "restart": True, "impact": ["跨群记忆"]},
     # —— 表达与节奏 ——
