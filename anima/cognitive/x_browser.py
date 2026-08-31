@@ -286,7 +286,6 @@ class XBrowserSession:
 
         优先于浏览器 DOM 抓取。返回 {tweets, tweet_images} 或 None（失败时回退浏览器）。
         """
-        import aiohttp
         try:
             # 从 cookies.json 取登录凭据
             cf = self.data_dir / "cookies.json"
@@ -320,36 +319,27 @@ class XBrowserSession:
                 "referer": "https://x.com/",
                 "accept": "application/json, text/plain, */*",
             }
-            timeout = aiohttp.ClientTimeout(total=25)
-            async with aiohttp.ClientSession(timeout=timeout) as sess:
-                async with sess.get(url, headers=headers) as resp:
-                    if resp.status != 200:
-                        logger.info("X GraphQL 搜索 HTTP %d，回退浏览器 DOM", resp.status)
-                        return None
-                    data = await resp.json()
-            # 递归提取所有图片 URL（media 类型为 photo 的 original_info 或 media_url_https）
+            import urllib.request
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                if resp.status != 200:
+                    logger.info("X GraphQL 搜索 HTTP %d，回退浏览器 DOM", resp.status)
+                    return None
+                data = json.loads(resp.read().decode("utf-8"))
+            # 递归提取所有图片 URL（media 类型为 photo 的 media_url_https）
             images: list[str] = []
             tweets: list[dict] = []
             seen: set[str] = set()
 
             def walk(node):
                 if isinstance(node, dict):
-                    # 推文结果
                     if node.get("__typename") in ("Tweet", "TweetWithVisibilityResults"):
                         txt = (node.get("legacy", {}) or {}).get("full_text", "") or ""
                         tweets.append({"text": txt})
-                    # 媒体
-                    if node.get("type") == "photo" and node.get("media_url_https"):
-                        u = node["media_url_https"]
-                        if u not in seen:
-                            seen.add(u)
-                            images.append(u)
-                    if node.get("media_url_https") and ("/media/" in node["media_url_https"] or
-                                                        "pbs.twimg.com/media" in node["media_url_https"]):
-                        u = node["media_url_https"]
-                        if u not in seen:
-                            seen.add(u)
-                            images.append(u)
+                    u = node.get("media_url_https") or ""
+                    if u and ("/media/" in u or "pbs.twimg.com/media" in u) and u not in seen:
+                        seen.add(u)
+                        images.append(u)
                     for v in node.values():
                         walk(v)
                 elif isinstance(node, list):
