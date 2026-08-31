@@ -249,6 +249,124 @@ class XBrowserSession:
     X_IN_CALL_RETRIES = 2                 # 单次调用内，空壳时等几秒重抓的次数
     X_IN_CALL_RETRY_WAIT = 8.0            # 每次重抓前的等待秒数
 
+    # X 搜索 GraphQL 查询（随前端版本可能变化；捕获自真实请求）
+    X_SEARCH_QUERY_ID = "hyPfJYJ_XAtDYoslQc-Rgg"
+    X_SEARCH_OPERATION = "SearchTimeline"
+    # X 公开 Bearer token（web 前端固定，非密钥）
+    X_GRAPHQL_BEARER = ("AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs"
+                        "%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA")
+
+    # 搜索所需的 features 标志（捕获自真实请求；保持与前端一致以兼容）
+    X_SEARCH_FEATURES = {
+        "rweb_video_screen_enabled": False, "rweb_cashtags_enabled": True,
+        "profile_label_improvements_pcf_label_in_post_enabled": True,
+        "responsive_web_profile_redirect_enabled": True, "rweb_tipjar_consumption_enabled": False,
+        "verified_phone_label_enabled": False, "creator_subscriptions_tweet_preview_api_enabled": True,
+        "responsive_web_graphql_timeline_navigation_enabled": True, "premium_content_api_read_enabled": False,
+        "communities_web_enable_tweet_community_results_fetch": True,
+        "c9s_tweet_anatomy_moderator_badge_enabled": True,
+        "responsive_web_grok_analyze_button_fetch_trends_enabled": False,
+        "responsive_web_grok_analyze_post_followups_enabled": True,
+        "rweb_cashtags_composer_attachment_enabled": True, "responsive_web_jetfuel_frame": True,
+        "responsive_web_grok_share_attachment_enabled": True, "responsive_web_grok_annotations_enabled": True,
+        "articles_preview_enabled": True, "responsive_web_edit_tweet_api_enabled": True,
+        "rweb_conversational_replies_downvote_enabled": False,
+        "graphql_is_translatable_rweb_tweet_is_translatable_enabled": True,
+        "view_counts_everywhere_api_enabled": True, "longform_notetweets_consumption_enabled": True,
+        "responsive_web_twitter_article_tweet_consumption_enabled": True,
+        "content_disclosure_indicator_enabled": True, "content_disclosure_ai_generated_indicator_enabled": True,
+        "blue_business_rating_consumption_enabled": True, "responsive_web_twitter_blue_verified_badge_is_enabled": True,
+        "responsive_web_graphql_timeline_navigation_enabled": True, "verified_phone_label_enabled": False,
+        "federated_twitter_trans_disc_enabled": True, "responsive_web_ex_video_config_v9_enabled": True,
+        "responsive_web_ex_video_config_fusion_enabled": True,
+    }
+
+    async def _api_search(self, query: str, limit: int, images_only: bool) -> Optional[dict]:
+        """直连 X 内部 GraphQL 搜索 API（更快、更隐蔽：不渲染页面即无指纹可检测）。
+
+        优先于浏览器 DOM 抓取。返回 {tweets, tweet_images} 或 None（失败时回退浏览器）。
+        """
+        import aiohttp
+        try:
+            # 从 cookies.json 取登录凭据
+            cf = self.data_dir / "cookies.json"
+            if not cf.exists():
+                return None
+            cookies = json.loads(cf.read_text(encoding="utf-8"))
+            auth_token = next((c["value"] for c in cookies if c.get("name") == "auth_token"), None)
+            ct0 = next((c["value"] for c in cookies if c.get("name") == "ct0"), None)
+            if not auth_token or not ct0:
+                return None
+            _q = query + (" filter:images" if images_only else "")
+            variables = {
+                "rawQuery": _q, "count": max(limit, 20), "querySource": "",
+                "product": "Top",
+                "withGrokTranslatedBio": True, "withQuickPromoteEligibilityTweetFields": False,
+            }
+            params = urllib.parse.urlencode({
+                "variables": json.dumps(variables, separators=(",", ":")),
+                "features": json.dumps(self.X_SEARCH_FEATURES, separators=(",", ":")),
+            })
+            url = (f"https://x.com/i/api/graphql/{self.X_SEARCH_QUERY_ID}/{self.X_SEARCH_OPERATION}"
+                   f"?{params}")
+            headers = {
+                "authorization": f"Bearer {self.X_GRAPHQL_BEARER}",
+                "x-csrf-token": ct0,
+                "x-twitter-active-user": "yes",
+                "x-twitter-auth-type": "OAuth2Session",
+                "cookie": f"auth_token={auth_token}; ct0={ct0}",
+                "user-agent": ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                               "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"),
+                "referer": "https://x.com/",
+                "accept": "application/json, text/plain, */*",
+            }
+            timeout = aiohttp.ClientTimeout(total=25)
+            async with aiohttp.ClientSession(timeout=timeout) as sess:
+                async with sess.get(url, headers=headers) as resp:
+                    if resp.status != 200:
+                        logger.info("X GraphQL 搜索 HTTP %d，回退浏览器 DOM", resp.status)
+                        return None
+                    data = await resp.json()
+            # 递归提取所有图片 URL（media 类型为 photo 的 original_info 或 media_url_https）
+            images: list[str] = []
+            tweets: list[dict] = []
+            seen: set[str] = set()
+
+            def walk(node):
+                if isinstance(node, dict):
+                    # 推文结果
+                    if node.get("__typename") in ("Tweet", "TweetWithVisibilityResults"):
+                        txt = (node.get("legacy", {}) or {}).get("full_text", "") or ""
+                        tweets.append({"text": txt})
+                    # 媒体
+                    if node.get("type") == "photo" and node.get("media_url_https"):
+                        u = node["media_url_https"]
+                        if u not in seen:
+                            seen.add(u)
+                            images.append(u)
+                    if node.get("media_url_https") and ("/media/" in node["media_url_https"] or
+                                                        "pbs.twimg.com/media" in node["media_url_https"]):
+                        u = node["media_url_https"]
+                        if u not in seen:
+                            seen.add(u)
+                            images.append(u)
+                    for v in node.values():
+                        walk(v)
+                elif isinstance(node, list):
+                    for item in node:
+                        walk(item)
+
+            walk(data)
+            if not images:
+                logger.info("X GraphQL 搜索返回 0 图（可能查询无图/被限），回退浏览器 DOM")
+                return None
+            logger.info("X GraphQL 直连搜索成功：%d 推文 %d 图", len(tweets), len(images))
+            self._stats["api_searches"] = self._stats.get("api_searches", 0) + 1
+            return {"tweets": tweets, "tweet_images": images[:max(limit * 2, 20)]}
+        except Exception as e:  # noqa: BLE001
+            logger.info("X GraphQL 直连搜索失败(%s)，回退浏览器 DOM", type(e).__name__)
+            return None
+
     async def _collect_search_once(self, page, limit: int, img_limit: int) -> tuple[list, list]:
         """在已打开的搜索页上抽一次推文+配图。返回 (tweets, tweet_images)。"""
         await asyncio.sleep(3)
@@ -312,6 +430,19 @@ class XBrowserSession:
         async with self._lock:
             try:
                 page = await self._get_page()
+                # 直连 GraphQL 快路径：成功即返回（更快、更隐蔽），失败/无图回退浏览器 DOM
+                api_res = await self._api_search(query, limit, images_only)
+                if api_res:
+                    if self._x_blocked_until:
+                        logger.info("X 搜索恢复正常（API 直连），清除风控窗口")
+                    self._x_blocked_until = 0.0
+                    return {
+                        "ok": True, "logged_in": True, "tweets": api_res["tweets"],
+                        "tweet_images": api_res["tweet_images"],
+                        "fresh_images": api_res["tweet_images"],
+                        "note": "X 直连搜索", "blocked": False,
+                    }
+
                 # goto 之前注入持久 cookie（cookies.json），让首次请求即带登录态
                 await self._inject_cookies(page)
                 # 用户要图时追加 filter:images：只返回含配图推文。
@@ -545,7 +676,7 @@ class XBrowserSession:
                 logger.warning("X 登录：需要二次验证或疑似风控，暂停自动登录（等待人工/稍后自愈）")
                 return False
             # 关键：校验是否真拿到会话凭据（auth_token / auth_multi），否则视为未登录
-            if not self._has_auth_cookie(page):
+            if not await self._has_auth_cookie(page):
                 logger.warning("X 登录：表单已提交但未检测到 auth_token（可能被风控拒绝），仍视为未登录")
                 return False
             logger.info("X 自动重登成功（检测到会话凭据）")
