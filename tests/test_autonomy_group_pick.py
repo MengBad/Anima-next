@@ -406,3 +406,67 @@ def test_drive_gate_default_off():
     from anima.core.config import AutonomyConfig
     assert isinstance(AutonomyConfig().drive_gate, bool)
     assert AutonomyConfig().drive_gate is False
+
+
+# ---------------------------------------------------------------------------
+# P3-3: quiet_hours 与主动克制联动 —— _in_quiet_hours 抑制主动发言
+# ---------------------------------------------------------------------------
+
+def _hb_with_quiet(cfg_attrs):
+    """构造带指定 quiet_hours 配置的 Heartbeat 桩（core.config.autonomy）。"""
+    from anima.core.autonomy import Heartbeat
+    from types import SimpleNamespace
+    acfg = SimpleNamespace(**cfg_attrs)
+    cfg = SimpleNamespace(autonomy=acfg)
+    core = SimpleNamespace(config=cfg)
+    hb = object.__new__(Heartbeat)
+    hb.core = core
+    return hb
+
+
+def _bj(hour):
+    """构造北京时区指定小时的时间点。"""
+    from datetime import datetime, timezone, timedelta
+    return datetime(2026, 8, 30, hour, 30, tzinfo=timezone(timedelta(hours=8)))
+
+
+def test_quiet_hours_disabled_does_not_suppress():
+    hb = _hb_with_quiet({"quiet_hours_enabled": False, "quiet_hours_start_hour": 23,
+                         "quiet_hours_end_hour": 7})
+    assert hb._in_quiet_hours(_bj(2)) is False  # 关闭 → 不抑制
+
+
+def test_quiet_hours_enabled_suppresses_inside_window():
+    hb = _hb_with_quiet({"quiet_hours_enabled": True, "quiet_hours_start_hour": 23,
+                         "quiet_hours_end_hour": 7})
+    assert hb._in_quiet_hours(_bj(23)) is True   # 23 点在 23-7 窗口内（跨午夜）
+    assert hb._in_quiet_hours(_bj(0)) is True    # 0 点也在窗口内
+    assert hb._in_quiet_hours(_bj(6)) is True    # 6 点在窗口内
+
+
+def test_quiet_hours_enabled_does_not_suppress_outside_window():
+    hb = _hb_with_quiet({"quiet_hours_enabled": True, "quiet_hours_start_hour": 23,
+                         "quiet_hours_end_hour": 7})
+    assert hb._in_quiet_hours(_bj(12)) is False  # 正午在窗口外
+    assert hb._in_quiet_hours(_bj(7)) is False   # 7 点出窗
+
+
+def test_quiet_hours_missing_config_fails_closed():
+    """配置缺失/异常 → 不擅自压制主动（fail-closed）。"""
+    from anima.core.autonomy import Heartbeat
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(autonomy=SimpleNamespace())  # 无 quiet_hours 字段
+    core = SimpleNamespace(config=cfg)
+    hb = object.__new__(Heartbeat)
+    hb.core = core
+    assert hb._in_quiet_hours(_bj(2)) is False
+
+
+def test_quiet_hours_circadian_gate_respects_window(monkeypatch):
+    """_in_quiet_hours() 为真（窗口内）→ _circadian_gate 返回 False（不主动发言）。"""
+    from anima.core.autonomy import Heartbeat
+    hb = _hb_with_quiet({"quiet_hours_enabled": True, "quiet_hours_start_hour": 12,
+                         "quiet_hours_end_hour": 13})
+    # 强制 _in_quiet_hours 为真（不依赖真实时钟），验证 _circadian_gate 短路抑制。
+    monkeypatch.setattr(Heartbeat, "_in_quiet_hours", lambda self, now=None: True)
+    assert hb._circadian_gate() is False  # 窗口内 → 不主动发言

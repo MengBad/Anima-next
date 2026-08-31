@@ -762,7 +762,8 @@ class Heartbeat:
         # 议程消费（约定跟进 / calendar 等）
         # 注意：议程消费在 _circadian_gate 之前，必须单独做夜间静默检查，
         # 否则凌晨仍会主动发言（如“秽土转生”事件）。
-        _quiet_hour = datetime.now(_BJ).hour in (0, 1, 2, 3, 4, 5)
+        # P3-3: 除硬静默 0-5 点外，也尊重用户可配置 quiet_hours 免打扰窗口。
+        _quiet_hour = datetime.now(_BJ).hour in (0, 1, 2, 3, 4, 5) or self._in_quiet_hours()
         agenda = getattr(self.core, "agenda", None)
         agenda_item = agenda.peek_ready(now=now) if agenda else None
         if agenda_item is not None and not _quiet_hour:
@@ -984,6 +985,9 @@ class Heartbeat:
         # 硬静默：凌晨 1-5 点绝不主动发言（避免深夜骚扰）
         if hour in (1, 2, 3, 4, 5):
             return False
+        # P3-3: quiet_hours 时段同样抑制主动发言（用户可配置免打扰窗口，独立于睡眠模式）
+        if self._in_quiet_hours():
+            return False
         base = HOURLY_ACTIVITY.get(hour, 0.5)
         jitter = random.uniform(0.5, 1.5)
         prob = base * jitter
@@ -999,6 +1003,27 @@ class Heartbeat:
         except Exception:
             pass
         return random.random() < prob
+
+    def _in_quiet_hours(self, now=None) -> bool:
+        """P3-3: 是否处于用户可配置的 quiet_hours 免打扰窗口（主动发言抑制用）。
+
+        读取 config.autonomy.quiet_hours_*（enabled/start_hour/end_hour，默认 23-7 跨午夜）。
+        quiet_hours 关闭、配置缺失或读取异常一律返回 False（不擅自压制主动）。
+        ``now`` 可注入（需带时区 datetime）便于测试。
+        """
+        try:
+            acfg = self.core.config.autonomy
+            if not getattr(acfg, "quiet_hours_enabled", False):
+                return False
+            from anima.cognitive.sleep_state import is_sleep_time
+            start = int(getattr(acfg, "quiet_hours_start_hour", 23) or 23)
+            end = int(getattr(acfg, "quiet_hours_end_hour", 7) or 7)
+            return is_sleep_time(
+                now if now is not None else datetime.now(_BJ),
+                start_hour=start, end_hour=end,
+            )
+        except Exception:  # noqa: BLE001
+            return False
 
     def _pick_group(self, now: float) -> Optional[int]:
         """选择一个符合冷却和预算条件的群。"""
