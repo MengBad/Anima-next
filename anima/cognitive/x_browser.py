@@ -496,7 +496,7 @@ class XBrowserSession:
         try:
             # 确保停在登录流；jf onboarding URL 也算
             if "i/flow/login" not in page.url and "onboarding/web" not in page.url:
-                await page.goto("https://x.com/i/flow/login", timeout=30000, wait_until="domcontentloaded")
+                await page.goto("https://x.com/i/flow/login", timeout=45000, wait_until="commit")
             # 用户名框等待至多 15s（JS 渲染，先前固定 sleep2 常因 SPA 未就绪而漏判）
             user_sel = None
             for sel in ('input[name="username_or_email"]', 'input[name="text"]', 'input[autocomplete="username"]'):
