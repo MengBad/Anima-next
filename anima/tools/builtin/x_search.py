@@ -391,7 +391,7 @@ async def _grade_images_by_style(session, style: str,
 
     try:
         return await asyncio.wait_for(_do(), timeout=_RELEVANCE_TIMEOUT)
-    except (asyncio.TimeoutError, Exception):  # noqa: BLE001 - 分级失败保底全发
+    except Exception:  # noqa: BLE001 - 分级失败/超时保底全发
         logger.warning("[IMGDBG] 内容分级(%s)失败/超时，回退全发", style)
         return False, []
 

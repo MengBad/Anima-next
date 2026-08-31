@@ -85,8 +85,7 @@ def _disk_cache_load(key: str) -> list[PreparedImage] | None:
         return None
     meta_p = d / "meta.json"
     try:
-        with meta_p.open("r", encoding="utf-8") as fh:
-            meta = json.loads(meta_p.read_text(encoding="utf-8"))
+        meta = json.loads(meta_p.read_text(encoding="utf-8"))
         frames = meta["frames"]
         out: list[PreparedImage] = []
         for fr in frames:
@@ -123,17 +122,21 @@ def _disk_cache_store(key: str, result: list[PreparedImage]) -> None:
             json.dumps({"key": key, "frames": frames_meta}, ensure_ascii=False),
             encoding="utf-8",
         )
-        _DISK_CACHE_EST_BYTES += sum(len(fr.data) for fr in result)
+        # 计数器用锁保护（与 P2-G 锁纪律一致），避免并发下 int 丢失更新。
+        # 仅保护计数器，不把整个磁盘 I/O 串行化（保持热路径并发）。
+        with _CACHE_LOCK:
+            _DISK_CACHE_EST_BYTES += sum(len(fr.data) for fr in result)
         if _DISK_CACHE_EST_BYTES > _DISK_CACHE_MAX_BYTES:
             # 超限：保守清空全部磁盘缓存（简单可靠，避免逐条淘汰的复杂度/风险）
             try:
-                for p in _DISK_CACHE_DIR.rglob("*"):
-                    if p.is_file():
-                        p.unlink()
-                for p in sorted(_DISK_CACHE_DIR.rglob("*"), reverse=True):
-                    if p.is_dir():
-                        p.rmdir()
-                _DISK_CACHE_EST_BYTES = 0
+                with _CACHE_LOCK:
+                    for p in _DISK_CACHE_DIR.rglob("*"):
+                        if p.is_file():
+                            p.unlink()
+                    for p in sorted(_DISK_CACHE_DIR.rglob("*"), reverse=True):
+                        if p.is_dir():
+                            p.rmdir()
+                    _DISK_CACHE_EST_BYTES = 0
             except OSError:
                 pass
     except Exception:  # noqa: BLE001 - 写缓存失败不阻塞主流程
