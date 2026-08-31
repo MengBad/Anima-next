@@ -175,3 +175,29 @@ def test_outbound_generated_images_split_separate_messages():
     # 1 条文本 + 2 条图
     assert len(msgs) == 3, msgs
     assert all(len(m) == 1 and m[0]["type"] == "image" for m in msgs[1:])
+
+
+def test_outbound_formal_intent_gate_keeps_generated_images():
+    """formal 氛围 + intent_gate 命中：仅跳过被动表情，生图段必须保留。
+
+    回归：曾因「formal 氛围 return 整个函数」吞掉用户明确要的 x_search 抓图，
+    只发文本。生图（generated_image_paths）不受表情意图门控影响。
+    """
+    paths = [f"/data/gen/{c}.jpg" for c in "abc"]
+    ctx = _ctx_with_gen(paths, atm="formal")
+    core = SimpleNamespace(
+        config=SimpleNamespace(
+            sticker=SimpleNamespace(
+                always_atmosphere=("humorous", "casual"),
+                intent_gate=True,
+                intent_gate_serious_atmospheres=("formal",),
+                share_across_groups=False,
+            ),
+            persistence=SimpleNamespace(data_dir="data"),
+        )
+    )
+    segs = _build_reply_segments(ctx, "group", 200, 727631526, core, at_trigger=False)
+    imgs = [s for s in segs if s["type"] == "image"]
+    assert len(imgs) == 3, f"formal 氛围下生图段应保留 3 张，实际={imgs}"
+    # 且不能附带被动表情（intent_gate 命中应跳过一次）
+    assert imgs[0]["data"]["file"] == "/data/gen/a.jpg"

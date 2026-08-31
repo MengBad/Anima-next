@@ -2396,31 +2396,41 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
             from anima.cognitive.stickers import get_sticker_manager
             from anima.cognitive.mood import get_mood_system
             scfg = core.config.sticker
-            # 意图门控（对标 stealer）：严肃/服务氛围不加被动表情，且在触及选图前短路
-            ig = bool(getattr(scfg, "intent_gate", False))
-            ig_serious = set(getattr(scfg, "intent_gate_serious_atmospheres", []) or [])
-            if ig and str(getattr(ctx, "atmosphere_style", "")).strip() in ig_serious:
-                logger.info("[IMGDBG] 表情 intent_gate 提前 return（氛围=%s）生图段将被跳过",
+            # 意图门控（对标 stealer）：严肃/服务氛围不加被动表情。
+            # 注意：仅跳过「被动表情」，绝不影响用户明确要的生图段（generated_image_paths）。
+            # 曾因「formal 氛围 return 整个函数」导致 3 张抓图被吞、只发文本。
+            _ig_gate = bool(getattr(scfg, "intent_gate", False)) and \
+                str(getattr(ctx, "atmosphere_style", "")).strip() in set(
+                    getattr(scfg, "intent_gate_serious_atmospheres", []) or [])
+            if _ig_gate:
+                logger.info("[IMGDBG] 表情 intent_gate 命中（氛围=%s），仅跳过被动表情，生图段保留",
                             getattr(ctx, "atmosphere_style", ""))
-                return segments
-            sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
-            now = time.time()
-            last = sticker_auto_last.get(str(group_id), 0.0)
-            if hasattr(scfg, "send_probability"):
-                probability = float(scfg.send_probability)
-                try:
-                    from anima.cognitive.stickers import get_sticker_manager
-                    _rprob = get_sticker_manager(core.config.persistence.data_dir).runtime_send_probability()
-                except Exception:
-                    _rprob = None
-                if _rprob is not None:
-                    probability = float(_rprob)
-                cooldown = float(getattr(scfg, "send_cooldown_sec", 0.0))
-                by_emotion = bool(getattr(scfg, "send_by_emotion", False))
-            else:
-                probability = 1.0 if getattr(ctx, "atmosphere_style", "") in getattr(scfg, "always_atmosphere", []) else 0.0
+                # 确保后续 E2/R3 引用的变量已定义且不会触发选图（probability=0）
+                sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
+                now = time.time()
+                last = sticker_auto_last.get(str(group_id), 0.0)
+                probability = 0.0
                 cooldown = 0.0
                 by_emotion = False
+            if not _ig_gate:
+                sticker_auto_last = sticker_auto_last if sticker_auto_last is not None else {}
+                now = time.time()
+                last = sticker_auto_last.get(str(group_id), 0.0)
+                if hasattr(scfg, "send_probability"):
+                    probability = float(scfg.send_probability)
+                    try:
+                        from anima.cognitive.stickers import get_sticker_manager
+                        _rprob = get_sticker_manager(core.config.persistence.data_dir).runtime_send_probability()
+                    except Exception:
+                        _rprob = None
+                    if _rprob is not None:
+                        probability = float(_rprob)
+                    cooldown = float(getattr(scfg, "send_cooldown_sec", 0.0))
+                    by_emotion = bool(getattr(scfg, "send_by_emotion", False))
+                else:
+                    probability = 1.0 if getattr(ctx, "atmosphere_style", "") in getattr(scfg, "always_atmosphere", []) else 0.0
+                    cooldown = 0.0
+                    by_emotion = False
 
             # E2: 情绪影响发图概率
             _mood_label = "neutral"
