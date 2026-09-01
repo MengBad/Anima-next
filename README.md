@@ -1,250 +1,341 @@
 # Anima-next
 
-Anima-next 是一个独立运行的 QQ AgentBot。它不依赖 AstrBot：通过 OneBot11 / NapCat 接收和发送 QQ 消息，使用 OpenAI 兼容的 LLM 进行对话、工具调用与媒体理解，并拥有独立的记忆、时间、关系、心跳、日历、审计和权限系统。
+Anima-next 是一个**独立运行的、OpenClaw 风格的全智能 QQ 机器人**（Autonomous Agent Operating System）。它不依赖 AstrBot：通过 OneBot11 / NapCat 接收和发送 QQ 消息，使用 OpenAI 兼容的 LLM 完成对话、工具调用与多模态理解，并拥有独立的记忆、时间、关系、心跳、日历、审计、权限、SelfCode 工程扩展与受控自我进化能力。
 
-当前发布候选版本为 **0.3.0rc2**。项目整体按 **GNU Affero General Public License v3.0 only（AGPL-3.0-only）** 发布，与 `sylanne-core==2.5.0` 的生产集成路径保持一致。
+> **定位（Post-R15，2026-08-17 起）**：本项目从「具备自治能力的 Agent 系统」演进为 **Owner 长期使用的个人 Autonomous Agent Operating System（非商业产品）**。终态是 `Owner → ANIMA OS →（记忆/技能/Agent/知识/运行时/演化/运维）`。明确不做：商业化、Marketplace、SaaS、多租户、企业权限扩展、用户增长。
 
-生产部署目录为 VPS 的 `/opt/anima`；本仓库是唯一生产源码。历史 AstrBot 插件项目 `G:/Anima` 已冻结，仅作参考，不应继续开发新功能。
+当前版本：`0.3.0rc2`（`anima/__init__.py`）。项目按 **AGPL-3.0-only** 许可发布。生产部署在 VPS `/opt/anima`，经 `_deploy.py` 发布，本仓库是唯一生产源码。历史 AstrBot 插件形态 `G:/Anima` 已冻结，不再开发新功能。
+
+---
+
+## 目录
+
+1. [当前能力](#当前能力)
+2. [系统架构](#系统架构)
+3. [代码库总览（模块地图）](#代码库总览模块地图)
+4. [WebUI 控制台](#webui-控制台)
+5. [WebUI API](#webui-api)
+6. [Owner QQ 命令](#owner-qq-命令)
+7. [配置](#配置)
+8. [开发与测试](#开发与测试)
+9. [CI/CD](#cicd)
+10. [部署](#部署)
+11. [数据与安全边界](#数据与安全边界)
+12. [自治与自我进化](#自治与自我进化)
+13. [维护](#维护)
+14. [许可证与对应源码](#许可证与对应源码)
+
+---
 
 ## 当前能力
 
-- QQ：OneBot11 WebSocket 入站与出站、私聊/群聊、@ 检测、去重、引用消息取图、图片与表情采集。
-- 人格与认知：外置哈基米人格、单一 system 消息护栏、时间感、欲望、关系、世界观、遗忘、反刍、伤痕和群氛围。
-- 记忆：按“群号 + QQ 号”隔离的对话记忆、向量召回、跨群事实记忆；不会把整群对话混成同一个会话。
-- 主动性：受昼夜、冷却、频率和预算约束的心跳；Agenda 一次提醒、每日/每周日历均通过同一受控发送链路执行。
-- 媒体：图片/表情语义、引用图、附件文本提取、受预算的 LLM 生图；语音转写为可选能力。
-- 表情系统：群图片自动收集、LLM/VLM 入库判断、情绪/场景/标签分类、Owner 审核池、语义选图、群作用域、黑白名单和发送冷却；模型故障时降级为本地语义匹配。
-- 自扩展：LLM 可为 owner 生成声明式 SkillDraft；可从 QQ 或 WebUI 用自然语言描述需求。HTTP Skill 必须预览，所有安装均需 owner 审核。固定公网 HTTPS 可使用查询字符串参数并按需提取网页正文交给 LLM 摘要，仍禁止改 host/path、登录、Cookie、重定向和写操作。内置 `compose_notice` 可把事实通知整理为自然 QQ 文本。
-- 验收与恢复：WebUI 可生成不含聊天正文、图片、向量库、配置或密钥的运行状态快照；隔离行为回放会复用真实消息 Pipeline，验证私聊回复、群聊克制和人格身份护栏，但不连接真实 QQ 或生产 LLM。
-- 联网与订阅：公开网页状态监控、B 站直播间开播通知。owner 可自然语言提出需求；持续订阅会进入审批流程。
-- 安全：QQ 号 + 群号权限、工具二次校验、危险工具审批、审计 JSONL、沙箱和失败隔离。
-- SylannEngine：已完整接入 `sylanne-core 2.5.0` 的语义评估、可选 embedding、会话状态、Surface、伤害影响注入和心跳 tick；生产当前为低权重 `active`。它只提供粗粒度语气建议，不直接发送 QQ 消息、读写聊天记忆、调用工具或覆盖人格与权限护栏。仍记录匿名化观测数、错误率、延迟和引擎去重统计。
+### 消息与渠道（QQ）
 
-## 系统结构
+- **OneBot11 WebSocket** 入站 + HTTP 出站（NapCat）；私聊 / 群聊 / @ 检测 / 去重 / 引用消息取图 / 图片与表情采集。
+- **背压与并发**：`event_concurrency` + `max_pending_events` 控制长业务事件上限与高峰等待；消息防抖（群聊合并连续输入）、私聊连续输入收束为一个语义回合、同会话回合串行锁、同会话回复在途合并。
+- **出站**：拟人分段发送（`reply_split`）+ 拟真打字延迟；出站前统一过滤内心独白；表情 / 图片 / GIF / 语音 / 文档附件出站。
+- **渠道鉴权**：`qq.access_token`（`Authorization: Bearer`），不读 `NAPCAT_TOKEN` 环境变量。
+
+### 认知内核
+
+- **人格**：外置哈基米人格（`config/persona_core.yaml`），单一 system 消息护栏；身份泄漏拦截、anti_derailment、人格漂移上限（`drift.*`）。
+- **状态模型**：时间感、欲望、世界观、关系、矛盾、伤痕（含回避期）、遗忘、反刍、群氛围、情绪（灵魂能量槽 EMA）、模拟生活、睡眠状态、自我笔记压缩。
+- **主动性与生活模拟**：Heartbeat（30s tick）驱动内省与主动发言冲动；昼夜 / 冷却 / 频率 / Token 预算约束；免打扰时段（quiet_hours）；晨间反思、梦境分享、秘密生成、Q 空间说说、群在场感。
+- **多模态**：全量视觉理解（`vision`）、图片描述入库记忆、大图下载 + WebP 缩放 / GIF 关键帧 + 预算控制、LLM 生图（含跨模型 failover）、语音转写（可选）。
+- **表情包系统**：群图片自动收集、pHash 感知哈希去重、LLM/VLM 入库判断、情绪/场景/标签分类、Owner 审核池、语义选图、群作用域、黑白名单、发送冷却、自然遗忘、GIF 发送节流。
+
+### 记忆（多源、分层）
+
+- **对话记忆**：按「群号 + QQ 号」隔离（`chat_memory`），不会把整群混成一个会话。
+- **向量记忆**：`sqlite-vec` + 远程 embedding/reranker，语义召回；未配向量库自动降级 BM25 / 无语义召回。
+- **跨群记忆**（`crossgroup`）：跨群事实抽取 + 群氛围差异化，只进唯一 system。
+- **长期记忆**（`memory/long_term.py`）：事件 → 知识 → 行为模式三层，含「为什么这么设计」专项（服务自治维护护栏）。
+- **宪法记忆**（`constitution/memory_engine.py`）：只读 / 有界 / fail-soft 开机水合 + 周期去重累积。
+- **情节记忆 / 连续性 / 运行时身份 attestation**：episodes、continuity、identity/attestation 契约。
+
+### 工具 / 沙箱 / Skills
+
+- **工具注册表**：内置工具 + 沙箱；`min_level` 权限分级（banned/readonly/user/admin/owner），ReAct 二次校验。
+- **沙箱隔离**：SandboxTier 分级、bwrap/unshare、RLIMIT/cgroup 资源限制、seccomp。
+- **Skills**：声明式 SkillDraft（自然语言生成）→ Owner 审批 → 安装执行；内置 `compose_notice`；个人能力生态闭环（提案→沙箱→Benchmark→采纳，须 Owner）。
+- **SelfCode 双 Agent**：Coder 写隔离 workspace 模块 → Critic APPROVE/REVISE + 静态契约回灌 → 沙箱 import 自测 → 工程任务 → Owner 批准 → 备份 → 热注册。
+- **工具自学习**（`tool_learning`）与 **内生能力自生长**（`capabilities`，Top-K 晋升注册进 ReAct 工具面）。
+
+### 主动联网 / 订阅 / 探索
+
+- **联网搜索**：X（Twitter）搬图（受管浏览器 patchright，会话级去重、风控退避、VNC 图形化登录）、Web 搜索、网页正文提取摘要。
+- **订阅监控**（`monitors`）：B 站直播间开播通知、公开网页状态监控；Owner 自然语言建订阅，持续订阅进入审批。
+- **探索**（`exploration`）：自主读取公开信息形成带来源的知识笔记，外部内容视为不可信资料。
+- **B 站视频理解**：字幕抓取 + LLM 总结。
+
+### 工程 / 自治 / 自我进化
+
+- **Owner Agent**（`agent/`）：多步任务规划 / 执行 / 存储 / 审计 / 通知。
+- **受控自我进化**（R9）：ANIMA 可提自身优化但绝不自我授权；`CORE_PROTECTED` 安全围栏禁止自动改核心/权限/安全/部署代码；`EvolutionGate` 默认 DENY，仅 Owner 显式 approve。
+- **多 Agent 协作**（R7/R12/P3）：Orchestrator 流水线、Debate & Judge、真实 Agent 社会（Architect/Security/Research/Coding/Critic/Judge 多视角加权裁决）。
+- **自治开发闭环**（R8）：DevIssue → Plan → Develop → Test → Review → Deploy，部署需 Owner 授权。
+- **观测 / 评估 / 闭环**（R10/P1/P2）：Observation 事件层、Evolution Evaluation（Before/After 指标证据）、Evolution Impact Score、自治运维闭环（默认 dry_run）。
+- **自治运维**（P5）：过期依赖检测 → 风险分析 → 待审提案 → Owner 批准。
+- **Human-AI OS 控制面**（R14/P0）：`/api/os/overview` 聚合健康/恢复/提案/观测全景；受限 NL 指令解析；每日健康证明、7/30/90 天稳定性记录（fail-closed、诚实）。
+
+### 安全 / 治理 / 审计
+
+- **权限模型**：QQ 号 + 群号分级（owner/admin/readonly/banned + 只读/静默群 + 群策略）；RBAC 引擎（R6.3）。
+- **Fail Closed · No Hidden Authority · Identity Cannot Be Forged · Audit Everything · Production Is Sacred**（五条不可违反）。
+- **审计**：JSONL append-only 审计、端到端审计事件链（event_chain）、审计哈希链、运行时 attestation。
+- **行为证据**：execution trace → artifact → audit → replay（任何行为可事后还原）。
+- **执行隔离**：CPU / 内存 / 超时 / 进程数 / seccomp 策略档 + 资源记账。
+- **SylannEngine**（可选，`sylanne-core 2.5.0`）：语义评估 / 可选 embedding / 会话状态 / 伤害影响注入 / 心跳 tick；只提供粗粒度语气建议，不发送 QQ 消息、不读聊天记忆、不调用工具、不绕过护栏。默认 `disabled`，低权重 `active`。
+
+---
+
+## 系统架构
 
 ```text
 QQ / NapCat
-  → OneBot11 WebSocket（事件入站 + action/echo 出站）
-  → Gateway / EventBus
-  → LLMHandler
-  → Permission → Memory → Cognition → Generation → Guardrail
-  → NapCat WS 出站
+   → OneBot11 WS（事件入站） + OneBot11 HTTP（action/echo 出站）
+   → Gateway / EventBus
+   → LLMHandler → Pipeline（权限 → 记忆 → 认知 → 生成 → 护栏）
+   → NapCat WS 出站
 
-认知与运行时：Memory / Relations / Time / Agenda / Heartbeat / Sylann active
-行动能力：ReAct Tools / Skills / Monitors / Image generation
-控制与观察：Audit JSONL / WebUI / owner QQ commands
+认知与运行时：Memory / Relations / Time / Agenda / Heartbeat / Sleep / Simulated Life
+行动能力：ReAct Tools / Skills / Monitors / Image generation / X browser / SelfCode
+自治与控制：autonomy / agent / evolution / observation / os / capability governance
+观察与运维：Audit JSONL / WebUI / owner QQ commands / CI / _deploy.py
 ```
 
-## WebUI
+### 消息流水线（Pipeline）
 
-当前生产配置监听 `0.0.0.0:8088`，公网入口为：
+`anima/pipeline/stages/` 五阶段：**permission → memory → cognition → generation → guardrail**。各阶段职责：
+- **permission**：按用户/群权限等级过滤，群策略判定。
+- **memory**：写入/读取对话记忆与上下文。
+- **cognition**：注入人格、时间、欲望、关系、世界观、跨群事实、多模态视觉。
+- **generation**：调 LLM 生成，注入工具引导、错别字、分段、剥标签。
+- **guardrail**：危险行为检测、身份泄漏拦截、内心独白过滤、记忆写入。
 
-```text
-http://pve.aicaowo.com:8088
-```
+### 核心生命周期
 
-Token 认证已启用。若以后迁移 VPS，需要同时在云防火墙 / 安全组中放行入站 **TCP 8088**。
+- `cli.py` → `AnimaCore.start()`：初始化认知单例 → Sylann → 向量记忆 → 订阅调度器 → 原生插件 → 各 Module `restore/init` → 社交监听 → X 浏览器 → WebUI → 心跳 → 宪法记忆水合 → 运行健康采样。
+- `AnimaCore.run()`：启动 systemd watchdog，`SIGTERM/SIGINT` 优雅停止，逐个 `persist/shutdown` 认知模块与资源。
+- **配置变更恢复**：`config_recovery`（`awaiting_start → attempting → healthy`），候选启动失败自动回滚上一版本配置。
 
-WebUI 是一个 Vue 3 + TypeScript 单一生命控制台，按六个任务导向区域组织能力：
+---
+
+## 代码库总览（模块地图）
+
+`anima/` 下 **23 个顶层包**（含 `__init__.py`，另含 `util/` 无 `__init__.py` 的命名空间目录；约 400 个 `.py` 文件）：
+
+| 包 | 职责 |
+|---|---|
+| `anima/core/` | Gateway、EventBus、AnimaCore、Config、Permissions、Persistence、Audit、autonomy(Heartbeat)、intents、workflows、tasks、approvals、backup、evaluation、replay、config_recovery/config_service/config_drift、reply_splitter、conversation_assembler |
+| `anima/channels/` | QQ 渠道适配（`onebot11.py`，OneBot11 WS+HTTP） |
+| `anima/llm/` | LLMClient（重试/熔断/fallback/413 再编码/用量账本）+ LLMHandler 对话处理器 + group_gate |
+| `anima/pipeline/` | 消息流水线五阶段 |
+| `anima/cognitive/` | 认知内核：欲望/关系/时间/遗忘/反刍/伤痕/矛盾/情绪/灵魂/日程/日历/梦境/探索/学习/能力自生长/回复质量/表情/视觉/SelfCode/模拟生活/睡眠/X浏览器/秘密 |
+| `anima/cognitive/inner_state/` | 内在状态（情绪连续性/硬事实/自我述说/矛盾感受/被忽视感/QZONE 生活） |
+| `anima/memory/` | 对话/向量/长期/情节/连续性/权威水合/身份验证/运行时 attestation |
+| `anima/crossgroup/` | 跨群记忆 + 群氛围 |
+| `anima/skills/` | Skill 注册表/草案/演进 + builtin compose_notice |
+| `anima/tools/` | 工具注册表 + 沙箱 + builtin 工具 + 能力工具工厂 |
+| `anima/runtime/` | 运行时编排/执行/恢复/持久化 + providers |
+| `anima/agent/` | Owner 多步 Agent、多 Agent 编排/社会、自治开发闭环、自我进化、自治运维 |
+| `anima/capability/` | 能力治理层：RBAC/隔离/证据/审计链/运行时契约/激活/健康/ops |
+| `anima/constitution/` | 宪法（记忆权威/人格/身份/需求/情感/驱动/反射/规划/工作流） |
+| `anima/contracts/` | 契约抽象（access/capability/execution/facades/lifecycle/pipeline） |
+| `anima/evolution/` | 演化评估/影响/陪审团/orchestrator |
+| `anima/observation/` | 观测事件层（运行时/审计/反馈/环境/工程闭环） |
+| `anima/os/` | Human-AI OS 控制面、可靠性、长期运行稳定性 |
+| `anima/monitors/` | 订阅调度器 + B 站 + HTTP 监控 |
+| `anima/pilot/` | 试点/rollout 层（canary/权限边界/安全过滤/生产监控） |
+| `anima/plugins/` | 原生插件运行时 |
+| `anima/compat/` | AstrBot 兼容层（api/core 垫片，Tier 1）+ 插件加载 |
+| `anima/adapters/` | 运行时契约适配器 |
+| `anima/util/` | 工具（`name_clean.clean_display_name`，命名空间目录无 `__init__.py`，被 crossgroup/llm 使用） |
+
+顶层模块：`anima/cli.py`（CLI 入口）、`anima/media.py` / `media_generation.py` / `media_observation.py`、`anima/watchdog.py`、`anima/release_preflight.py`、`anima/__main__.py`。
+
+> **注意**：部分模块为**库级 / 试点 / 测试层**，未接入生产 `cli/startup` 主链路（例如 `runtime` 下的 executor/pilot_*/bridge_bootstrap/startup_recovery 等，以及 `capability` 下的治理 gateway 在默认配置下 OFF）。生产接线路径以 `cli.py` 与 `AnimaCore.start()` 为准，见「维护」文档。
+
+---
+
+## WebUI 控制台
+
+Vue 3 + TypeScript 单一控制台（源码 `webui/src/`，`npm run build` 产出 `anima/webui/static/`）。默认生产监听 `0.0.0.0:8088`（公网入口见部署），Token 认证已启用。
 
 | 页面 | 入口 | 用途 |
 |---|---|---|
-| 生命总览 | `/` | QQ、LLM、NapCat、Sylann、心跳和看门狗健康；待办、活动与用量摘要 |
-| 对话与记忆 | `/memory` | 连续性、群体感知、自我笔记摘要和脱敏时间线 |
-| 认知状态 | `/cognitive` | 身份稳定度、欲望、关系、矛盾、伤痕与 Sylann 状态 |
-| 能力与自动化 | `/abilities` | Skills、订阅、议程、日历与表情资产 |
-| 审批与工程 | `/engineering` | 工程作用、影响、diff/测试证据、回滚点与 Owner 审批 |
-| 设置与权限 | `/settings` | LLM 快速配置、模块模型路由、Token 统计、行为策略和权限 |
-| 表情资产工作室 | `/stickers` | 直接打开能力区的表情审核池、图库、导入、搜索排序、批量管理与 LLM/VLM 重审 |
-| 登录 | `/login` | 写入安全 Cookie；密钥和原始配置不会回显 |
+| 生命总览 | `/` | QQ/LLM/NapCat/Sylann/心跳/看门狗健康；待办、活动、用量摘要 |
+| 一生 | `/life` | 一生档案/传承：时间线、快照恢复/回滚、遗忘、日记、伤痕、议程 |
+| 对话与记忆 | `/memory` | 连续性、群体感知、自我笔记、长期记忆、脱敏时间线 |
+| 认知状态 | `/cognitive` | 身份稳定度、欲望、关系、矛盾、伤痕、漂移、Sylann 状态 |
+| 能力与自动化 | `/abilities` | Skills、探索、订阅、议程、日历、表情资产、插件 |
+| 审批与工程 | `/engineering` | 工程任务、能力治理、影响、diff/测试证据、受控自我进化、回滚点 |
+| 设置与权限 | `/settings` | LLM 快速配置、模块模型路由、Token 统计、行为策略、权限、配置变更集 |
+| ANIMA OS | `/os` | 自治工作台：健康/恢复/提案/观测/稳定性/演化影响/多 Agent 社会 |
+| 表情资产工作室 | `/stickers` | 表情审核池、图库、导入、搜索排序、批量管理、LLM/VLM 重审 |
+| 登录 | `/login` | 写入安全 Cookie；密钥不回显 |
 | 对应源码 | `/source` | 许可证、运行版本、源码归档与校验信息；无需登录 |
 
-主控制台的各区域独立加载：某个非核心接口失败时只降级对应卡片，不会让整页停在“读取状态中”。页面支持系统“减少动态效果”设置；窄屏设置页的模型路由保留可横向滚动的表格，不会挤压其它字段。
+主控制台各区域独立加载，某非核心接口失败只降级对应卡片。支持系统「减少动态效果」；窄屏设置页模型路由保留可横向滚动表格。
 
-如不希望直接暴露端口，仍可使用 SSH 隧道在本机访问：
+### WebUI Token
 
-```bash
-ssh -L 8088:127.0.0.1:8088 root@pve.aicaowo.com
-```
-
-然后访问：
-
-```text
-http://127.0.0.1:8088/
-```
-
-### 如何获取 WebUI Token
-
-Token 不会写入本 README，也不应发送到群聊、截图或提交到 Git。它保存在 VPS 的生产配置 `/opt/anima/config.yaml` 中的 `webui.token`。
-
-登录 VPS 后仅查看该字段：
+Token 保存在生产配置 `/opt/anima/config.yaml` 的 `webui.token`（≥32 位随机串），不写入本 README / 群聊 / Git。查看：
 
 ```bash
 grep -A4 '^webui:' /opt/anima/config.yaml
-```
-
-如果配置了 Token，可任选一种方式认证：
-
-```text
-http://127.0.0.1:8088/?token=<你的-token>
-```
-
-首次通过这个地址打开后，浏览器会得到 HttpOnly Cookie；之后同一浏览器不必在 URL 中重复携带 Token。调用 API 时使用：
-
-```bash
-curl -H 'Authorization: Bearer <你的-token>' http://127.0.0.1:8088/api/health
-```
-
-若 `webui.token` 为空，观察接口可以使用，但所有控制接口会被拒绝。应在 `/opt/anima/config.yaml` 设置一个随机长 Token 后重启服务。公网部署使用：
-
-```yaml
-webui:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8088
-  token: "请替换为至少 32 位随机字符串"
-```
-
-```bash
 systemctl restart anima
 systemctl show --property=ActiveEnterTimestamp anima
 ```
 
-公网访问时必须保留 Token。更推荐后续使用 HTTPS 反向代理与额外访问控制，避免在不受信任网络中传输 Token。
+首次访问 `http://127.0.0.1:8088/?token=<token>` 会种下 HttpOnly Cookie；调用 API 用 `Authorization: Bearer <token>`。`webui.token` 为空时观察接口可用、控制接口被拒。
+
+---
 
 ## WebUI API
 
-所有 `/api/*` 路径均可用于观察；控制类接口还要求配置 Token 和 owner。
+所有 `/api/*` 均可观察；控制类接口需 Token + owner。主要端点分组：
 
-仪表盘页面已覆盖自主开关、议程/日历/订阅的创建与取消、SkillDraft 的预览/批准/拒绝，以及已安装声明式 Skill 的 owner 执行；不需要手工拼接 API 请求。
+**健康 / 运维**
+- `GET /api/health`、`/api/health/history`、`/api/modules/status`、`/api/evaluation`
+- `POST /api/diagnostics/napcat`、`/api/reply-quality`、`/api/ops-quality`
+- `GET/POST /api/backups`、`/api/provenance`、`/api/audit`
+- `GET/POST /api/replays`、`/api/replays/run`
 
-| API | 用途 |
-|---|---|
-| `GET /api/health` | 服务、NapCat 实时 WS、出站回执、LLM、心跳、Sylann 健康状态 |
-| `GET /api/health/history` | 最近 24 小时/7 天的脱敏健康趋势样本；包括心跳、QQ、LLM、Sylann、语音、订阅和 SkillDraft 聚合状态，不含聊天正文、群号或提示词 |
-| `GET /api/modules/status` | 23 个运行模块的语义状态和非敏感指标 |
-| `GET /api/subject` / `GET /api/life` | 时间、欲望、关系摘要和生活轨迹 |
-| `GET /api/timeline` | 最近审计事件 |
-| `GET /api/skills` / `GET /api/skill-drafts` | 已加载 Skill 与待审核草案 |
-| `POST /api/skills/{skill_id}/execute` | owner 执行已加载的声明式 Skill |
-| `POST /api/skill-drafts` | 以自然语言需求创建待审核 SkillDraft |
-| `GET /api/approvals` | 待审批危险操作 |
-| `GET/POST/DELETE /api/agenda` | 一次性主动议程 |
-| `GET /api/calendar` | 每日与每周日历 |
-| `POST /api/calendar/daily` / `POST /api/calendar/weekly` | 创建日历事件 |
-| `GET/POST/DELETE /api/subscriptions` | B 站直播与网页监控订阅 |
-| `GET /api/stickers` | 表情资产统计 |
-| `GET /api/stickers/assets` | 审核池/图库搜索、分类、作用域和排序数据 |
-| `GET/POST /api/stickers/policy` | 读取或热更新收集、审核、检索和发送策略 |
-| `POST /api/stickers/import` | Owner 批量导入并进入 AI 审核流程 |
-| `POST /api/stickers/batch` | 批量批准、删除、改分类或改作用域 |
-| `POST /api/stickers/maintenance` | 清理失效索引并重新核对资产 |
-| `POST /api/stickers/reclassify` | Owner 显式触发全库 LLM/VLM 重审 |
-| `GET/POST /api/tasks` | 工程任务与待审批部署证据 |
-| `GET /api/events` | Server-Sent Events 审计流 |
-| `GET /api/config/manifest` / `GET /api/config/state` | 设置字段说明与脱敏后的当前状态 |
-| `POST /api/config/validate` | 只校验配置，不保存 |
-| `POST /api/config/change-sets` | Owner 创建配置变更预览 |
-| `POST /api/config/change-sets/{id}/apply` / `rollback` / `reject` | 应用、回滚或驳回配置，必要时受控重启；驳回不改运行配置 |
-| `GET /api/llm/providers` / `POST /api/llm/providers/test` | 查看提供商状态、测试 `/models` 连通性 |
-| `GET /api/llm/routes` | 查看可独立切换模型的模块路由与当日用量 |
-| `GET /api/llm/usage` / `events` / `export` | Token、延迟、失败、模型/模块排行与导出 |
+**配置 / LLM**
+- `GET/POST /api/config/manifest|state|validate`、`/api/config/change-sets[...]`（apply/rollback/reject）
+- `GET/POST /api/config/drift`、`/api/config/drift/repin`
+- `GET/POST /api/llm/providers`、`/api/llm/routes`、`/api/llm/usage[/events|/export]`
 
-LLM 路由按功能隔离，而不是把所有后台调用记成主聊天。当前可独立配置并统计的模块包括：主聊天、主动发言、语音转写、视觉理解、表情审核/选图、生图、Sylann 评估、反刍与生活模拟、跨群事实、个人能力、工具学习、Skill 生成/执行、B 站总结、工程代理、笔记压缩、Embedding 和 Rerank。账本只保存时间、模块、模型、Token、延迟和成功状态，不保存 prompt 或聊天正文。
+**认知 / 生活**
+- `GET /api/cognitive/overview|contradictions|relations|identity|desires|scars|prompt|persona|drift|config`
+- `POST /api/cognitive/persona/rollback`、`/api/cognitive/drift`、`/api/cognitive/config`
+- `GET /api/subject`、`/api/life`、`/api/timeline`、`/api/life/timeline`、`/api/life/snapshot/staged|restore|rollback|apply|live-rollback|settings`
+- `GET /api/platform/summary`、`/api/soul/state`、`/api/soul/history`
+- `GET /api/agenda`、`/api/intents`、`/api/workflows`、`/api/calendar`；`DELETE /api/agenda/{id}`、`DELETE /api/calendar/{id}`、`POST /api/workflows/{id}/cancel`
 
-表情的策略修改独立持久化到运行数据目录，不会改写包含 API Key 的主配置。新收集素材默认先进入审核池，Owner 批准前绝不会被发送。
+**自主 / 受控迭代**
+- `GET /api/autonomy/status`、`POST /api/autonomy/pause|resume`
+- `GET /api/iterate/status`、`POST /api/iterate/scan`、`/api/iterate/{id}/escalate|prepare|approve|apply|diffs`
+
+**能力 / Skills / 订阅 / 探索**
+- `GET/POST /api/skills`、`/api/skills/{id}/execute`
+- `GET/POST /api/skill-drafts`、`/api/skill-drafts/{id}/preview|approve|reject`
+- `GET/POST/DELETE /api/subscriptions`、`/api/exploration`、`/api/exploration/run`
+- `GET /api/compat/plugins`、`/api/native-plugins`
+
+**SelfCode / 工程 / 自治**
+- `GET/POST/DELETE /api/selfcode/tools...`、`/api/selfcode/backups/{id}/restore`、`/api/selfcode/evaluate`
+- `GET/POST /api/tasks`、`/api/tasks/{id}/execute|approve|reject|redo`
+- `GET/POST /api/approvals`、`/api/approvals/{id}/approve|reject`
+- `GET/POST /api/evolution/proposals|propose|{id}/approve|reject`
+- `GET /api/os/overview|self-evaluation|engineering-loop|long-term-operation`、`POST /api/os/command`
+
+**权限 / 工具 / 表情 / 社交**
+- `GET/POST/DELETE /api/permissions`、`/api/permissions/admins`（`DELETE /api/permissions/admins/{qq}`）
+- `GET /api/tools`
+- `GET/POST /api/stickers`、`/api/stickers/assets|policy|import|batch|maintenance|reclassify`、`/api/stickers/{id}/image|approve|reject`
+- `GET /api/social/status`、`/api/qzone/history`、`POST /api/qzone/post`
+- `GET /api/events`（SSE 审计流）、`GET /api/memory/health`、`GET/POST /api/agent/tasks`、`/api/agent/audit`、`POST /api/agent/tasks/{id}/cancel`
+- `GET /api/x-browser/stats`
+- `GET /api/auth/login|logout`、`POST /api/webui/change-token`
+
+---
 
 ## Owner QQ 命令
 
-只有配置为 owner 的 QQ 号可使用 `!anima` 命令。常用示例：
+只有配置为 owner 的 QQ 号可用 `!anima` 命令。常用：
 
 ```text
-!anima status
-!anima pause
-!anima resume
-!anima skills
-!anima skills reload
-
+!anima status | pause | resume
+!anima skills | skills reload
 !anima draft create 帮我学习一个只读公开网页状态查询能力
-!anima drafts
-!anima draft preview <草案ID>
-!anima draft approve <草案ID>
-
-!anima subscribe bili <直播间号> <目标群号>
-!anima subscriptions
-!anima unsubscribe <订阅ID>
-
-!anima remind <群号> <分钟> <提醒内容>
-!anima calendar daily <群号> <HH:MM> <提醒内容>
-!anima calendar weekly <群号> <星期1-7> <HH:MM> <提醒内容>
-!anima calendar list
-!anima calendar cancel <事件ID>
-
-!anima approvals
-!anima approve <审批ID>
-!anima deny <审批ID>
+!anima drafts | draft preview <ID> | draft approve <ID>
+!anima subscribe bili <直播间号> <群号> | subscriptions | unsubscribe <ID>
+!anima remind <群号> <分钟> <内容>
+!anima calendar daily|weekly ... | calendar list | calendar cancel <ID>
+!anima approvals | approve <ID> | deny <ID>
 ```
 
-自然语言提出“某直播间开播时通知到某群”时，LLM 也可以调用受控订阅工具；若只提供 UP 主昵称而没有直播间号或链接，bot 会先追问，避免订阅错目标。
+---
 
 ## 配置
 
-配置模板在 [config/default.yaml](config/default.yaml)。生产配置是 `/opt/anima/config.yaml`，部署时默认不会覆盖它。
+模板在 [config/default.yaml](config/default.yaml)；生产配置 `/opt/anima/config.yaml`（部署默认不覆盖）。配置 schema 见 [schemas/config.schema.yaml](schemas/config.schema.yaml)。`AnimaConfig` 顶层节（`anima/core/config.py`，共 45 个配置 Model）：
 
-重点配置：
+- **qq**：NapCat WS/HTTP、self_id、access_token、并发与背压。
+- **llm**：endpoint/api_key/model、embedding、timeout/retries、fallback_models、circuit、providers、active_provider、module_models（模块级模型路由）。
+- **vector**：向量库路径、embedding/reranker 后端。
+- **autonomy**：心跳、冷却、每日上限、主动发言概率/沉默门控/全局冷却、quiet_hours、睡眠。
+- **drift**：人格漂移上限、自校正预算、7 日窗口、相似度与价态下限。
+- **permissions**：owners/admins/readonly/banned + 只读/静默群 + 群策略。
+- **persistence**：data_dir、use_sqlite。
+- **memory / compat / crossgroup / tool_learning / capabilities / capability_layer / notes_compact / rumination / sticker / bilibili_read / self_code / vision / image_generation / audio / sylann / skills / conversation / reply_split / debounce / soul / gate / qzone / qq_status / voice / meme / scrapling / tavily / context / exploration / x_browser / webui / security / contradiction / danger / deploy / iteration / social / persona**。
 
-```yaml
-llm:
-  endpoint: "https://example.com/v1"
-  api_key: "仅保存在生产配置或环境变量"
-  model: "gemini-3.5-flash-low"
+环境变量：`ANIMA_LLM_API_KEY`、`ANIMA_LLM_ENDPOINT`；生产部署用 `ANIMA_DEPLOY_HOST/USER/PASS`；外置密钥经 systemd `EnvironmentFile=/opt/anima/.secrets`。
 
-qq:
-  napcat_ws_url: "ws://127.0.0.1:3001"
-  # NapCat 正向 WS 同时承载事件与 action/echo；只有另开 HTTP API 时才配置下项
-  # napcat_http_url: "http://127.0.0.1:<NapCat-HTTP端口>"
+人格在 [config/persona_core.yaml](config/persona_core.yaml) 调整。不要在 prompt/文档写入真实密钥。
 
-permissions:
-  owners: [你的QQ号]
-
-webui:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8088
-  token: "随机长Token"
-
-sylann:
-  enabled: true
-  mode: active  # 仅注入粗粒度表达提示；可随时切回 shadow
-  engine_mode: lite
-  assessor_enabled: true
-  pel_core_enabled: true
-  tick_sessions_limit: 32
-```
-
-人格在 [config/persona_core.yaml](config/persona_core.yaml) 调整。不要在 prompt 或公开文档中写入真实 API Key、QQ Token 或 WebUI Token。
+---
 
 ## 开发与测试
 
 ```bash
-pip install -e ".[qq,vector,dev,sylann,docs]"
-pytest tests/ -q
+# 安装（推荐 .venv）
+pip install -e ".[qq,vector,dev,sylann,docs]"   # 或 make install
+make test          # pytest tests/ -q
+make test-verbose  # pytest tests/ -v
+make doctor        # python -m anima doctor
+make run           # python -m anima start --config config.yaml
+make ci            # 本地复跑 CI（pytest + guard + evidence）
+
+# 单独测试
+pytest tests/test_xxx.py::test_func_name
+
+# WebUI 前端
+cd webui && npm install && npm run build    # 产出 anima/webui/static
+
+# 生成配置 / 自检 / 启动
+python -m anima init --agent --spec spec.json
 python -m anima doctor
 python -m anima start --config config.yaml
+python -m anima ops-cleanup                 # 清理僵尸 SelfCode / 粘滞笔记
+python -m anima x-diag                      # X 搬图模块诊断
 ```
 
-当前本地基线为 **455 项测试通过**。测试不会读取或写入生产 `data/`。
+- Python `3.12+`；`tests/` 平铺 420 个 `test_*.py`，覆盖核心/认知/治理/演化/WebUI/安全/试点等（现有若干 `.pytest-*` scratch 目录为缓存，勿并入版本控制）。
+- 测试不会读写生产 `data/`；以全量绿为准。
+
+---
+
+## CI/CD
+
+`.github/workflows/anima-ci.yml`（push/PR 到 `master` 与 `anima-autonomous-evo`），四 job：
+
+1. **backend**：`pip install -e ".[qq,vector,dev,docs,sylann]"` + `pytest tests/ -q --cov`。
+2. **frontend**：`webui/` 下 `npm ci && npm run build`。
+3. **security**：`scripts/anima_guard.py --base origin/master` 检测是否触碰 `CORE_PROTECTED`/敏感路径 → 标记 `requires_owner_review`（需 Owner 审查，不阻断）。
+4. **evidence**：`scripts/ci_evidence.py` 聚合三阶段 → `ci-report.json` + `commit-attestation.json`。
+
+**安全纪律**：CI 只有读取与验证逻辑，绝不持有生产部署凭证，绝不自动批准 Evolution，绝不自动部署/改码/跳过失败。
+
+---
 
 ## 部署
 
-部署脚本只同步 Git 已跟踪文件，保留生产 `config.yaml` 与 `data/`，生成不含密钥和运行数据的对应源码包，然后安装依赖并重启 systemd。默认拒绝脏工作树；只有明确使用 `--allow-dirty` 才能执行破窗部署：
+部署脚本 `_deploy.py`（paramiko SSH）同步 Git 已跟踪文件到 VPS `/opt/anima`，保留生产 `config.yaml` 与 `data/`，生成不含密钥/运行数据的源码归档，装依赖、刷新 systemd、重启、smoke。
 
 ```powershell
 $env:ANIMA_DEPLOY_HOST = 'your-vps-host'
 $env:ANIMA_DEPLOY_USER = 'root'
 $env:ANIMA_DEPLOY_PASS = 'your-password'
-.\.venv\Scripts\python.exe _deploy.py
+python _deploy.py --dry-run   # 仅预检
+python _deploy.py             # 正式部署
+# --with-config 上传本地 config.yaml（默认保留生产配置）
+# --allow-dirty 允许脏工作区（紧急恢复专用）
 ```
+
+部署流程：预检 → 源码归档（zip + release-manifest.json 逐文件 sha256）→ SFTP 上传 → 快照并恢复 `data/` → `pip install -e` → 渲染 systemd 单元（注入 `EnvironmentFile=/opt/anima/.secrets`）→ `systemctl restart anima` → 核对 MainPID/ActiveEnterTimestamp → smoke（/api/health · modules · evaluation · runtime_status）→ 写 `version.json` → `doctor`。
 
 部署后必须确认：
 
@@ -252,33 +343,46 @@ $env:ANIMA_DEPLOY_PASS = 'your-password'
 systemctl is-active anima
 systemctl show --property=ActiveEnterTimestamp anima
 journalctl -u anima -n 100 --no-pager
+curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/health
 ```
+
+> **容器化替代路径**（可选）：`Dockerfile` + `docker-compose.yml` 提供 Anima + NapCat 同机容器部署（见 [deploy/README.md](deploy/README.md)）。生产当前用裸 systemd。
+
+---
 
 ## 数据与安全边界
 
-- 运行时数据在 `/opt/anima/data/`，包括记忆、审计、订阅、Skill 草案、表情与 Sylann shadow 指标。
-- 表情资产与索引也在运行时数据目录；部署脚本不会覆盖它们，并会在部署前滚动备份表情元数据。
-- `data/`、生产 `config.yaml`、密钥和用户数据均不得提交 Git。
-- 自建 Skill 只支持受限声明式 prompt / 固定公开 HTTPS 查询（可选查询参数与内容摘要）；不允许 bot 自行执行任意代码或自行部署。
-- Sylann 不是“人格自主控制”；即使处于 active，也只能给出低分辨率表达建议，不能绕过人格、权限、审计或审批。
+- 运行时数据在 `/opt/anima/data/`（记忆、审计、订阅、Skill 草案、表情资产、SelfCode、向量库、健康证明、稳定性、演化证据等）。
+- `data/`、生产 `config.yaml`、`.secrets`、密钥、用户数据不得提交 Git。
+- 权限模型：QQ 号 + 群号分级；工具二次校验；危险工具审批；审计 JSONL；沙箱；失败隔离；Fail Closed。
+- 自建 Skill 只支持受限声明式 prompt / 固定公开 HTTPS 查询；不允许 bot 自行执行任意代码或自行部署。
+- SelfCode 只写 `data/selfcode/` 运行时工具，不改核心源码；安装/删除/禁用需 Owner；`auto_install` 恒不自动装。
+- **自改进 ≠ 自我授权**：任何自动演化只生成提案，落地均需 Owner 审批。
+
+---
+
+## 自治与自我进化
+
+五条安全铁律（贯穿所有阶段）：
+
+> **Fail Closed · No Hidden Authority · Identity Cannot Be Forged · Audit Everything · Production Is Sacred**
+
+- **R6–R15**：权限边界 / 治理加固 / RBAC / 执行隔离 / 行为证据 / 多 Agent 编排 / 自治开发闭环 / 受控自我进化 / CI+观测+评估闭环 / Agent Intelligence / Multi-Agent Society / Autonomous Operation / Human-AI OS / ANIMA OS 终验。
+- **P0–P6**：每日健康证明 / 长期运行稳定性 / 真实环境观测 / 演化影响评分 / 真实 Agent 社会 / 长期记忆 / 自治维护 / 个人能力生态。
+- 详细演化历史见 [ROADMAP.md](ROADMAP.md) 与 [CHANGELOG.md](CHANGELOG.md)。
+
+---
+
+## 维护
+
+模块级维护、部署运维、常见故障与回滚见 **[MAINTENANCE.md](MAINTENANCE.md)**（含各模块/子模块职责、数据文件、运维命令、监控、备份/恢复与故障处置）。另有：
+- [DEPLOYMENT_OPERATOR_GUIDE.md](DEPLOYMENT_OPERATOR_GUIDE.md)：部署运维操作指南（接管前检查/启停/健康检查/回滚/禁止自动修复）。
+- [RELEASE_POLICY.md](RELEASE_POLICY.md)：发布门禁与回滚纪律。
+- [PROJECT_STATE.md](PROJECT_STATE.md)：当前状态快照与增量。
+- [AGENTS.md](AGENTS.md)：开发协作总纲（架构/命令/环境/注意事项）。
+
+---
 
 ## 许可证与对应源码
 
-Anima-next 按 [`AGPL-3.0-only`](LICENSE) 发布。通过网络使用 WebUI 的用户可在公开的 `/source` 页面取得与当前部署版本对应的源码归档；归档由部署脚本从发布清单生成，不包含：
-
-- `/opt/anima/config.yaml`、`.env` 或任何 API Key / Token；
-- `/opt/anima/data/` 中的 QQ 消息、记忆、审计、表情与用量数据库；
-- 本地虚拟环境、缓存、日志和临时诊断文件。
-
-修改后向网络用户提供服务时，应继续保留 Source 入口并提供修改版本的完整对应源码。许可证正文见 [LICENSE](LICENSE)，GNU 官方说明见 [GNU AGPL v3](https://www.gnu.org/licenses/agpl-3.0.html)。
-
-## 当前上线验收
-
-2026-07-16 的测试 VPS 验收包括：
-
-- 449 项自动化测试全部通过；
-- 公网 8088 的登录、生命控制台、深层认知和表情工作室均由真实浏览器验证；
-- 24 个运行模块没有降级项；
-- 347 项生产表情索引与图片文件逐一核对，无失效图片；
-- Owner 授权的真实群议程完成 `Agenda → LLM → Gateway → NapCat WS action/echo → QQ`，NapCat 返回真实 `message_id`；
-- 最终服务实例连续探测超过 10 分钟，systemd 重启数为 0、看门狗持续刷新、严重日志为 0。一次外部探测连接短暂失败，但前后实例时间戳未变化且窗口日志无异常，判定为客户端链路抖动。
+Anima-next 按 [`AGPL-3.0-only`](LICENSE) 发布。通过网络使用 WebUI 的用户可在公开 `/source` 页面取得与当前部署版本对应的源码归档（由部署脚本从发布清单生成，不含 `config.yaml`、`.env`、`data/`、密钥/Token/虚拟环境/缓存/日志）。修改后向网络用户提供服务时，应继续保留 Source 入口并提供修改版本的完整对应源码。许可证正文见 [LICENSE](LICENSE)。
