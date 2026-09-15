@@ -1,0 +1,21 @@
+id: group_roster
+name: 群里都有谁
+version: "1.0.0"
+description: 查看群成员并整理成易读的概览（人数、活跃成员、某人在不在群里）。
+min_level: user
+parameters:
+  group_id:
+    type: integer
+    description: 群号（可留空，默认当前群）
+  name:
+    type: string
+    description: 想找的某个人的显示名或群名片（可留空）
+execution:
+  type: tool
+  tool: get_group_members
+  content_summary: true
+  template: |
+    把上面的群成员查询结果整理成简短的群成员概览，1-3 句。
+    只说明材料中确实存在的信息（人数、是否找到某人、名单长度等）。
+    找不到某人就直说没找到，不要用相近名字猜；不要输出完整名单（太长），
+    除非材料里的人数很少（不超过 15 人）。

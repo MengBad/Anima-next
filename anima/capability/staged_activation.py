@@ -12,11 +12,11 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping
 
-from anima.capability_activation_contract import (
+from anima.capability.activation_contract import (
     CapabilityActivationPlan,
     SyntheticCapabilityProposal,
 )
-from anima.capability_activation_proof import (
+from anima.capability.activation_proof import (
     ActivationProof,
     ActivationRecord,
     verify_activation_proof,

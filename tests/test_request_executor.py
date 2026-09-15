@@ -84,8 +84,13 @@ async def test_ignore_private_not_allowed(tmp_path):
 ### 提醒 ###
 
 class _Cal:
-    def __init__(self): self.items = []
+    def __init__(self):
+        self.items = []   # daily
+        self.once = []    # (gid, date, hhmm, content)
+
     def add_daily(self, gid, hhmm, content): self.items.append((gid, hhmm, content))
+
+    def add_once(self, gid, date, hhmm, content): self.once.append((gid, date, hhmm, content))
 
 
 async def test_remind(tmp_path):
@@ -94,15 +99,29 @@ async def test_remind(tmp_path):
         calendar = cal
     ex = RequestExecutor(Core(), data_dir=str(tmp_path))
     reply = await ex.handle("明早8点提醒我交稿", user_id=1562290139, group_id=727, detail_type="group")
-    assert "已设提醒" in reply
-    assert cal.items and cal.items[0][0] == 727 and "交稿" in cal.items[0][2]
+    assert "一次性提醒" in reply
+    assert cal.once and cal.once[0][0] == 727 and "交稿" in cal.once[0][3]
+    assert not cal.items, "「明早」是一次性请求，不应落进每日提醒"
 
 
-async def test_remind_no_time(tmp_path):
+async def test_remind_daily_when_recurring_word(tmp_path):
+    cal = _Cal()
+    class Core:
+        calendar = cal
+    ex = RequestExecutor(Core(), data_dir=str(tmp_path))
+    reply = await ex.handle("每天晚上10点提醒我吃药", user_id=1562290139, group_id=727, detail_type="group")
+    assert "每天提醒" in reply and cal.items and cal.items[0][1] == "22:00"
+    assert cal.items[0][2] == "吃药", "时段/重复词/客套应从内容里清洗掉"
+
+
+async def test_remind_no_time_falls_through(tmp_path):
+    """无时间的「提醒我」回落 None 走正常 LLM 管线（修复打招呼被劫持）"""
     class Core: calendar = _Cal()
     ex = RequestExecutor(Core(), data_dir=str(tmp_path))
     reply = await ex.handle("提醒我一下", user_id=1562290139, group_id=727, detail_type="group")
-    assert "要有时间" in reply
+    assert reply is None
+    reply2 = await ex.handle("大家好呀，叫我小测就好。", user_id=1562290139, group_id=727, detail_type="group")
+    assert reply2 is None
 
 
 ### 代办 ###

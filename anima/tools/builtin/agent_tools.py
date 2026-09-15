@@ -208,18 +208,40 @@ async def agent_exec(core, command: str, timeout: int = _DEFAULT_EXEC_TIMEOUT) -
     return f"[exit {proc.returncode}]\n{text}"
 
 
+def _browser_allowed_actions(core) -> set[str]:
+    """P1-3：受控动作白名单（默认 navigate/extract，click 需 Owner 显式开启）。"""
+    raw = getattr(getattr(getattr(core, "config", None), "owner_browser", None),
+                  "allowed_actions", "navigate,extract") or ""
+    return {a.strip().lower() for a in str(raw).split(",") if a.strip()}
+
+
 async def agent_browser(core, action: str, *, url: str = "",
                         selector: str = "", text: str = "") -> str:
-    """Playwright 无头浏览器（navigate / click / extract）。懒加载，未安装时优雅提示。"""
-    try:
-        from playwright.async_api import async_playwright
-    except ImportError:
-        return ("[agent] agent_browser 不可用：未安装 Playwright。"
-                "在 VPS 上 `pip install playwright && playwright install chromium` 后启用。")
+    """Playwright 无头浏览器（navigate / click / extract）。懒加载，未安装时优雅提示。
+
+    P1-3 受控约束：
+    - 仅 Owner（``min_level=LEVEL_OWNER``）；
+    - 私聊专属（``private_only=True``，群聊既不可见也不可调用）；
+    - 动作受 ``owner_browser.allowed_actions`` 白名单约束。
+    """
+    action = (action or "").strip().lower()
+    # 先查动作白名单（零成本，且不受 playwright 是否安装影响），再尝试导入。
+    if action not in _browser_allowed_actions(core):
+        _audit(core, "agent_browser", ok=False, reason="action_not_allowed", action=action)
+        return f"[agent] 动作 '{action}' 不在允许列表（owner_browser.allowed_actions）内"
+    # 校验全部前置到 import 之前：零成本、且不受 playwright 是否安装影响
+    # （装没装都必须拒绝非法动作/非法 URL —— fail closed）。
     if not url and action != "close":
         return "[agent] 缺少 url 参数"
     if url and not is_safe_url(url):
+        _audit(core, "agent_browser", ok=False, reason="unsafe_url", url=url)
         return f"[agent] 拒绝非 http/https URL: {url}"
+    try:
+        from playwright.async_api import async_playwright
+    except ImportError:
+        _audit(core, "agent_browser", ok=False, reason="playwright_missing", action=action)
+        return ("[agent] agent_browser 不可用：未安装 Playwright。"
+                "在 VPS 上 `pip install playwright && playwright install chromium` 后启用。")
     try:
         async with async_playwright() as p:
             browser = await p.chromium.launch()
@@ -242,6 +264,8 @@ async def agent_browser(core, action: str, *, url: str = "",
                 return f"[agent] 未知 browser 动作: {action}"
             await browser.close()
     except Exception as e:
+        _audit(core, "agent_browser", ok=False, action=action, url=url,
+               error=type(e).__name__)
         return f"[agent] 浏览器操作失败: {type(e).__name__}: {str(e)[:200]}"
     _audit(core, "agent_browser", ok=True, action=action, url=url)
     return result[:_MAX_FILE_READ]
@@ -311,15 +335,22 @@ def register_agent_tools(registry, core=None) -> None:
         granted_scopes={"exec": True},
     ))
 
-    registry.register(Tool(
-        "agent_browser",
-        "（仅主人）Playwright 无头浏览器：navigate/click/extract。禁止 file:// 协议。",
-        {
-            "action": {"type": "string", "description": "navigate | click | extract"},
-            "url": {"type": "string", "description": "目标 URL（仅 http/https）"},
-            "selector": {"type": "string", "description": "click 用的 CSS 选择器"},
-            "text": {"type": "string", "description": "可选文本参数"},
-        },
-        functools.partial(agent_browser, core),
-        required=["action"], min_level=LEVEL_OWNER,
-    ))
+    # P1-3：Owner 受控浏览器。三道门——min_level(Owner) / private_only(不进群聊) /
+    # allowed_actions(默认只给 navigate+extract，click 与交互类动作需 Owner 显式开)。
+    _bcfg = getattr(getattr(core, "config", None), "owner_browser", None)
+    if getattr(_bcfg, "enabled", True):
+        _acts = getattr(_bcfg, "allowed_actions", "navigate,extract") or "navigate,extract"
+        registry.register(Tool(
+            "agent_browser",
+            f"（仅主人·仅私聊）Playwright 无头浏览器，当前可用动作：{_acts}。"
+            "禁止 file:// 等非 http/https 协议；每次调用都会写审计。",
+            {
+                "action": {"type": "string", "description": f"允许的动作：{_acts}"},
+                "url": {"type": "string", "description": "目标 URL（仅 http/https）"},
+                "selector": {"type": "string", "description": "click 用的 CSS 选择器"},
+                "text": {"type": "string", "description": "可选文本参数"},
+            },
+            functools.partial(agent_browser, core),
+            required=["action"], min_level=LEVEL_OWNER,
+            private_only=bool(getattr(_bcfg, "private_only", True)),
+        ))

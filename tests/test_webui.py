@@ -59,9 +59,19 @@ async def test_webui_observation_endpoints_and_token(tmp_path):
             assert "审核池、图库与发送策略" in app_js
         async with session.post(f"http://127.0.0.1:{port}/api/auth/login", json={"token": "test-token"}) as response:
             assert response.status == 200
+        # ?token= 建 Cookie 的通路已移除（token 进 URL 泄露面）：带 token 的
+        # SPA 访问只得到登录页，且绝不 Set-Cookie。
         async with session.get(f"http://127.0.0.1:{port}/?token=test-token") as response:
             assert response.status == 200
-            assert "anima_webui_token" in response.headers.get("Set-Cookie", "")
+            assert "anima_webui_token" not in response.headers.get("Set-Cookie", "")
+        # 登录防爆破：15 分钟窗口内 10 次失败后锁定，正确 token 也拒绝
+        for _ in range(10):
+            async with session.post(f"http://127.0.0.1:{port}/api/auth/login", json={"token": "wrong"}) as response:
+                assert response.status == 401
+        async with session.post(f"http://127.0.0.1:{port}/api/auth/login", json={"token": "wrong"}) as response:
+            assert response.status == 429
+        async with session.post(f"http://127.0.0.1:{port}/api/auth/login", json={"token": "test-token"}) as response:
+            assert response.status == 429
         async with session.get(f"http://127.0.0.1:{port}/api/health", headers=headers) as response:
             assert response.status == 200
             health = await response.json()

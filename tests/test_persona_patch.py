@@ -4,12 +4,14 @@
 - 模糊输入被脑补成长篇（anti_derailment）
 - 破角色结构化解剖/社会学分析（anti_derailment + 角色守卫）
 - 主动外泄用户私人事实（anti_derailment）
-以及内联兜底人格必须对齐哈基米（防 YAML 加载失败静默切换身份）。
+以及人格单源（队列②）：内联兜底已删除，YAML 不可加载必须 fail-closed。
 """
 import yaml
+import pytest
 from pathlib import Path
 
-from anima.pipeline.stages import SYSTEM_PROMPT
+from anima.cognitive.persona_core import load_persona_template
+from anima.cognitive import persona_core as pc
 
 
 def _load_persona() -> str:
@@ -35,11 +37,24 @@ def test_persona_keeps_task_and_uncertainty_rules():
     assert "优先走工具拿事实" in sp
 
 
-def test_fallback_prompt_is_hakimi_not_anima():
-    """内联兜底人格必须对齐哈基米，避免 persona_core.yaml 加载失败时静默切换身份。"""
-    assert "哈基米" in SYSTEM_PROMPT
-    assert "你是 Anima" not in SYSTEM_PROMPT
-    # 占位符保持一致，避免 .format() 抛 KeyError
-    for ph in ("{time_context}", "{desire_context}", "{self_notes}",
-               "{world_context}", "{scar_context}"):
-        assert ph in SYSTEM_PROMPT
+def test_template_placeholders_intact():
+    """占位符与 SECTION_KEYS 对齐，避免装配阶段占位段丢失。"""
+    sp = load_persona_template()
+    assert "哈基米" in sp
+    for ph in pc.SECTION_KEYS:
+        assert "{" + ph + "}" in sp
+
+
+def test_missing_yaml_fails_closed(tmp_path, monkeypatch):
+    """内联兜底已删除（队列②）：正本不可读必须抛错（拒绝启动），而非静默换人格。"""
+    monkeypatch.setattr(pc, "persona_yaml_path", lambda: tmp_path / "missing.yaml")
+    with pytest.raises(RuntimeError):
+        load_persona_template()
+
+
+def test_broken_yaml_fails_closed(tmp_path, monkeypatch):
+    p = tmp_path / "persona_core.yaml"
+    p.write_text("system_prompt: [unclosed", encoding="utf-8")
+    monkeypatch.setattr(pc, "persona_yaml_path", lambda: p)
+    with pytest.raises(RuntimeError):
+        load_persona_template()

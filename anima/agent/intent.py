@@ -25,6 +25,12 @@ TASK_TRIGGER_RE = re.compile(
 _FALSE_POSITIVE_RE = re.compile(r"做[为作]|叫[做作]|称[为作]", re.IGNORECASE)
 
 
+_FILE_OP_RE = re.compile(
+    r"(把[^。，]{0,20}(?:写|存)(?:进|到|入)[^。，]{0,12}文件)|(读一?[下读][^。，]{0,6}文件)|(写(?:进|入|到)[^。，]{0,12}文件)"
+)
+_MULTI_STEP_RE = re.compile(r"(然后|接着|并且|之后|顺便|再来)")
+
+
 def is_agent_task(text: str, permission_level: int) -> bool:
     """仅当权限等级达到主人且文本命中任务触发正则时，才进入 Agent 路径。"""
     if permission_level < LEVEL_OWNER:
@@ -34,5 +40,9 @@ def is_agent_task(text: str, permission_level: int) -> bool:
         return False
     # 仍命中但纯属「做为/作为」等词汇巧合时，不放行。
     if _FALSE_POSITIVE_RE.search(t):
+        return False
+    # C3（第四轮体验测试）：单步文件写/读请求用 write_file/read_file 工具即可，
+    # 不应劫持进 Agent 草稿审批两步流；含多步连接词的复合任务仍走 Agent。
+    if _FILE_OP_RE.search(t) and not _MULTI_STEP_RE.search(t):
         return False
     return True

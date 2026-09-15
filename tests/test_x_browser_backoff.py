@@ -125,24 +125,42 @@ async def test_empty_shell_retries_then_recovers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_persistent_empty_shell_marks_blocked_window(monkeypatch):
-    """持续空壳 -> 标记 30min 窗口，返回 blocked=True。"""
+    """X3 新契约：无登录墙证据时单次空壳不封窗；连续 3 次才升级 30min 窗口。"""
     s = _fake_session(monkeypatch, articles_factory=lambda a: [])
+    r1 = await s.search("男娘", limit=3, fresh=True)
+    assert r1["ok"] is False and r1["blocked"] is False and s._x_blocked_until == 0
+    await s.search("男娘", limit=3, fresh=True)
+    r3 = await s.search("男娘", limit=3, fresh=True)
+    assert r3["ok"] is False
+    assert r3["blocked"] is True
+    assert s._x_blocked_until > 0
+    assert "风控" in r3["note"]
+
+
+@pytest.mark.asyncio
+async def test_login_wall_evidence_blocks_immediately(monkeypatch):
+    """X2/X3：有登录墙证据时首次空壳即封窗（真风控）。"""
+    s = _fake_session(monkeypatch, articles_factory=lambda a: [])
+
+    async def _ev(page):
+        return {"login_wall": True, "articles": 0, "title": "登录 X", "url_tail": "x.com/i/flow/login"}
+
+    s._empty_shell_evidence = _ev
     r = await s.search("男娘", limit=3, fresh=True)
     assert r["ok"] is False
     assert r["blocked"] is True
     assert s._x_blocked_until > 0
-    assert "风控" in r["note"]
 
 
 @pytest.mark.asyncio
 async def test_blocked_window_fast_fails(monkeypatch):
     """窗口内再次调用 -> 快速失败不硬撞浏览器(blocked=True)。"""
     s = _fake_session(monkeypatch, articles_factory=lambda a: [])
-    r1 = await s.search("男娘", limit=3, fresh=True)
-    assert r1["blocked"] is True
-    r2 = await s.search("男娘", limit=3, fresh=True)
-    assert r2["blocked"] is True
-    assert "风控" in r2["note"]
+    for _ in range(3):
+        await s.search("男娘", limit=3, fresh=True)
+    r = await s.search("男娘", limit=3, fresh=True)
+    assert r["blocked"] is True
+    assert "风控" in r["note"]
 
 
 @pytest.mark.asyncio

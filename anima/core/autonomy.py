@@ -116,6 +116,21 @@ def _is_low_value_active_reply(reply: str) -> bool:
     return False
 
 
+# 接地网关（2026-09-06 第三轮体验测试 B1）：proactive_grounding 此前是哑配置
+# （config 声明「未接地一律丢弃」但全仓零实现），实测把「输入数据解析异常…
+# 请提供具体的地理坐标」这类内部排障话术发进了群。现在落地为真检查：
+# 主动发言命中排障/索要话术一律丢弃——群里没人能回应 bot 的内部错误。
+_PROACTIVE_UNGROUNDED_RE = re.compile(
+    r"(解析异常|解析失败|参数不足|缺少[^。，]{0,8}(?:参数|信息)|请提供|请给出|请具体说明|"
+    r"无法检索|检索失败|访问失败|请求失败|接口[^。，]{0,4}不可用|工具执行错误|工具暂时不可用|"
+    r"需要[^。，]{0,6}(?:提供|补充)[^。，]{0,8}(?:信息|坐标|城市|名称))"
+)
+
+
+def _is_ungrounded_proactive(reply: str) -> bool:
+    return bool(_PROACTIVE_UNGROUNDED_RE.search(_clean_active_reply(reply or "")))
+
+
 _OPEN_QUESTION_RE = re.compile(
     r"(?:[?？]|为什么|为啥|怎么(?:办|弄|说)?|咋(?:办|整)?|谁知道|有没有|能不能|可不可以|吗[啊呀呢]?$)"
 )
@@ -181,6 +196,94 @@ HOURLY_ACTIVITY = {
 # ---------------------------------------------------------------------------
 # 自身状态刷新（P3）：每小时核对群头衔/名片，变更写 self_notes
 # ---------------------------------------------------------------------------
+
+def _build_active_speech_system(time_ctx: str, desire_ctx: str, speaking_rules: str) -> str:
+    """人格单源（队列②）：主动发言与被动回复共用 persona_core.yaml 正本。
+
+    时间/欲望片段走与被动回复相同的注入位（anima/cognitive/persona_core）；
+    出口专属的发言守则经 extra_rules 追加。身份/边界护栏以 yaml 正本
+    「身份与边界」为准，此处不再重复（2026-09-12 去重：三重最高优先级
+    指令堆叠会让主动发言更剧本化）。"""
+    from anima.cognitive.persona_core import assemble_persona_system
+    return assemble_persona_system(
+        extra_rules=speaking_rules,
+        time_context=f"当前时间：{time_ctx}",
+        desire_context=desire_ctx,
+    )
+
+
+def _desire_event_match(content: str, recent_text: str) -> bool:
+    """欲望内容与最近群消息的宽松匹配：整句/词包含，或任一 2 字滑窗命中。"""
+    c = (content or "").strip().lower()
+    r = (recent_text or "").strip().lower()
+    if not c or not r:
+        return False
+    if c in r:
+        return True
+    for w in c.split():
+        if len(w) >= 2 and w in r:
+            return True
+    return any(c[i:i + 2] in r for i in range(len(c) - 1))
+
+
+def _select_desire_topic(
+    desire_sys, group_id, history, now, *,
+    min_intensity: float = 0.55,
+    freshness_window_sec: float = 1800.0,
+    event_match_bonus: float = 0.12,
+    repeat_cooldown_sec: float = 3600.0,
+    expressed=None,
+):
+    """A1 欲望深化（队列③）：最强欲望优先选题。
+
+    候选 = ``get_expressible(group_id, min_intensity)``（作用域允许出站的欲望）；
+    评分 = intensity
+         + 新鲜度加成（created_at 距今 < freshness_window_sec，线性衰减，封顶 +0.15）
+         + 新鲜事件匹配（欲望内容命中最近群消息，+event_match_bonus）
+    ``repeat_cooldown_sec`` 内已表达过的相似欲望不再入选（防念叨同一话题）。
+    无可选返回 None，调用方退回普通接话选题。
+    """
+    try:
+        candidates = desire_sys.get_expressible(group_id, min_intensity)
+    except Exception:
+        return None
+    if not candidates:
+        return None
+
+    recent_text = " ".join(
+        str(m.get("content") or "") for m in (history or [])[-8:]
+    )
+    expressed = list(expressed or [])
+    best = None
+    best_score = -1.0
+    for d in candidates:
+        content_l = str(d.content or "").strip().lower()
+        # 表达冷却：近期已说过的高度相似话题跳过
+        cooled = any(
+            _desire_text_similar(content_l, str(prev_c or "").lower())
+            for prev_c, ts in expressed
+            if now - float(ts) < repeat_cooldown_sec
+        )
+        if cooled:
+            continue
+        age = max(0.0, now - float(getattr(d, "created_at", now)))
+        score = float(d.intensity)
+        if age < freshness_window_sec:
+            score += 0.15 * (1.0 - age / freshness_window_sec)
+        if _desire_event_match(content_l, recent_text):
+            score += event_match_bonus
+        if score > best_score:
+            best, best_score = d, score
+    return best
+
+
+def _desire_text_similar(a: str, b: str) -> bool:
+    """表达冷却的相似判定：短串被长串包含即视为同一话题。"""
+    if not a or not b:
+        return False
+    s, l = (a, b) if len(a) <= len(b) else (b, a)
+    return s in l
+
 
 def compute_self_status_notes(
     prev_title: str, new_title: str, prev_card: str, new_card: str, group_id: int
@@ -295,6 +398,10 @@ class Heartbeat:
                  active_feedback_window_sec: int = 900,
                  active_feedback_min_samples: int = 4,
                  active_feedback_min_acceptance: float = 0.20,
+                 desire_speak_min_intensity: float = 0.55,
+                 desire_freshness_window_sec: float = 1800.0,
+                 desire_event_match_bonus: float = 0.12,
+                 desire_repeat_cooldown_sec: float = 3600.0,
                  data_dir: str = "data"):
         self.core = core
         self.tick_sec = tick_sec
@@ -318,9 +425,17 @@ class Heartbeat:
         self.active_feedback_window_sec = max(60, int(active_feedback_window_sec))
         self.active_feedback_min_samples = max(1, int(active_feedback_min_samples))
         self.active_feedback_min_acceptance = max(0.0, min(1.0, float(active_feedback_min_acceptance)))
+        # A1 欲望深化（队列③）：欲望驱动选题参数
+        self.desire_speak_min_intensity = max(0.0, min(1.0, float(desire_speak_min_intensity)))
+        self.desire_freshness_window_sec = max(0.0, float(desire_freshness_window_sec))
+        self.desire_event_match_bonus = max(0.0, float(desire_event_match_bonus))
+        self.desire_repeat_cooldown_sec = max(0.0, float(desire_repeat_cooldown_sec))
 
         self._task: Optional[asyncio.Task] = None
         self._running = False
+
+        # A1（队列③）：欲望表达记录（选题冷却用），跨重启持久化
+        self._recent_expressed_desires: dict[int, list[tuple[str, float]]] = {}
 
         # 每群独立追踪
         self._group_last_speak: dict[int, float] = {}
@@ -373,6 +488,20 @@ class Heartbeat:
             int(k): v for k, v in data.get("group_last_msg", {}).items()
         }
         self._last_active_speak = data.get("last_active_speak", 0.0)
+        self._last_morning_dream_date = data.get("last_morning_dream_date", "")
+        self._last_secret_gen_date = data.get("last_secret_gen_date", "")
+        self._last_consolidation_date = data.get("last_consolidation_date", "")
+        raw_expressed = data.get("recent_expressed_desires", {})
+        self._recent_expressed_desires = {}
+        for k, v in raw_expressed.items():
+            if not isinstance(v, list):
+                continue
+            try:
+                self._recent_expressed_desires[int(k)] = [
+                    (str(c), float(t)) for c, t in v
+                ]
+            except (TypeError, ValueError):
+                continue
         self._active_feedback_pending = {
             int(k): dict(v) for k, v in (data.get("active_feedback_pending", {}) or {}).items()
             if isinstance(v, dict)
@@ -410,6 +539,16 @@ class Heartbeat:
             "tokens_today": self._tokens_today,
             "recent_active_replies": {
                 str(k): v[-8:] for k, v in getattr(self, "_recent_active_replies", {}).items()
+            },
+            # 深审 P1-3：日期标记持久化，防重启后当天重复生成/分享
+            "last_morning_dream_date": getattr(self, "_last_morning_dream_date", ""),
+            "last_secret_gen_date": getattr(self, "_last_secret_gen_date", ""),
+            # 队列②前微修：沉淀日期标记同样持久化，防重启后当天重复调度沉淀
+            "last_consolidation_date": getattr(self, "_last_consolidation_date", ""),
+            # A1（队列③）：欲望表达冷却记录
+            "recent_expressed_desires": {
+                str(k): [(str(c), float(t)) for c, t in v[-20:]]
+                for k, v in getattr(self, "_recent_expressed_desires", {}).items()
             },
         }
         self._persist.write_json(self._path, data)
@@ -562,6 +701,14 @@ class Heartbeat:
                         len(made), [a.get("type") for a in made])
 
     async def _tick(self) -> None:
+        # P1-4：主动优先级单一事实来源（core/proactive.py）。导入失败时回落 0.5，
+        # 绝不因为拿不到注册表就让心跳挂掉。
+        _pro_cfg = getattr(self.core.config, "proactive", None)
+        try:
+            from anima.core.proactive import priority_for as _pf
+        except Exception:  # pragma: no cover
+            def _pf(source, cfg=None):  # type: ignore[misc]
+                return 0.5
 
         self._expire_active_feedback(time.time())
         try:
@@ -616,16 +763,71 @@ class Heartbeat:
             self.persist()
             return
 
+        # 发展层级 1：记忆沉淀闭环（细节→要点→特质），每日一次（fail-soft）。
+        try:
+            from anima.memory.consolidation import run_daily_consolidation
+            _today_c = self._bj_date_str(time.time())
+            if getattr(self, "_last_consolidation_date", "") != _today_c:
+                self._last_consolidation_date = _today_c
+                self.persist()
+                _launch_bg(run_daily_consolidation(self.core, time.time()),
+                           "memory_consolidation")
+                logger.info("[记忆沉淀] 每日沉淀已调度")
+        except Exception:
+            logger.debug("记忆沉淀调度失败（已隔离）", exc_info=True)
+
+        # 记忆可靠性（深审批次5）：关系/对话记忆节流落盘。
+        # relation 走 deferred 队列（touch 每次消息登记，此处批量 fsync）；
+        # chat_memory.save 自带脏守卫，干净时零写入。
+        try:
+            from anima.cognitive.relation import get_relation
+            get_relation().flush_deferred_if_any()
+        except Exception:
+            logger.debug("关系延迟落盘 flush 失败", exc_info=True)
+        try:
+            from anima.memory.chat_memory import get_chat_memory
+            get_chat_memory().save()
+        except Exception:
+            logger.debug("chat_memory 补充落盘失败", exc_info=True)
+
+        # 收敛计划 E1：自治工程自检（2h 节奏，与 ops_cleanup 同量级）。
+        # reply_quality 退化信号 → 自动建 owner 待办（fail-soft、open 去重）。
+        try:
+            _eng_now = time.time()
+            if _eng_now - getattr(self, "_last_eng_selfcheck", 0) >= 7200:
+                self._last_eng_selfcheck = _eng_now
+                from anima.agent.issue_sources import collect_self_monitor_issues
+                rq = getattr(self.core, "reply_quality", None)
+                rep = rq.report() if rq is not None and hasattr(rq, "report") else None
+                for issue in collect_self_monitor_issues(reply_quality_report=rep):
+                    _dup = False
+                    tasks = getattr(self.core, "tasks", None)
+                    if tasks is not None and hasattr(tasks, "list"):
+                        for t in tasks.list():
+                            if getattr(t, "status", "") in ("planned", "running", "awaiting_approval")                                     and getattr(t, "request", "") == issue.title:
+                                _dup = True
+                                break
+                    if _dup:
+                        continue
+                    owner = int((getattr(self.core.config.permissions, "owners", None) or [0])[0])
+                    if tasks is not None:
+                        tasks.create(issue.title, owner, [issue.detail])
+                        logger.warning("[自治自检] 生成 owner 待办：%s", issue.title)
+        except Exception:
+            logger.debug("自治工程自检失败（已隔离）", exc_info=True)
+
         # 日预算重置
         now = time.time()
         # 每日历事件只入队，不绕过 Agenda 的冷却、预算和发送确认。
         calendar = getattr(self.core, "calendar", None)
         if calendar is not None:
-            for event in [*calendar.due(now), *calendar.weekly_due(now)]:
+            _once = list(getattr(calendar, "once_due", lambda now: [])(now)) if hasattr(calendar, "once_due") else []
+            for event in [*calendar.due(now), *calendar.weekly_due(now), *_once]:
                 workflows = getattr(self.core, "workflows", None)
                 run = workflows.trigger("calendar", event.id, event.group_id, event.text,
                                         event_key=str(getattr(event, "last_triggered_day", ""))) if workflows else None
-                agenda_item = self.core.propose_agenda(event.group_id, event.text, priority=0.9,
+                agenda_item = self.core.propose_agenda(event.group_id, event.text,
+                                priority=_pf("calendar", _pro_cfg),
                                                        expires_at=now + 6 * 3600, source="calendar")
                 if run:
                     workflows.bind_intent(run.id, getattr(agenda_item, "intent_id", ""))
@@ -648,6 +850,58 @@ class Heartbeat:
                     logger.info("WebKnowledgeStore 每日衰减清理 %d 条过期知识", removed)
             except Exception as e:
                 logger.warning("WebKnowledgeStore 每日衰减失败（已忽略）: %s", e)
+            # P1-2：夜间记忆压缩（置信度衰减 + 相似合并 + 超容淘汰）
+            try:
+                from anima.crossgroup.memory.compression import (
+                    get_compression as _get_compression,
+                )
+                _mc = getattr(self.core.config, "memory_compression", None)
+                if getattr(_mc, "enabled", True):
+                    _cgm = getattr(self.core, "crossgroup", None)
+                    if _cgm is None:
+                        from anima.crossgroup import get_crossgroup_manager as _gcgm
+                        _cgm = _gcgm()
+                    _rep = await _get_compression(
+                        str(self.core.config.persistence.data_dir), _mc,
+                    ).maybe_run(
+                        crossgroup_manager=_cgm,
+                        vector_memory=getattr(self.core, "vector_memory", None),
+                        llm=getattr(self.core, "llm", None),
+                    )
+                    if _rep.get("merged") or _rep.get("evicted"):
+                        logger.info(
+                            "夜间记忆压缩：%d 用户，合并 %d 条，淘汰 %d 条",
+                            _rep.get("users", 0), _rep.get("merged", 0),
+                            _rep.get("evicted", 0),
+                        )
+            except Exception as e:
+                logger.warning("夜间记忆压缩失败（已忽略）: %s", e)
+            # P1-1：到期承诺 → 走既有 propose_agenda 主动管线（继承限流/冷却）
+            try:
+                from anima.cognitive.debt import get_debt_manager as _get_dm
+                _dt = getattr(self.core.config, "debt_tracking", None)
+                if getattr(_dt, "enabled", True):
+                    _dd = str(self.core.config.persistence.data_dir)
+                    _mgr = _get_dm(_dd)
+                    for _d in _mgr.check_due(
+                        reminded_max=getattr(_dt, "reminded_max", 3),
+                        remind_interval_sec=getattr(_dt, "remind_interval_sec", 86400),
+                        grace_hours=getattr(_dt, "grace_hours", 48.0),
+                    ):
+                        if not str(_d.source_group).isdigit():
+                            continue
+                        self.core.propose_agenda(
+                            int(_d.source_group),
+                            f"你答应过的事：{_d.content[:60]}"
+                            + (f"（约好 {_d.due_hint}）" if _d.due_hint else "")
+                            + "。能做就现在做，不能就老实说还没做成，别装作没这回事。",
+                            priority=_pf("debt_due", _pro_cfg),
+                            expires_at=time.time() + 6 * 3600,
+                            source="debt_due",
+                        )
+                        _mgr.mark_reminded(_d.id)
+            except Exception as e:
+                logger.warning("debt 到期检查失败（已忽略）: %s", e)
             # R16 闭环5：每日低峰清理过期审计文件（整文件粒度），保持可回溯窗口
             # 连续不断档，同时防止小盘 VPS 上审计日志无限膨胀。
             try:
@@ -765,11 +1019,42 @@ class Heartbeat:
         # P3-3: 除硬静默 0-5 点外，也尊重用户可配置 quiet_hours 免打扰窗口。
         _quiet_hour = datetime.now(_BJ).hour in (0, 1, 2, 3, 4, 5) or self._in_quiet_hours()
         agenda = getattr(self.core, "agenda", None)
-        agenda_item = agenda.peek_ready(now=now) if agenda else None
-        if agenda_item is not None and not _quiet_hour:
-            if now - self._last_active_speak >= self.active_global_cooldown_sec:
+        if agenda is not None and not _quiet_hour:
+            # 深审 P2-5：owner 对群配置 autonomy=false 时，议程出站同样遵守
+            # （此前只有随机接话路径检查，日历/订阅/承诺议程会照发）
+            _gpolicies = getattr(getattr(self.core.config, "permissions", None),
+                                 "group_policies", None) or {}
+
+            def _group_allowed(gid: int) -> bool:
+                p = _gpolicies.get(str(gid)) if isinstance(_gpolicies, dict) else None
+                return not (isinstance(p, dict) and p.get("autonomy") is False)
+
+            # P1-4：先清掉被禁群里的议程，再把剩余候选按优先级降序逐个尝试
+            # （队首被挡不再堵死整轮）。
+            for _it in list(getattr(agenda, "items", []) or []):
+                if (str(getattr(_it, "status", "")) == "pending"
+                        and not _group_allowed(int(getattr(_it, "group_id", 0) or 0))):
+                    agenda.cancel(_it.id)
+                    logger.info("议程跳过：群 %s 已配置 autonomy=false", _it.group_id)
+            try:
+                from anima.core.proactive import rank_agenda as _rank_agenda
+                _candidates = _rank_agenda(agenda.ready_items(now=now), now,
+                                           group_allowed=_group_allowed, limit=5)
+            except Exception:
+                logger.debug("议程优先级排序失败（回退单条）", exc_info=True)
+                _candidates = [agenda.peek_ready(now=now)] if agenda.peek_ready(now=now) else []
+
+            for agenda_item in _candidates:
+                if now - self._last_active_speak < self.active_global_cooldown_sec:
+                    break  # 遵守全局冷却（P1-4 不为"要事"开口子）
                 subject = getattr(self.core, "subject", None)
                 intent = subject.claim_agenda(agenda_item, now) if subject else None
+                if subject and intent is None:
+                    # 深审 P1-1 僵尸清理：intent 已 terminal/被其它 item 占用时
+                    # claim 永远失败，不清理会永久压住队列里所有低优先级议程
+                    agenda.cancel(agenda_item.id)
+                    logger.info("议程僵尸清理：item=%s 对应意图已终结", agenda_item.id)
+                    continue
                 if subject and intent:
                     subject.ledger.mark_dispatched(intent.id, "议程已进入出站")
                 spoke = await self._speak(agenda_item.group_id, now, agenda_item.text_intent) if (subject is None or intent) else False
@@ -784,13 +1069,15 @@ class Heartbeat:
                     if audit:
                         audit.emit("agenda_consumed", agenda_id=agenda_item.id,
                                    group_id=agenda_item.group_id, intent_id=getattr(intent, "id", ""))
-                elif subject and intent:
+                    break  # 一轮只主动说一次
+                if subject and intent:
                     max_attempts = int(getattr(self, "active_intent_max_attempts", 5) or 5)
                     subject.ledger.release(
                         intent.id, "本轮未满足出站条件", max_attempts=max_attempts,
                     )
-            self.persist()
-            return
+            if _candidates:
+                self.persist()
+                return
 
         if not self._circadian_gate():
             # 睡眠时段（01-05 点）：不主动发言，但生成梦境（灵魂补丁 A2）。
@@ -811,6 +1098,10 @@ class Heartbeat:
         try:
             if (getattr(getattr(self.core.config, "autonomy", None), "morning_dream_share_enabled", True)
                     and self._maybe_morning_dream_share(now)):
+                # 深审 P1-3：抽中即标记（日期进 persist），先于挑群——
+                # 挑群失败/重启不再重复重抽与建议程
+                self._last_morning_dream_date = self._bj_date_str(now)
+                self.persist()
                 gid = self._pick_group(now)
                 if gid is not None:
                     from anima.cognitive.dream_engine import DreamEngine
@@ -906,7 +1197,8 @@ class Heartbeat:
         if subject is not None and has_hook:
             try:
                 proposed = subject.propose_expression(
-                    group_id, "主动接话", source="heartbeat", priority=0.35,
+                    group_id, "主动接话", source="heartbeat",
+                    priority=_pf("heartbeat", _pro_cfg),
                     expires_at=now + 3600,
                 )
                 proactive_intent = subject.ledger.claim(proposed.id, now)
@@ -943,7 +1235,8 @@ class Heartbeat:
                         f"可以带刺或调侃，但别真的人身攻击，也别刷屏）。"
                     )
                     subject.propose_expression(
-                        group_id, _intent_text, source="bot_social", priority=0.3,
+                        group_id, _intent_text, source="bot_social",
+                        priority=_pf("bot_social", _pro_cfg),
                         expires_at=now + 3600,
                     )
                     logger.info("[多Bot] 今日主动找 Bot %s 说话已入议程", _target["name"])
@@ -1200,6 +1493,7 @@ class Heartbeat:
         # 明确议程/提醒可以在没有近期上下文时照常发送。
         recent_context = getattr(memory, "get_recent_group_context", None)
         history = recent_context(group_id, limit=12) if callable(recent_context) else []
+        topic = None  # A1（队列③）：欲望选题结果；仅无议程路径会被覆盖为真实选题
         if not intent:
             threshold = float(getattr(self, "active_context_score_threshold", 0.0) or 0.0)
             context_score = score_active_context(history)
@@ -1237,6 +1531,20 @@ class Heartbeat:
                     group_id, context_score, effective_threshold, silence,
                 )
                 return False
+
+            # A1 欲望深化（队列③）：最强欲望优先选题；无欲望退回普通接话。
+            topic = None
+            try:
+                topic = _select_desire_topic(
+                    desire, group_id, history, now,
+                    min_intensity=self.desire_speak_min_intensity,
+                    freshness_window_sec=self.desire_freshness_window_sec,
+                    event_match_bonus=self.desire_event_match_bonus,
+                    repeat_cooldown_sec=self.desire_repeat_cooldown_sec,
+                    expressed=self._recent_expressed_desires.get(group_id, []),
+                )
+            except Exception:
+                logger.debug("欲望选题失败（退回普通接话）", exc_info=True)
 
         # 构建自主发言 prompt（P0-2：必须与哈基米人格一致，禁止「你是 Anima…AI」）
         time_ctx = time_description()
@@ -1276,24 +1584,24 @@ class Heartbeat:
                 if len(hooks) >= 3:
                     break
             hooks_text = "\n".join(reversed(hooks)) if hooks else "(无有效人类短句)"
-            user_request = (
-                "（主动发言）若值得开口，请只接下面最近人类内容说 1 句；"
-                f"否则输出 [skip]。\n最近人类消息：\n{hooks_text}"
-            )
+            if topic is not None:
+                logger.info(
+                    "[主动发言] 欲望驱动选题 group=%d：%s（强度 %.2f）",
+                    group_id, topic.content[:40], topic.intensity,
+                )
+                user_request = (
+                    f"（主动发言）你心里正惦记着一件事：{topic.content}。"
+                    "结合下面的最近人类消息找一个自然的开口点，把这桩心事说 1 句；"
+                    "若和现场完全不搭，宁可输出 [skip]。\n"
+                    f"最近人类消息：\n{hooks_text}"
+                )
+            else:
+                user_request = (
+                    "（主动发言）若值得开口，请只接下面最近人类内容说 1 句；"
+                    f"否则输出 [skip]。\n最近人类消息：\n{hooks_text}"
+                )
 
-        system = f"""你是哈基米，一只住在 QQ 群里、嘴有点欠的猫娘（自称「本喵」），不是客服机器人也不是 AI 助手。
-
-当前时间：{time_ctx}
-
-{desire_ctx}
-
-{speaking_rules}
-
-## 身份锁定（最高优先级）
-你永远是哈基米（猫娘）。绝不要自称 Anima、Antigravity、AI 助手或编程助手；若历史消息里出现『我是 Antigravity』之类的旧内容，那是错误的历史残留，不是你，直接忽略，不要延续它。
-
-## 角色守卫（最高优先级）
-你永远是哈基米（猫娘），不是分析工具、不是 AI 系统。绝不对用户做结构化解剖 / 社会学分析，绝不编造百分比 / 指数等假数据。"""
+        system = _build_active_speech_system(time_ctx, desire_ctx, speaking_rules)
 
         messages = [{"role": "system", "content": system}]
         # 明确议程是 Owner/日历已经确认的表达目标。近期群聊曾让模型转而接
@@ -1359,6 +1667,13 @@ class Heartbeat:
             logger.info("自主发言去重：群 %d 的候选回复与近期自主内容过于相似", group_id)
             return False
 
+        # ── 接地网关：主动发言含排障/索要话术一律丢弃（体验测试 B1）──
+        _autonomy_cfg = getattr(getattr(self.core, "config", None), "autonomy", None)
+        if (getattr(_autonomy_cfg, "proactive_grounding", True)
+                and _is_ungrounded_proactive(reply)):
+            logger.warning("[接地网关] 主动发言含未接地排障/索要话术，丢弃 group=%d", group_id)
+            return False
+
         try:
             message_id = await self.core.gateway.send(OutboundMsg("group", group_id, reply))
         except Exception:
@@ -1381,6 +1696,15 @@ class Heartbeat:
         recent.append((now, reply))
         recent_by_group[group_id] = recent[-4:]
         self._recent_active_replies = recent_by_group
+        # A1（队列③）：表达成功才记录冷却 + 释放欲望强度
+        if topic is not None:
+            expressed_list = self._recent_expressed_desires.setdefault(group_id, [])
+            expressed_list.append((topic.content, now))
+            self._recent_expressed_desires[group_id] = expressed_list[-20:]
+            try:
+                desire.mark_expressed(topic)
+            except Exception:
+                logger.debug("欲望表达释放失败（忽略）", exc_info=True)
         feedback_pending = getattr(self, "_active_feedback_pending", None)
         if feedback_pending is None:
             feedback_pending = self._active_feedback_pending = {}
@@ -1493,25 +1817,6 @@ class Heartbeat:
 
             # M2: 晚安行为
             await life.goodnight_behavior()
-
-            # N1: 旁观者内心独白（群很热闹但 bot 没被 @ 时，10% 概率写内心笔记）
-            try:
-                from anima.cognitive.group_presence import get_group_presence
-                from anima.cognitive.learning import get_learning
-                gp = get_group_presence(self.core.config.persistence.data_dir)
-                learning = get_learning(self.core.config.persistence.data_dir)
-                # 找最近活跃但 bot 没被 summon 的群
-                for gid, presence in gp.items.items():
-                    if presence.state == "GETTING_FAMILIAR" and presence.message_count >= 5:
-                        # 群很热闹但 bot 没被 @
-                        if random.random() < 0.1:
-                            learning.add_note(
-                                f"[旁观] 群 {gid} 在聊什么，本喵在旁边看着挺有意思的"
-                            )
-                            logger.debug("旁观内心独白已写入 group=%s", gid)
-                        break  # 每次心跳只处理一个群
-            except Exception:
-                logger.debug("旁观内心独白失败")
 
             # S3: 群活跃度影响欲望生成
             try:

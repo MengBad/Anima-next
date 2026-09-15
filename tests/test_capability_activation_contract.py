@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from anima.capability_activation_contract import (
+from anima.capability.activation_contract import (
     CapabilityActivationError,
     CapabilityActivationReview,
     OfflineCapabilityActivationPlanner,

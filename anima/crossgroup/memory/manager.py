@@ -86,7 +86,8 @@ class CrossGroupManager:
 
     def add_user_fact(self, user_id: str, content: str, source_group: str,
                       tags: list[str] | None = None, name: str = "",
-                      nicknames: list[str] | None = None) -> UserFact | None:
+                      nicknames: list[str] | None = None,
+                      confidence: float = 1.0) -> UserFact | None:
         """新增一条用户事实。
 
         内容去重：若该用户已有"内容标准化后相同"的事实，则跳过（返回 None），
@@ -102,7 +103,7 @@ class CrossGroupManager:
         for f in user.facts:
             if "".join(f.content.split()).lower() == norm:
                 return None  # 已存在，跳过
-        fact = user.add_fact(content, source_group, tags)
+        fact = user.add_fact(content, source_group, tags, confidence=confidence)
         # FIFO 截断：超出上限时丢弃最旧事实，防止 LLM 抽取无限膨胀存储
         if self.max_facts_per_user > 0 and len(user.facts) > self.max_facts_per_user:
             user.facts = user.facts[-self.max_facts_per_user:]
@@ -321,7 +322,11 @@ class CrossGroupManager:
                         avg_msg_length=float(d.get("avg_msg_length", 0)), # E2
                     )
                     u._msg_count = int(d.get("_msg_count", 0))            # E2
-                    u.facts = [UserFact(**f) for f in d.get("facts", [])]
+                    # 只取 UserFact 已知字段：老 users.json 缺新字段由 dataclass
+                    # 默认值补齐；万一将来有多余字段也不会让整份记忆加载失败。
+                    _ff = UserFact.__dataclass_fields__
+                    u.facts = [UserFact(**{k: v for k, v in f.items() if k in _ff})
+                               for f in d.get("facts", [])]
                     self._users[uid] = u
         except Exception:
             logger.exception("加载 crossgroup users.json 失败")
@@ -362,7 +367,14 @@ class CrossGroupManager:
                 "_msg_count": u._msg_count,                # E2
                 "facts": [
                     {"content": f.content, "source_group": f.source_group,
-                     "timestamp": f.timestamp, "tags": f.tags}
+                     "timestamp": f.timestamp, "tags": f.tags,
+                     # P1-2 记忆压缩：置信度/争议/合并信息必须持久化，否则每次
+                     # 重启后压缩产出的成果（merge_count / source_groups）会丢失。
+                     "confidence": f.confidence, "disputed": f.disputed,
+                     "compressed": f.compressed, "merge_count": f.merge_count,
+                     "source_groups": f.source_groups,
+                     "access_count": f.access_count,
+                     "merged_from": f.merged_from}
                     for f in u.facts
                 ],
             }

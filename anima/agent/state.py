@@ -24,6 +24,13 @@ class Step:
     status: str = "pending"        # pending|running|done|failed|skipped
     result: str = ""
     error: str = ""
+    # P2-1：验收标准（自然语言）。空表示跳过独立验收，只看工具是否报错。
+    verify: str = ""
+    # P2-1：同名字段的连续步骤在「都有显式 tool_name」时可并行执行；空=串行。
+    parallel_group: str = ""
+    verified: bool = False
+    attempts: int = 0
+    origin: str = "plan"           # plan | replan（便于审计区分重规划产出）
 
 
 @dataclass
@@ -36,6 +43,8 @@ class AgentTask:
     current_step: int = 0
     context: dict = field(default_factory=dict)
     error: str = ""
+    # P2-1：已发生的重规划次数（上限由 executor 把关，防无界重试）
+    replan_count: int = 0
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -49,6 +58,11 @@ def _step_from(raw: dict) -> Step:
         status=str(raw.get("status", "pending")),
         result=str(raw.get("result", "")),
         error=str(raw.get("error", "")),
+        verify=str(raw.get("verify", "")),
+        parallel_group=str(raw.get("parallel_group", "")),
+        verified=bool(raw.get("verified", False)),
+        attempts=int(raw.get("attempts", 0)),
+        origin=str(raw.get("origin", "plan")),
     )
 
 
@@ -62,6 +76,7 @@ def _task_from(raw: dict) -> AgentTask:
         current_step=int(raw.get("current_step", 0)),
         context=dict(raw.get("context", {}) or {}),
         error=str(raw.get("error", "")),
+        replan_count=int(raw.get("replan_count", 0)),
         created_at=float(raw.get("created_at", time.time())),
         updated_at=float(raw.get("updated_at", time.time())),
     )

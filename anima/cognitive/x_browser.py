@@ -142,6 +142,7 @@ class XBrowserSession:
                 str(self.profile_dir / "firefox"),
                 headless=True,
                 viewport={"width": 1280, "height": 900},
+                **({"proxy": {"server": self.proxy}} if self.proxy else {}),
             )
         else:
             args = ["--no-sandbox", "--disable-dev-shm-usage", "--disable-blink-features=AutomationControlled"]
@@ -264,6 +265,36 @@ class XBrowserSession:
         tweet_images = await self._collect_tweet_images(page, img_limit)
         return tweets, tweet_images
 
+    async def _wait_timeline_ready(self, page, timeout_ms: int = 10000) -> None:
+        """X1 确定性等待：commit 后推文流才异步渲染，等到 article 出现才抽取。
+
+        盲等固定秒数在冷启动/慢渲染时抽到 0 article，被误判成风控空壳
+        （生产实证 2026-09-06：部署重启后 3/3 空壳 → 30 分钟自我封锁）。
+        """
+        try:
+            await page.wait_for_selector("article", timeout=timeout_ms)
+            return
+        except Exception:
+            pass
+        try:
+            await page.mouse.wheel(0, 1600)
+            await page.wait_for_selector("article", timeout=timeout_ms // 2)
+        except Exception:
+            pass
+
+    async def _empty_shell_evidence(self, page) -> dict:
+        """X2 空壳现场证据：区分「慢渲染」与「登录墙/真风控」。"""
+        try:
+            url = page.url or ""
+            title = await page.title()
+            articles = await page.evaluate("document.querySelectorAll('article').length")
+            wall = bool(await page.query_selector(
+                'input[autocomplete="username"], [data-testid="loginButton"]'))
+            return {"url_tail": url[-50:], "title": (title or "")[:40],
+                    "articles": articles, "login_wall": wall}
+        except Exception as e:
+            return {"evidence_error": str(e)[:60], "login_wall": False}
+
     async def search(self, query: str, limit: int = 5, *, fresh: bool = True,
                      images_only: bool = False) -> dict:
         """搜索 X。返回 {ok, logged_in, tweets, tweet_images, fresh_images, note, blocked}。
@@ -320,27 +351,53 @@ class XBrowserSession:
                 _q = query + (" filter:images" if images_only else "")
                 url = "https://x.com/search?q=" + urllib.parse.quote(_q) + "&f=top"
                 await page.goto(url, timeout=30000, wait_until="commit")
+                # X1 确定性等待：SPA 在 commit 后才异步渲染推文流，盲等固定秒数
+                # 在冷启动/慢渲染时抽到 0 article，被误判成风控空壳并烧掉 30 分钟
+                # 窗口（生产实证 2026-09-06：重启后 3/3 空壳，success_rate 0.0）。
+                await self._wait_timeline_ready(page)
                 tweets, tweet_images = await self._collect_search_once(page, limit, img_limit)
+                if tweet_images:
+                    self._consec_empty = 0
 
-                # 空壳检测：页面能开但抽到 0 图 -> 疑似被 X 风控。短重试 1-2 次。
+                # 空壳检测：等到渲染完成仍 0 图才可能是被挡。X2 保留现场证据
+                # 区分「慢渲染」与「登录墙/真风控」，X3 只在后者升级风控窗口。
                 if not tweet_images:
                     self._x_block_count += 1
+                    self._consec_empty = getattr(self, "_consec_empty", 0) + 1
+                    _evidence = await self._empty_shell_evidence(page)
+                    logger.info("X 搜索抽到 0 图（空壳证据：%s）", _evidence)
+                    _wall = bool(_evidence.get("login_wall"))
                     for _ in range(self.X_IN_CALL_RETRIES):
-                        logger.info("X 搜索抽到 0 图（疑似风控空壳），%ss 后重抓 (retry %d)",
+                        logger.info("X 搜索抽到 0 图，%ss 后重抓 (retry %d)",
                                     int(self.X_IN_CALL_RETRY_WAIT), _ + 1)
                         await asyncio.sleep(self.X_IN_CALL_RETRY_WAIT)
-                        # 重新 goto 触发一次新加载，规避瞬时挑战
                         await page.goto(url, timeout=30000, wait_until="commit")
+                        await self._wait_timeline_ready(page)
                         tweets, tweet_images = await self._collect_search_once(page, limit, img_limit)
                         if tweet_images:
+                            self._consec_empty = 0
                             break
+                        _evidence = await self._empty_shell_evidence(page)
+                        logger.info("X 搜索抽到 0 图 (retry %d，证据：%s)", _ + 1, _evidence)
+                        _wall = _wall or bool(_evidence.get("login_wall"))
                     if not tweet_images:
-                        # 确认被挡：标记窗口，后续快速失败
+                        self._stats["search_failed"] = self._stats.get("search_failed", 0) + 1
+                        if not _wall and getattr(self, "_consec_empty", 0) < 3:
+                            # 无登录墙证据：大概率慢渲染而非风控，不进 30 分钟窗口，
+                            # 连续 3 次无证据空壳才升级（保守降惩罚，防误伤）
+                            logger.warning("X 搜索空壳但无登录墙证据（连续 %d 次），不进风控窗口",
+                                           self._consec_empty)
+                            await page.close()
+                            return {
+                                "ok": False, "logged_in": True, "tweets": [],
+                                "note": "X 搜索页暂未渲染出内容，稍后再试",
+                                "blocked": False,
+                            }
+                        # 登录墙证据确凿 / 连续 3 次无证据：确认被挡，标记窗口
                         self._x_blocked_until = time.time() + self.X_BLOCK_WINDOW_SEC
-                        self._x_blocked_reason = "空壳(抽到0图)"
+                        self._x_blocked_reason = "空壳(登录墙证据)" if _wall else "连续空壳"
                         logger.warning("X 搜索连续空壳，标记风控窗口 %ds", self.X_BLOCK_WINDOW_SEC)
                         self._stats["blocked_events"] = self._stats.get("blocked_events", 0) + 1
-                        self._stats["search_failed"] = self._stats.get("search_failed", 0) + 1
                         await page.close()
                         return {
                             "ok": False, "logged_in": False, "tweets": [],

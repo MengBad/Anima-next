@@ -29,6 +29,16 @@ _CORRECTION_RE = re.compile(
     re.I,
 )
 
+# B5：纯情绪抱怨词（无具体故障对象时不构成工程反馈）。
+_EMOTION_COMPLAINT_RE = re.compile(
+    r"(让人?失望|嘴硬|上纲上线|态度[^。，]{0,4}(?:差|不好)|生气|讨厌你|烦人|不理我|骄傲|自大)"
+)
+# 具体故障对象/证据词：命中其一即视为可行动反馈。
+_CONCRETE_EVIDENCE_RE = re.compile(
+    r"(报错|崩溃|异常|失败|乱码|复读|链接|网页|图[片]?|看图|搜索|搜到|代码|运行|"
+    r"记错|说错[^。，]{0,16}(?:内容|话|事实|名字)|答错[^。，]{0,16}(?:题|数字|事实))"
+)
+
 # 类别关键词：优先级从高到低（image > tool > memory > persona > behavior > bug > system）
 _CATEGORY_RULES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
     ("image", "image",
@@ -121,6 +131,10 @@ def detect_engineering_feedback(
         # 超长当普通聊天（工程反馈通常是短句直指问题）
         return None
     if not _CORRECTION_RE.search(t):
+        return None
+    # B5（2026-09-06 第三轮体验测试）：纯情绪抱怨（失望/嘴硬/态度差）没有
+    # 具体故障对象 → 当普通聊天。fail-closed 纪律：拿不准就不当反馈。
+    if _EMOTION_COMPLAINT_RE.search(t) and not _CONCRETE_EVIDENCE_RE.search(t):
         return None
     # 带 @ 本喵/「哈基米」/「你」更可能是纠错；但纯「错了」也可能指向第三方。
     # 保守策略：命中纠错动词即可，避免漏掉「你刚才回答错了」这类高价值反馈。

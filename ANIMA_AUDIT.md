@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-07-23，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # Anima 项目审计报告（2026-07-09 二次刷新 · 修复批次收尾）
 
 > 审计范围：G:\Anima-next（独立运行时版本）

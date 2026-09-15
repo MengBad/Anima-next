@@ -2,6 +2,25 @@
 
 本项目采用近似语义化版本（MAJOR.MINOR.PATCH）。记录每个版本相对上一版的行为与接口变化。
 
+> [!NOTE]
+> 本文件自 2026-08-17（Post-R15）起断档约三周：期间明细见 `git log` 与 `reports/`。自 2026-09-06 恢复记录。
+
+## [Unreleased] — 2026-09-05 ~ 2026-09-06
+
+### 会话连续性（使用者视角体检驱动）
+- `feat(continuity)` `78b7d0b`：防抖合并保留 @ 归属——修复「@bot 后 2-3 秒内补一句整轮被吞」；唤醒窗内纠正/补充豁免被动冷却（新配置 `autonomy.correction_exempt_cooldown`，默认开）；生成期撤销弃答与分段中断三分类（撤销/纠正/调侃）。
+- `fix(continuity)` 本次：分段中断的撤销/纠正只认同一用户（跨用户不可打断他人回复）；纠正词表收窄为句首引导词并加 60s/3 次频率上限。
+
+### 安全与隐私（复审 R1/R2 收口）
+- `fix(deploy)` `076b174` + 本次：AGPL 公开源码包改**白名单制**（anima/webui/schemas + 构建许可文件），不再携带任何日志/测试/运维文档/persona 数据。
+- `fix(privacy)` 本次：relation.py 种子关系外置到 `config.persona.seed_relations`（生产 config.yaml 配置），源码零内嵌真实个人信息。
+- `fix(webui)` 本次：登录按来源 IP 限流（15 分钟 10 次）；移除 `?token=` 建 Cookie 通路。
+
+### 工程与部署
+- `fix(cli)` `cea5d4d`：补 `__main__` 守卫，`python -m anima.cli` / `make run` 复活。
+- `fix(deploy)` `6d9d48f`：pip 镜像源安装失败自动回退官方 PyPI 重试。
+- 新配置键已同步 `schemas/config.schema.yaml` 与 `config_service` MANIFEST。
+
 ## [Post-R15] — 2026-08-17（个人 Autonomous Agent OS 路线启动）
 
 ### 战略重新定位

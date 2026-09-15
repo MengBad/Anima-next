@@ -21,6 +21,29 @@ logger = logging.getLogger("anima.core.persistence")
 _READ_CACHE_MAX = 128
 
 
+def atomic_write_text(target, content: str) -> None:
+    """模块级原子写：mkstemp 唯一临时名 + fsync + os.replace。
+
+    供未持有 PersistenceProvider 实例的模块统一使用。chat_memory/web_knowledge/
+    bot_social/long_term 此前各自用固定 `.tmp` 名且无 fsync，部署新旧实例重叠
+    窗口会把半截文件替换成主文件（2026-09-06 深审 #5）。
+    """
+    target = Path(target)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".tmp_",
+                               suffix=target.suffix)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, target)
+    except Exception:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+
+
 class PersistenceProvider:
     """
     所有磁盘写操作必须经此类，禁止模块各自 open() 写文件。
@@ -98,6 +121,14 @@ class PersistenceProvider:
             with open(p, "r", encoding="utf-8") as fh:
                 data = json.load(fh)
         except (json.JSONDecodeError, OSError):
+            # 损坏留证：坏文件改名 .corrupt.bak 后返默认值。此前直接返默认，
+            # 下一次 persist 会把默认值覆盖回去，将「瞬时损坏」放大成「历史清零」
+            # （chat_memory 有同款兜底，2026-09-06 深审推广到统一入口）。
+            try:
+                p.replace(p.with_name(p.name + ".corrupt.bak"))
+                logger.warning("JSON 损坏已留证 .corrupt.bak: %s（返回默认值）", rel_path)
+            except OSError:
+                pass
             return default
         self._update_cache(rel_path, data, mtime)
         return data

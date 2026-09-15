@@ -32,8 +32,6 @@ from .memory import memory_stage  # noqa: F401
 
 # 阶段 3: 认知
 from .cognition import (  # noqa: F401
-    SYSTEM_PROMPT,
-    _safe_format,
     load_persona_template,
     _is_fadian_message,
     _detect_copycat,
@@ -71,7 +69,6 @@ from .guardrail import (  # noqa: F401
     _tool_failure_fallback,
     _runtime_status_reply,
     _looks_like_analysis_essay,
-    _looks_derailed,
     _looks_like_unprompted_fixation,
     _record_reply_memory,
     _run_danger_behaviors,
@@ -86,7 +83,6 @@ __all__ = [
     "generation_stage",
     "guardrail_stage",
     # key symbols used externally
-    "SYSTEM_PROMPT",
     "load_persona_template",
     "PERMISSION_LEVELS",
     "_check_permission",

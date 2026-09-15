@@ -8,8 +8,11 @@
 """
 
 from __future__ import annotations
+import asyncio
+import datetime
 import json
 import logging
+import re
 from typing import Any
 from anima.llm.usage import llm_scope
 from anima.pipeline.context import ContextComposer
@@ -23,18 +26,48 @@ def _tool_result_ok(result: object) -> bool:
     return tool_result_ok(result)
 
 
+#: P2-3：会产生「外部时效事实」的工具。命中后本轮回答要带来源/时间口径。
+_FRESHNESS_TOOLS = frozenset({
+    "web_search", "x_search", "query_web_memory", "bilibili_read",
+    "skill_web_brief", "skill_member_profile", "skill_group_roster",
+})
+
+_FRESHNESS_GUIDANCE = (
+    "上面是工具取到的事实材料。给最终回答时务必遵守："
+    "① 涉及日期、数字、版本、价格的结论，带上你依据的来源或日期；"
+    "② 材料里没有明确日期的，就写「未标注日期」，不要推断成「今天」「最近」；"
+    "③ 材料明显陈旧时直接说明，不要当作最新事实自信断言；"
+    "④ 工具没拿到有用信息就老实说没查到，不要用记忆补全成像是查到的样子。"
+)
+
+_FRESHNESS_FOOTER = "（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）"
+
+#: 回答里出现的「日期感」token：有其一就不追加时效脚注（说明它已经标注了时间口径）。
+_DATE_TOKEN_RE = re.compile(
+    r"\d{4}\s*[-/年]\s*\d{1,2}|\d{1,2}\s*月\s*\d{1,2}\s*日|"
+    r"\d{4}-\d{2}-\d{2}|\d{1,2}[:：]\d{2}",
+)
+
+
 class ReActLoop:
     """ReAct 执行循环。"""
 
     def __init__(self, llm, tools, max_rounds: int = 5,
                  permission_level: int = 2, quality=None,
-                 tool_result_token_budget: int = 1800):
+                 tool_result_token_budget: int = 1800,
+                 priority_sort: bool = True,
+                 freshness_footer: bool = True):
         self.llm = llm
         self.tools = tools
         self.max_rounds = max_rounds
         self.permission_level = permission_level
         # 可选 ReplyQuality：记录工具空转 / 触顶，不阻塞主路径
         self.quality = quality
+        # P0-1 Memory-First：schema 按 Tool.priority 升序（记忆类先于 web_search）。
+        # 由 generation 依 config.react.memory_first 传入；关掉即回到注册顺序。
+        self.priority_sort = bool(priority_sort)
+        # P2-3：时效兜底脚注（只对用过时效工具、且回答里毫无日期痕迹的情况生效）
+        self.freshness_footer = bool(freshness_footer)
         self._context_composer = ContextComposer(
             tool_result_token_budget=tool_result_token_budget,
         )
@@ -42,6 +75,24 @@ class ReActLoop:
         self.tool_trace: list[dict] = []
         self._hit_tool_spin = False
         self._hit_max_rounds = False
+        self._freshness_tools_used: set[str] = set()
+        self._freshness_guidance_sent = False
+
+    def _apply_freshness_footer(self, content: str) -> str:
+        """回答里完全没有日期痕迹、但本轮确实查过外部事实 → 追加一句时效声明。
+
+        只做「披露」，不改写答案内容：不加脚注等于让一个无日期的检索结论看起来像
+        永恒事实，这对时效类问题是最常见的误导来源。
+        """
+        if not self.freshness_footer or not content:
+            return content
+        if not self._freshness_tools_used:
+            return content
+        if _DATE_TOKEN_RE.search(content):
+            return content
+        stamp = datetime.date.today().isoformat()
+        return content + _FRESHNESS_FOOTER.format(date=stamp)
+
 
     async def _finalize_content(self, messages: list[dict], temperature: float,
                                 max_tokens: int,
@@ -85,16 +136,15 @@ class ReActLoop:
             最终回复文本（LLM 的最终 content 字段）
         """
         self.tool_trace = []  # 每条回复重新采集
-        tool_schemas = self.tools.get_schemas(self.permission_level) if self.tools else []
+        self._freshness_tools_used = set()
+        self._freshness_guidance_sent = False
+        tool_schemas = self.tools.get_schemas(
+            self.permission_level, sort_by_priority=self.priority_sort,
+        ) if self.tools else []
         current_msgs = list(messages)  # 不修改原始列表
         prev_sig = None  # 反工具死循环：记录上一轮工具调用签名
 
         for round_idx in range(self.max_rounds):
-            # Memory-first 引导（任务1）
-            # Thought 阶段强制引导：先评估内部记忆
-            thought = "Thought: 用户问" + str(current_msgs[-1].get("content", ""))[:50] + "，我先检查内部记忆是否有答案。如果有，直接回答；如果没有，再考虑搜网。"
-            current_msgs.append({"role": "user", "content": thought})
-
             # 询问 LLM（带已过滤的工具 schema）
             with llm_scope("chat", "react"):
                 response = await self.llm.chat_structured(
@@ -113,7 +163,7 @@ class ReActLoop:
                     content = await self._finalize_content(
                         messages, temperature, max_tokens
                     )
-                return content or "（思考中...）"
+                return self._apply_freshness_footer(content or "（思考中...）")
 
             # 反工具死循环：工具调用签名与上一轮完全相同（同一查询重复搜）
             # → 立即转出最终回复，避免 5 轮空转把延迟拖到 15s 且最终仍可能 content 空。
@@ -159,7 +209,15 @@ class ReActLoop:
                     args = {}
 
                 # 权限二次校验（工具调用前的最后一道闸）
-                result = await self.tools.call(name, args, self.permission_level)
+                # A2（收敛计划）：工具级超时——单工具卡死不再拖死整条回复
+                try:
+                    result = await asyncio.wait_for(
+                        self.tools.call(name, args, self.permission_level),
+                        timeout=120.0,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning("工具调用超时(120s) name=%s", name)
+                    result = "工具执行超时（超过 120 秒），本次未获得结果"
                 # 工具参数和结果可能含用户正文、URL、文件路径；journal 只保留
                 # 名称、成败和长度，排障走受控 audit/任务记录而非聊天日志。
                 ok = _tool_result_ok(result)
@@ -181,6 +239,18 @@ class ReActLoop:
                     "role": "tool",
                     "tool_call_id": call_id,
                     "content": result_for_context,
+                })
+                if name in _FRESHNESS_TOOLS and ok:
+                    self._freshness_tools_used.add(name)
+
+            # P2-3：时效约束此前只在「触顶强制收尾」路径注入，正常一轮工具→作答的
+            # 主路径（最常见）完全没有约束。这里在本轮工具结果之后补一条约束，
+            # 让紧接着生成的回答就带上来源/时间口径；只注入一次，避免多轮累积占 token。
+            if self._freshness_tools_used and not self._freshness_guidance_sent:
+                self._freshness_guidance_sent = True
+                current_msgs.append({
+                    "role": "user",
+                    "content": _FRESHNESS_GUIDANCE,
                 })
 
         # 达到最大轮次（或被反死循环守卫 break）→ 最后问一次，无工具
@@ -205,17 +275,6 @@ class ReActLoop:
                 ),
             })
 
-            # Memory-first 引导（任务1 - ReAct 记忆优先）
-            current_msgs.append({
-                "role": "user",
-                "content": (
-                    "你在选择工具时，请遵循以下优先级："
-                    "如果问题关于群成员（\"小明是谁\"、\"亦萱喜欢什么\"），优先使用 get_member_facts / get_user_relations "
-                    "如果问题关于已知事实或历史对话，优先查询内部记忆 "
-                    "只有内部记忆无法回答时，才使用 web_search "
-                    "涉及实时信息（今天天气、新闻、股价）时，可直接使用 web_search"
-                ),
-            })
         with llm_scope("chat", "react_finalize"):
             final = await self.llm.chat_structured(
                 current_msgs, [],  # 不再给工具
@@ -227,7 +286,7 @@ class ReActLoop:
             current_msgs, temperature, max_tokens, final
         )
         if content and content.strip() not in {"（想了一下不知道说什么...）", "（思考中...）"}:
-            return content
+            return self._apply_freshness_footer(content)
         if self.tool_trace and any(not item.get("ok") for item in self.tool_trace):
             return "本喵工具这边没查到准信喵，你换个说法再问一次？"
         if self.tool_trace:

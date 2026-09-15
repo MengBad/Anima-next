@@ -181,7 +181,7 @@ def test_parse_skill_readonly():
     assert c.needs_confirmation is False
 
 
-def test_skill_evolution_no_request():
+async def test_skill_evolution_no_request():
     s = _surface()
-    out = s.skill_evolution()
+    out = await s.skill_evolution()
     assert out.get("available") is False

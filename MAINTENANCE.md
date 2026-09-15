@@ -96,9 +96,9 @@ python _deploy.py
 
 1. **预检**：SSH/python3/venv/待上传文件数。
 2. **发布清单**：`git ls-files` 已跟踪文件；排除 `data/ .env .venv *.pyc 密钥 *.log reports/` 等。
-3. **源码归档**：`anima-next-{version}.zip` + `release-manifest.json`（逐文件 sha256）→ 上传 `/opt/anima/public/`。
+3. **源码归档**：`anima-next-{version}.zip` + `release-manifest.json`（逐文件 sha256）→ 上传 `/opt/anima/public/`。归档按**白名单**生成（anima/ + webui/ + schemas/ + 构建/许可文件），不含 persona_core.yaml 等任何隐私数据（2026-09-06 收口）。
 4. **数据保护**：先快照 `data/` → `data.deploy-bak`，解包后**强制恢复 `data/`**（生产数据永不被源码覆盖）。
-5. **依赖**：`/opt/anima/venv/bin/pip install -e '[qq,vector,dev,sylann,docs]'`。
+5. **依赖**：`/opt/anima/venv/bin/pip install -e '[qq,vector,dev,sylann,docs]'`；镜像源失败自动以官方 PyPI 重试（2026-09-06 新增，清华镜像拉不到 setuptools>=77 的实测容灾）。
 6. **systemd**：渲染写入 `/etc/systemd/system/anima.service`（含 `EnvironmentFile=-/opt/anima/.secrets`）→ `daemon-reload`。
 7. **重启**：`systemctl restart anima`；核对 MainPID + ActiveEnterTimestampMonotonic **确实变化**。
 8. **Smoke**：`/api/health`（running/heartbeat_running/channel_connected）、`/api/modules/status` 非空、`/api/evaluation`、固定工具 runtime_status（内存/磁盘/负载）。
@@ -123,26 +123,135 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 
 ---
 
-## 3. 生产接线清单（哪些真上线）
+## 3. 生产接线清单（WIRED vs 库级 OFF）
 
-> 维护前先确认某功能是否接入生产主链路，避免改完「以为上线实际没生效」。
+> **改任何东西之前先查这张表** —— 它决定「改完到底会不会影响线上」。
 
-**✅ 已接生产（`cli.py` / `AnimaCore.start`）**
-- `channels.onebot11.OneBot11Adapter`（`qq.enabled` 时绑定）。
-- `llm.LLMClient` + `llm.handler.LLMHandler`（LLM 配置时）。
-- `tools.create_default_registry(core)`、Skills、SelfCode、记忆、Heartbeat（`autonomy.enabled` 时）。
-- `runtime.recovery_module.RecoveryModule` → `runtime.bootstrap.recover_all` → `runtime.recovery.recover_run` + `runtime.persistence.WorkflowRunStore`（`data/workflow_runs/*.json`）。
-- `core` 下绝大多数子系统（gateway/event_bus/audit/persistence/health_history/approvals/backup/evaluation/config_service/config_drift/intents/workflows/tasks/permissions…）。
+三档语义，不要混用：
 
-**⚠️ 库级 / 试点 / 测试层（默认未接生产）**
-- `runtime` 的 `resolving_executor / startup_recovery / resume_coordinator / recovery_marker_store / bridge_bootstrap / pilot_control / pilot_rollout / pilot_scope / execution_events`；providers 的 `sandbox_write / mock_http`。
-- `core/exceptions.py` 异常层级（全树零 import）。
-- `core/paths.py` 的 `Paths` 类与 `child()`（仅 `set_data_dir/data_dir` 生效）。
-- 受治理能力层（`capability_layer.*`、`capability_gateway_mode`、`python_exec` 等）默认 OFF。
+| 档位 | 含义 | 判定依据 |
+|---|---|---|
+| **WIRED** | 代码无条件接线，改它 = 改生产行为 | 在 `cli.py` / `AnimaCore.start` / `create_default_registry(core)` 调用链上 |
+| **WIRED · 默认 OFF** | 接线完整、有真实入口，仅配置默认关闭；置 `true` 即生效 | 有生产调用点 + 默认 `false` |
+| **LIBRARY** | 代码与测试齐全，但**没有任何生产入口** | import 图里只被自身/同簇模块引用 |
 
-**⚠️ 易踩坑**
-- `gateway.get_gateway` 被 `cognitive/intent_generator.py` 与 `tools/builtin/honor.py` 引用，但全树无定义（潜在损坏懒加载）。
-- `memory.hydrate_period_hours` 被读取但 `MemoryConfig` 未声明该字段（仅静默默认）。
+⚠️ 表中「默认」= **代码默认值**（Pydantic 默认 + `config/default.yaml`）。
+生产真实值以 VPS `/opt/anima/config.yaml` 为准 —— `_deploy.py` 默认**不覆盖**生产配置。
+核实手段：`python -m anima doctor`、WebUI 配置页、`journalctl -u anima` 启动日志。
+
+> 本表依据（2026-09-15）：`AnimaConfig` 反射枚举 **392 字段 / 42 个默认 `False`** + 全树 import 图扫描。
+> 新增开关后必须同步本节，否则这张表会立刻开始骗人。
+
+### 3.1 WIRED（无条件接线）
+
+| 组件 | 入口 | 备注 |
+|---|---|---|
+| `channels.onebot11.OneBot11Adapter` | `AnimaCore` 在 `qq.enabled` 时绑定 | WS 入站 + HTTP 出站；`_call_action`/`get_group_*` 供工具同步取数 |
+| `llm.LLMClient` + `llm.handler.LLMHandler` | 配了 LLM 即接线 | 重试 / 熔断 / `fallback_models` / 413 再编码 |
+| `tools.create_default_registry(core)` | `cli.py:385` | **唯一**工具注册入口；`core` 必传（不传则 core 依赖类工具整体缺席） |
+| Skills / SelfCode / 记忆 / Heartbeat | `AnimaCore.start` | Heartbeat 另受 `autonomy.enabled` 约束 |
+| `runtime.recovery_module` → `bootstrap.recover_all` → `recovery.recover_run` + `persistence.WorkflowRunStore` | `AnimaCore.start` | `data/workflow_runs/*.json` |
+| `core.paths.set_data_dir` | `anima_core.py:499`（**唯一接线点**） | 其余 `Paths` / `child()` 未用（见 §3.3） |
+| `core` 下绝大多数子系统 | gateway / event_bus / audit / persistence / health_history / approvals / backup / evaluation / config_service / config_drift / intents / workflows / tasks / permissions | — |
+| `capability.*` 受治理层 | `tools/__init__.py`（resolver / governance.gateway / health / audit sink / ops.observer / lifecycle） | 代码已接线，但**模式默认 OFF** → 走 legacy 路径（见 §3.2） |
+| `tools/builtin/reminder.py` | `create_default_registry(core)`（P2-2） | 复用 `cognitive.debt` 债账本，不另起存储 |
+| `tools/builtin/honor.py` | `create_default_registry(core)`（P2-4） | P2-4 修复：改走真实 OneBot 通道（原实现调不存在的 `get_gateway`，恒失效） |
+
+**默认 ON 的能力开关（关掉就是主动退化，不是"更安全"）**
+
+| 配置键 | 默认 | 作用 |
+|---|---|---|
+| `react.memory_first` | `true` | P0-1 先查记忆再动手 |
+| `react.freshness_footer` | `true` | P2-3 时效工具用过后，答案缺日期时补一句时效披露 |
+| `debt_tracking.enabled` | `true` | P1-1 承诺追踪（`keyword_only_mode: true`，零 LLM 成本） |
+| `task_agent.verify_steps` / `parallel_steps` / `max_replans` | `true` / `true` / `2` | P2-1 步骤验收 / 并行批次 / 重规划上限（`max_replans: 0` 退回"一失败即终止"） |
+| `owner_browser.enabled` | `true`（`private_only: true`） | P1-3 Owner 受控浏览器（群聊不暴露） |
+| `proactive.enabled` | `true` | P1-4 主动优先级队列（债/订阅异常/健康 > 闲聊） |
+| `iteration.enabled` / `auto_restart` | `true` | 故障扫描与工单 / 补丁 apply 后重启服务（`auto_repair` 另见 §3.2） |
+| `social.bot_social_enabled` | `true` | 识别其他 Bot + 防循环（发现/搭话/私聊三个子开关默认 OFF） |
+
+### 3.2 WIRED · 默认 OFF（需在 `/opt/anima/config.yaml` 显式开启）
+
+**a) 认知 / 自主 / 记忆**
+
+| 配置键 | 默认 | 作用 |
+|---|---|---|
+| `autonomy.drive_gate` | `false` | Constitution Drive 门：主动表达须源于趋近 Drive 才开口，并把 Drive 写进审计 trace |
+| `autonomy.quiet_hours_enabled` | `false` | 免打扰时段 |
+| `memory.unified_recall_enabled` | `false` | 收敛计划 M2 统一检索聚合层（只读聚合 chat/vector/facts/episodes）；关 = 回退各域独立召回 |
+| `conversation.natural_feedback_ack` | `false` | §17 安全版反馈自然回话（仅私聊 + 已有主回复时追加轻确认，不双发） |
+| `contradiction.enabled` | `false` | 矛盾检测（仅在向量命中强相关旧记忆时才调 LLM） |
+
+**b) 能力治理（fail-closed，默认全 OFF）**
+
+| 配置键 | 默认 | 作用 |
+|---|---|---|
+| `capability_layer.capability_mode` | `false` | 输出 capability schema（否则 legacy Tool schema）；`false` 时逐字节保持旧行为 |
+| `capability_layer.capability_gateway_mode` | `false` | 受治理 Gateway pilot（Line B）；pilot 白名单见 `_GATEWAY_PILOT_CAPABILITIES` |
+| `capability_layer.governance_audit_enabled` | `false` | Resolution 审计链 `resolution_events.jsonl` |
+| `capability_layer.health_evidence_enabled` | `false` | Health 证据链 `health_evidence.jsonl` |
+| `capability_layer.transition_audit_enabled` | `false` | 生命周期迁移链 `lifecycle_transitions.jsonl` |
+| `capability_layer.python_exec_enabled` | `false` | `python.exec` provider 注册与可达（需与上面两个 mode 同时为真） |
+| `iteration.auto_repair` | `false` | 自治运维档 3：自动生成补丁并 apply（`iteration.enabled` 本身默认 ON） |
+
+**c) 危险自升级 `danger.*`（默认全 OFF；只生成 WebUI 待审工程任务，**绝不自动安装**）**
+
+`danger.enabled`、`danger.self_improvement(_confirm)`、`danger.core_mutation(_confirm)`、
+`danger.stance_propagation(_confirm)`、`danger.memory_infection(_confirm)`、
+`danger.identity_crisis`、`danger.autonomous_web`、`danger.info_collection_can_speak` —— 全部 `false`。
+
+**d) QQ 外围 / 可选能力（参考 AstrBot 插件回迁，默认全 OFF）**
+
+| 配置键 | 默认 | 作用 |
+|---|---|---|
+| `qzone.enabled` | `false` | QQ 空间说说（`daily_max: 2`、冷却 4h） |
+| `qq_status.enabled` | `false` | QQ 在线状态同步 |
+| `voice.enabled` | `false` | AI 语音 TTS（`auto_probability: 0.1`） |
+| `meme.enabled` | `false` | 趣味图片互动（被戳摸头回击概率 0.3） |
+| `gate.enabled` | `false` | 轻重双模型前置判断（超时/失败回落完整流程） |
+| `x_browser.enabled` | `false` | X（Twitter）受管浏览器（刷时间线 + 对外提供 `x_search`） |
+| `scrapling.enabled` | `false` | Scrapling 反反爬网页抓取 |
+| `image_generation.enabled` | `false` | LLM 生图（仅 owner；启用前确认网关 `images/generations` 可用） |
+| `self_code.enabled` | `false` | SelfCode 双 Agent 产物热注册 |
+| `self_code.auto_install` | `false` | 字段仅兼容旧配置；**运行时始终要求 Owner 审批** |
+| `sticker.share_across_groups` | `false` | 表情跨群复用（默认仅来源群） |
+| `exploration.share_enabled` | `false` | 探索笔记主动分享（先自主学习，Owner 验证后再开）。配套 `share_groups` 非空即为**群白名单**；空=仅沿欲望来源群，绝不广播 |
+| `social.bot_discovery_enabled` | `false` | 动态发现群内其他 Bot（昵称启发式，默认关避免误判） |
+| `social.bot_talk_enabled` | `false` | 心跳每日最多一次「找其他 Bot 说话」（`rivalry > 0.3`） |
+| `social.bot_whisper_enabled` | `false` | Bot 间私聊通道（经 NapCat 私聊，标记 `[Bot内部]`） |
+| `compat.astrbot_enabled` | `false` | AstrBot 兼容层（tier 1） |
+| `sylann.enabled` / `sylann.mode` | `false` / `disabled` | SylannEngine 适配（`disabled` / `shadow` / `active`） |
+| `webui.enabled` | `false`（`host: 127.0.0.1`） | ⚠️ **生产实际为 ON**（8443 HTTPS 控制台 + 8088 native）：这是"代码默认 ≠ 生产值"的典型例子 |
+
+### 3.3 LIBRARY（代码在、生产无入口）
+
+改动这些**不会**影响线上；声称"修好了某问题"前请先确认它到底有没有入口。
+
+| 模块 | 实测 |
+|---|---|
+| `runtime/resolving_executor.py`、`runtime/bridge_bootstrap.py` | 全树 **0 import** |
+| providers `sandbox_write`、`mock_http` | 全树 **0 import** |
+| `runtime/startup_recovery.py` + `resume_coordinator.py` + `recovery_marker_store.py` | 仅同簇互引，无生产入口 |
+| `runtime/pilot_rollout.py` + `pilot_control.py` + `pilot_scope.py` + `execution_events.py` | 仅同簇互引，无生产入口 |
+| `core/exceptions.py` 异常层级（`AnimaError` 家族） | 全树 **0 import** |
+| `core/paths.py` 的 `Paths` 类与 `child()` | 仅 `set_data_dir()` 被接线，二者未用 |
+| `capability/_archive/*` | 刻意归档的兼容再导出层（`from ... import *`），非活跃代码 |
+
+### 3.4 易踩坑
+
+- ✅ **已修（2026-09-15）** `gateway.get_gateway` —— 该符号**从未定义**（`core/gateway.py` 只有 `Gateway` 类，无全局单例）。曾被两处引用：
+  `cognitive/intent_generator.py`（模块级 import → 一 import 即 `ImportError`）与
+  `tools/builtin/honor.py`（`try/except` 吞掉 → 工具**注册在表里但 100% 失效**，还把"我们的 bug"说成"群没开这个功能"）。
+  现两处均已改为依赖注入 / 真实通道访问，全树零引用；
+  `tests/test_p24_honor_wired.py` 用 AST 扫描（剔除注释与字符串后）锁死回归。
+- ✅ **已澄清** `memory.hydrate_period_hours` **已声明**于 `MemoryConfig`（`core/config.py:891`，默认 `6.0`）。旧版本文档称"未声明"是**过期信息**，勿再据此改代码。
+- ⚠️ `Tool.required` 缺省时 `to_openai_schema()` 会**回退为「所有参数必填」**。参数可省略的工具必须显式传 `required=[]`——`honor.py` 踩过这个坑：描述写「可省略」，schema 却声明必填，模型因此不敢省略参数。
+- ⚠️ 默认 `False` 的开关里混着**两种语义**：**安全开关**（`danger.*` / `self_code.*` / `capability_layer.*`，坏掉即 fail-closed）与**能力开关**（`qzone` / `voice` / `meme` / `gate`…，关着只是没这个功能）。调配置时不要把前者当后者顺手打开。
+- ✅ **已修（2026-09-15）** `exploration` 的 `0` 语义曾**未定义**：`daily_limit` / `daily_share_limit` 都写成 `getattr(..., N) or N`，而 `0` 是 falsy → 被静默吞成 `N`。结果 `daily_share_limit: 0` 本意"今天不分享"，实际是"每天分享 1 条"——**关不掉的开关**。现两处均已按显式语义实现并写进 `config/default.yaml` 与 schema 描述：
+  - `exploration.daily_limit: 0` = **不限制**（与 `image_generation.daily_limit` 同义，属"内部读取配额"）
+  - `exploration.daily_share_limit: 0` = **当天完全不分享**（属"外发闸门" → fail-closed，**语义与上面相反，勿统一**）
+  回归由 `tests/test_p34_exploration_share.py` 双向锁死（含 RED 验证）。
+  注意：`image_generation.daily_limit` 的 `0 = 不限制` 是**既有成文约定**，本次未改动。
 
 ---
 
@@ -155,7 +264,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 | 文件 | 职责 | 关键类 | 数据文件 | 运维注意 |
 |---|---|---|---|---|
 | `anima_core.py` | 编排核，生命周期中枢 | `AnimaCore` | `data/sticker_policy.json` | 改生命周期=改核心，遵循 RELEASE_POLICY |
-| `gateway.py` | 消息路由 + 出站 | `Gateway`、`OutboundMsg` | 无 | 出站前过内心独白过滤；`get_gateway` 未定义 |
+| `gateway.py` | 消息路由 + 出站 | `Gateway`、`OutboundMsg` | 无 | 出站前过内心独白过滤；**无全局单例**（历史误引用 `get_gateway`，2026-09-15 已全树清除） |
 | `event_bus.py` | 异步主题订阅/发布 | `EventBus` | 无 | handler 异常隔离 |
 | `config.py` | Pydantic 配置模型 | `AnimaConfig`、`load_config` | 读 YAML | 新增配置节必须同步 `schemas/config.schema.yaml` |
 | `config_service.py` | WebUI 配置变更服务 | `ConfigService` | `data/config_changes.json`、`data/config_backups/*.bak` | 变更先成 change-set + 全量校验 + 脱敏 |
@@ -302,7 +411,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 
 **接线说明**：capability 治理层分「运行时适配线（受 `capability_mode`/`capability_gateway_mode` 等旗标门控）」与「规格/离线原型线（synthetic-only，只记审计事实、绝不激活运行时）」两层。
 - **✅ 运行时适配线（WIRED，旗标门控）**：`contract/canonical/scopes/index/resolver/schema`（经 tools，`capability_mode`）、`governance/{enforcement,audit,lifecycle,validation,state,attestation}`、`adapters` 双投影、`audit/{storage,persistent_sink}`、`health/{adapter,store,normalizer}`、`ops/{observer,transition_store}`。
-- **⚠️ 库函数/仅测试（未全局接线）**：`rbac`（`RUNTIME_WIRED=False`，运行时唯一权威=`pipeline/stages/permission._check_permission`）、`isolation`、`evidence`、`audit/event_chain`、`audit/query`、`governance/audit_chain`、`governance/surface`、`ops/policy`（`POLICIES={}` 出厂为空=不猜阈值）、`ops/health_policy_evaluator`，以及 P3–P6 证据/事实切片（activation/authorization_fact/intent_fact/execution_dispatch/runtime_* 只读事实桥）。
+- **⚠️ 库函数/仅测试（未全局接线）**：`rbac`（`RUNTIME_WIRED=False`，运行时唯一权威=`pipeline/stages/permission._check_permission`）、`isolation`、`evidence`、`audit/event_chain`、`audit/query`、`governance/audit_chain`、`governance/surface`、`ops/policy`（`POLICIES={}` 出厂为空=不猜阈值）、`ops/health_policy_evaluator`，以及 P3–P6 证据/事实切片（activation/authorization_fact/intent_fact/execution_dispatch 只读事实桥）。**2026-09-12 归档**：`runtime_*` 事实桥 7 个 + `evolution_contract` + 16 个顶层 `capability_*.py` shim 已 git mv 至 `capability/_archive/`（只读冻结快照，pytest 不收集），留守模块 import 已改指 canonical 路径。
 
 **capability/**（Capability 治理 OS 层）
 - `contract.py`/`canonical.py`：`CapabilityContract`、`CanonicalCapabilityContract`（CANONICAL/LEGACY/RUNTIME 来源并集）。
@@ -340,7 +449,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 
 - `server.py`（3865 行）：aiohttp 服务。**鉴权模型**：token fail-closed（`webui.token` 未配则锁定，仅登录页可渲染）+ HttpOnly Cookie + CSRF（写操作 `X-Anima-CSRF`）。免认证仅 `/login`,`/source`,`/source/archive`,`/api/auth/login`,`/assets/*`。控制端点 `_owner_id()` 前置校验（单 token=owner 模型）。
 - `routes/__init__.py`（328 行）：按域注册（页面/认证/健康/配置/LLM/认知/记忆/工程·SelfCode·OS/自主·一生/社交/表情/Agent 等）。`routes/agent.py` 为 Owner Agent 面板。
-- `dashboard.py`/`login_page.py`/`source_page.py`/`cognitive_page.py`/`stickers_page.py`/`life_*.py`/`platform_summary.py`。
+- `dashboard.py`/`login_page.py`/`source_page.py`/`life_*.py`/`platform_summary.py`。
 - **数据**：配置变更 `data/config_changes.json`、`data/config_backups/`；审计读 `data/audit/`。
 - **运维注意**：控制类接口需 token + owner；`webui.token` 为空则控制接口全拒；生产监听 `0.0.0.0` 必须保留 token + 建议反代 HTTPS；`/vnc` noVNC 反代也已纳入 token 保护。
 
@@ -549,7 +658,7 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/ops-quality
 - CI：`.github/workflows/anima-ci.yml` 四 job（backend pytest / frontend build / security guard / evidence），只读验证，无部署凭证，不自动批准 Evolution。
 - 本地：`make ci` 复跑 CI（pytest + anima_guard + ci_evidence）。
 - 发布门禁：baseline verify → test result → diff audit → frozen boundary check → commit → release。
-- 6 个已知「预存 broken」被忽略：`test_r3_4_audit_completeness`、`test_r3_5_kill_switch`、`test_f9_2_operational_activation`、`test_memory_read_r2a`、`test_audit_persistence`、`test_health_observer`（后两者因 subprocess 硬编码 Windows 路径，Linux CI 不可运行）。
+- 历史上 6 个「预存 broken」测试（`test_r3_4_audit_completeness`、`test_r3_5_kill_switch`、`test_f9_2_operational_activation`、`test_memory_read_r2a`、`test_audit_persistence`、`test_health_observer`）**现已全部修复并通过**（2026-09-01 复核）。其中后两者早期被认为「subprocess 硬编码 Windows 路径」，实为 `sys.executable` + 相对路径（可移植），无需忽略。以全量 pytest 绿为准。
 - **禁止自动修复**：改 Foundation contract/冻结 schema/新增 runtime layer/daemon/timer/polling/改权限边界/删生产数据而无授权 → 必须 STOP 并上报（事实→证据→判断→风险→下一步）。
 
 ---

@@ -5,6 +5,8 @@ import types
 
 import pytest
 
+from anima.pipeline import Pipeline
+from anima.pipeline.stages.prefilter import prefilter_stage
 from anima.llm.handler import (
     classify_group_reply_skip,
     is_addressed_to_other_bot,
@@ -177,7 +179,7 @@ async def test_handler_skips_yue_ma_in_familiar_group(tmp_path, monkeypatch):
         ctx.reply = "不该到这里"
         return ctx
 
-    handler.pipeline = types.SimpleNamespace(run=fake_run)
+    handler.pipeline = Pipeline().use(prefilter_stage).use(fake_run)
     base = {
         "user_id": 10001,
         "group_id": 20001,

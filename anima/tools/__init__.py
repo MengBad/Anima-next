@@ -142,7 +142,9 @@ class Tool:
                  enabled: bool = True,
                  capability_ids: Optional[list] = None,
                  granted_scopes: Any = None,
-                 capability_only: bool = False):
+                 capability_only: bool = False,
+                 priority: int = 5,
+                 private_only: bool = False):
         self.name = name
         self.description = description
         self.parameters = parameters  # JSON Schema properties
@@ -153,6 +155,10 @@ class Tool:
         self.danger = danger
         # 允许运行时由插件启用/停用；默认工具保持原有行为。
         self.enabled = enabled
+        # --- P0-1 Memory-First：schema 展示序（越小越靠前）---
+        # 只影响 get_schemas() 的返回顺序，不改变调用语义。默认 5 => 未显式标注的
+        # 工具按注册顺序（Python sort 稳定）保持原样，向后兼容。
+        self.priority = int(priority)
         # --- M0.3 (RFC-0001) Capability 元数据：additive，默认空，不改变任何既有语义 ---
         # name 仍是唯一执行标识；capability_ids 只是「这个实现满足哪些能力」的声明。
         self.capability_ids: list[str] = [str(c) for c in (capability_ids or []) if str(c)]
@@ -163,6 +169,11 @@ class Tool:
         # 防止绕过 capability allowlist / 路由控制。默认 False 保持既有 mixed-mode 行为
         # （web_search / read_file / write_file 即此模式——仍 legacy 暴露 + capability 路由并存）。
         self.capability_only = bool(capability_only)
+        # --- P1-3：私聊专属（「受控环境」类工具不进群聊）---
+        # True 时该工具在群聊场景既不可见也不可调用（即便调用者是 Owner——owner 在
+        # 群内同样拿到 permission_level=4，仅靠 min_level 挡不住）。判定依据是
+        # call context 的 detail_type/group_id，不是 permission_level。
+        self.private_only = bool(private_only)
 
     def to_openai_schema(self) -> dict:
         required = self.required if self.required is not None else list(self.parameters.keys())
@@ -670,9 +681,32 @@ class ToolRegistry:
     def reset_call_context(self, token: contextvars.Token) -> None:
         _CALL_CONTEXT.reset(token)
 
+    # ------------------------------------------------------------------
+    # P1-3：私聊专属工具（群聊不暴露「受控环境」能力）
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _is_group_context() -> bool:
+        """当前调用上下文是否群聊。
+
+        只看可信 ctx（generation 用 set_call_context 注入），绝不读工具入参。
+        无上下文时（如单测/离线调用）按**非群聊**处理——可见性放宽只可能发生在
+        没有真实会话的场景，不会让群聊会话拿到私聊工具。
+        """
+        ctx = _CALL_CONTEXT.get()
+        if not isinstance(ctx, dict) or not ctx:
+            return False
+        if str(ctx.get("detail_type") or "") == "group":
+            return True
+        gid = ctx.get("group_id")
+        return gid is not None and str(gid) != ""
+
+    def _private_only_blocked(self, tool: "Tool") -> bool:
+        return bool(getattr(tool, "private_only", False)) and self._is_group_context()
+
     def get_schemas(self, permission_level: int = LEVEL_USER,
                     capability_mode: Optional[bool] = None, *,
-                    caller: Optional[str] = None) -> list[dict]:
+                    caller: Optional[str] = None,
+                    sort_by_priority: bool = False) -> list[dict]:
         """根据用户权限等级过滤可使用的工具 schema。
 
         M0.3 双模式（RFC-0001 §5.4）：
@@ -690,15 +724,28 @@ class ToolRegistry:
             schema visible = capability_mode ∧ provider available ∧ allowlist permitted
 
         mixed-mode 能力不属治理集，可见性不受 allowlist 影响（行为不变）。
+
+        ``sort_by_priority``（P0-1）：为 True 时 legacy schema 按 ``Tool.priority``
+        升序返回（记忆类 1 → web_search 3 → 未标注 5）。**默认 False**，因为返回
+        顺序本身属于上述冻结契约；只有 ReAct 主路径会显式打开。
         """
         use_capability = self.capability_mode if capability_mode is None else bool(capability_mode)
         if not use_capability:
-            return [
-                t.to_openai_schema()
-                for t in self.tools.values()
+            visible = [
+                t for t in self.tools.values()
                 if t.enabled and permission_level >= t.min_level
                 and not t.capability_only
+                and not self._private_only_blocked(t)   # P1-3：群聊隐藏私聊专属工具
             ]
+            if sort_by_priority:
+                # P0-1 Memory-First：记忆类工具（priority 1）排在 web_search（3）之前。
+                # sort 稳定 => 同 priority 保持注册顺序，未标注工具（默认 5）行为不变。
+                #
+                # 默认 **关闭**：legacy schema 的返回顺序是 M0.3（RFC-0001 §5.4）冻结契约
+                # 「逐字节不变」的一部分，由 test_capability_* 系列守着。排序只对
+                # 显式开启的主路径（ReAct）生效，不改动任何既有调用方的可见行为。
+                visible.sort(key=lambda t: t.priority)
+            return [t.to_openai_schema() for t in visible]
         from anima.capability.schema import capability_schemas, legacy_only_schemas
         exclude = None if self.pilot_capability_permitted(caller) else self._governed_capability_ids()
         return (
@@ -812,6 +859,15 @@ class ToolRegistry:
         if not self.can_call(name, permission_level):
             self._audit("tool_denied", tool=name, permission_level=permission_level)
             return f"错误: 你的权限不足，无法调用工具 '{name}'"
+
+        # P1-3：私聊专属工具即便权限够，在群聊上下文也拒绝执行。
+        # 与 schema 隐藏是两道独立门——LLM 可能凭旧上下文/幻觉点名调用，
+        # 权限够也可能来自「owner 在群里」，必须在这里再挡一次。
+        if self._private_only_blocked(tool):
+            ctx = get_call_context()
+            self._audit("tool_denied", tool=name, reason="private_only_in_group",
+                        group_id=ctx.get("group_id"), permission_level=permission_level)
+            return f"错误: 工具 '{name}' 仅限私聊使用，群聊不可调用"
 
         if tool.danger and self._requires_approval():
             store = getattr(self.core, "approvals", None)

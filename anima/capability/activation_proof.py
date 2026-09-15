@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping
 
-from anima.capability_activation_contract import (
+from anima.capability.activation_contract import (
     CapabilityActivationPlan,
     CapabilityActivationReview,
     PlanStatus,

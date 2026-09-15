@@ -154,9 +154,14 @@ class ChatMemory:
             if od:
                 self._store[key] = od
         if changed:
+            # 恢复期清洗（CQ 剥离/污染剔除）视为脏数据：置脏让下方 save 的
+            # 脏守卫放行（深审批次5 新增守卫，此处需同步置脏）
+            self._dirty += 1
             self.save()
 
     def save(self) -> None:
+        if getattr(self, "_dirty", 0) == 0:
+            return  # 无新增脏数据，跳过整文件重写（心跳补 flush 用）
         if not self._persist_path:
             return
         try:
@@ -172,10 +177,9 @@ class ChatMemory:
                 cleaned_rounds = {rk: v for rk, v in cleaned_rounds.items() if v}
                 if cleaned_rounds:
                     data[k] = cleaned_rounds
-            tmp = self._persist_path.with_suffix(".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2),
-                           encoding="utf-8")
-            tmp.replace(self._persist_path)
+            from anima.core.persistence import atomic_write_text
+            atomic_write_text(self._persist_path,
+                              json.dumps(data, ensure_ascii=False, indent=2))
             self._dirty = 0
             self._last_save = time.time()
         except Exception:

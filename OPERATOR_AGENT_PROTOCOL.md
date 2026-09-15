@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-10，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # Anima-next Operator Agent Protocol
 
 > 本协议定义接管后的角色、权限和停机条件。默认目标是稳定运行，不是持续开发。

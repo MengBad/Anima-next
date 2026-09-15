@@ -121,8 +121,7 @@ class RelationEngine:
             rel.positive_days = rel_data.get("positive_days", 0)
             self._relations[uid] = rel
 
-    def persist(self) -> None:
-        """保存关系状态到磁盘。"""
+    def _snapshot(self) -> dict:
         data: dict[str, dict] = {}
         for uid, rel in self._relations.items():
             data[str(uid)] = {
@@ -144,21 +143,38 @@ class RelationEngine:
                 # R2: 信任修复
                 "positive_days": rel.positive_days,
             }
-        self._persist.write_json(self._path, data)
+        return data
+
+    def persist(self) -> None:
+        """保存关系状态到磁盘。"""
+        self._persist.write_json(self._path, self._snapshot())
+
+    def flush_deferred_if_any(self) -> None:
+        """心跳调用：存在延迟脏数据才落盘（touch 走 write_json_deferred 队列）。"""
+        if self._persist.has_deferred:
+            self._persist.flush_deferred()
+
+    def touch_deferred_persist(self) -> None:
+        """touch 后的节流落盘：进 deferred 队列，由心跳批量 fsync。
+
+        深审 P0：运行期 touch 只改内存，persist 仅 danger 事件/关机触发——
+        每次部署重启（关机持久化 EROFS）关系即回退，「bot 忘了和你的关系」。
+        """
+        try:
+            self._persist.write_json_deferred(self._path, self._snapshot())
+        except Exception:
+            logger.debug("关系延迟落盘失败", exc_info=True)
 
     def _ensure_seed_relations(self) -> None:
-        """G2: 确保关键人物种子关系存在（仅首次初始化写入）。"""
-        # 默认种子（可被 config.persona.seed_relations 覆盖）
-        _DEFAULT_SEEDS = [
-            {"qq": 1562290139, "name": "吴雨萌", "stage": "CLOSE",
-             "familiarity": 0.9, "trust": 0.95, "valence": 0.7,
-             "tags": ["开发者", "主人", "MTF", "HRT"]},
-            {"qq": 1371704917, "name": "华初", "stage": "FRIEND",
-             "familiarity": 0.6, "trust": 0.7, "valence": 0.4,
-             "tags": ["雨萌的对象", "MTF"]},
-        ]
+        """G2: 确保关键人物种子关系存在（仅首次初始化写入）。
+
+        种子来自 config.persona.seed_relations（经 set_seed_relations 接线，
+        生产在 config.yaml 配置）——源码不内嵌真实个人信息
+        （2026-09-06 复审 R1：原内联种子曾随 AGPL 公开源码包泄露）。
+        未配置时无种子，关系从空白自然生长。
+        """
         changed = False
-        for seed in _DEFAULT_SEEDS:
+        for seed in _seed_relations:
             qq = seed["qq"]
             if qq in self._relations:
                 # 已存在：仅补全缺失字段，不覆盖自然演化结果
@@ -193,7 +209,7 @@ class RelationEngine:
             changed = True
         if changed:
             self.persist()
-            logger.info("种子关系已初始化: %s", [s["qq"] for s in _DEFAULT_SEEDS])
+            logger.info("种子关系已初始化: %s", [s["qq"] for s in _seed_relations])
 
     # ------------------------------------------------------------------
     # 公开 API
@@ -256,6 +272,7 @@ class RelationEngine:
             rel.notes += f"\n[{time.strftime('%m-%d')}] → {rel.stage.name}"
             self._trim_notes(rel)
 
+        self.touch_deferred_persist()
         return rel
 
     def get(self, user_id: int) -> Relation:
@@ -475,6 +492,15 @@ class RelationEngine:
 # 全局单例（按 data_dir 隔离，避免跨数据目录串数据）
 _relation_engines: dict[str, RelationEngine] = {}
 _default_dir: str = "data"
+# 种子关系（首次初始化写入）：由装配层从 config.persona.seed_relations 注入。
+# 源码零内嵌真实个人信息；未注入则无种子。
+_seed_relations: list[dict] = []
+
+
+def set_seed_relations(seeds: "list[dict] | None") -> None:
+    """接线种子关系（cli/anima_core 装配时调用，须先于首个 get_relation()）。"""
+    global _seed_relations
+    _seed_relations = [dict(s) for s in (seeds or []) if isinstance(s, dict)]
 
 
 def set_relation_data_dir(data_dir: str) -> None:

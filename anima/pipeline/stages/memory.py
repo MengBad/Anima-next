@@ -36,6 +36,47 @@ def _contains_secret(text: str) -> bool:
     return any(p.search(text) for p in _SECRET_PATTERNS)
 
 
+# --- P0-2：长期记忆写入筛选 -------------------------------------------------
+# 只有「偏好/决策句」和 Owner 私聊才值得沉淀进 LongTerm。若把每条闲聊都写盘，
+# knowledge / patterns 会被噪音淹没，query 命中质量反而下降（这是 long_term_context
+# 原先默认关闭的实际原因之一）。
+_PREF_HINTS = (
+    "我喜欢", "我讨厌", "我不喜欢", "我偏好", "我习惯", "我一般", "我通常",
+    "我希望", "我要你", "你以后", "你别", "你不要", "你最好",
+    "以后都", "以后别", "以后就", "记得我", "记住我", "别再", "不要再",
+    "默认就", "默认用", "总是要", "每次都", "我的原则是", "就这样定", "定下来",
+)
+
+
+def _is_preference_text(text: str) -> bool:
+    t = (text or "").strip()
+    return bool(t) and any(h in t for h in _PREF_HINTS)
+
+
+def _is_owner_private(ctx) -> bool:
+    """Owner 私聊：Owner 的话权重最高，一律沉淀（无论是否像偏好句）。"""
+    try:
+        if str(getattr(ctx, "detail_type", "") or "") != "private":
+            return False
+        meta = getattr(ctx, "meta", None) or {}
+        if meta.get("is_owner"):
+            return True
+        return int(meta.get("permission_level", 0) or 0) >= 4  # LEVEL_OWNER
+    except Exception:
+        return False
+
+
+def _long_term_should_write(core, ctx, text: str) -> bool:
+    mem_cfg = getattr(getattr(core, "config", None), "memory", None)
+    mode = str(getattr(mem_cfg, "long_term_write", "preference") or "preference").strip().lower()
+    if mode == "off":
+        return False
+    if mode == "all":
+        return True
+    # preference（默认）
+    return _is_owner_private(ctx) or _is_preference_text(text)
+
+
 def _long_term_query(core, text: str):
     """④ long_term 第三层查询：memory.long_term_context 开启且有命中时返回结果，否则 None（fail-closed）。"""
     try:
@@ -80,6 +121,19 @@ def _memory_audit(ctx: PipelineContext, event: str, reason: str = "") -> None:
 
 
 async def memory_stage(ctx: PipelineContext) -> StageResult:
+    # 收敛计划 M2：统一记忆检索聚合片段（只读，flag 默认关）
+    try:
+        core_m2 = ctx.meta.get("core")
+        if (core_m2 is not None
+                and getattr(getattr(core_m2.config, "memory", None), "unified_recall_enabled", False)):
+            from . import _shared as _sh
+            agg = await _sh.unified_recall(
+                core_m2, ctx.text or "", group_id=ctx.group_id, user_id=ctx.user_id)
+            lines = [f"- [{k}] {v}" for k, vs in agg.items() for v in vs if v]
+            if lines:
+                ctx.meta["unified_memory_recall"] = "\n".join(lines)[:1200]
+    except Exception:
+        pass
     """注入短期对话记忆 + 长期向量记忆到 LLM 上下文。"""
     from anima.memory.chat_memory import get_chat_memory
 
@@ -207,12 +261,13 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
         except Exception:
             logger.exception("情节记忆写入失败")
 
-    # ④b long_term 第三层写入：开启时把用户消息沉淀为长期记忆事件(与读取同门, 默认关)
+    # ④b long_term 第三层写入：仅偏好/决策句（或 Owner 私聊）沉淀，闲聊不入库
     try:
         _lt_memcfg = getattr(getattr(core, "config", None), "memory", None)
         _lt_text = (ctx.text or "").strip()
         if (_lt_memcfg is not None and getattr(_lt_memcfg, "long_term_context", False)
-                and _lt_text and len(_lt_text) >= 2 and not _contains_secret(_lt_text)):
+                and _lt_text and len(_lt_text) >= 2 and not _contains_secret(_lt_text)
+                and _long_term_should_write(core, ctx, _lt_text)):
             _lt = getattr(core, "long_term", None)
             if _lt is None:
                 from anima.memory.long_term import LongTermMemory
@@ -220,10 +275,12 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
                 _lt_dir = getattr(_lt_dir, "data_dir", "data") if _lt_dir else "data"
                 _lt = LongTermMemory(str(_lt_dir))
                 core.long_term = _lt
-            _tags = ["conversation"]
+            _tags = ["conversation", "preference"]
             if bool(ctx.inbound_images):
                 _tags.append("with_image")
-            getattr(_lt, "record_event")("conversation", _lt_text[:400], tags=_tags)
+            _ev = getattr(_lt, "record_event")("conversation", _lt_text[:400], tags=_tags)
+            # 同步抽到知识层：只写 events 的话 query() 的 knowledge_matches 永远为空
+            getattr(_lt, "extract_and_store", lambda e: [])(_ev)
     except Exception:  # noqa: BLE001 - 长期记忆写入失败不阻断流水线
         logger.debug("long_term 写入失败, 隔离")
     ctx.meta["chat_id"] = chat_id

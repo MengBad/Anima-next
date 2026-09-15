@@ -33,7 +33,7 @@ NOW = "2026-08-11T16:00:00+00:00"
 # A - Intent isolation (intent != authorization)
 # ---------------------------------------------------------------------------
 def test_a_intent_isolation(tmp_path):
-    from anima.capability_intent_fact import (
+    from anima.capability.intent_fact import (
         IntentFactReadError,
         IntentFactStore,
         verify_intent_fact,
@@ -61,9 +61,9 @@ def test_a_intent_isolation(tmp_path):
 # B - Identity continuity (intent -> authz -> exec -> evidence)
 # ---------------------------------------------------------------------------
 def test_b_identity_continuity(tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactStore
-    from anima.capability_execution_dispatch import DispatchFlow
-    from anima.capability_intent_fact import (
+    from anima.capability.authorization_fact import AuthorizationFactStore
+    from anima.capability.execution_dispatch import DispatchFlow
+    from anima.capability.intent_fact import (
         IntentFactStore,
         verify_identity_continuity,
     )
@@ -107,7 +107,7 @@ def test_b_identity_continuity(tmp_path):
 # C - Replay safety (same intent -> same chain, no second chain)
 # ---------------------------------------------------------------------------
 def test_c_replay_safe(tmp_path):
-    from anima.capability_intent_fact import IntentFactStore
+    from anima.capability.intent_fact import IntentFactStore
 
     store = IntentFactStore(str(tmp_path))
     first = store.record(
@@ -135,9 +135,9 @@ def test_c_replay_safe(tmp_path):
 # D - Non-escalation (intent never upgrades to approved/executed/production)
 # ---------------------------------------------------------------------------
 def test_d_non_escalation(tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactStore
-    from anima.capability_execution_dispatch import DispatchFlow
-    from anima.capability_intent_fact import (
+    from anima.capability.authorization_fact import AuthorizationFactStore
+    from anima.capability.execution_dispatch import DispatchFlow
+    from anima.capability.intent_fact import (
         IntentFactStore,
         verify_identity_continuity,
     )
@@ -175,10 +175,10 @@ def test_d_non_escalation(tmp_path):
 # E - Cross-sink consistency (intent + authz + exec + health evidence)
 # ---------------------------------------------------------------------------
 def test_e_cross_sink_consistency(tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactStore
-    from anima.capability_execution_dispatch import DispatchFlow
-    from anima.capability_health_evidence_linker import HealthEvidenceLinker
-    from anima.capability_intent_fact import (
+    from anima.capability.authorization_fact import AuthorizationFactStore
+    from anima.capability.execution_dispatch import DispatchFlow
+    from anima.capability.health_evidence_linker import HealthEvidenceLinker
+    from anima.capability.intent_fact import (
         IntentFactStore,
         verify_identity_continuity,
     )
@@ -238,7 +238,7 @@ def test_e_cross_sink_consistency(tmp_path):
 # F - Static boundary (doubles as the scan)
 # ---------------------------------------------------------------------------
 def test_f_static_boundary():
-    src = pathlib.Path("anima/capability_intent_fact.py").read_text(encoding="utf-8")
+    src = pathlib.Path("anima/capability/intent_fact.py").read_text(encoding="utf-8")
     transport = [
         "subprocess", r"\bssh\b", "paramiko", "docker", "systemctl",
         r"\brequests\b", "httpx", "daemon", r"\btimer\b", r"\bpoll\b",
@@ -266,12 +266,12 @@ def test_f_static_boundary():
 # G - Backward compatibility (P6.10-A/B facts without intent_id still work)
 # ---------------------------------------------------------------------------
 def test_g_backward_compat(tmp_path):
-    from anima.capability_authorization_fact import (
+    from anima.capability.authorization_fact import (
         AuthorizationFact,
         AuthorizationFactStore,
         verify_authorization_fact,
     )
-    from anima.capability_execution_dispatch import DispatchFlow
+    from anima.capability.execution_dispatch import DispatchFlow
 
     # AuthorizationFact without intent_id -> default "" (absence marker)
     authz = AuthorizationFactStore(str(tmp_path)).record(

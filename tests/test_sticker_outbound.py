@@ -82,12 +82,24 @@ def test_group_no_sticker_but_atmosphere_whitelist_auto_picks():
     assert any(s["type"] == "image" for s in segs)
 
 
-def test_generated_image_appended():
+def test_generated_image_appended(tmp_path):
+    # 生图文件真实存在时，出站必须带 image 段（不能因鲁棒性守卫被跳过）。
+    gen = tmp_path / "z.webp"
+    gen.write_bytes(b"fake-webp")
     ctx = _ctx(sticker=None, atm="formal", reply="看图")
-    ctx.generated_image_paths = ["/opt/anima/data/gen/z.webp"]
+    ctx.generated_image_paths = [str(gen)]
     segs = _build_reply_segments(ctx, "group", 123, 456, _core())
     imgs = [s for s in segs if s["type"] == "image"]
-    assert imgs and imgs[0]["data"]["file"] == "/opt/anima/data/gen/z.webp"
+    assert imgs and imgs[0]["data"]["file"] == str(gen)
+
+
+def test_generated_image_missing_path_skipped(tmp_path):
+    """鲁棒性守卫：生图路径文件已不存在（磁盘清理/进程切换）时，跳过不硬发。"""
+    ctx = _ctx(sticker=None, atm="formal", reply="看图")
+    ctx.generated_image_paths = [str(tmp_path / "gone.webp")]  # 文件不存在
+    segs = _build_reply_segments(ctx, "group", 123, 456, _core())
+    assert not any(s["type"] == "image" for s in segs)
+    assert any(s["type"] == "text" for s in segs)
 
 
 def test_split_text_and_sticker_into_separate_messages():
@@ -173,10 +185,12 @@ def test_private_never_at():
     assert not any(s["type"] == "at" for s in segs)
 
 
-def test_split_generated_image_also_separate():
+def test_split_generated_image_also_separate(tmp_path):
     """表情 + 生图都应各自独立成条（共 3 条：@文本 / 表情 / 生图）。"""
+    gen = tmp_path / "z.webp"
+    gen.write_bytes(b"fake-webp")
     ctx = _ctx(sticker="/opt/anima/data/stickers/x.jpg")
-    ctx.generated_image_paths = ["/opt/anima/data/gen/z.webp"]
+    ctx.generated_image_paths = [str(gen)]
     segs = _build_reply_segments(ctx, "group", 123, 456, _core())
     msgs = _split_reply_messages(segs)
     assert len(msgs) == 3

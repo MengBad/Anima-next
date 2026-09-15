@@ -114,8 +114,16 @@ def build_engineering_loop(
             except Exception:  # noqa: BLE001
                 denials = []
             selfcode = getattr(core, "selfcode_manager", None)
+            rq = getattr(core, "reply_quality", None)
+            rq_report = None
+            try:
+                if rq is not None and hasattr(rq, "report"):
+                    rq_report = rq.report()
+            except Exception:  # noqa: BLE001
+                rq_report = None
             issues = list(collect_self_monitor_issues(
-                selfcode_manager=selfcode, audit_denials=denials))
+                selfcode_manager=selfcode, audit_denials=denials,
+                reply_quality_report=rq_report))
             stages["plan"] = True
         except Exception:  # noqa: BLE001 - 提案采集失败不阻断快照
             unavailable.append("proposals")

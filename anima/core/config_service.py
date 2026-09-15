@@ -92,6 +92,10 @@ MANIFEST: list[dict[str, Any]] = [
     {"path": "autonomy.familiar_reply_min", "label": "熟人模式亲密度门槛", "type": "number", "min": 0, "max": 1, "risk": "green", "restart": False, "impact": ["回复门控"]},
     {"path": "autonomy.wake_session_ttl_sec", "label": "唤醒会话窗（秒）", "type": "number", "min": 5, "max": 600, "risk": "green", "restart": False, "impact": ["回复门控"]},
     {"path": "autonomy.passive_reply_cooldown_sec", "label": "每用户被动回复冷却（秒）", "type": "number", "min": 0, "max": 600, "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "autonomy.correction_exempt_cooldown", "label": "纠正豁免被动冷却（唤醒窗内）", "type": "boolean", "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "autonomy.fatigue_mention_soft", "label": "社交疲劳软阈值（@次数）", "type": "number", "min": 3, "max": 30, "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "autonomy.fatigue_mention_hard", "label": "社交疲劳硬阈值（@次数）", "type": "number", "min": 4, "max": 40, "risk": "green", "restart": False, "impact": ["回复门控"]},
+    {"path": "proxy_mgmt.enabled", "label": "代理节点管理开关", "type": "boolean", "risk": "green", "restart": False, "impact": ["WebUI"]},
     {"path": "permissions.group_policies", "label": "逐群策略", "type": "group_policies", "risk": "green", "restart": False, "impact": ["群策略", "回复门控", "工具与表情"]},
     # 心跳对象是在启动阶段按该开关装配的；切换开关必须受控重启，
     # 否则仅替换 Pydantic 配置并不会创建/销毁运行中的任务。

@@ -15,7 +15,7 @@ from dataclasses import replace
 
 import pytest
 
-from anima.capability_activation_contract import (
+from anima.capability.activation_contract import (
     CapabilityActivationPlan,
     CapabilityActivationReview,
     OfflineCapabilityActivationPlanner,
@@ -23,12 +23,12 @@ from anima.capability_activation_contract import (
     ReviewDecision,
     SyntheticCapabilityProposal,
 )
-from anima.capability_activation_proof import (
+from anima.capability.activation_proof import (
     ActivationRecord,
     OfflineActivationProofBuilder,
 )
 
-from anima.capability_suspend_revocation import (  # RED: fails until module exists
+from anima.capability.suspend_revocation import (  # RED: fails until module exists
     OfflineSuspendRevocationPlanner,
     RevocationRecord,
     SuspendRevocationError,

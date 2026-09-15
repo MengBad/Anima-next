@@ -12,6 +12,10 @@ consistency guarantees that the governance closure depends on:
 * Foundation / Lifecycle / CapabilityContract / Memory / Identity are untouched.
 
 Every assertion here is evidence for ``P4.4_GOVERNANCE_CLOSURE_AUDIT.md``.
+
+P4 evolution-chain slice retired 2026-09-12 together with ``evolution_contract``
+(archived at ``anima/capability/_archive/`` with its dedicated tests); the
+activation-chain guarantees below cover the modules that stay in production.
 """
 
 from __future__ import annotations
@@ -20,9 +24,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-import pytest
-
-from anima.capability_activation_contract import (
+from anima.capability.activation_contract import (
     CapabilityActivationPlan,
     CapabilityActivationReview,
     OfflineCapabilityActivationPlanner,
@@ -31,35 +33,22 @@ from anima.capability_activation_contract import (
     SyntheticCapabilityProposal,
     verify_activation_plan,
 )
-from anima.capability_activation_proof import (
+from anima.capability.activation_proof import (
     ActivationProof,
     ActivationRecord,
     OfflineActivationProofBuilder,
     verify_activation_proof,
 )
-from anima.capability_staged_activation import (
+from anima.capability.staged_activation import (
     OfflineStagedActivationPlanner,
     StageStatus,
     StagedActivationRecord,
     verify_staged_activation,
 )
-from anima.capability_suspend_revocation import (
+from anima.capability.suspend_revocation import (
     OfflineSuspendRevocationPlanner,
     SuspensionRecord,
     verify_suspend_revocation,
-)
-from anima.capability_evolution_contract import (
-    EvolutionGateRecord,
-    EvolutionImpact,
-    EvolutionProposal,
-    EvolutionRecord,
-    EvolutionReview,
-    OfflineEvolutionPlanner,
-    EVOLUTION_RECORD_LIFECYCLE,
-    EVOLUTION_RECORD_TERMINAL,
-    verify_evolution_chain,
-    verify_evolution_gate,
-    verify_evolution_record,
 )
 
 NOW = "2026-08-11T00:00:00+08:00"
@@ -95,26 +84,6 @@ def _build_capability_chain():
     return proposal, review, plan, builder, record, proof
 
 
-def _build_evolution_chain(decision: str = "approved"):
-    planner = OfflineEvolutionPlanner()
-    proposal = planner.propose(
-        proposal_id="evo-1", validation_rfc_id="RFC-0000",
-        observed_contradiction="X contradicts Y",
-        inconsistency_eliminated="Z eliminated",
-        change_class="contraction", forbids_expansion="true",
-        proposed_at=NOW,
-    )
-    impact = planner.assess_impact("imp-1", proposal, ("Foundation/0100",), NOW)
-    review = planner.review("rev-1", proposal, impact, "approve", NOW)
-    gate = planner.record_gate(
-        "gate-1", proposal, review, decision, "auditor-2",
-        ("ev-2",), NOW,
-        rationale="" if decision == "approved" else "rejected: not contraction-safe",
-    )
-    record = planner.record_evolution("rec-1", proposal, review, gate, "recorder-1", NOW)
-    return planner, proposal, impact, review, gate, record
-
-
 # --- static boundary scan ------------------------------------------------
 
 _ALL_MODULE_NAMES = [
@@ -122,7 +91,6 @@ _ALL_MODULE_NAMES = [
     "capability_activation_proof",
     "capability_staged_activation",
     "capability_suspend_revocation",
-    "capability_evolution_contract",
 ]
 
 
@@ -142,7 +110,7 @@ _RUNTIME_PAT = [
 ]
 _FROZEN_IMPORT = re.compile(
     r"^\s*(?:from|import)\s+anima\.(?!capability_(?:activation_contract|"
-    r"activation_proof|staged_activation|suspend_revocation|evolution_contract))"
+    r"activation_proof|staged_activation|suspend_revocation))"
     r"(lifecycle|constitution|foundation|memory|identity|runtime|capability_contract)\b",
     re.M,
 )
@@ -168,8 +136,7 @@ def test_no_frozen_module_imports():
 _RECORD_CLASSES = [
     SyntheticCapabilityProposal, CapabilityActivationReview, CapabilityActivationPlan,
     ActivationRecord, ActivationProof, StagedActivationRecord,
-    SuspensionRecord, EvolutionProposal, EvolutionImpact, EvolutionReview,
-    EvolutionGateRecord, EvolutionRecord,
+    SuspensionRecord,
 ]
 
 
@@ -237,47 +204,12 @@ def test_suspend_revocation_chain_intact_and_not_executed():
     assert v.no_unrelated_revocation
 
 
-# --- evolution chain full digest binding (Q2, P4 side) ----------------------
-
-def test_evolution_chain_full_digest_binding():
-    planner, proposal, impact, review, gate, record = _build_evolution_chain()
-    vc = verify_evolution_chain(proposal, impact, review)
-    assert vc.valid and vc.f1_valid and vc.f2_valid and vc.f3_valid and vc.f4_valid
-    assert vc.impact_read_only and vc.digest_intact
-    vg = verify_evolution_gate(proposal, gate)
-    assert vg.valid and vg.proposal_binding_intact and vg.reviewer_provenance
-    assert vg.gate_not_executor and vg.approval_not_apply
-
-
-def test_evolution_record_lifecycle_reaches_terminal_and_stays_inert():
-    planner, proposal, impact, review, gate, record = _build_evolution_chain()
-    opened = planner.advance_lifecycle(record, "open", NOW)
-    closed = planner.advance_lifecycle(opened, "closed", NOW)
-    v = verify_evolution_record(closed, proposal, review, gate)
-    assert v.valid and v.lifecycle_complete and v.no_execution and v.digest_intact
-    # irreversible terminal
-    with pytest.raises(Exception):
-        planner.advance_lifecycle(closed, "closed", NOW)
-
-
 # --- execution invariants (Q5) ---------------------------------------------
-
-def test_execution_status_pinned_not_executed_through_lifecycle():
-    planner, proposal, impact, review, gate, record = _build_evolution_chain()
-    for state in EVOLUTION_RECORD_LIFECYCLE[1:]:  # open, closed
-        record = planner.advance_lifecycle(record, state, NOW)
-    assert record.execution_status == "not_executed"
-    assert record.lifecycle_state == EVOLUTION_RECORD_TERMINAL
-
 
 def test_approval_is_never_execution():
     # capability side
     proposal, review, plan, builder, record, proof = _build_capability_chain()
     assert record.status == PlanStatus.NOT_ACTIVATED
-    # evolution side
-    _, _, _, _, _, erecord = _build_evolution_chain(decision="approved")
-    assert erecord.execution_status == "not_executed"
-    assert erecord.decision == "approved"
 
 
 # --- terminal-state irreversibility across slices (Q4) ----------------------

@@ -41,6 +41,22 @@ class WeeklyCalendarEvent(DailyCalendarEvent):
             raise ValueError("星期必须是 1-7（周一到周日）")
 
 
+@dataclass
+class OnceCalendarEvent(DailyCalendarEvent):
+    """一次性提醒：仅 due_date（北京时间 YYYY-MM-DD）当天触发，触发后自动失效。
+
+    「明天早上7点提醒我喂猫」是一次性请求，此前落进 add_daily 会变成永久
+    每日提醒（2026-09-06 用户体验测试②）；本类型补足一次语义。
+    """
+
+    due_date: str = ""
+
+    def __post_init__(self) -> None:
+        super().__post_init__()
+        self.due_date = str(self.due_date).strip()
+        datetime.strptime(self.due_date, "%Y-%m-%d")  # 非法日期即抛
+
+
 class CalendarStore:
     def __init__(self, persistence: PersistenceProvider):
         self.persistence = persistence
@@ -56,10 +72,28 @@ class CalendarStore:
                 self.weekly_items.append(WeeklyCalendarEvent(**raw))
             except (TypeError, ValueError):
                 continue
+        self.once_items: list[OnceCalendarEvent] = []
+        for raw in persistence.read_json("calendar_once.json", []) or []:
+            try:
+                self.once_items.append(OnceCalendarEvent(**raw))
+            except (TypeError, ValueError):
+                continue
 
     def save(self) -> None:
         self.persistence.write_json("calendar_daily.json", [asdict(item) for item in self.items])
         self.persistence.write_json("calendar_weekly.json", [asdict(item) for item in self.weekly_items])
+        self.persistence.write_json("calendar_once.json", [asdict(item) for item in self.once_items])
+
+    def add_once(self, group_id: int, date_str: str, hhmm: str, text: str) -> OnceCalendarEvent:
+        try:
+            hour_text, minute_text = hhmm.split(":", 1)
+            item = OnceCalendarEvent(group_id, int(hour_text), int(minute_text), text,
+                                     due_date=date_str)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("一次性提醒需要 YYYY-MM-DD 日期与 HH:MM 时间") from exc
+        self.once_items.append(item)
+        self.save()
+        return item
 
     def add_daily(self, group_id: int, hhmm: str, text: str) -> DailyCalendarEvent:
         try:
@@ -119,5 +153,20 @@ class CalendarStore:
         for item in due:
             item.last_triggered_day = day
         if due:
+            self.save()
+        return due
+
+    def once_due(self, now: float | None = None) -> list[OnceCalendarEvent]:
+        """当天到期的一次性提醒；取出即置 disabled（一次性语义），由调用方持久化。"""
+        current = datetime.fromtimestamp(time.time() if now is None else now, _BEIJING)
+        day = current.date().isoformat()
+        due = [
+            item for item in self.once_items
+            if item.enabled and item.due_date == day
+            and (current.hour, current.minute) >= (item.hour, item.minute)
+        ]
+        if due:
+            for item in due:
+                item.enabled = False
             self.save()
         return due

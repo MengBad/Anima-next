@@ -44,3 +44,16 @@ def test_weekly_calendar_only_triggers_matching_weekday(tmp_path):
     assert [item.id for item in store.weekly_due(monday)] == [event.id]
     assert store.weekly_due(monday + 60) == []
     assert store.weekly_due(tuesday) == []
+
+
+def test_once_calendar_fires_only_on_date_then_disabled(tmp_path):
+    """一次性提醒：仅到期日触发，触发后自动失效（不再逐日重复）。"""
+    store = CalendarStore(PersistenceProvider(str(tmp_path)))
+    event = store.add_once(727, "2026-09-07", "07:00", "喂猫")
+    assert store.once_due(_beijing_ts("2026-09-06", 10, 0)) == []
+    fired = store.once_due(_beijing_ts("2026-09-07", 8, 0))
+    assert [item.id for item in fired] == [event.id]
+    # 触发后禁用：同日稍后/次日都不再触发，且跨重启持久
+    assert store.once_due(_beijing_ts("2026-09-07", 9, 0)) == []
+    restored = CalendarStore(PersistenceProvider(str(tmp_path)))
+    assert restored.once_due(_beijing_ts("2026-09-08", 7, 1)) == []

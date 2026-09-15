@@ -4,10 +4,11 @@ import re
 from typing import Literal
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 _ID_RE = re.compile(r"^[a-z][a-z0-9_]{1,32}$")
 _PLACEHOLDER_RE = re.compile(r"^\{([a-z][a-z0-9_]*)\}$")
+_TOOL_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,40}$")
 
 
 def render_http_template(template: str, args: dict[str, object] | None = None) -> str:
@@ -36,12 +37,31 @@ class SkillExecution(BaseModel):
     ``http_get`` 刻意只接受固定地址，不提供请求头、方法、重定向、
     cookie 或参数插值。这样一个经审批的网站探查 Skill 不会变成通用
     HTTP 代理或 SSRF 绕过入口。
+
+    ``tool``（P2-2）是**声明式工具组合**：只把既有的注册工具按名字组合起来，
+    Skill 自身不携带任何代码。无提权上界由 ``SkillRegistry`` 机械保证：
+    生成的 Skill 工具等级 = max(技能声明等级, 目标工具等级)，
+    因此调用者通过 Skill 能达到的权限，永远不超过他直接调用同一工具能达到的权限。
+    目标工具的 ``danger`` / ``capability_only`` / ``agent_`` 前缀环境操控类一律拒绝组合。
     """
 
-    type: Literal["prompt", "http_get"]
-    template: str = Field(min_length=1, max_length=8000)
+    type: Literal["prompt", "http_get", "tool"] = "prompt"
+    template: str = Field(default="", max_length=8000)
+    #: type=tool 时：被组合的目标工具名（必须已注册且通过 SkillRegistry 的组合白名单校验）
+    tool: str = ""
     content_summary: bool = False
     max_content_chars: int = Field(default=4000, ge=500, le=8000)
+
+    @model_validator(mode="after")
+    def _check_execution_shape(self) -> "SkillExecution":
+        if self.type == "tool":
+            if not _TOOL_NAME_RE.fullmatch(self.tool or ""):
+                raise ValueError("tool 型 Skill 必须给出合法的目标工具名（tool 字段）")
+            if not self.template.strip():
+                raise ValueError("tool 型 Skill 必须给出 template 作为整理指令")
+        elif not self.template.strip():
+            raise ValueError("prompt/http_get 型 Skill 的 template 不能为空")
+        return self
 
 
 class SkillManifest(BaseModel):

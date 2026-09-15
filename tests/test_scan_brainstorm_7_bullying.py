@@ -33,7 +33,8 @@ def test_playful_offset_suppresses_hurt():
 
 
 def test_handler_single_point_classify_and_playful():
-    src = io.open("anima/llm/handler.py", encoding="utf-8").read()
+    # 队列④第二刀：霸凌布线整体迁至 pipeline 前置 stage，契约跟随实现走
+    src = io.open("anima/pipeline/stages/prefilter.py", encoding="utf-8").read()
     assert "bullying_level" in src              # 统一分级字段
     assert "_detect_hurtful" in src             # playful 抵消单源复用
     assert "classify as _bully_classify" in src  # 单点分级

@@ -58,6 +58,24 @@ _REALTIME_TOOL_GUIDANCE = (
     "若用户丢的是 space.bilibili.com 主页链接，用 bilibili_read 读主页最近投稿；"
     "不要对主页链接反复 web_search 空转，也不要假装已经看完某个具体视频。"
 )
+# --- P0-1 Memory-First（DESIGN_REACT_MEMORY_FIRST.md）---
+# 与 _REALTIME_TOOL_GUIDANCE 反向互补：成员/事实类问题先查内部记忆，别一上来就搜网。
+# 注意与 _REALTIME_TOOL_RE 的关系：后者刻意宽松（含「是什么/为什么/资料/百科」等泛事实词），
+# 因此采用**互斥分流**——实时词命中走实时引导（搜网），仅在未命中实时词时才注入记忆引导，
+# 避免同一条消息同时收到「先搜网」和「先查记忆」两条互相打架的指令。
+_MEMORY_FIRST_RE = re.compile(
+    r"(是谁|喜欢|讨厌|怎么样|怎样的人|讲讲|介绍|认识|是什么关系|干啥|做啥|"
+    r"什么性格|爱好|擅长|背景|以前|去年|上次|记得|提过|说过)",
+    re.I,
+)
+_MEMORY_FIRST_GUIDANCE = (
+    "这个问题大概率关于群里某个已知成员或已有事实。请遵循工具优先级：\n"
+    "1) 关于群成员（『亦萱是谁』『小明喜欢什么』）→ 优先用 get_member_facts / get_user_relations；\n"
+    "2) 关于已知事实或历史对话 → 优先用已注入的记忆（cognition 已把被提及者的公开事实放进 system）；\n"
+    "3) 只有内部记忆确实无法回答时，才调用 web_search；\n"
+    "4) 仅当问题明确涉及实时信息（今天天气、正在发生的新闻、股价、开播状态）才可直接 web_search。\n"
+    "在动手前先想清楚『我是否已经从记忆/已注入内容知道答案』，再决定要不要搜网——不要一上来就搜。"
+)
 # X（Twitter）搜索专用引导：用户明确要求「去 X/推特上搜」时，必须走 x_search 而非 web_search。
 _X_SEARCH_RE = re.compile(
     r"(推特|twitter|x\.com|去\s*X|在\s*X|上\s*X|X\s*上|推特上搜|X\s*上搜|推特搜|男娘推荐)",
@@ -148,6 +166,26 @@ def _inject_runtime_tool_guidance(ctx: PipelineContext, guidance: str) -> bool:
     system["content"] = updated
     ctx.system_prompt = updated
     return True
+
+
+def _memory_first_enabled(core) -> bool:
+    """P0-1 总开关：``react.memory_first``（默认 True）。
+
+    取不到配置时 fail-open 开启：最坏情况是模型被建议「先查记忆」，
+    不构成越权调用，也不改变任何工具的可调用性。
+    """
+    cfg = getattr(getattr(core, "config", None), "react", None)
+    return bool(getattr(cfg, "memory_first", True))
+
+
+def _freshness_footer_enabled(core) -> bool:
+    """P2-3 开关：``react.freshness_footer``（默认 True）。
+
+    取不到配置时 fail-open 开启：最坏情况是回答末尾多一句时效声明，
+    不改变任何工具可调用性，也不会丢失用户内容。
+    """
+    cfg = getattr(getattr(core, "config", None), "react", None)
+    return bool(getattr(cfg, "freshness_footer", True))
 
 
 def _inject_user_boundary_note(ctx: PipelineContext) -> bool:
@@ -551,6 +589,10 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         permission_level=ctx.meta.get("permission_level", 2),
         quality=getattr(core, "reply_quality", None),
         tool_result_token_budget=context_composer.tool_result_token_budget,
+        # P0-1：开关关闭时 schema 退回注册顺序（与引导注入同一个回滚点）
+        priority_sort=_memory_first_enabled(core),
+        # P2-3：时效兜底脚注（react.freshness_footer）
+        freshness_footer=_freshness_footer_enabled(core),
     )
 
     logger.info("ReAct: model=%s text_len=%d mem=%d desire=%d tools=%d",
@@ -559,9 +601,16 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                  ctx.meta.get("desire_count", 0),
                  len(available_tools.tools) if available_tools else 0)
 
-    # 实时/可查事实工具引导
-    if available_tools and _REALTIME_TOOL_RE.search(ctx.text or ""):
+    # 实时/可查事实工具引导 vs 记忆优先引导：互斥分流（详见 _MEMORY_FIRST_RE 注释）
+    _realtime_hit = bool(available_tools) and bool(_REALTIME_TOOL_RE.search(ctx.text or ""))
+    if _realtime_hit:
         _inject_runtime_tool_guidance(ctx, _REALTIME_TOOL_GUIDANCE)
+    elif (
+        available_tools
+        and _memory_first_enabled(core)
+        and _MEMORY_FIRST_RE.search(ctx.text or "")
+    ):
+        _inject_runtime_tool_guidance(ctx, _MEMORY_FIRST_GUIDANCE)
 
     # X（Twitter）搜索专用引导：用户明确要求去 X/推特上搜时，优先走 x_search 而非 web_search
     if available_tools and _X_SEARCH_RE.search(ctx.text or ""):

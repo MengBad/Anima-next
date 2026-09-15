@@ -193,10 +193,17 @@ class ExplorationManager:
         self._reset_day()
         now = time.time()
         interval = max(300, int(getattr(self.config, "interval_sec", 3600) or 3600))
-        daily_limit = max(0, int(getattr(self.config, "daily_limit", 3) or 3))
+        # daily_limit 语义与 image_generation.daily_limit 保持一致：0 = 不限制。
+        # 不能写 `getattr(...) or 3`——0 是 falsy，会被静默吞成 3，
+        # 使「0」成为一个既非"不限"也非"关闭"的未定义值。
+        raw_daily_limit = getattr(self.config, "daily_limit", 3)
+        daily_limit = 3 if raw_daily_limit is None else max(0, int(raw_daily_limit))
         if not force and now - float(self.state.get("last_run_at", 0) or 0) < interval:
             return None
-        if not force and daily_limit and int(self.state.get("explored_today", 0) or 0) >= daily_limit:
+        if (
+            not force and daily_limit > 0
+            and int(self.state.get("explored_today", 0) or 0) >= daily_limit
+        ):
             return None
         self._running = True
         self.state["last_run_at"] = now
@@ -698,8 +705,12 @@ class ExplorationManager:
     def _maybe_share(self, note: ExplorationNote, desire: Any) -> None:
         if not bool(getattr(self.config, "share_enabled", False)) or desire is None:
             return
-        limit = max(0, int(getattr(self.config, "daily_share_limit", 1) or 1))
-        if limit and int(self.state.get("shared_today", 0) or 0) >= limit:
+        # fail-closed：同上，daily_share_limit=0 表示当天完全不分享，不能被 `or 1` 吞成 1。
+        raw_share_limit = getattr(self.config, "daily_share_limit", 1)
+        limit = 1 if raw_share_limit is None else max(0, int(raw_share_limit))
+        if limit <= 0:
+            return
+        if int(self.state.get("shared_today", 0) or 0) >= limit:
             return
         threshold = float(getattr(self.config, "share_min_score", 0.75) or 0.75)
         group_id = getattr(desire, "source_group_id", None)

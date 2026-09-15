@@ -1,4 +1,5 @@
 {
+  "_historical_note": "HISTORICAL — 本快照停更于 2026-08-16，仅作历史参考；现状以 README.md / MAINTENANCE.md 为准",
   "updated": "2026-08-15",
   "owner": "Principal Autonomous Engineering Agent",
   "tasks": [
@@ -86,5 +87,7 @@
       "status": "PENDING",
       "detail": "自我优化但 Self improvement ≠ Self authorization，全程 owner 审批"
     }
-  ]
+  ],
+  "_deprecated": true,
+  "_deprecated_note": "DEPRECATED 2026-09-15：历史快照，不代表当前阶段。智能升级路线见 ROADMAP.md；Foundation 冻结运维状态见 MAINTENANCE.md。仍读取本文件的脚本请迁移。"
 }

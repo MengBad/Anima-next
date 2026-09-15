@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-07-29，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # 【设计文档】记忆压缩与遗忘（进化1）
 
 > 目标：让 bot 从"堆事实的字典"进化成"有信誉、会整理、记得重点"的数字生命。
@@ -174,4 +176,22 @@ memory_compression:
 | `tests/test_memory_compression.py` | 上述 10 项单测 |
 
 ---
-*设计基线：Anima-next 生产路径 `G:/Anima-next`，部署于 VPS `/opt/anima`。本文件仅设计，未实现。待用户确认后进入实现阶段。*
+*设计基线：Anima-next 生产路径 `G:/Anima-next`，部署于 VPS `/opt/anima`。*
+
+> **状态：已实现（2026-09-15，P1-2）** · 实现：`anima/crossgroup/memory/compression.py`
+> 测试：`tests/test_memory_compression.py`（21 项） · 调度：`core/autonomy.py` 日切块
+> 配置：`memory_compression.*`（`enabled: true` 默认开，`enabled=false` 一键停整理）
+>
+> **实现偏差（与原设计不一致处，均为基于真实代码的取舍）**
+> 1. **相似度默认走 difflib 字符比，不是 embedding**：零成本、零外部依赖、结果可确定性测试；
+>    `CompressionEngine._make_sim_fn()` 会在 `vector_memory.similarity()` 存在时自动改用向量相似度。
+> 2. **LLM 摘要默认不触发**：仅在 `len(facts) >= min_facts_to_llm(40)` 且传入 llm 时才调，
+>    失败静默回退为「取簇内最新一条为代表句」。绝大多数用户永不产生 LLM 成本。
+> 3. **`run_hour` 默认 -1（不限小时）而非 3**：实际挂在 autonomy 的「日切块」（凌晨首次心跳，
+>    天然低峰）；若硬限定 `tm_hour == 3`，日切几乎不可能正好落在 3 点 → 压缩永不触发。
+>    需严格 03:00 窗口可把 `memory_compression.run_hour` 改回 3。
+> 4. **`recall()` / `summary()` 排序未改**（仍按时间倒序），低置信事实的降权由夜间 cap 淘汰完成——
+>    改注入排序会触碰既有跨群注入契约（test_crossgroup_fact_recall）。
+> 5. **压缩在副本上进行**（`copy.copy(fact)`），落盘失败时整体还原，避免「内存已压缩、磁盘没压缩」。
+> 6. `manual rollback` 提供 `CompressionEngine.rollback()`（还原最近 `users.json.bak-*`）；
+>    未加 CLI 子命令/WebUI 按钮（无审批不新增可执行入口）。

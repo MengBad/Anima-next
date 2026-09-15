@@ -261,6 +261,8 @@ class VectorMemory:
             return
         self._ready = True
         async with aiosqlite.connect(self.db_path) as db:
+            # 深审 P1：WAL——并发读写不再互相阻塞/SQLITE_BUSY 丢记忆
+            await db.execute("PRAGMA journal_mode=WAL")
             # meta 表始终创建
             await db.execute(
                 """CREATE TABLE IF NOT EXISTS memory_meta (
@@ -346,6 +348,22 @@ class VectorMemory:
             vec = await self.embedding.embed(text)
 
         if vec is None or not _SQLITE_VEC_AVAILABLE:
+            async with aiosqlite.connect(self.db_path) as db:
+                # 深审 P1：embed await 窗口内并发消息可能同时通过首个去重，
+                # 插入前同一连接复检（窗口从网络级收窄到即时）
+                cur = await db.execute(
+                    "SELECT 1 FROM memory_meta WHERE text = ? LIMIT 1", (text,)
+                )
+                if await cur.fetchone():
+                    return True
+            async with aiosqlite.connect(self.db_path) as db:
+                # 深审 P1：embed await 窗口内并发消息可能同时通过首个去重，
+                # 插入前同一连接复检（窗口从网络级收窄到即时）
+                cur = await db.execute(
+                    "SELECT 1 FROM memory_meta WHERE text = ? LIMIT 1", (text,)
+                )
+                if await cur.fetchone():
+                    return True
             async with aiosqlite.connect(self.db_path) as db:
                 await db.execute(
                     "INSERT INTO memory_meta(text, meta, ts, salience, source_uin, source_gid) VALUES (?, ?, ?, ?, ?, ?)",

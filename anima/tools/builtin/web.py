@@ -12,6 +12,27 @@ from collections import OrderedDict
 
 logger = logging.getLogger("anima.tools.web")
 
+
+class SearchUnavailable(RuntimeError):
+    """所有搜索通道都没能给出结果。
+
+    专门区分两种失败，避免把「环境问题」伪装成「网上没有这条信息」：
+
+    - ``responded=True``：至少有一条通道 HTTP 成功、但结果集为空
+      → 可以诚实地告诉模型/用户「没搜到」，鼓励换关键词。
+    - ``responded=False``：所有通道都在网络/限流/改版层面抛错
+      → 是环境故障，必须让模型知道「查不到 ≠ 不存在」，绝不能凭记忆补答案。
+
+    ``attempts`` 保留逐通道状态串，便于审计「到底试过哪些源」。
+    """
+
+    def __init__(self, attempts: list[str], responded: bool):
+        self.attempts = list(attempts)
+        self.responded = responded
+        self.detail = ", ".join(self.attempts)
+        super().__init__(f"全部搜索通道均未取到结果（{self.detail}）")
+
+
 # 时效词：命中即视为对「新鲜度」敏感，追加当前日期以引导引擎/模型优先取新。
 _TIME_SENSITIVE_RE = re.compile(
     r"(今天|昨天|明天|最近|最新|新闻|资讯|实时|现在|当前|今日|本周|本月|"
@@ -260,24 +281,43 @@ async def tool_web_search(query: str, num_results: int = 5,
         return results
 
     def _search() -> list[dict]:
-        """Tavily 首选（高相关、带时效）；失败降级本地 SearXNG，最后直接 Bing。
+        """多源 failover：Tavily → 本地 SearXNG → Bing → DuckDuckGo。
 
-        免费抓取（SearXNG/Bing）结果按「权威域加权」再排序：wikipedia/gov/主流新闻
-        靠前，SEO 内容农场降权。
+        Tavily 自带高质量相关排序（高相关、带 published_date），命中即返回；
+        免费抓取通道（SearXNG/Bing/DDG）结果按「权威域加权」再排序：
+        wikipedia/gov/主流新闻靠前，SEO 内容农场降权。
+
+        P2-3：DDG 此前**已实现却从未被调用**（死代码），现接入链路末尾——
+        前三个通道同时被限流/改版时它仍可能可用。全部无果时抛
+        :class:`SearchUnavailable`，由调用方区分「通道全挂（环境）」与
+        「通道答话了但确实没有（可换关键词）」，而不是一律伪装成「没有结果」。
         """
+        attempts: list[str] = []
+        responded = False  # 是否有通道真的「答了话」（HTTP 成功但结果为空）
         try:
             results = _search_tavily()
             if results:
-                return results  # Tavily 自带高质量相关排序，不二次重排
+                attempts.append("tavily:ok")
+                return results
+            attempts.append("tavily:empty")
+            responded = True
         except Exception as e:
-            logger.info("Tavily 搜索不可用/失败(%s)，降级到 SearXNG/Bing", e)
-        try:
-            results = _search_searxng()
+            attempts.append(f"tavily:fail({type(e).__name__})")
+            logger.info("Tavily 搜索不可用/失败(%s)，降级到 SearXNG/Bing/DDG", e)
+        for name, fn in (("searxng", _search_searxng), ("bing", _search_bing),
+                         ("duckduckgo", _search_ddg)):
+            try:
+                results = fn()
+            except Exception as e:
+                attempts.append(f"{name}:fail({type(e).__name__})")
+                logger.info("%s 搜索失败(%s)，继续降级", name, e)
+                continue
             if results:
+                attempts.append(f"{name}:ok")
                 return _rank_by_authority(results)
-        except Exception as e:
-            logger.info("SearXNG 搜索失败(%s)，降级到直接 Bing", e)
-        return _rank_by_authority(_search_bing())
+            attempts.append(f"{name}:empty")
+            responded = True
+        raise SearchUnavailable(attempts, responded)
 
     def _fetch_page(u: str) -> tuple[str, str]:
         now = time.monotonic()
@@ -340,7 +380,7 @@ async def tool_web_search(query: str, num_results: int = 5,
             logger.debug("web_search 自动记忆化跳过: %s", e)
 
         header = (
-            f"当前日期是 {_today_str}（今天）。关于「{query}」的搜索结果"
+            f"当前日期是 {_today_str}（今天）。抓取时间：{_today_str}。关于「{query}」的搜索结果"
             f"（共 {len(results)} 条，展示前 {n} 条）：\n"
             f"【时效提示】结果摘要里的相对时间（如“X 小时前”）请以今天 {_today_str} 为基准换算；"
             f"若网页/摘要未标注日期或明显过时，请在回答中明确说明这是陈旧信息，不要当作最新事实。"
@@ -348,12 +388,25 @@ async def tool_web_search(query: str, num_results: int = 5,
         # Tavily include_answer 的摘要答案优先展示，作为即时可信依据
         if _tavily_answer[0]:
             header = (
-                f"当前日期是 {_today_str}（今天）。关于「{query}」，Tavily 直接给出的答案：\n"
+                f"当前日期是 {_today_str}（今天）。抓取时间：{_today_str}。"
+                f"关于「{query}」，Tavily 直接给出的答案：\n"
                 f"{_tavily_answer[0]}\n\n"
                 f"以下为搜索结果（共 {len(results)} 条，展示前 {n} 条）："
             )
         return header + "\n\n" + "\n\n".join(blocks)
 
+    except SearchUnavailable as exc:
+        logger.warning("web_search 全部通道无果: %s", exc)
+        if exc.responded:
+            # 有通道正常应答但结果为空——这是「真的没搜到」，换关键词有救。
+            return (f"没有搜到「{query}」的相关结果（通道状态：{exc.detail}）。"
+                    f"搜索引擎是正常应答的，所以这更可能意味着关键词太窄或说法不同，"
+                    f"可以换个说法/更具体的词再试一次。")
+        # 所有通道都在 HTTP/解析层抛错——这是环境/限流问题，必须说清，
+        # 否则模型会把「查不到」当成「不存在」然后凭记忆编答案。
+        return (f"联网检索全部通道都不通（通道状态：{exc.detail}）。"
+                f"这是网络/限流/反爬导致的环境问题，不是「网上没有这条信息」。"
+                f"请如实告诉用户暂时查不到，不要凭记忆补答案。")
     except Exception as exc:
         logger.warning("web_search 执行失败: %s", exc)
         return f"搜索时出错了：{type(exc).__name__}"

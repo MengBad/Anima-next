@@ -1,0 +1,19 @@
+id: member_profile
+name: 成员小传
+version: "1.0.0"
+description: 把 Anima 对某位群成员的事实记忆整理成一段简洁的人物小传（是谁、做过什么、偏好是什么）。
+min_level: user
+parameters:
+  name:
+    type: string
+    description: 目标成员的 QQ 号或昵称
+    required: true
+execution:
+  type: tool
+  tool: get_member_facts
+  content_summary: true
+  template: |
+    把上面关于某位成员的事实记忆整理成一段 2-4 句的人物小传。
+    只使用材料里出现的事实；材料为空或没有有效信息时，直接回答「我对他还没有印象」，
+    不要为了凑字数编造经历、职业、爱好或关系。
+    语气自然，不要罗列原始条目，不要解释你查了哪些数据。

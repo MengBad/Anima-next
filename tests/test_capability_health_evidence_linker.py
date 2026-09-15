@@ -30,7 +30,7 @@ NOW = "2026-08-11T15:00:00+00:00"
 # ---------------------------------------------------------------------------
 def _make_execution_fact(tmp_path, capability_id: str = "code.execute"):
     """Build a REAL ExecutionFact through DispatchFlow (P6.10-B)."""
-    from anima.capability_execution_dispatch import DispatchFlow
+    from anima.capability.execution_dispatch import DispatchFlow
 
     flow = DispatchFlow(str(tmp_path))
     authz = flow.approve(
@@ -79,7 +79,7 @@ def _make_health_evidence(
 # A - Cross-sink consistency
 # ---------------------------------------------------------------------------
 def test_a_cross_sink_consistent(tmp_path):
-    from anima.capability_health_evidence_linker import (
+    from anima.capability.health_evidence_linker import (
         CONSISTENT,
         HealthEvidenceLinker,
     )
@@ -98,7 +98,7 @@ def test_a_cross_sink_consistent(tmp_path):
 # B - Evidence immutability (both files byte-identical after reconcile)
 # ---------------------------------------------------------------------------
 def test_b_evidence_immutable(tmp_path):
-    from anima.capability_health_evidence_linker import HealthEvidenceLinker
+    from anima.capability.health_evidence_linker import HealthEvidenceLinker
 
     _fact, fact_path = _make_execution_fact(tmp_path)
     health_path = _make_health_evidence(tmp_path)
@@ -118,7 +118,7 @@ def test_b_evidence_immutable(tmp_path):
 # C - Replay safety (same input -> same linkage digest)
 # ---------------------------------------------------------------------------
 def test_c_replay_safe_same_linkage(tmp_path):
-    from anima.capability_health_evidence_linker import HealthEvidenceLinker
+    from anima.capability.health_evidence_linker import HealthEvidenceLinker
 
     _fact, fact_path = _make_execution_fact(tmp_path)
     health_path = _make_health_evidence(tmp_path)
@@ -134,7 +134,7 @@ def test_c_replay_safe_same_linkage(tmp_path):
 # D - Non-escalation (execution fact never becomes authorization)
 # ---------------------------------------------------------------------------
 def test_d_non_escalation(tmp_path):
-    from anima.capability_health_evidence_linker import HealthEvidenceLinker
+    from anima.capability.health_evidence_linker import HealthEvidenceLinker
 
     _fact, fact_path = _make_execution_fact(tmp_path)
     health_path = _make_health_evidence(
@@ -161,7 +161,7 @@ def test_d_non_escalation(tmp_path):
 # E - Missing health evidence (audit state, no fabrication)
 # ---------------------------------------------------------------------------
 def test_e_missing_health_evidence(tmp_path):
-    from anima.capability_health_evidence_linker import (
+    from anima.capability.health_evidence_linker import (
         MISSING_HEALTH_EVIDENCE,
         HealthEvidenceLinker,
     )
@@ -183,7 +183,7 @@ def test_e_missing_health_evidence(tmp_path):
 # F - Corrupt health evidence (fail closed, no auto repair)
 # ---------------------------------------------------------------------------
 def test_f_corrupt_health_evidence(tmp_path):
-    from anima.capability_health_evidence_linker import (
+    from anima.capability.health_evidence_linker import (
         SCHEMA_FAILURE,
         HealthEvidenceLinker,
     )
@@ -204,7 +204,7 @@ def test_f_corrupt_health_evidence(tmp_path):
 # G - Cross-sink separation (execution_ledger untouched / not read)
 # ---------------------------------------------------------------------------
 def test_g_cross_sink_separation(tmp_path):
-    from anima.capability_health_evidence_linker import HealthEvidenceLinker
+    from anima.capability.health_evidence_linker import HealthEvidenceLinker
 
     _fact, fact_path = _make_execution_fact(tmp_path)
     health_path = _make_health_evidence(tmp_path)
@@ -223,7 +223,7 @@ def test_g_cross_sink_separation(tmp_path):
 # ---------------------------------------------------------------------------
 def test_h_static_boundary():
     src = pathlib.Path(
-        "anima/capability_health_evidence_linker.py"
+        "anima/capability/health_evidence_linker.py"
     ).read_text(encoding="utf-8")
     transport = [
         "subprocess",

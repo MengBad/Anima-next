@@ -111,28 +111,14 @@ def _looks_like_analysis_essay(reply: str, *, user_text: str = "") -> bool:
     return False
 
 
-# 模糊输入跑偏检测
-_TASK_VERBS = (
-    "讲", "写", "做", "分析", "列", "排", "翻译", "起名", "算", "画", "搜", "编",
-    "整理", "统计", "生成", "总结", "帮", "查", "推荐", "解释", "评价", "描述",
-    "来个", "给我", "说个", "写个", "整一个", "搞个", "弄个", "帮我", "讲讲",
-    "试试", "看个", "念", "唱", "吐槽", "猜",
-)
-
-
-def _looks_derailed(ctx: "PipelineContext") -> bool:
-    """用户极短且无任务诉求的输入，却换来一篇无问号的长回复 → 判定为跑偏自语。"""
-    text = (ctx.text or "").strip()
-    reply = ctx.reply or ""
-    if len(text) > 6:
-        return False
-    if any(v in text for v in _TASK_VERBS):
-        return False
-    if "？" in reply or "?" in reply:
-        return False
-    if len(reply) <= 140:
-        return False
-    return True
+# 政治敏感词表（高精度专名级；2026-09-11 owner 指示：此类门槛只拦政治内容，
+# 不再用启发式猜测「跑偏」——后者曾误拦严肃医学追问「双低会死吗」）
+_POLITICAL_RE = re.compile(
+    r"(习近平|李克强|李强|温家宝|胡锦涛|毛泽东|邓小平|江泽民|周恩来|"
+    r"中共|共产党|国民党|民进党|政府朝鲜|六四|天安门事件|文革|文化大革命|"
+    r"台独|港独|藏独|疆独|法轮功|习近平连任|总书记|国务院总理|"
+    r"台湾独立|西藏独立|新疆独立|颜色革命|政变|镇压|屠杀)"
+, re.I)
 
 
 # 用户未提及时禁止主动灌入的旧梗
@@ -165,6 +151,14 @@ def _looks_like_unprompted_fixation(user_text: str, reply: str) -> bool:
             continue
         return True
     return False
+
+
+def _strip_fixation_sentences(reply: str) -> str:
+    """剥离命中旧梗模式的句子，保留其余内容（整段罐头改写会答非所问）。"""
+    parts = re.split(r"(?<=[。！？!?\n])", reply or "")
+    kept = [p for p in parts if p.strip() and not any(
+        pat.search(p) for pat, _ in _UNPROMPTED_FIXATION_RULES)]
+    return "".join(kept).strip()
 
 
 async def _record_reply_memory(ctx: PipelineContext) -> None:
@@ -285,32 +279,29 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         return StageResult.CONTINUE
 
     # 模糊输入跑偏兜底
-    if _looks_derailed(ctx):
-        now = time.time()
-        hist = _derail_history.setdefault(ctx.user_id, deque())
-        hist.append(now)
-        while hist and now - hist[0] > 180:
-            hist.popleft()
-        if not hist:
-            _derail_history.pop(ctx.user_id, None)
-        if len(_derail_history) > _DERAIL_HISTORY_MAX:
-            cutoff = now - 180
-            stale = [k for k, v in _derail_history.items() if not v or (v and v[0] < cutoff)]
-            for k in stale[:len(_derail_history) // 10 + 1]:
-                _derail_history.pop(k, None)
-        if len(hist) >= 3:
-            logger.warning("Guardrail: 同一用户反复跑偏，本次静默避免刷屏")
-            ctx.reply = ""
-            return StageResult.SKIP_REPLY
-        logger.warning("Guardrail: 模糊输入被脑补成长篇，改写为轻松接话")
-        ctx.reply = "（本喵刚跑偏了）你刚想说啥来着？接着聊～"
-        await _record_reply_memory(ctx)
-        return StageResult.CONTINUE
+
+    # ── 政治敏感内容门槛（2026-09-11 owner 指示：此类门槛只拦政治）──
+    # 平台会对政治内容封号，bot 输出命中高精度政治词表时人格化回避。
+    # 词表刻意保持高精度（专名级），避免误伤正常聊天。
+    try:
+        if _POLITICAL_RE.search(ctx.reply or ""):
+            logger.warning("Guardrail: 回复命中政治敏感词，改写为话题回避")
+            ctx.reply = "这个话题本喵不碰喵～聊点别的吧！"
+            quality = getattr(ctx.meta.get("core") if isinstance(ctx.meta, dict) else None, "reply_quality", None)
+    except Exception:
+        pass
 
     # 未提示却硬塞旧梗
     if _looks_like_unprompted_fixation(ctx.text or "", ctx.reply or ""):
-        logger.warning("Guardrail: 未提示却塞入固定旧梗，改写为短接话")
-        ctx.reply = "（本喵刚又扯远了）你刚才那句本喵听着呢，直接说重点喵。"
+        # 体验测试 B3：整段罐头改写会让用户的问题得到答非所问的回复。
+        # 改为剥离命中旧梗的句子、保留其余内容；剥无可剥才用切题短兜底。
+        _stripped = _strip_fixation_sentences(ctx.reply or "")
+        if len(_stripped) >= 8:
+            logger.warning("Guardrail: 未提示却塞入固定旧梗，已剥离旧梗句保留其余回答")
+            ctx.reply = _stripped
+        else:
+            logger.warning("Guardrail: 未提示却塞入固定旧梗且剥离后无内容，改写为短接话")
+            ctx.reply = "本喵刚才想到别的去了，直接说重点喵。"
         try:
             # M0.1 Commit 3c-1a (Telemetry/T1)：经 Facade 表面记录 guard fixation，
             # 不再经 meta["core"] 抓整个 core。ctx.core 由 handler 无条件注入；
@@ -352,8 +343,14 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
                 "bored": "就这吧",
             }
             _tail = _MOOD_TAIL.get(_mood_label_c1)
-            if _tail and not _truncated.rstrip().endswith(("。", "！", "!", "~", "…")):
-                _truncated = _truncated.rstrip("。.!！~…") + f"，{_tail}。"
+            if _tail:
+                # 只在截断留下半截子句时补情绪尾巴；完整句（含问句/省略号）
+                # 不再拼接，且先剥干净尾部逗号——修复「，，嗯…不想多说了」硬拼
+                # （2026-09-06 用户体验测试③）。
+                _body = _truncated.rstrip()
+                if not _body.endswith(("。", "！", "!", "？", "?", "~", "…")):
+                    _body = _body.rstrip("，,、；;。．!！?？~… ")
+                    _truncated = f"{_body}，{_tail}。" if _body else f"{_tail}。"
             ctx.reply = _truncated
             logger.info("C1: 情绪[%s]回复长度约束 %d→%d", _mood_label_c1, _orig_len_c1, len(ctx.reply))
     except Exception:

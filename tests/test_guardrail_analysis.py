@@ -12,7 +12,6 @@ from anima.pipeline import PipelineContext
 from anima.pipeline.stages import (
     guardrail_stage,
     _looks_like_analysis_essay,
-    _looks_derailed,
     _looks_like_unprompted_fixation,
     _has_internal_tool_leak,
     _strip_speaker_labels,
@@ -149,70 +148,6 @@ async def test_guardrail_keeps_successful_runtime_status_data():
     assert "没拿到完整" not in ctx.reply
 
 
-@pytest.mark.asyncio
-async def test_guardrail_rewrites_vague_derailment():
-    """模糊输入 + 长文无问号 = 跑偏自语 → 改写为轻松接话。"""
-    ctx = PipelineContext(
-        event={}, text="怎么说", user_id=888, group_id=222,
-        detail_type="group", sender_name="Alice", meta={},
-    )
-    ctx.reply = (
-        "其实呢关于这个事情我觉得本质上是这样的，你平时喜欢聊的那些东西本喵都能接，"
-        "总之就是一句话说不清楚，反正你懂的，这事儿吧要是从头捋的话能说上老半天，"
-        "本喵也就是随口一说你别太往心里去，反正群里大家平时怎么聊本喵都记着呢，"
-        "哪天你想正经聊了咱再慢慢掰扯，这会儿先这样吧回头再说，反正闲着也是闲着，"
-        "你要是真想知道详情咱们改天单独聊，这会儿群里热热闹闹的先嗨着，本喵去瞄两眼别的了。"
-    )
-    await guardrail_stage(ctx)
-    assert "你刚想说啥来着" in ctx.reply, "模糊输入跑偏未被拦截"
-    assert "一句话说不清楚" not in ctx.reply, "原长篇未被改写"
-
-
-@pytest.mark.asyncio
-async def test_guardrail_passes_short_input_task_reply():
-    """含任务动词的短输入 + 长回复 不被误拦。"""
-    ctx = PipelineContext(
-        event={}, text="讲个长故事", user_id=888, group_id=222,
-        detail_type="group", sender_name="Alice", meta={},
-    )
-    ctx.reply = "从前有只猫，它每天都要巡逻领地，认识了很多朋友，有一天它遇到了另一只猫……"
-    before = ctx.reply
-    await guardrail_stage(ctx)
-    assert ctx.reply == before
-
-
-@pytest.mark.asyncio
-async def test_guardrail_passes_short_casual_reply():
-    """短输入的短回复 不触发。"""
-    ctx = PipelineContext(
-        event={}, text="在吗", user_id=888, group_id=222,
-        detail_type="group", sender_name="Alice", meta={},
-    )
-    ctx.reply = "在，咋了"
-    before = ctx.reply
-    await guardrail_stage(ctx)
-    assert ctx.reply == before
-
-
-def test_looks_derailed_unit():
-    class _C:
-        def __init__(self, text, reply):
-            self.text = text
-            self.reply = reply
-
-    # 模糊 + 长（>140 字）+ 无问号 → 跑偏
-    assert _looks_derailed(_C("怎么说",
-        "这事儿本质上就是这样的，本喵都记着呢，" * 20)) is True
-    # 已经在反问/抛回 → 正确行为，放行
-    assert _looks_derailed(_C("怎么说", "你刚想说啥来着？接着聊～")) is False
-    # 含任务动词 → 放行
-    assert _looks_derailed(_C("讲个笑话", "从前有只猫……（很长很长）")) is False
-    # 短回复 → 放行
-    assert _looks_derailed(_C("在吗", "在，咋了")) is False
-    # 较长输入 → 放行
-    assert _looks_derailed(_C("你觉得这件事应该怎么看呢", "长篇大论……")) is False
-
-
 def test_unprompted_fixation_detects_old_gags():
     # 用户没提沙琪玛，却连环改名纠正
     assert _looks_like_unprompted_fixation(
@@ -295,3 +230,20 @@ async def test_guardrail_fixation_telemetry_missing_core_is_safe():
     ctx.reply = "本喵再说最后一遍，本喵叫哈基米，不叫沙琪玛喵！还有小鱼干呢！"
     await guardrail_stage(ctx)
     assert "不叫沙琪玛" not in (ctx.reply or "")
+
+
+@pytest.mark.asyncio
+async def test_political_gate_replaces_reply():
+    """政治门槛：回复命中专名级政治词 → 人格化回避（不误伤正常聊天）"""
+    ctx = PipelineContext(
+        event={}, text="随便聊聊", user_id=888, group_id=222,
+        detail_type="group", sender_name="Alice", meta={},
+    )
+    ctx.reply = "说起六四事件的历史意义……"
+    await guardrail_stage(ctx)
+    assert "不碰" in ctx.reply
+
+
+def test_political_gate_not_triggered_by_normal():
+    assert not __import__("anima.pipeline.stages.guardrail", fromlist=["_POLITICAL_RE"])._POLITICAL_RE.search(
+        "今天天气不错，本喵想去晒太阳")

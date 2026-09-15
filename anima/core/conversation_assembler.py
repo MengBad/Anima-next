@@ -72,6 +72,12 @@ class ConversationAssembler:
     @staticmethod
     def _merge(events: list[dict[str, Any]]) -> dict[str, Any]:
         merged = copy.deepcopy(events[-1])
+        # 「直接呼叫」归属必须取并集，不能继承最后一条：群友最自然的习惯是
+        # 先 @bot 再补一句，若 merged 只带最后一条的 mentions_self=False，
+        # 拼接后的 raw_message 里又含 [CQ:at,self]，回复闸门会把整轮误判成
+        # 「@ 了别人」而静默吞掉（实测：@在前+补句在后 → mention_only/idle 零回复）。
+        merged["mentions_self"] = any(bool(e.get("mentions_self")) for e in events)
+        merged["reply_to_self"] = any(bool(e.get("reply_to_self")) for e in events)
         texts = [str(item.get("raw_message") or item.get("message") or "").strip()
                  for item in events]
         text = "\n".join(item for item in texts if item)[:6000]
@@ -238,6 +244,12 @@ class GroupDebouncer:
         if not events:
             return {}
         merged = copy.deepcopy(events[-1])
+        # 「直接呼叫」归属必须取并集，不能继承最后一条：群友最自然的习惯是
+        # 先 @bot 再补一句，若 merged 只带最后一条的 mentions_self=False，
+        # 拼接后的 raw_message 里又含 [CQ:at,self]，回复闸门会把整轮误判成
+        # 「@ 了别人」而静默吞掉（实测：@在前+补句在后 → mention_only/idle 零回复）。
+        merged["mentions_self"] = any(bool(e.get("mentions_self")) for e in events)
+        merged["reply_to_self"] = any(bool(e.get("reply_to_self")) for e in events)
         texts = [str(item.get("raw_message") or item.get("message") or "").strip()
                  for item in events]
         text = "\n".join(item for item in texts if item)[:6000]

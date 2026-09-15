@@ -1,4 +1,5 @@
 {
+  "_historical_note": "HISTORICAL — 本快照停更于 2026-08-13，仅作历史参考；现状以 README.md / MAINTENANCE.md 为准",
   "current_stage": "R2",
   "stage_detail": "R2-A Memory Read Recovery (secret_filtered 已上线)",
   "observation": {
@@ -14,5 +15,7 @@
     "no_incident": true,
     "rollback_available": true
   },
-  "updated_at": "2026-08-13T21:15:42+08:00"
+  "updated_at": "2026-08-13T21:15:42+08:00",
+  "_deprecated": true,
+  "_deprecated_note": "DEPRECATED 2026-09-15：历史快照，不代表当前阶段。智能升级路线见 ROADMAP.md；Foundation 冻结运维状态见 MAINTENANCE.md。仍读取本文件的脚本请迁移。"
 }

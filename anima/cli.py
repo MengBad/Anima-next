@@ -298,6 +298,12 @@ def start(config_path, once, identity_attestation):
 
     cfg = load_config(config_path)
 
+    # 宪法：人格不能静默变味（队列②）——人格正本不可加载则拒绝启动，
+    # 让配置损坏在部署窗口暴露，而不是回退过期内联副本静默上线。
+    from anima.cognitive.persona_core import load_persona_template
+    load_persona_template()
+    click.echo("人格正本加载 OK（config/persona_core.yaml）")
+
     core = AnimaCore(cfg, identity_context=identity_context)
     core.config_path = str(config_path)
     # P2-3：启用大图转码结果磁盘缓存（跨重启命中，省重复 Pillow 压缩）。
@@ -450,6 +456,16 @@ def start(config_path, once, identity_attestation):
             core.heartbeat.active_intent_max_attempts = int(
                 getattr(cfg.autonomy, "active_intent_max_attempts", 5) or 5
             )
+            # A1 欲望深化（队列③）：欲望驱动选题阈值（schema 未收编前走 getattr 默认，
+            # 生产可在 config.yaml autonomy 段直接加同名键覆盖）
+            core.heartbeat.desire_speak_min_intensity = float(
+                getattr(cfg.autonomy, "desire_speak_min_intensity", 0.55) or 0.55)
+            core.heartbeat.desire_freshness_window_sec = float(
+                getattr(cfg.autonomy, "desire_freshness_window_sec", 1800) or 1800)
+            core.heartbeat.desire_event_match_bonus = float(
+                getattr(cfg.autonomy, "desire_event_match_bonus", 0.12) or 0.12)
+            core.heartbeat.desire_repeat_cooldown_sec = float(
+                getattr(cfg.autonomy, "desire_repeat_cooldown_sec", 3600) or 3600)
             # 心跳群消息计数回调
             mem.set_group_callback(core.heartbeat.count_message)
             core._auto_start_heartbeat = True
@@ -919,3 +935,7 @@ def _x_diag_checks(cfg, *, live: bool = False) -> dict:
 
 def main():
     cli()
+
+
+if __name__ == "__main__":
+    main()

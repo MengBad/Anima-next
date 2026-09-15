@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import pytest
 import types
+from anima.pipeline import Pipeline
+from anima.pipeline.stages.prefilter import bullying_stage
 
 from anima.llm.handler import LLMHandler
 
@@ -54,7 +56,7 @@ def _run_handle(core, text, uid, detail_type="private", owner=False):
         ctx.reply = "（测试回复）"
         return ctx
 
-    handler.pipeline = types.SimpleNamespace(run=fake_run)
+    handler.pipeline = Pipeline().use(bullying_stage).use(fake_run)
     event = {
         "user_id": uid,
         "group_id": None if detail_type == "private" else 20001,

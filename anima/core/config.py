@@ -118,6 +118,16 @@ class AutonomyConfig(BaseModel):
     # 若这次消息未被 @/回复（纯被动接话）则跳过，避免对熟人逐条抢答。
     # 0 = 关闭。这个不阻断被 @ 的直接呼叫。
     passive_reply_cooldown_sec: float = 45.0
+    # 会话连续性：唤醒窗内，非@消息若命中纠正/补充词（"不对，我说的是X"），
+    # 豁免上面的被动回复冷却——那是对话仍在进行的信号，不是刷屏。
+    # 双闸门 = 命中词表 ∧ 唤醒窗活跃；关闭则恢复一律冷却。
+    correction_exempt_cooldown: bool = True
+
+    # 社交疲劳阈值（第四轮体验测试 C2）：5 分钟窗口内被 @/引用次数超过 soft
+    # 触发 overwhelmed 情绪、超过 hard 直接罐头短回复跳过 LLM（owner 豁免硬闸）。
+    # 此前硬编码 6/8 不可调，管理员长会话也被误拦。
+    fatigue_mention_soft: int = 6
+    fatigue_mention_hard: int = 8
 
     # —— 主动发言（自主心跳 speak）策略 ——
     # 通过全部主动发言门控后的实际开口概率。默认保守，避免群里突然刷屏。
@@ -567,6 +577,108 @@ class TavilyConfig(BaseModel):
     include_answer: bool = True
 
 
+class ProactiveConfig(BaseModel):
+    """P1-4 主动优先级队列（单一事实来源见 ``core/proactive.py``）。
+
+    ``enabled=false`` → 关闭新增的主动来源（订阅异常提醒），已入队议程照常消费。
+    优先级数值本身仍由 ``core.proactive.SOURCE_PRIORITY`` 决定，可用
+    ``source_priority`` 按来源名覆盖（如 ``{"heartbeat": 0.1}`` 让闲聊更靠后）。
+    """
+    enabled: bool = True
+    # 订阅连续失败多少次才提醒（避免偶发网络抖动就打扰）
+    subscription_failure_threshold: int = 3
+    # 同一订阅的异常提醒冷却（秒），默认 6 小时
+    subscription_anomaly_cooldown_sec: int = 21600
+    # >= 该优先级视为"要事"（日志/审计分流用，不绕过冷却）
+    urgent_threshold: float = 0.7
+    # 按来源覆盖优先级（可选）
+    source_priority: dict[str, float] = Field(default_factory=dict)
+
+
+class TaskAgentConfig(BaseModel):
+    """P2-1 多步任务执行策略（``anima/agent/executor.py``）。
+
+    - ``verify_steps``：步骤执行成功后按 ``Step.verify`` 判据做独立验收。
+      验收需要 LLM；无 LLM 时自动跳过（判据判不了就不要假装判过）。
+    - ``max_replans``：失败重规划次数上限（0 = 关闭重规划）。
+    - ``parallel_steps``：允许 planner 标记的 ``parallel_group`` 内部并发执行。
+      只并发「显式指定工具」的步骤，ReAct 步骤永远串行。
+    """
+    verify_steps: bool = True
+    max_replans: int = 2
+    parallel_steps: bool = True
+    max_parallel: int = 4
+
+
+class OwnerBrowserConfig(BaseModel):
+    """P1-3 Owner 受控浏览器（复用 ``agent_tools.agent_browser``）。
+
+    三道门，各自独立、可分别回滚：
+    - ``enabled=false``：工具根本不注册（私聊也不给）。
+    - ``private_only=true``：群聊既不可见也不可调用（owner 在群里同样拿到 level 4，
+      仅靠 ``min_level`` 挡不住「群里操控环境」）。
+    - ``allowed_actions``：动作白名单，默认只给 navigate/extract（只读取页面），
+      click 这类「改变页面状态」的动作需 Owner 显式加。
+    """
+    enabled: bool = True
+    private_only: bool = True
+    allowed_actions: str = "navigate,extract"
+
+
+class MemoryCompressionConfig(BaseModel):
+    """P1-2 记忆压缩（DESIGN_MEMORY_COMPRESSION.md）。
+
+    ``enabled=false`` → 夜间不跑压缩，行为退化为只有 ForgettingEngine 时间衰减。
+    注意这只是「不再整理」，已写入的 confidence/disputed 字段仍会被读取侧尊重。
+    """
+    enabled: bool = True
+    # 相似度阈值：高于此值的事实才合并（默认字符级 difflib 比）
+    sim_threshold: float = 0.85
+    # 每人事实数上限，超出按 (confidence, timestamp) 升序淘汰
+    max_facts_per_user: int = 30
+    # 每日衰减系数：0.99 ≈ 70 天衰减到 0.5
+    daily_decay: float = 0.99
+    # 本地时区低峰窗口小时；<0 表示不限小时。
+    # 偏差：设计文档写 3，但实现挂在 autonomy 的「日切块」（凌晨首次心跳，天然低峰），
+    # 若同时限定 tm_hour==3，日切几乎不可能正好落在 3 点 → 压缩永不触发。故默认 -1，
+    # 由 interval_sec(24h) 保证一天最多一次。需要严格 3 点窗口时可改回 3。
+    run_hour: int = -1
+    # 低于此事实数不调 LLM 摘要（成本控制；40 意味着绝大多数用户永不触发）
+    min_facts_to_llm: int = 40
+    # 两次运行最小间隔（秒）
+    interval_sec: int = 86400
+
+
+class DebtTrackingConfig(BaseModel):
+    """P1-1 承诺追踪（DESIGN_DEBT_TRACKING.md）。
+
+    ``enabled=false`` → 不记账、不提醒、不注入，完全退化为无债状态（一键回滚）。
+    ``keyword_only_mode`` 默认 true：只走关键词漏斗，零 LLM 成本、零额外延迟。
+    """
+    enabled: bool = True
+    keyword_only_mode: bool = True
+    reminded_max: int = 3
+    remind_interval_sec: int = 86400
+    grace_hours: float = 48.0
+    inject_to_cognition: bool = True
+
+
+class ReactConfig(BaseModel):
+    """P0-1 Memory-First（DESIGN_REACT_MEMORY_FIRST.md）总开关。
+
+    true  -> 成员/事实类问题注入「先查内部记忆，再考虑搜网」引导，
+             且 get_schemas() 按 Tool.priority 升序（记忆类 1 先于 web_search 3）。
+    false -> 完全退化为改动前行为：只注入实时引导，schema 保持注册顺序。
+             这是一键回滚点（设计文档 §4.4）。
+
+    ``freshness_footer``（P2-3）：用过联网/时效类工具、但最终回答里完全没有日期
+    痕迹时，追加一句时效声明（只披露，不改写答案）。true 为默认；关掉即回到
+    「答完就发」的旧行为。
+    """
+    memory_first: bool = True
+    freshness_footer: bool = True
+
+
 class ContextConfig(BaseModel):
     """聊天上下文预算。
 
@@ -693,6 +805,19 @@ class SecurityConfig(BaseModel):
     approval_ttl_sec: float = 900.0
 
 
+class ProxyMgmtConfig(BaseModel):
+    """WebUI 代理节点管理（mihomo/Clash 外部控制器）。
+
+    X 搬图「空壳/goto 超时」的根源是 mihomo 当前节点失联而 bot 侧无干预
+    手段（2026-09-06 网络诊断）。控制器默认 127.0.0.1:9090，仅本机可达。
+    """
+
+    enabled: bool = True
+    controller_url: str = "http://127.0.0.1:9090"
+    config_path: str = "/usr/local/share/mihomo/config.yaml"
+    subscription_timeout: int = 30
+
+
 class DeployConfig(BaseModel):
     mode: str = "systemd"           # systemd | bare
     napcat_topology: str = "same-host"  # 同机默认
@@ -753,8 +878,52 @@ class PersonaConfig(BaseModel):
 
 class MemoryConfig(BaseModel):
     # ④ 长期记忆第三层：把 long_term（事件→知识→行为模式）查询注入认知上下文。
-    # 默认关（fail-closed）。开启后 memory 阶段按本次消息 keyword 注入命中片段，仅供上下文参考不改变权限。
-    long_term_context: bool = False
+    # P0-2 起默认开：跨会话偏好/决策能被 QQ 主路径感知。置回 false 即完全关闭读写。
+    long_term_context: bool = True
+    # 写入范围（P0-2）：preference=仅「偏好/决策句」与 Owner 私聊入库；
+    # all=每条用户消息都入库（旧行为，噪音大）；off=只读不写。
+    long_term_write: str = "preference"
+    # 宪法记忆(constitution)周期水合间隔（小时）。被 anima_core._memory_hydrate_loop 读取；
+    # 默认 6.0 小时，可经 config.yaml `memory.hydrate_period_hours` 调节。<=0 视为无效回退默认。
+    hydrate_period_hours: float = 6.0
+    # 收敛计划 M2：统一记忆检索聚合层（只读聚合 chat/vector/facts/episodes，
+    # 注入 cognition 记忆片段）。写入路径不变；关闭则回退各域独立召回。
+    unified_recall_enabled: bool = False
+    # 收敛计划 M3：保留期分层显式化——细节层（chat_memory TTL=168h/20 轮）、
+    # 要点层（vector 永久+遗忘引擎衰减）、人格特质层（self_notes/scar 永久）。
+    # 分层由各模块既有淘汰机制执行，此处为声明性配置位（M2 读侧据此取权重）。
+    retention_layers: dict = Field(default_factory=lambda: {
+        "detail_days": 7, "gist_days": 30, "persona": "permanent"})
+    # P3-1：长期记忆（事件→知识→行为模式）叠加**语义召回**读路径。
+    # 默认 False —— 该路径要调远程 embedding（延迟+费用），只服务 Owner 主动查询
+    # （HumanAIControlSurface.long_term_memory_semantic），**绝不**进每条消息的
+    # 认知注入热路径；关掉即回到纯关键词检索，行为与旧版逐字节一致。
+    long_term_semantic: bool = False
+    # 语义召回候选上限（知识陈述 + 模式 + 示例）。超出的不扫，结果里会如实报告漏扫量。
+    long_term_semantic_max_candidates: int = 60
+    # 语义召回相似度阈值（余弦）；低于此值不进结果。
+    long_term_semantic_threshold: float = 0.35
+
+
+class RepoReadConfig(BaseModel):
+    """P3-2 受控仓库只读访问（``anima/agent/repo_read.py``）。
+
+    给"读自己的源码"一条**有边界**的路：只读、根目录约束、拒绝名单、
+    字节/行/条数上限、每次读发 ``repo_read`` 审计事件。对应的工具
+    （``repo_list`` / ``repo_read`` / ``repo_grep`` / ``propose_repo_change``）
+    全部 ``LEVEL_OWNER`` 且 ``private_only``——源码不得从群聊里被读出去。
+
+    与 ``danger.*`` 那类**安全开关**不同，这是**能力开关**：关掉只是没这个
+    功能，不会让系统更安全；但关掉它确实能立刻收回"bot 看自己代码"的能力，
+    所以保留一个显式 kill switch。``enabled`` 为 False 时工具不注册。
+    """
+
+    enabled: bool = True
+    max_bytes: int = 20_000       # 单文件返回字节上限
+    max_lines: int = 400          # 单文件返回行数上限
+    max_files: int = 40           # 单次列目录条数上限
+    max_hits: int = 40            # 单次 grep 命中上限
+    deny_extra: list[str] = Field(default_factory=list)  # 运维追加的拒绝 glob
 
 
 # ---------------------------------------------------------------------------
@@ -797,10 +966,17 @@ class AnimaConfig(BaseModel):
     meme: MemeConfig = Field(default_factory=MemeConfig)
     scrapling: ScraplingConfig = Field(default_factory=ScraplingConfig)
     tavily: TavilyConfig = Field(default_factory=TavilyConfig)
+    react: ReactConfig = Field(default_factory=ReactConfig)
+    debt_tracking: DebtTrackingConfig = Field(default_factory=DebtTrackingConfig)
+    memory_compression: MemoryCompressionConfig = Field(default_factory=MemoryCompressionConfig)
+    owner_browser: OwnerBrowserConfig = Field(default_factory=OwnerBrowserConfig)
+    proactive: ProactiveConfig = Field(default_factory=ProactiveConfig)
+    task_agent: TaskAgentConfig = Field(default_factory=TaskAgentConfig)
     context: ContextConfig = Field(default_factory=ContextConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
     x_browser: XBrowserConfig = Field(default_factory=XBrowserConfig)
     webui: WebUIConfig = Field(default_factory=WebUIConfig)
+    proxy_mgmt: ProxyMgmtConfig = Field(default_factory=ProxyMgmtConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     contradiction: ContradictionConfig = Field(default_factory=ContradictionConfig)
     danger: DangerConfig = Field(default_factory=DangerConfig)
@@ -808,6 +984,7 @@ class AnimaConfig(BaseModel):
     iteration: IterationConfig = Field(default_factory=IterationConfig)
     social: SocialConfig = Field(default_factory=SocialConfig)
     persona: PersonaConfig = Field(default_factory=PersonaConfig)
+    repo_read: RepoReadConfig = Field(default_factory=RepoReadConfig)
 
 
 # ---------------------------------------------------------------------------

@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-10，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # Anima-next Release Policy
 
 > 本规则保护 Foundation Freeze。发布是受控维护动作，不是架构演化入口。

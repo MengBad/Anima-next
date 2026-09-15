@@ -30,6 +30,7 @@ def register_all_routes(app: web.Application, s: "WebUIServer") -> None:
     _register_memory(app, s)
     _register_engineering(app, s)
     _register_agent(app, s)
+    _register_proxy(app, s)
     _register_autonomy(app, s)
     _register_social(app, s)
     _register_stickers(app, s)
@@ -300,9 +301,14 @@ def _register_stickers(app: web.Application, s: "WebUIServer") -> None:
 # Agent 面板（多步任务 / 审计 / 紧急停止）
 # ---------------------------------------------------------------------------
 
+def _register_proxy(app: web.Application, s: "WebUIServer") -> None:
+    from anima.webui.routes.proxy import _register_proxy
+    _register_proxy(app, s)
+
+
 def _register_agent(app: web.Application, s: "WebUIServer") -> None:
-    from anima.webui.routes.agent import _register_agent as _do_register
-    _do_register(app, s)
+    from anima.webui.routes.agent import _register_agent
+    _register_agent(app, s)
 
 
 # ---------------------------------------------------------------------------

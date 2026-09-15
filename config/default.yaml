@@ -69,6 +69,7 @@ autonomy:
   familiar_reply_min: 0.35                # familiar 群策略下的亲密度门槛
   wake_session_ttl_sec: 60                 # 被@/回复/喊名后窗内可自然续话的时长（秒），调短可降连环刷屏
   passive_reply_cooldown_sec: 45           # 每用户被动回复冷却（秒）：刚回过又未点名时跳过，0=关
+  correction_exempt_cooldown: true         # 唤醒窗内命中纠正/补充词（"不对，我说的是X"）时豁免上述冷却
   active_intent_max_attempts: 5           # 主动意图连续失败后标记 failed
   active_feedback_window_sec: 900         # 主动消息后 15 分钟内有人继续互动视为获得反馈
   active_feedback_min_samples: 4          # 至少积累这些样本才自动按接受度降频
@@ -267,6 +268,67 @@ conversation:
   max_wait_sec: 8.0
   natural_feedback_ack: false   # §17 反馈自然回话：识别到反馈时私聊主回复末尾追加一句轻量确认（默认关）
 
+react:
+  # P0-1 Memory-First：成员/事实类问题先查内部记忆、再考虑搜网；
+  # 同时让记忆类工具在 schema 中排在 web_search 之前。改 false 即完全回滚到旧行为。
+  memory_first: true
+  # P2-3 时效兜底：用过联网/时效类工具、但最终回答完全没日期痕迹时追加一句时效声明。
+  freshness_footer: true
+
+memory:
+  # 长期记忆（事件→知识→行为模式；anima/memory/long_term.py）
+  # P0-2：把 long_term 查询注入认知上下文，跨会话偏好/决策能被 QQ 主路径感知。
+  long_term_context: true
+  long_term_write: "preference"       # preference=仅偏好/决策句与 Owner 私聊；all=每条消息；off=只读不写
+  hydrate_period_hours: 6.0           # 宪法记忆周期水合间隔（小时）；<=0 回退默认
+  # P3-1 语义召回读路径。默认 false：要调远程 embedding（延迟 + 费用），
+  # 只服务 Owner 主动查询（!anima os / WebUI 控制面），不进每条消息的认知注入热路径。
+  # 关键词检索不依赖 embedding（且已修好中文分词），关掉不影响基本可用性。
+  long_term_semantic: false
+  long_term_semantic_max_candidates: 60   # 候选上限；超出的不扫，结果会如实报告漏扫量
+  long_term_semantic_threshold: 0.35      # 余弦相似度阈值
+
+debt_tracking:
+  # P1-1 承诺追踪：「帮你查 / 明天提醒」进债账本，到点跟进。enabled=false 完全关闭。
+  enabled: true
+  keyword_only_mode: true      # 只走关键词漏斗，零 LLM 成本
+  reminded_max: 3
+  remind_interval_sec: 86400
+  grace_hours: 48
+  inject_to_cognition: true
+
+memory_compression:
+  # P1-2 记忆压缩：夜间低峰跑一次，衰减置信度 + 合并相似事实 + 淘汰超容。
+  # enabled=false → 不做整理（已写入的 confidence/disputed 仍被读取侧尊重）。
+  enabled: true
+  sim_threshold: 0.85        # 高于此相似度才合并（difflib 字符比，保守防误并）
+  max_facts_per_user: 30     # 超出按 (confidence, timestamp) 升序淘汰
+  daily_decay: 0.99          # ≈70 天衰减到 0.5；disputed 免疫
+  run_hour: -1               # -1=不限小时（挂在凌晨日切块，天然低峰）；改 3 则严格 03:00 窗口
+  min_facts_to_llm: 40       # 低于此数不调 LLM 摘要（成本封顶）
+  interval_sec: 86400
+
+task_agent:
+  # P2-1 多步 Agent 任务的 verify / replan / 并行策略（anima/agent/executor.py）
+  verify_steps: true          # 步骤成功后按 Step.verify 判据独立验收（需 LLM，无 LLM 自动跳过）
+  max_replans: 2              # 失败重规划上限；0 = 关闭（退回「一失败即终止」）
+  parallel_steps: true        # 允许 planner 标记的 parallel_group 内部并发
+  max_parallel: 4             # 单个并行批次最大步骤数
+
+owner_browser:
+  # P1-3 Owner 受控浏览器（复用 agent_tools.agent_browser 进常规 ReAct）
+  enabled: true
+  private_only: true          # 群聊不暴露：owner 在群里同样是 level 4，仅靠 min_level 挡不住
+  allowed_actions: "navigate,extract"   # 默认只读取页面；click 之类改页面状态的动作需显式加
+
+proactive:
+  # P1-4 主动优先级队列：债/订阅异常/健康 > 闲聊主动（注册表 core/proactive.py）
+  enabled: true
+  subscription_failure_threshold: 3   # 连续失败 3 次才提醒，避免抖动打扰
+  subscription_anomaly_cooldown_sec: 21600
+  urgent_threshold: 0.7
+  source_priority: {}                 # 可选：按来源覆盖，如 heartbeat: 0.1
+
 context:
   # 请求前上下文预算：人格、身份护栏和本轮用户输入不可裁，最旧历史/低优先级
   # 认知片段优先退出。不同模型 tokenizer 不同，数值是保守的防溢出阈值。
@@ -280,7 +342,7 @@ exploration:
   # 不登录、不评论、不点赞、不执行网页指令。分享仍走 Agenda 与群级频控。
   enabled: true
   interval_sec: 3600
-  daily_limit: 3
+  daily_limit: 3                         # 当日探索次数上限；0 = 不限制（与 image_generation.daily_limit 同义）
   min_desire_intensity: 0.4
   sources:
     - bilibili_popular
@@ -290,9 +352,9 @@ exploration:
   novelty_window_sec: 604800
   max_notes: 200
   share_enabled: false                  # 先自主学习；Owner 验证后再允许主动分享
-  daily_share_limit: 1
-  share_min_score: 0.75
-  share_groups: []                      # 空=仅沿欲望来源群；非空=额外限制可分享群
+  daily_share_limit: 1                  # 当日外发分享条数上限；0 = 当天完全不分享（fail-closed，注意与 daily_limit 语义相反）
+  share_min_score: 0.75                 # value_score 低于此值不外发
+  share_groups: []                      # 空=仅沿欲望来源群；非空=额外限制可分享群（白名单）
 
 self_code:
   enabled: false                             # 高危能力：仅 owner 显式开启；候选必须进入 WebUI/QQ 审批
@@ -317,6 +379,12 @@ self_code:
                                            # 若用 native 并指定模型，配 llm.module_models.selfcode 或本块的 model。
   coder_retries: 4                       # 原生 coder/critic 最大尝试次数；LLM 异常或未出代码块时退避重试，慢慢跑
   coder_retry_delay: 5.0                 # 重试基础退避秒数，线性递增（attempt*delay）
+
+proxy_mgmt:
+  enabled: true                            # WebUI 代理节点管理（owner 鉴权 + 仅本机控制器）
+  controller_url: "http://127.0.0.1:9090"  # mihomo 外部控制器
+  config_path: "/usr/local/share/mihomo/config.yaml"
+  subscription_timeout: 30                 # 订阅下载超时（秒）
 
 webui:
   # 默认关闭且只监听本机；若改为非回环地址，必须设置 token 并通过反向代理加密。

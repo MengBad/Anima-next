@@ -114,11 +114,10 @@ class WebKnowledgeStore:
 
     def save(self) -> None:
         self.FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = self.FILE.with_suffix(self.FILE.suffix + ".tmp")
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump([w.to_dict() for w in self._data], f, ensure_ascii=False, indent=2)
-        # 原子替换，避免半写入损坏
-        tmp.replace(self.FILE)
+        from anima.core.persistence import atomic_write_text
+        atomic_write_text(self.FILE,
+                          json.dumps([w.to_dict() for w in self._data],
+                                     ensure_ascii=False, indent=2))
 
     # --- 写入 -----------------------------------------------------------
     def add(self, query: str, summary: str, source_urls: Optional[List[str]] = None,

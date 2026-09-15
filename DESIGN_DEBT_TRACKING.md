@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-07-29，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # 【设计文档】承诺追踪系统（进化2 · debt）
 
 > 目标：让 bot 从"答完就忘"进化成"说话算数、记得自己欠了谁什么"的数字生命。
@@ -247,4 +249,21 @@ debt_tracking:
 | `tests/test_debt_tracking.py` | 上述 12 项单测 |
 
 ---
-*设计基线：Anima-next 生产路径 `G:/Anima-next`，部署于 VPS `/opt/anima`。本文件仅设计，未实现。待用户确认后进入实现阶段。*
+*设计基线：Anima-next 生产路径 `G:/Anima-next`，部署于 VPS `/opt/anima`。*
+
+---
+
+## 9. 实现状态（2026-09-15：已实现，含偏差）
+
+新增 `anima/cognitive/debt.py`（`Debt` / `DebtManager` / `get_debt_manager` / `parse_due_hint`），
+测试见 `tests/test_debt_tracking.py`（21 项）。开关 `config.debt_tracking.enabled`（默认 true）。
+
+**实现偏差（相对本设计）**
+
+| # | 设计原文 | 实际实现 | 原因 |
+|---|---|---|---|
+| 1 | §1.2 命中触发词后走 LLM 结构化抽取 | **不做 LLM**（`keyword_only_mode` 默认 true），直接用既有 agenda 的 intent 原文记账 | 零成本、零延迟；保留 `keyword_only_mode=false` 的扩展位 |
+| 2 | §8 在 `llm/handler.py:_extract_and_store` 追加 `_extract_debt` | 改为挂在 `pipeline/stages/_shared.py:_detect_promise_and_schedule` | 后者已有一套承诺触发正则并在建 agenda；再开一条抽取路径就是双轨（设计 §0 明令避免）。现在：触发只有一处，agenda 管「何时说」，debt 管「欠什么、还了没」 |
+| 3 | §3 提醒文案生成 | 复用 `propose_agenda` 主动管线，继承限流/冷却/quiet_hours | 不新造主动发言通道 |
+
+**未实现**：`max_pending_per_user` 上限、`soft_window` 分级窗口、`beneficiary_uids` 反查 QQ 号。

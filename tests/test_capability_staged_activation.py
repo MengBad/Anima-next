@@ -5,15 +5,15 @@ from pathlib import Path
 
 import pytest
 
-from anima.capability_activation_contract import (
+from anima.capability.activation_contract import (
     CapabilityActivationError,
     CapabilityActivationReview,
     OfflineCapabilityActivationPlanner,
     ReviewDecision,
     SyntheticCapabilityProposal,
 )
-from anima.capability_activation_proof import OfflineActivationProofBuilder
-from anima.capability_staged_activation import (
+from anima.capability.activation_proof import OfflineActivationProofBuilder
+from anima.capability.staged_activation import (
     OfflineStagedActivationPlanner,
     StageStatus,
     StagedActivationError,

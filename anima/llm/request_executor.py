@@ -60,6 +60,29 @@ def _strip_trigger(content: str) -> str:
     return t
 
 
+_DATE_ONCE_RE = re.compile(r"(大后天|后天|明天|明早|明晚)")
+_PERIOD_RE = re.compile(r"(凌晨|清晨|早上|早晨|上午|中午|下午|傍晚|晚上|夜里)")
+_RECUR_RE = re.compile(r"(每天|每日)")
+_POLITENESS_RE = re.compile(r"[，,]?\s*(可以吗|好吗|行吗|好不好|麻烦了|谢谢)[？?！!。~～]*\s*$")
+
+
+def _once_date(text: str, now: float | None = None) -> "str | None":
+    """明天/明早/明晚/后天/大后天 → 北京时间 YYYY-MM-DD；无一次性日期词返回 None。"""
+    if not _DATE_ONCE_RE.search(text or ""):
+        return None
+    from datetime import datetime, timedelta, timezone
+    tz = timezone(timedelta(hours=8))
+    base = datetime.fromtimestamp(time.time() if now is None else now, tz).date()
+    if "大后天" in text:
+        base += timedelta(days=3)
+    elif "后天" in text:
+        base += timedelta(days=2)
+    else:  # 明天 / 明早 / 明晚
+        base += timedelta(days=1)
+    return base.isoformat()
+
+
+
 class RequestExecutor:
     """一句话要求 → 落地动作 → 回执。data_dir 下 request_memory.json 存口头要求。"""
 
@@ -171,7 +194,7 @@ class RequestExecutor:
         self.ignore_store.add(str(group_id), targets)
         return f"妥了，本喵以后不再理 {targets} 了。"
 
-    async def _remind(self, text: str, group_id) -> str:
+    async def _remind(self, text: str, group_id) -> "str | None":
         if group_id is None:
             return "提醒是按群定的，私聊设不了喵。"
         calendar = getattr(self.core, "calendar", None)
@@ -180,17 +203,31 @@ class RequestExecutor:
         t = _CQ.sub("", text or "")
         m = _TIME.search(t) or _TIME_CN.search(t)
         if not m:
-            return "设提醒要有时间呀，像「明早8点提醒我交稿」。格式：时间 + 内容。"
+            # 无时间的「提醒我」多为闲聊表达（如打招呼「叫我小测」），回落
+            # 正常 LLM 回复，不再抢答格式提示（2026-09-06 体验测试①）。
+            return None
         hh, mm = int(m.group(1)), int(m.group(2) or 0)
+        period_m = _PERIOD_RE.search(t)
+        if period_m and hh < 12 and period_m.group(1) in ("下午", "晚上", "傍晚", "夜里"):
+            hh += 12
         if hh > 23 or mm > 59:
             return "时间不对喵（时 0-23、分 0-59）。"
         content = t[: m.start()].strip() + " " + t[m.end():].strip()
-        content = _strip_trigger(content).strip() or "（提醒）"
+        content = _strip_trigger(content)
+        # 只留提醒本体：去掉残留日期/时段/重复词与句尾客套（体验测试②）
+        content = _RECUR_RE.sub(" ", _PERIOD_RE.sub(" ", _DATE_ONCE_RE.sub(" ", content)))
+        content = _POLITENESS_RE.sub("", content)
+        content = re.sub(r"\s+", " ", content).strip() or "（提醒）"
+        once_date = _once_date(t)
         try:
+            if once_date is not None:
+                calendar.add_once(int(group_id), once_date, f"{hh:02d}:{mm:02d}", content)
+                return (f"已设一次性提醒喵：{once_date} {hh:02d}:{mm:02d} "
+                        f"提醒「{content}」。")
             calendar.add_daily(int(group_id), f"{hh:02d}:{mm:02d}", content)
         except (TypeError, ValueError):
             return "提醒设置失败喵。"
-        return f"已设提醒喵：群 {group_id}，每天 {hh:02d}:{mm:02d} 提醒「{content}」。"
+        return f"已设每天提醒喵：{hh:02d}:{mm:02d} 提醒「{content}」。"
 
     async def _do_task(self, text: str, user_id: int) -> str:
         from anima.agent.owner_proposal import handle_owner_problem

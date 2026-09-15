@@ -15,6 +15,32 @@ class UserFact:
     source_group: str
     timestamp: float = field(default_factory=time.time)
     tags: list[str] = field(default_factory=list)
+    # ---- P1-2 记忆压缩 ----
+    # 抽取置信度 0-1。旧数据缺省 1.0（视为可信），无需迁移脚本。
+    confidence: float = 1.0
+    # 被 ContradictionDetector 判为冲突 → True；不衰减/不合并/不淘汰
+    disputed: bool = False
+    # 由多条相似事实压缩而来
+    compressed: bool = False
+    merge_count: int = 1
+    # 合并后记录全部来源群（单条事实时为 None，节省存储）
+    source_groups: list[str] | None = None
+    # 被 recall 命中次数；召回时置信度小幅回弹（"被想起就更牢"）
+    access_count: int = 0
+    # 被合并掉的原文（保留可追溯，最多 6 条）
+    merged_from: list[str] = field(default_factory=list)
+
+    def bump_access(self, rebound: float = 0.02) -> None:
+        """被召回一次：计数 +1，置信度小幅回弹（disputed 事实免疫）。"""
+        self.access_count += 1
+        if not self.disputed:
+            self.confidence = min(1.0, self.confidence + rebound)
+
+    @property
+    def is_protected(self) -> bool:
+        """容量淘汰保护名单：争议 / 高聚合度 / 私聊来源。"""
+        return bool(self.disputed or self.merge_count >= 3
+                    or str(self.source_group) == "private")
 
 
 @dataclass
@@ -35,8 +61,10 @@ class UserMemory:
     _msg_count: int = 0  # 统计用
 
     def add_fact(self, content: str, source_group: str,
-                 tags: list[str] | None = None) -> UserFact:
-        fact = UserFact(content=content, source_group=source_group, tags=tags or [])
+                 tags: list[str] | None = None,
+                 confidence: float = 1.0) -> UserFact:
+        fact = UserFact(content=content, source_group=source_group, tags=tags or [],
+                        confidence=max(0.0, min(1.0, float(confidence))))
         self.facts.append(fact)
         self.groups.setdefault(source_group, "成员")
         return fact
@@ -47,7 +75,10 @@ class UserMemory:
         默认 k=3：注入 system 的跨群事实封顶 3 条，避免个别用户 17 条 facts
         把上下文 priming 得过重（见 2026-07-12 回复诊断报告 P2）。
         """
-        return sorted(self.facts, key=lambda f: f.timestamp, reverse=True)[:k]
+        hits = sorted(self.facts, key=lambda f: f.timestamp, reverse=True)[:k]
+        for f in hits:
+            f.bump_access()
+        return hits
 
     def recall_public(self, k: int = 3) -> list[UserFact]:
         """召回最近 k 条『公开』事实（排除私聊来源 ``source_group == 'private'``）。
@@ -58,7 +89,10 @@ class UserMemory:
         ``get_user_relations`` 统一收敛到此方法，避免过滤逻辑分散、再次漏写。
         """
         public = [f for f in self.facts if f.source_group != "private"]
-        return sorted(public, key=lambda f: f.timestamp, reverse=True)[:k]
+        hits = sorted(public, key=lambda f: f.timestamp, reverse=True)[:k]
+        for f in hits:
+            f.bump_access()
+        return hits
 
     def recall_in_group(self, group_id: str, k: int = 3) -> list[UserFact]:
         """#5 跨群群隐私（2026-08-28 乙·温和版）：仅召回「本群来源」的事实。
@@ -69,7 +103,10 @@ class UserMemory:
         """
         gid = str(group_id)
         in_group = [f for f in self.facts if str(f.source_group) == gid]
-        return sorted(in_group, key=lambda f: f.timestamp, reverse=True)[:k]
+        hits = sorted(in_group, key=lambda f: f.timestamp, reverse=True)[:k]
+        for f in hits:
+            f.bump_access()
+        return hits
 
     def summary(self, max_facts: int = 3, per_fact_chars: int = 80) -> str:
         if not self.facts:

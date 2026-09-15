@@ -73,8 +73,12 @@ class AnimaCore:
         self.monitors = None
         self.webui = None
         self.skill_drafts = None
-        from anima.cognitive.group_presence import GroupPresenceManager
-        self.group_presence = GroupPresenceManager(config.persistence.data_dir)
+        from anima.cognitive.group_presence import (
+            get_group_presence,
+            set_group_presence_data_dir,
+        )
+        set_group_presence_data_dir(config.persistence.data_dir)
+        self.group_presence = get_group_presence(config.persistence.data_dir)
         from anima.cognitive.agenda import AgendaQueue
         self.agenda = AgendaQueue(self.persistence)
         from anima.core.intents import IntentLedger, SubjectOrchestrator
@@ -335,6 +339,12 @@ class AnimaCore:
         """周期性把实时 chat_memory 水合进宪法记忆(M1.2, dedupe), 随运行累积。"""
         _cfg = getattr(getattr(self, "config", None), "memory", None)
         _hours = getattr(_cfg, "hydrate_period_hours", 6.0) or 6.0
+        try:
+            _hours = float(_hours)
+        except (TypeError, ValueError):
+            _hours = 0.0
+        if not (_hours > 0):  # 缺失/0/负/非数字均回退默认，避免负数导致忙循环
+            _hours = 6.0
         period = float(_hours) * 3600.0
         while not self._shutdown_event.is_set():
             try:
@@ -480,6 +490,15 @@ class AnimaCore:
             self.vector_memory = create_vector_memory(self.config)
             if self.vector_memory:
                 logger.info("向量记忆已启用: %s", self.config.vector.db_path)
+                # P3-1：把 embedder 回填给长期记忆，供「可选」语义召回读路径使用。
+                # 这一步只搬引用、不触发任何调用——真正是否启用由
+                # `memory.long_term_semantic` 在查询侧决定（默认 OFF）。
+                try:
+                    if getattr(self, "long_term", None) is not None:
+                        self.long_term.embedder = getattr(
+                            self.vector_memory, "embedding", None)
+                except Exception:  # noqa: BLE001 - 回填失败不影响向量记忆本身
+                    logger.debug("long_term embedder 回填失败，语义召回不可用", exc_info=True)
         except Exception:
             logger.exception("向量记忆初始化失败，已禁用")
             self.vector_memory = None
@@ -496,7 +515,11 @@ class AnimaCore:
         set_time_sense_data_dir(data_dir)  # M3：get_time_sense() 默认归一到配置目录，消 split-brain
         get_time_sense(data_dir)
         from anima.cognitive.desire import get_desire_system
-        from anima.cognitive.relation import get_relation, set_relation_data_dir
+        from anima.cognitive.relation import (
+            get_relation,
+            set_relation_data_dir,
+            set_seed_relations,
+        )
         from anima.crossgroup import configure_crossgroup_manager
         get_time_sense(data_dir)
         get_desire_system(data_dir)
@@ -504,6 +527,8 @@ class AnimaCore:
         set_mood_data_dir(data_dir)  # M3：get_mood_system() 默认归一到配置目录，消 split-brain
         get_mood_system(data_dir)
         set_relation_data_dir(data_dir)  # M2.4：get_relation() 默认归一到配置目录，消 split-brain
+        set_seed_relations(
+            getattr(getattr(self.config, "persona", None), "seed_relations", None))
         get_relation(data_dir)
         configure_crossgroup_manager(data_dir)  # M2.5：跨群数据落到配置目录/crossgroup
         from anima.cognitive.stickers import get_sticker_manager

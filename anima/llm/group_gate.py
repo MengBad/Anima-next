@@ -93,6 +93,51 @@ def is_conversation_end_signal(text: str) -> bool:
     return False
 
 
+# ---------------------------------------------------------------------------
+# 会话连续性信号：纠正/补充 与 撤销
+# ---------------------------------------------------------------------------
+# 每用户被动冷却的本意是治「戳一句又回一句」的刷屏，但它分不清闲话和对上一轮
+# 的纠正/补充。唤醒窗内的纠正（"不对，我问的是历史题"）是对话仍在进行的信号，
+# 不应被吞。词表刻意收窄，且只在唤醒窗活跃时豁免（双闸门），窗外纪律不变。
+_CONTINUATION_PATTERNS = (
+    "不对", "不是", "错了", "说错", "等等", "补充", "还有", "对了", "重说",
+)
+
+
+def is_conversation_continuation(text: str) -> bool:
+    """是否为对上一轮的纠正/补充（配合唤醒窗豁免每用户被动回复冷却）。
+
+    只认句首引导词（startswith）：纠正几乎总是先说「不对/等等」再展开；
+    句中出现这些词的普通聊天不豁免（2026-09-06 复审收窄防刷面）。
+    """
+    plain = _plain_group_text(text or "")
+    return bool(plain) and plain.startswith(_CONTINUATION_PATTERNS)
+
+
+# 撤销：用户在 bot 生成/发送期间改主意，在途回复应让路（首段前弃答/停止分段）。
+_CANCEL_SIGNAL_PATTERNS = (
+    "算了", "不用了", "不用回", "不用答", "别回了", "当我没说", "撤回",
+    "收回", "不问了", "取消刚才",
+)
+# 纠正：发送中发现理解错了，剩余分段停止，让位给纠正后的新回复。
+_CORRECTION_SIGNAL_PATTERNS = (
+    "不对", "不是这样", "我说的是", "你理解错", "理解错了", "问的不是",
+    "重说", "说错了",
+)
+
+
+def is_cancel_signal(text: str) -> bool:
+    """是否为撤销信号（生成/发送期间用户改主意）。"""
+    plain = _plain_group_text(text or "")
+    return bool(plain) and any(p in plain for p in _CANCEL_SIGNAL_PATTERNS)
+
+
+def is_correction_signal(text: str) -> bool:
+    """是否为纠正信号（对 bot 正在说的内容改口）。"""
+    plain = _plain_group_text(text or "")
+    return bool(plain) and any(p in plain for p in _CORRECTION_SIGNAL_PATTERNS)
+
+
 # 群内其它 bot / 常被点名的同伴；句首点到他们且未叫本喵时不抢话。
 _DEFAULT_OTHER_BOT_NAMES = (
     "沙琪玛", "沙其玛", "莎琪玛", "sakima", "Sakima", "SAKIMA",

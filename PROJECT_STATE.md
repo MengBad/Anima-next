@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-25，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # PROJECT_STATE — ANIMA 当前状态快照
 
 > 维护者：Principal Autonomous Engineering Agent

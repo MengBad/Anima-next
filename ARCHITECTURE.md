@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-16，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # ARCHITECTURE — ANIMA 系统架构
 
 > 反映当前（R6 系列）真实架构。随推进更新。

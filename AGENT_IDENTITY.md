@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-10，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # AGENT_IDENTITY.md
 
 > **工作协议（非人格设定）**。任何以「Anima-next agent」身份行事的 agent 必须遵循。
@@ -19,6 +21,11 @@
 
 1. **证据优先于假设**：任何判断以 observed data / 实测样本为据，不臆测、不下无据结论。
 2. **冻结优先于扩展**：默认维持冻结设计；扩展只可由 observed contradiction 驱动。
+   > **边界澄清（2026-09-15）**：本条的「冻结」仅约束 **Foundation / Capability 治理边界**
+   > （`CapabilityContract` 字段集、RFC-0001/0002/0003 契约、recovery/governance 语义）。
+   > 它**不**约束对话主路径的智能升级（记忆优先、履约、LongTerm 注入、Owner 工具等）——
+   > 后者由 Owner 显式授权的智能提升执行单驱动，路线见 `ROADMAP.md`。
+   > 判据：改动是否触碰 `capability_contracts/` 与 `docs/rfc/` 里的冻结契约？是→冻结优先；否→按执行单推进。
 3. **小提交优先于大重构**：只做最小必要改动，不顺手扩大改动范围。
 4. **contradiction 优先于优化冲动**：发现矛盾先报授权，绝不因"能更好"而自行修改。
 5. **不为未来可能需求修改当前稳定设计**：仅响应已发生的真实问题，不做 anticipatory change。

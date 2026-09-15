@@ -24,6 +24,9 @@ from anima.llm.group_gate import (  # noqa: F401
     resolve_other_bot_names,
     is_addressed_to_other_bot,
     is_familiar_idle_unaddressed,
+    is_cancel_signal,
+    is_correction_signal,
+    is_conversation_continuation,
     classify_group_reply_skip,
     should_reply_in_group,
 )
@@ -55,13 +58,14 @@ _DOCUMENT_ATTACHMENT_SUFFIXES = {".pdf", ".docx", ".xlsx"}
 _MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024
 
 
-def _parse_beijing_reminder_time(value: str) -> float:
-    """只接受无歧义的北京时间 ISO 分钟格式，避免自然语言日期误触发。"""
-    parsed = datetime.strptime(value.strip(), "%Y-%m-%dT%H:%M")
-    return parsed.replace(tzinfo=timezone(timedelta(hours=8))).timestamp()
+# 队列④：实现迁至 anima/llm/commands.py；此处保留导入兼容旧测试引用
+from anima.llm.commands import (  # 队列④第一刀：命令路由表 + 分支 mixin
+    AnimaCommandsMixin,
+    _parse_beijing_reminder_time,  # noqa: F401  兼容旧测试引用
+)
 
 
-class LLMHandler:
+class LLMHandler(AnimaCommandsMixin):
     """对话处理器：构建 Pipeline，逐阶段处理消息。"""
 
     def __init__(self, core: "AnimaCore"):
@@ -142,7 +146,15 @@ class LLMHandler:
             generation_stage,
             guardrail_stage,
         )
+        from anima.pipeline.stages.prefilter import (
+            prefilter_stage,
+            attachment_text_stage,
+            bullying_stage,
+        )
         pipe = (Pipeline()
+                .use(prefilter_stage)
+                .use(attachment_text_stage)
+                .use(bullying_stage)
                 .use(permission_stage)
                 .use(memory_stage)
                 .use(cognition_stage)
@@ -156,6 +168,9 @@ class LLMHandler:
                 hook_stage = _build_llm_hook_stage(self.core)
                 # 在 cognition 和 generation 之间插入，允许插件修改提示词
                 pipe = (Pipeline()
+                        .use(prefilter_stage)
+                        .use(attachment_text_stage)
+                        .use(bullying_stage)
                         .use(permission_stage)
                         .use(memory_stage)
                         .use(cognition_stage)
@@ -265,21 +280,47 @@ class LLMHandler:
         except Exception:
             pass
 
-    def _mark_wake(self, gid: int) -> None:
+    # 纠正豁免的频率上限：60s 内同一 (群,用户) 最多 3 次。防止在唤醒窗内
+    # 「每条都带纠正词」无限豁免被动冷却、把豁免变成刷屏绕过（2026-09-06 复审）。
+    _CONTINUATION_EXEMPT_MAX = 3
+    _CONTINUATION_EXEMPT_WINDOW = 60.0
+
+    def _continuation_exempt_ok(self, group_id: Any, user_id: Any) -> bool:
+        try:
+            key = (str(int(group_id)), str(int(user_id)))
+        except (TypeError, ValueError):
+            return False
+        reg = getattr(self, "_continuation_exempt_log", None)
+        if reg is None:
+            reg = self._continuation_exempt_log = {}
+        now = time.time()
+        window = reg.setdefault(key, [])
+        while window and now - window[0] > self._CONTINUATION_EXEMPT_WINDOW:
+            window.pop(0)
+        if len(window) >= self._CONTINUATION_EXEMPT_MAX:
+            return False
+        window.append(now)
+        return True
+
+    def _mark_wake(self, gid: int, uid: int | None = None) -> None:
+        """唤醒窗按 (群,用户) 粒度：A 的唤醒不再让 B 的闲聊被当续话
+        （2026-09-12 收敛计划 A3）。uid 缺省时退化为群级（兼容旧调用）。"""
         try:
             s = getattr(self, "_wake_sessions", None)
             if s is None:
                 s = self._wake_sessions = {}
-            s[str(int(gid))] = time.time() + self._wake_session_ttl()
+            key = f"{int(gid)}:{int(uid)}" if uid is not None else str(int(gid))
+            s[key] = time.time() + self._wake_session_ttl()
         except Exception:
             logger.debug("mark wake failed", exc_info=True)
 
-    def _wake_session_active(self, gid: Any) -> bool:
+    def _wake_session_active(self, gid: Any, uid: Any = None) -> bool:
         try:
             s = getattr(self, "_wake_sessions", None)
             if not s:
                 return False
-            return bool(s.get(str(int(gid)))) and time.time() < s[str(int(gid))]
+            key = f"{int(gid)}:{int(uid)}" if uid is not None else str(int(gid))
+            return bool(s.get(key)) and time.time() < s[key]
         except Exception:
             return False
 
@@ -309,6 +350,13 @@ class LLMHandler:
             is_owner = self._is_owner(int(user_id))
             if detail_type == "private":
                 if not is_owner:
+                    # 私聊提醒/记事按设计仅 owner 可执行（提醒落到群日历）。
+                    # 非 owner 的提醒请求给确定性诚实指引，而不是回落 LLM
+                    # 幻觉「本喵没有闹钟功能」（2026-09-06 第三轮测试 B2）。
+                    from anima.llm.request_executor import classify_request_intent
+                    if classify_request_intent(text) == "remind":
+                        return ("提醒要落到群日历喵：在群里 @我 说一句"
+                                "「明天早上7点提醒我喂猫」就行啦～")
                     return None
             else:
                 from anima.llm.group_gate import is_direct_group_call
@@ -351,693 +399,14 @@ class LLMHandler:
 
     async def _handle_command(self, event: dict, text: str, user_id: int,
                               group_id: Optional[int], detail_type: str) -> bool:
-        """处理 owner 命令。返回 True 表示已消费该消息。"""
-        if not text.startswith("!anima "):
-            return False
-        raw_cmd = text[len("!anima "):].strip()
-        if raw_cmd.lower() in {"forget me", "delete my data"}:
-            from anima.memory.chat_memory import get_chat_memory
-            short_count = get_chat_memory().forget_user(int(user_id))
-            long_count = 0
-            if getattr(self.core, "vector_memory", None):
-                try:
-                    long_count = await self.core.vector_memory.delete_by_source_uin(int(user_id))
-                except Exception:
-                    logger.exception("用户自助遗忘的向量清理失败")
-            audit = getattr(self.core, "audit", None)
-            if audit:
-                audit.emit("user_forget_requested", user_id=int(user_id),
-                           short_sessions=short_count, long_memories=long_count)
-            target_id = group_id if detail_type == "group" else user_id
-            prefix = f"[CQ:at,qq={user_id}] " if detail_type == "group" else ""
-            await self.core.gateway.send(OutboundMsg(
-                detail_type, target_id,
-                f"{prefix}已清除本喵保存的你的对话记忆（短期档案 {short_count} 份、长期记录 {long_count} 条）。",
-            ))
-            return True
-        if raw_cmd.lower() in {"export me", "export my data"}:
-            from anima.memory.chat_memory import get_chat_memory
-            short_memory = get_chat_memory().export_user(int(user_id))
-            long_memory = []
-            if getattr(self.core, "vector_memory", None):
-                try:
-                    long_memory = await self.core.vector_memory.export_by_source_uin(int(user_id))
-                except Exception:
-                    logger.exception("用户数据导出的向量读取失败")
-            payload = {"user_id": int(user_id), "exported_at": time.time(),
-                       "chat_memory": short_memory, "long_memory": long_memory}
-            output = Path(self.core.config.persistence.data_dir) / "output"
-            output.mkdir(parents=True, exist_ok=True)
-            path = output / f"anima_export_{int(user_id)}_{int(time.time())}.json"
-            path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-            audit = getattr(self.core, "audit", None)
-            if audit:
-                audit.emit("user_export_requested", user_id=int(user_id),
-                           short_sessions=len(short_memory), long_memories=len(long_memory))
-            await self.core.gateway.send_file(OutboundMsg(
-                "private", int(user_id), "你的 Anima 数据导出", extra={"file_path": str(path), "name": path.name},
-            ))
-            return True
-        if not self._is_owner(user_id):
-            return False
+        """处理 owner 命令。返回 True 表示已消费该消息。
 
-        cmd = raw_cmd.lower()
-        target_id = group_id if detail_type == "group" else user_id
-        at_prefix = f"[CQ:at,qq={user_id}] " if detail_type == "group" else ""
-
-        if cmd == "pause":
-            self.core.config.autonomy.enabled = False
-            if self.core.heartbeat:
-                await self.core.heartbeat.stop()
-            reply = f"{at_prefix}已暂停自主心跳。"
-        elif cmd == "resume":
-            self.core.config.autonomy.enabled = True
-            if self.core.heartbeat and not self.core.heartbeat._running:
-                await self.core.heartbeat.start()
-            reply = f"{at_prefix}已恢复自主心跳。"
-        elif cmd == "status":
-            hb = self.core.heartbeat
-            status = "运行中" if (hb and hb._running) else "已停止"
-            reply = f"{at_prefix}自主心跳: {status} | 自主开关: {self.core.config.autonomy.enabled}"
-        elif raw_cmd.startswith("ignore "):
-            scope = str(group_id) if detail_type == "group" else "global"
-            tokens = [t for t in raw_cmd[len("ignore "):].replace(",", " ").replace("，", " ").split() if t.strip().isdigit()]
-            if tokens:
-                got = self._ignore_store().add(scope, [int(t) for t in tokens])
-                reply = f"{at_prefix}已把 {tokens} 加入忽略名单（{got} 个）。"
-            elif detail_type == "group":
-                spk = (getattr(self, "_recent_spk", {}) or {}).get(str(group_id), {})
-                recent = [int(u) for u, _ in sorted(spk.items(), key=lambda kv: kv[1], reverse=True)]
-                if not recent:
-                    reply = f"{at_prefix}用法：!anima ignore <qq...>（本群最近无发言者可忽略）"
-                else:
-                    self._ignore_store().add(scope, recent[:2])
-                    reply = f"{at_prefix}已把最近发言的 {recent[:2]} 加入忽略名单。"
-            else:
-                reply = f"{at_prefix}私聊无法用最近发言解析，请用 !anima ignore <qq...>"
-        elif raw_cmd.startswith("unignore "):
-            scope = str(group_id) if detail_type == "group" else "global"
-            tokens = [t for t in raw_cmd[len("unignore "):].replace(",", " ").replace("，", " ").split() if t.strip().isdigit()]
-            removed = [t for t in tokens if self._ignore_store().remove(scope, int(t))]
-            reply = f"{at_prefix}已移除忽略 {removed}。" if removed else f"{at_prefix}没有需要移除的（可用 !anima ignore list 查看）。"
-        elif cmd in ("ignore", "ignore list"):
-            scope = str(group_id) if detail_type == "group" else "global"
-            lst = self._ignore_store().list(scope)
-            reply = f"{at_prefix}忽略名单: " + (", ".join(lst) if lst else "空")
-        elif cmd in ("tasks", "task list"):
-            rows = [f"{x.id} [{x.status}] {x.request[:70]}" for x in self.core.tasks.list()[:10]]
-            reply = f"{at_prefix}" + ("\n".join(rows) if rows else "暂无 Owner 任务")
-        elif raw_cmd.startswith("task create "):
-            request_text = raw_cmd[len("task create "):].strip()
-            if not request_text:
-                reply = f"{at_prefix}用法：!anima task create <目标>"
-            else:
-                plan = ["收集日志、配置和相关代码证据", "给出最小修复方案并等待修改确认", "修改后运行测试", "部署/重启前等待部署确认", "验证结果并记录任务结论"]
-                task = self.core.tasks.create(request_text, user_id, plan)
-                reply = f"{at_prefix}已创建任务 {task.id}（planned）。\n" + "\n".join(f"{i+1}. {v}" for i,v in enumerate(plan)) + f"\n用 !anima task approve {task.id} 进入确认队列。"
-        elif raw_cmd.startswith("task approve "):
-            task_id = raw_cmd[len("task approve "):].strip()
-            try:
-                task = self.core.tasks.get(task_id)
-                if task is None:
-                    raise ValueError("未找到任务")
-                result = await self.core.task_agent.execute(task)
-                reply = f"{at_prefix}任务 {task.id} 已执行：\n{result[:1800]}"
-            except ValueError:
-                reply = f"{at_prefix}未找到任务"
-        elif raw_cmd.startswith("task cancel "):
-            try:
-                task = self.core.tasks.set_status(raw_cmd[len("task cancel "):].strip(), "cancelled", "Owner 取消")
-                reply = f"{at_prefix}任务 {task.id} 已取消"
-            except ValueError:
-                reply = f"{at_prefix}未找到任务"
-        elif raw_cmd.startswith("agent "):
-            sub = raw_cmd[len("agent "):].strip()
-            if sub.startswith("approve "):
-                tid = sub[len("approve "):].strip()
-                reply = f"{at_prefix}{await self.core.agent.approve(tid)}"
-            elif sub.startswith("cancel "):
-                tid = sub[len("cancel "):].strip()
-                reply = f"{at_prefix}{self.core.agent.cancel(tid)}"
-            elif sub in ("list", "tasks"):
-                reply = f"{at_prefix}" + self.core.agent.status_text()
-            elif sub:
-                # 主人专属：把整句作为 Agent 请求直接提交执行
-                task = await self.core.agent.submit(sub, int(user_id), auto_run=True)
-                reply = f"{at_prefix}已创建 Agent 任务 {task.id}，开始执行（进度将推送）。"
-            else:
-                reply = (f"{at_prefix}用法：!anima agent <请求> | "
-                         f"!anima agent approve <id> | !anima agent cancel <id> | !anima agent list")
-        elif cmd == "agenda" or cmd == "agenda list":
-            items = self.core.agenda.pending()
-            if not items:
-                reply = f"{at_prefix}当前没有待执行的议程"
-            else:
-                rows = [f"{item.id}: 群{item.group_id} p={item.priority:.1f} {item.text_intent}" for item in items]
-                reply = f"{at_prefix}" + "\n".join(rows[:10])
-        elif cmd == "calendar" or cmd == "calendar list":
-            items = [*self.core.calendar.items, *self.core.calendar.weekly_items]
-            items = [item for item in items if item.enabled]
-            if not items:
-                reply = f"{at_prefix}当前没有每日历事件"
-            else:
-                rows = [f"{item.id}: {'每周'+str(item.weekday) if hasattr(item, 'weekday') else '每天'} "
-                        f"{item.hour:02d}:{item.minute:02d} 群{item.group_id} {item.text}" for item in items]
-                reply = f"{at_prefix}" + "\n".join(rows[:10])
-        elif raw_cmd.startswith("calendar daily "):
-            try:
-                _, _, group_text, hhmm, reminder = raw_cmd.split(" ", 4)
-                item = self.core.calendar.add_daily(int(group_text), hhmm, reminder)
-                audit = getattr(self.core, "audit", None)
-                if audit:
-                    audit.emit("calendar_event_created", calendar_id=item.id, group_id=item.group_id)
-                reply = (f"{at_prefix}已添加每日历事件 {item.id}："
-                         f"每天北京时间 {item.hour:02d}:{item.minute:02d} 提醒群 {item.group_id}。")
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima calendar daily <群号> <HH:MM> <提醒内容>"
-        elif raw_cmd.startswith("calendar weekly "):
-            try:
-                _, _, group_text, weekday, hhmm, reminder = raw_cmd.split(" ", 5)
-                item = self.core.calendar.add_weekly(int(group_text), int(weekday), hhmm, reminder)
-                reply = (f"{at_prefix}已添加每周日历事件 {item.id}：周{item.weekday} "
-                         f"{item.hour:02d}:{item.minute:02d} 提醒群 {item.group_id}。")
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima calendar weekly <群号> <星期1-7> <HH:MM> <提醒内容>"
-        elif raw_cmd.startswith("calendar cancel "):
-            event_id = raw_cmd[len("calendar cancel "):].strip()
-            reply = f"{at_prefix}{'已取消日历事件' if self.core.calendar.cancel(event_id) else '未找到日历事件'}：{event_id}"
-        elif raw_cmd.startswith("agenda add "):
-            try:
-                _, _, group_text, intent = raw_cmd.split(" ", 3)
-                item = self.core.propose_agenda(int(group_text), intent)
-                if item is None:
-                    raise ValueError("内容无效")
-                reply = f"{at_prefix}已加入议程 {item.id}，会受主动发言频率与预算限制"
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima agenda add <群号> <表达意图>"
-        elif raw_cmd.startswith("agenda cancel "):
-            agenda_id = raw_cmd[len("agenda cancel "):].strip()
-            reply = f"{at_prefix}{'已取消议程' if self.core.agenda.cancel(agenda_id) else '未找到待执行议程'}：{agenda_id}"
-        elif raw_cmd.startswith("remind at "):
-            try:
-                _, _, group_text, at_text, reminder = raw_cmd.split(" ", 4)
-                target_group = int(group_text)
-                not_before = _parse_beijing_reminder_time(at_text)
-                now = time.time()
-                if target_group <= 0 or not reminder.strip() or not (now < not_before <= now + 366 * 86400):
-                    raise ValueError
-                item = self.core.propose_agenda(
-                    target_group, reminder.strip(), priority=0.9,
-                    not_before_at=not_before, expires_at=not_before + 6 * 3600,
-                )
-                if item is None:
-                    raise ValueError("内容无效")
-                reply = (f"{at_prefix}已设定北京时间 {at_text} 的群提醒，议程 {item.id}；"
-                         "到点后仍会遵守全局发言冷却与日预算。")
-            except (TypeError, ValueError):
-                reply = (f"{at_prefix}用法：!anima remind at <群号> "
-                         "<YYYY-MM-DDTHH:MM(北京时间)> <提醒内容>")
-        elif raw_cmd.startswith("remind "):
-            try:
-                _, group_text, minutes_text, reminder = raw_cmd.split(" ", 3)
-                target_group, minutes = int(group_text), int(minutes_text)
-                if target_group <= 0 or not 1 <= minutes <= 10080 or not reminder.strip():
-                    raise ValueError
-                not_before = time.time() + minutes * 60
-                # 到点后留 6 小时交给心跳的冷却/预算闸门发送，过期后绝不补发旧提醒。
-                item = self.core.propose_agenda(
-                    target_group, reminder.strip(), priority=0.9,
-                    not_before_at=not_before, expires_at=not_before + 6 * 3600,
-                )
-                if item is None:
-                    raise ValueError("内容无效")
-                reply = (f"{at_prefix}已设定 {minutes} 分钟后的群提醒，议程 {item.id}；"
-                         "到点后仍会遵守全局发言冷却与日预算。")
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima remind <群号> <分钟(1-10080)> <提醒内容>"
-        elif cmd in ("skills", "skills list"):
-            skills = getattr(self.core, "skills", None)
-            if skills is None:
-                reply = f"{at_prefix}Skills 未启用"
-            elif not skills.manifests:
-                reply = f"{at_prefix}当前没有已加载的 Skills"
-            else:
-                names = "、".join(f"{m.id}({m.name})" for m in skills.manifests.values())
-                reply = f"{at_prefix}已加载 {len(skills.manifests)} 个 Skills：{names}"
-        elif cmd == "skills reload":
-            skills = getattr(self.core, "skills", None)
-            if skills is None:
-                reply = f"{at_prefix}Skills 未启用"
-            else:
-                count = skills.reload()
-                suffix = f"；{len(skills.errors)} 个无效文件已跳过" if skills.errors else ""
-                reply = f"{at_prefix}Skills 已热重载：{count} 个{suffix}"
-        elif cmd in ("drafts", "drafts list"):
-            drafts = getattr(self.core, "skill_drafts", None)
-            items = drafts.pending() if drafts else []
-            if not items:
-                reply = f"{at_prefix}当前没有待审核的 SkillDraft"
-            else:
-                rows = [f"{item.id}: {item.manifest.get('name', '未命名')} | {item.request[:80]}"
-                        for item in items]
-                reply = f"{at_prefix}" + "\n".join(rows[:10])
-        elif raw_cmd.startswith("draft create "):
-            drafts = getattr(self.core, "skill_drafts", None)
-            try:
-                draft = await drafts.create_from_request(raw_cmd[len("draft create "):])
-                errors = "；".join(draft.errors) if draft.errors else "静态验证通过"
-                reply = f"{at_prefix}已创建草案 {draft.id}（{errors}）。请先 !anima drafts 查看，再用 approve/reject 审核。"
-            except (ValueError, RuntimeError, AttributeError) as exc:
-                reply = f"{at_prefix}创建 SkillDraft 失败：{str(exc)[:160]}"
-        elif raw_cmd.startswith("draft preview "):
-            drafts = getattr(self.core, "skill_drafts", None)
-            try:
-                draft = await drafts.preview(raw_cmd[len("draft preview "):].strip())
-                result = draft.preview_result or {}
-                reply = (f"{at_prefix}预览完成：{result.get('name', '网页')} | "
-                         f"{result.get('title', '')} | {result.get('state', '')}。"
-                         "确认无误后再使用 !anima draft approve <id>。")
-            except (ValueError, RuntimeError, AttributeError) as exc:
-                reply = f"{at_prefix}草案预览失败：{str(exc)[:180]}"
-        elif raw_cmd.startswith("draft approve "):
-            drafts = getattr(self.core, "skill_drafts", None)
-            try:
-                draft = drafts.approve(raw_cmd[len("draft approve "):].strip(), user_id)
-                reply = f"{at_prefix}已批准并安装 SkillDraft {draft.id}：{draft.manifest.get('name')}"
-            except (ValueError, AttributeError) as exc:
-                reply = f"{at_prefix}批准失败：{str(exc)[:180]}"
-        elif raw_cmd.startswith("draft reject "):
-            drafts = getattr(self.core, "skill_drafts", None)
-            try:
-                draft = drafts.reject(raw_cmd[len("draft reject "):].strip(), user_id)
-                reply = f"{at_prefix}已拒绝 SkillDraft {draft.id}"
-            except (ValueError, AttributeError) as exc:
-                reply = f"{at_prefix}拒绝失败：{str(exc)[:180]}"
-        elif cmd in ("approvals", "approvals list"):
-            items = self.core.approvals.pending()
-            if not items:
-                reply = f"{at_prefix}当前没有待审批的高危工具请求"
-            else:
-                rows = [f"{item.id}: {item.tool} 参数摘要={item.args_digest}"
-                        for item in items]
-                reply = f"{at_prefix}" + "\n".join(rows[:10])
-        elif raw_cmd.startswith("approve "):
-            try:
-                approval_id = raw_cmd[len("approve "):].strip()
-                result = await self.core.tools.approve_and_execute(approval_id, user_id)
-                reply = f"{at_prefix}已批准并执行 {approval_id}：{result[:300]}"
-            except (ValueError, AttributeError) as exc:
-                reply = f"{at_prefix}审批执行失败：{str(exc)[:180]}"
-        elif raw_cmd.startswith("deny "):
-            try:
-                approval_id = raw_cmd[len("deny "):].strip()
-                self.core.tools.reject_approval(approval_id, user_id)
-                reply = f"{at_prefix}已拒绝高危请求 {approval_id}"
-            except (ValueError, AttributeError) as exc:
-                reply = f"{at_prefix}拒绝失败：{str(exc)[:180]}"
-        elif cmd == "subscriptions" or cmd == "subscriptions list":
-            monitors = getattr(self.core, "monitors", None)
-            if monitors is None or not monitors.store.items:
-                reply = f"{at_prefix}当前没有直播订阅"
-            else:
-                rows = [f"{s.id}: {s.platform}/{s.subject_id} -> {','.join(map(str, s.target_groups))} ({'开' if s.enabled else '关'})" for s in monitors.store.items.values()]
-                reply = f"{at_prefix}" + "\n".join(rows[:10])
-        elif raw_cmd.startswith("subscribe bili "):
-            parts = raw_cmd.split()
-            monitors = getattr(self.core, "monitors", None)
-            try:
-                room_id = parts[2]
-                target_group = int(parts[3]) if len(parts) > 3 else int(group_id)
-                if not room_id.isdigit() or target_group <= 0:
-                    raise ValueError
-                from anima.monitors import Subscription
-                sub = monitors.store.add(Subscription(platform="bilibili_live", subject_id=room_id, target_groups=[target_group]))
-                reply = f"{at_prefix}已订阅 B站直播间 {room_id}，开播通知群 {target_group}，id={sub.id}"
-            except (ValueError, IndexError, TypeError, AttributeError):
-                reply = f"{at_prefix}用法：!anima subscribe bili <直播间号> [目标群号]"
-        elif raw_cmd.startswith("subscribe http "):
-            parts = raw_cmd.split()
-            monitors = getattr(self.core, "monitors", None)
-            try:
-                url = parts[2]
-                target_group = int(parts[3]) if len(parts) > 3 else int(group_id)
-                from anima.monitors.http_page import validate_public_url
-                from anima.monitors import Subscription
-                url = await validate_public_url(url)
-                sub = monitors.store.add(Subscription(
-                    platform="http_page", subject_id=url, target_groups=[target_group],
-                    poll_interval_sec=300,
-                    template="本喵监控到 {name} 状态或内容变了：{title}\n{url}",
-                ))
-                reply = f"{at_prefix}已创建公开网页监控 {sub.id}；首轮只建基线，后续变化才通知群 {target_group}"
-            except (ValueError, IndexError, TypeError, AttributeError) as exc:
-                reply = f"{at_prefix}创建网页监控失败：{str(exc)[:120]}"
-        elif raw_cmd.startswith("unsubscribe "):
-            sub_id = raw_cmd[len("unsubscribe "):].strip()
-            monitors = getattr(self.core, "monitors", None)
-            reply = f"{at_prefix}{'已删除订阅' if monitors and monitors.store.remove(sub_id) else '未找到订阅'}：{sub_id}"
-        elif raw_cmd.startswith("memory show "):
-            try:
-                target_user = int(raw_cmd[len("memory show "):].strip())
-                from anima.memory.chat_memory import get_chat_memory
-                from anima.crossgroup import get_crossgroup_manager
-                short = get_chat_memory().export_user(target_user)
-                facts = get_crossgroup_manager().get_user(str(target_user)).facts
-                vectors = []
-                if getattr(self.core, "vector_memory", None):
-                    vectors = await self.core.vector_memory.export_by_source_uin(target_user)
-                rows = [
-                    f"用户 {target_user}：短期会话 {len(short)} 份，跨群事实 {len(facts)} 条，向量记忆 {len(vectors)} 条"
-                ]
-                rows.extend(
-                    f"F{index}. {fact.content[:120]}（群{fact.source_group}）"
-                    for index, fact in enumerate(facts[:10], 1)
-                )
-                rows.extend(
-                    f"V{item['rowid']}. {str(item.get('text', ''))[:120]}"
-                    for item in vectors[:10]
-                )
-                reply = f"{at_prefix}" + "\n".join(rows)
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima memory show <QQ号>"
-        elif raw_cmd.startswith("memory replace "):
-            try:
-                _, _, user_text, index_text, content = raw_cmd.split(" ", 4)
-                from anima.crossgroup import get_crossgroup_manager
-                ok = get_crossgroup_manager().replace_user_fact(
-                    str(int(user_text)), int(index_text), content,
-                )
-                reply = f"{at_prefix}{'已纠正' if ok else '未找到'}跨群事实 F{index_text}"
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima memory replace <QQ号> <事实序号> <新内容>"
-        elif raw_cmd.startswith("memory delete fact "):
-            try:
-                _, _, _, user_text, index_text = raw_cmd.split(" ", 4)
-                from anima.crossgroup import get_crossgroup_manager
-                ok = get_crossgroup_manager().delete_user_fact(str(int(user_text)), int(index_text))
-                reply = f"{at_prefix}{'已删除' if ok else '未找到'}跨群事实 F{index_text}"
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima memory delete fact <QQ号> <事实序号>"
-        elif raw_cmd.startswith("memory delete vector "):
-            try:
-                rowid = int(raw_cmd[len("memory delete vector "):].strip())
-                if not getattr(self.core, "vector_memory", None):
-                    raise ValueError
-                ok = await self.core.vector_memory.delete(rowid)
-                reply = f"{at_prefix}{'已删除' if ok else '未找到'}向量记忆 V{rowid}"
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima memory delete vector <rowid>"
-        elif raw_cmd.startswith("memory clear "):
-            try:
-                target_user = int(raw_cmd[len("memory clear "):].strip())
-                from anima.memory.chat_memory import get_chat_memory
-                from anima.crossgroup import get_crossgroup_manager
-                short_count = get_chat_memory().forget_user(target_user)
-                fact_count = get_crossgroup_manager().forget_user(str(target_user))
-                vector_count = 0
-                if getattr(self.core, "vector_memory", None):
-                    vector_count = await self.core.vector_memory.delete_by_source_uin(target_user)
-                reply = (f"{at_prefix}已清除用户 {target_user} 的记忆：短期 {short_count} 份、"
-                         f"跨群事实 {fact_count} 条、向量 {vector_count} 条")
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima memory clear <QQ号>"
-        elif cmd == "quality" or raw_cmd.startswith("quality "):
-            try:
-                parts = raw_cmd.split()
-                if len(parts) > 2:
-                    raise ValueError
-                day = parts[1] if len(parts) == 2 else None
-                if day:
-                    datetime.strptime(day, "%Y-%m-%d")
-                quality = getattr(self.core, "reply_quality", None)
-                if quality is None:
-                    from anima.cognitive.reply_quality import get_reply_quality
-                    quality = get_reply_quality(self.core.config.persistence.data_dir)
-                reply = f"{at_prefix}" + quality.format_report(day)
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima quality [YYYY-MM-DD]"
-        elif cmd in ("iterate", "iterate status") or raw_cmd.startswith("iterate "):
-            # B/C 受控迭代：故障工单 + 白名单 core_patch（审批与 apply 分离）
-            from anima.cognitive.controlled_iteration import get_controlled_iteration
-            it = get_controlled_iteration(self.core.config.persistence.data_dir)
-            parts = raw_cmd.split()
-            sub = parts[1].lower() if len(parts) >= 2 else "status"
-            if sub == "status" or cmd == "iterate status":
-                reply = f"{at_prefix}" + it.format_status(self.core)
-            elif sub == "auto" and len(parts) >= 3:
-                mode = parts[2].lower()
-                if mode in {"on", "1", "true", "enable"}:
-                    it.set_auto_repair_override(True)
-                    reply = f"{at_prefix}档3自动修复：已开启（运行时覆盖）。" + it.format_status(self.core)
-                elif mode in {"off", "0", "false", "disable"}:
-                    it.set_auto_repair_override(False)
-                    reply = f"{at_prefix}档3自动修复：已关闭（运行时覆盖）。" + it.format_status(self.core)
-                elif mode in {"default", "clear", "reset"}:
-                    it.set_auto_repair_override(None)
-                    reply = f"{at_prefix}档3自动修复：已恢复配置默认。" + it.format_status(self.core)
-                else:
-                    reply = f"{at_prefix}用法：!anima iterate auto on|off|default"
-            elif sub == "repair":
-                # 立即尝试一条自动修复（仍受配额/冷却约束）
-                msg = await it.maybe_auto_repair(self.core)
-                reply = f"{at_prefix}" + (msg or ("未执行：" + it.format_status(self.core)))
-            elif sub == "scan":
-                opened = it.scan_quality_and_open_tickets(self.core, force=True)
-                if not opened:
-                    reply = f"{at_prefix}扫描完成：无新故障工单（或信号未达阈值/冷却中）。\n" + it.format_status(self.core)
-                else:
-                    rows = [f"{t.id} {t.request.splitlines()[0][:80]}" for t in opened]
-                    reply = f"{at_prefix}新开 {len(opened)} 个故障工单：\n" + "\n".join(rows)
-            elif sub == "escalate" and len(parts) >= 3:
-                try:
-                    task = it.escalate_to_core_patch(self.core, parts[2].strip(), owner_id=int(user_id))
-                    files = (task.proposal or {}).get("target_files") or []
-                    reply = (
-                        f"{at_prefix}已升级为 core_patch {task.id}（awaiting_approval）。\n"
-                        f"白名单目标：{', '.join(files)}\n"
-                        f"审批：WebUI 批准 或 !anima iterate approve {task.id}\n"
-                        f"落地：!anima iterate apply {task.id}（不自动重启）"
-                    )
-                except ValueError as exc:
-                    reply = f"{at_prefix}升级失败：{exc}"
-            elif sub == "approve" and len(parts) >= 3:
-                try:
-                    task = it.approve_core_patch(self.core, parts[2].strip(), int(user_id))
-                    reply = f"{at_prefix}core_patch {task.id} 已批准，状态={task.status}。用 !anima iterate apply {task.id} 落地。"
-                except ValueError as exc:
-                    reply = f"{at_prefix}审批失败：{exc}"
-            elif sub == "apply" and len(parts) >= 3:
-                try:
-                    msg = it.apply_core_patch(self.core, parts[2].strip(), int(user_id))
-                    reply = f"{at_prefix}{msg}"
-                except ValueError as exc:
-                    reply = f"{at_prefix}apply 失败：{exc}"
-                except Exception as exc:
-                    reply = f"{at_prefix}apply 异常：{type(exc).__name__}: {str(exc)[:160]}"
-            else:
-                reply = (
-                    f"{at_prefix}用法：!anima iterate status|scan|auto on|off|"
-                    "repair|escalate <id>|approve <id>|apply <id>"
-                )
-        elif cmd == "digest" or raw_cmd.startswith("digest "):
-            # Owner 按需周报：只读聚合指标，写入 data/digests，不改配置/不装 SelfCode
-            try:
-                parts = raw_cmd.split()
-                days = 7
-                if len(parts) == 2:
-                    days = int(parts[1])
-                elif len(parts) > 2:
-                    raise ValueError
-                from anima.cognitive.weekly_digest import save_digest, format_digest_text
-                digest = save_digest(self.core, days=days)
-                reply = f"{at_prefix}" + format_digest_text(digest)
-            except (TypeError, ValueError):
-                reply = f"{at_prefix}用法：!anima digest [天数1-31]"
-        elif cmd == "selfcode" or cmd.startswith("selfcode "):
-            # SelfCode 效果：列表 / 评估建议卸载 / 驳回建议 / 禁用 / 删除（删除需 Owner 明确）
-            from anima.cognitive.selfcode import get_selfcode_manager
-            mgr = get_selfcode_manager(self.core)
-            parts = raw_cmd.split()
-            sub = parts[1].lower() if len(parts) >= 2 else "list"
-            if sub in ("list", "ls", "status"):
-                items = mgr.list_installed()
-                if not items:
-                    reply = f"{at_prefix}尚无已安装 SelfCode 工具。"
-                else:
-                    rows = []
-                    for it in items[:15]:
-                        st = it.get("stats") or {}
-                        flag = " ⚠建议卸" if st.get("suggest_uninstall") else ""
-                        en = "开" if it.get("enabled") else "关"
-                        rows.append(
-                            f"{it['name']}[{en}] 调{st.get('calls', 0)} "
-                            f"成{st.get('ok', 0)}/败{st.get('fail', 0)}{flag}"
-                        )
-                    reply = f"{at_prefix}SelfCode {len(items)} 个：\n" + "\n".join(rows)
-            elif sub == "eval" or sub == "evaluate":
-                sug = mgr.evaluate_tools()
-                if not sug:
-                    reply = f"{at_prefix}评估完成：暂无建议卸载的工具。"
-                else:
-                    rows = [f"{s['name']}: {s['reason']}" for s in sug[:12]]
-                    reply = (
-                        f"{at_prefix}建议卸载 {len(sug)} 个（不会自动删）：\n"
-                        + "\n".join(rows)
-                        + f"\n确认删除：!anima selfcode delete <名>\n"
-                        f"驳回建议：!anima selfcode keep <名>"
-                    )
-            elif sub == "keep" and len(parts) >= 3:
-                name = parts[2].strip()
-                mgr.dismiss_uninstall_suggestion(name)
-                reply = f"{at_prefix}已驳回对 {name} 的卸载建议。"
-            elif sub == "disable" and len(parts) >= 3:
-                try:
-                    r = mgr.set_tool_enabled(parts[2].strip(), False)
-                    reply = f"{at_prefix}{r.get('message', '已禁用')}"
-                except ValueError as exc:
-                    reply = f"{at_prefix}禁用失败：{exc}"
-            elif sub == "enable" and len(parts) >= 3:
-                try:
-                    r = mgr.set_tool_enabled(parts[2].strip(), True)
-                    reply = f"{at_prefix}{r.get('message', '已启用')}"
-                except ValueError as exc:
-                    reply = f"{at_prefix}启用失败：{exc}"
-            elif sub == "delete" and len(parts) >= 3:
-                try:
-                    r = mgr.delete_tool(parts[2].strip())
-                    reply = f"{at_prefix}已删除 {r.get('name')}（备份 {r.get('backup') or '—'}）"
-                except ValueError as exc:
-                    reply = f"{at_prefix}删除失败：{exc}"
-            else:
-                reply = (
-                    f"{at_prefix}用法：!anima selfcode list|eval|"
-                    "keep <名>|disable <名>|enable <名>|delete <名>"
-                )
-        elif cmd == "drift" or cmd.startswith("drift "):
-            # 人格漂移状态 / 暂停反刍 / 笔记维护（Owner 主权）
-            from anima.cognitive.learning import get_learning
-            sl = get_learning(self.core.config.persistence.data_dir)
-            parts = raw_cmd.split()
-            sub = parts[1].lower() if len(parts) >= 2 else "status"
-            if sub in ("status", "stat", "s"):
-                st = sl.drift_status()
-                paused = "是" if st.get("rumination_paused") else "否"
-                lr = st.get("last_reject") or {}
-                lr_s = lr.get("reason", "—") if isinstance(lr, dict) else "—"
-                reply = (
-                    f"{at_prefix}漂移 general {st['daily_spent']:.2f}/{st['daily_budget']:.2f} · "
-                    f"纠错 {st['self_correction_spent']:.2f}/{st['self_correction_daily_budget']:.2f} · "
-                    f"7日窗 {st['window_spent']:.2f}/{st['window_ceiling']:.2f}\n"
-                    f"笔记 {st.get('notes_lines', 0)} 行 · 反刍暂停 {paused} · 最近拒因 {lr_s}"
-                )
-            elif sub == "pause":
-                hours = 24.0
-                if len(parts) >= 3:
-                    try:
-                        hours = float(parts[2])
-                    except ValueError:
-                        hours = 24.0
-                until = sl.pause_rumination(hours)
-                import time as _t
-                left_h = max(0.0, (until - _t.time()) / 3600.0)
-                reply = f"{at_prefix}已暂停反刍约 {left_h:.1f} 小时（不写新自我笔记）。"
-            elif sub == "resume":
-                was = sl.resume_rumination()
-                reply = f"{at_prefix}{'已恢复反刍。' if was else '反刍本来就没暂停。'}"
-            elif sub == "notes":
-                n = sl.count_note_lines()
-                sample = sl.get_notes(400)
-                reply = f"{at_prefix}自我笔记 {n} 行。\n{sample or '（空）'}"
-            elif sub == "drop":
-                n = 1
-                if len(parts) >= 3:
-                    try:
-                        n = int(parts[2])
-                    except ValueError:
-                        n = 1
-                dropped = sl.delete_last_notes(n)
-                reply = f"{at_prefix}已删除最近 {dropped} 条自我笔记。"
-            elif sub == "clear":
-                dropped = sl.clear_notes()
-                reply = f"{at_prefix}已清空自我笔记（原 {dropped} 行）。"
-            elif sub == "purge":
-                dropped = sl.purge_sticky_notes()
-                reply = f"{at_prefix}已清粘滞笔记 {dropped} 行。"
-            else:
-                reply = (
-                    f"{at_prefix}用法：!anima drift [status|pause [小时]|resume|"
-                    "notes|drop [n]|clear|purge]"
-                )
-        elif cmd.startswith("remember "):
-            # 手动补种/纠偏跨群用户事实（保留原始大小写）
-            fact_text = raw_cmd[len("remember "):].strip()
-            if not fact_text:
-                reply = f"{at_prefix}用法：!anima remember <事实>"
-            else:
-                from anima.crossgroup import get_crossgroup_manager
-                cgm = get_crossgroup_manager()
-                sender_name = event.get("raw", {}).get("sender", {}).get("nickname", str(user_id))
-                src = str(group_id) if detail_type == "group" else "private"
-                f = cgm.add_user_fact(str(user_id), fact_text, source_group=src, name=sender_name)
-                reply = (f"{at_prefix}已记住：{fact_text}" if f
-                         else f"{at_prefix}这条已经记过了：{fact_text}")
-        elif cmd == "stickers":
-            # 表情库状态（空库时暴露诊断，定位取图失败）
-            try:
-                from anima.cognitive.stickers import get_sticker_manager
-                mgr = get_sticker_manager(self.core.config.persistence.data_dir)
-                n = mgr.count()
-                if n == 0 and hasattr(mgr, "stats"):
-                    st = mgr.stats()
-                    reply = (f"{at_prefix}表情库为空（上限 {self.core.config.sticker.max_stickers}）。"
-                             f"取图失败累计 {st.get('fetch_fail_total', 0)} 次；"
-                             f"若群里有图却一直空，多为 NapCat 取图失败——"
-                             f"检查 resolver/get_image GUID 解析是否可用。")
-                else:
-                    reply = f"{at_prefix}表情库共 {n} 张（上限 {self.core.config.sticker.max_stickers}）"
-            except Exception:
-                reply = f"{at_prefix}表情库状态查询失败"
-        elif cmd == "clear_stickers":
-            # 清空表情库（隐私/重置用）
-            try:
-                from anima.cognitive.stickers import get_sticker_manager
-                n = get_sticker_manager(self.core.config.persistence.data_dir).clear()
-                reply = f"{at_prefix}已清空表情库（删除 {n} 张）"
-            except Exception:
-                reply = f"{at_prefix}清空失败"
-        elif cmd in ("stickers pending", "sticker pending"):
-            from anima.cognitive.stickers import get_sticker_manager
-            items = get_sticker_manager(self.core.config.persistence.data_dir).pending()
-            reply = (f"{at_prefix}没有待审核表情" if not items else
-                     f"{at_prefix}" + "\n".join(f"{h[:12]} 来源群{m.get('src_group')} 标签{m.get('labels', [])}" for h, m in items[:10]))
-        elif raw_cmd.startswith("sticker approve ") or raw_cmd.startswith("sticker reject "):
-            from anima.cognitive.stickers import get_sticker_manager
-            approve = raw_cmd.startswith("sticker approve ")
-            sticker_hash = raw_cmd.split()[-1].strip()
-            manager = get_sticker_manager(self.core.config.persistence.data_dir)
-            ok = manager.approve(sticker_hash) if approve else manager.reject(sticker_hash)
-            reply = f"{at_prefix}{'已批准' if approve else '已拒绝'}" if ok else f"{at_prefix}未找到待审核表情"
-        elif raw_cmd.strip() == "sticker reclassify":
-            from anima.cognitive.stickers import get_sticker_manager
-            mgr = get_sticker_manager(self.core.config.persistence.data_dir)
-            if not getattr(self.core.config.sticker, "classify_at_collect", True):
-                reply = f"{at_prefix}分类闸门已关闭（classify_at_collect=false），无法重新分类"
-            else:
-                n = mgr.count()
-                asyncio.create_task(self._reclassify_stickers(mgr, detail_type, target_id))
-                reply = (f"{at_prefix}开始用 LLM 重新分类现有 {n} 张表情库"
-                         f"（非表情包将被剔除），完成后汇报结果~")
-        elif raw_cmd.startswith("meme"):
-            from anima.cognitive.meme_commands import handle_meme_command
-            rep = handle_meme_command(raw_cmd, at_prefix, self.core)
-            if rep is None:
-                return False
-            reply = rep
-        else:
-            return False
-
-        await self.core.gateway.send(OutboundMsg(detail_type, target_id, reply))
-        return True
+        队列④第一刀：路由实现整体迁至 anima/llm/commands.py
+        （AnimaCommandsMixin 分支 + COMMAND_ROUTES 路由表，顺序即语义）。
+        """
+        from anima.llm.commands import dispatch_anima_command
+        return await dispatch_anima_command(
+            self, event, text, user_id, group_id, detail_type)
 
     # ------------------------------------------------------------------
     # G1：跨群氛围观察 + 事实抽取（前置到回复闸门之前）
@@ -1095,6 +464,9 @@ class LLMHandler:
                 cgm.add_user_fact(
                     str(user_id), f["content"],
                     source_group=src, tags=f.get("tags", []), name=name,
+                    # P1-2：抽取层早已产出 confidence（默认 0.5），此前下游丢弃，
+                    # 导致低置信猜测与确凿事实同权。此处真正落库。
+                    confidence=float(f.get("confidence") or 0.5),
                 )
             # 外号独立于「事实」落库：即使本次没有抽到事实，只要出现了别人
             # 对 TA 的称呼（如「大家都叫他企鹅仔」），也必须存下来，否则外号会丢失。
@@ -1334,12 +706,15 @@ class LLMHandler:
                     from anima.cognitive.mood import get_mood_system
                     # F6：按群隔离计数，A 群被刷屏的疲劳不拖累 B 群
                     cnt = self._record_group_mention(group_id)
-                    if cnt > 6:
+                    _fat_soft = int(getattr(self.core.config.autonomy, "fatigue_mention_soft", 6) or 6)
+                    _fat_hard = int(getattr(self.core.config.autonomy, "fatigue_mention_hard", 8) or 8)
+                    if cnt > _fat_soft:
                         data_dir = str(self.core.config.persistence.data_dir)
                         get_mood_system(data_dir).trigger("overwhelmed", 0.5)
                         logger.info("社交疲劳触发：群%s 5分钟内被@%d次", group_id, cnt)
                         # 疲劳 gate：发简短回复并跳过完整 pipeline，避免被刷屏时每条都走 LLM
-                        if cnt > 8:
+                        # C2：owner/管理员不受罐头硬闸（阈值可配）；软性 overwhelmed 情绪仍生效
+                        if cnt > _fat_hard and not self._is_owner(int(user_id)):
                             import random as _rnd
                             _tired_replies = [
                                 "本喵累了喵…先歇会儿…",
@@ -1499,146 +874,8 @@ class LLMHandler:
             except Exception:
                 logger.exception("AstrBot 插件分发异常")
 
-        # A1 睡眠模式：凌晨 1-5 点，群聊被 @ 本喵时 80% 装睡不回、20% 迷糊回一句。
-        # 不走完整 Pipeline / 不调工具（ReAct），保证夜间不打扰且不会误触发复杂动作。
-        # 未 @ 本喵的消息直接落到下方闸门（常态 skip），无需特殊处理。
-        try:
-            acfg = self.core.config.autonomy
-            if getattr(acfg, "sleep_enabled", False) and detail_type == "group" and group_id:
-                from anima.cognitive.sleep_state import is_sleep_time, classify_sleep_reply
-                if is_sleep_time(
-                    start_hour=getattr(acfg, "sleep_start_hour", 1),
-                    end_hour=getattr(acfg, "sleep_end_hour", 5),
-                ):
-                    _at_me = bool(event.get("mentions_self") or event.get("reply_to_self"))
-                    _decision = classify_sleep_reply(
-                        _at_me, getattr(acfg, "sleep_silent_prob", 0.8),
-                    )
-                    if _decision == "silent":
-                        logger.info(
-                            "[睡眠][trace=%s] 群%s @本喵，睡眠中装睡不回", trace, group_id,
-                        )
-                        return
-                    if _decision == "sleepy":
-                        await self._sleepy_reply(
-                            group_id, int(user_id), text, acfg,
-                        )
-                        return
-        except Exception:
-            logger.exception("[睡眠] 模式判定异常（已隔离，退回正常流程）")
-
-        # quiet_hours 免打扰：命中时段且为群聊非点名被动消息时静默跳过。
-        # 与 sleep 区分：quiet_hours 只拦非点名被动回复；点名/@/私聊默认豁免仍回。
-        try:
-            acfg = self.core.config.autonomy
-            if getattr(acfg, "quiet_hours_enabled", False) and detail_type == "group" and group_id:
-                from anima.cognitive.sleep_state import is_sleep_time
-                if is_sleep_time(
-                    start_hour=getattr(acfg, "quiet_hours_start_hour", 23),
-                    end_hour=getattr(acfg, "quiet_hours_end_hour", 7),
-                ):
-                    _direct = False
-                    try:
-                        from anima.llm.group_gate import is_direct_group_call
-                        _direct = bool(is_direct_group_call(event, text))
-                    except Exception:
-                        _direct = bool(event.get("mentions_self") or event.get("reply_to_self"))
-                    _allow_direct = getattr(acfg, "quiet_hours_allow_direct", True)
-                    if not (_allow_direct and _direct):
-                        logger.info("[quiet_hours][trace=%s] 免打扰时段，非点名被动消息静默跳过 gid=%s",
-                                    trace, group_id)
-                        return
-        except Exception:
-            logger.exception("[quiet_hours] 判定异常（已隔离，退回正常流程）")
-
-        # 群聊回复闸门：仅当被 @、被回复或文字喊「哈基米」时才回复；私聊始终回复。
-        # owner 命令已在上方 _handle_command 处理，不受此闸门影响。
-        group_policy = {}
-        if detail_type == "group" and group_id is not None:
-            policies = getattr(getattr(self.core.config, "permissions", None), "group_policies", {})
-            candidate = policies.get(str(group_id), {}) if isinstance(policies, dict) else {}
-            group_policy = candidate if isinstance(candidate, dict) else {}
-        if detail_type == "group" and group_policy.get("reply_enabled") is False:
-            logger.debug("[群策略][trace=%s] 群 %s 已关闭普通回复", trace, group_id)
-            return
-        if detail_type == "group":
-            # owner 忽略名单：命中直接跳过（“别再理那两人”落地成真的拦截）。
-            from anima.llm.ignore_list import should_skip_ignored
-            if should_skip_ignored(self._ignore_store(), detail_type, int(group_id), int(user_id)):
-                mode = resolve_group_reply_mode(group_policy, self.core.config.autonomy)
-                logger.info("[回复闸门][trace=%s] skip reason=ignored_user gid=%s uid=%s mode=%s",
-                            trace, group_id, user_id, mode)
-                quality = getattr(self.core, "reply_quality", None)
-                if quality is not None:
-                    try:
-                        quality.record_gate_skip("ignored_user")
-                    except Exception:
-                        logger.debug("ignore gate skip telemetry failed", exc_info=True)
-                return
-            # 唤醒会话窗：直接呼叫即开启/续期；窗内相关消息可自然接续。
-            try:
-                from anima.llm.group_gate import is_direct_group_call
-                if is_direct_group_call(event, text):
-                    self._mark_wake(int(group_id))
-                session_active = self._wake_session_active(int(group_id))
-            except Exception:
-                session_active = False
-            data_dir = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
-            skip_reason = classify_group_reply_skip(
-                event, text,
-                user_id=int(user_id),
-                group_policy=group_policy,
-                autonomy=self.core.config.autonomy,
-                data_dir=str(data_dir or "data"),
-                social=getattr(self.core.config, "social", None),
-                session_active=session_active,
-            )
-            if skip_reason:
-                mode = resolve_group_reply_mode(group_policy, self.core.config.autonomy)
-                logger.info(
-                    "[回复闸门][trace=%s] skip reason=%s mode=%s text_len=%d",
-                    trace, skip_reason, mode, len(text or ""),
-                )
-                quality = getattr(self.core, "reply_quality", None)
-                if quality is not None:
-                    try:
-                        quality.record_gate_skip(skip_reason)
-                    except Exception:
-                        logger.debug("gate skip telemetry failed", exc_info=True)
-                return
-
-            # 每用户被动回复冷却：同一用户刚回过、这次又非直接点名时，跳过避免逐条抢答。
-            # 被 @ / 回复 / 喊名（直接呼叫）不受此限制。
-            if detail_type == "group" and self._passive_should_cooldown(group_id, user_id):
-                try:
-                    from anima.llm.group_gate import is_direct_group_call
-                    _direct = bool(is_direct_group_call(event, text))
-                except Exception:
-                    _direct = False
-                if not _direct:
-                    logger.info("[回复闸门][trace=%s] skip reason=passive_cooldown gid=%s uid=%s",
-                                trace, group_id, user_id)
-                    return
-
-        # 小文本附件理解：只经 OneBot get_file 读取受信任的本地/base64 返回，
-        # 不跟随 URL，避免附件段成为 SSRF 或大文件读取入口。
-        if event.get("files"):
-            try:
-                attachment_text = await self._extract_text_attachments(event)
-                if attachment_text:
-                    text = (text + "\n" + attachment_text).strip()
-                    event["text"] = text
-            except Exception:
-                logger.exception("文本附件提取异常（已隔离，不阻塞回复）")
-
-        if event.get("records"):
-            try:
-                transcript = await self._transcribe_records(event, int(user_id))
-                if transcript:
-                    text = (text + "\n[语音转写]\n" + transcript).strip()
-                    event["text"] = text
-            except Exception:
-                logger.exception("语音转写异常（已隔离，不阻塞回复）")
+        # 睡眠/免打扰/群策略/忽略名单/回复闸门/被动冷却/附件与语音合并
+        # → pipeline 前置 stage（队列④第二刀，见 anima/pipeline/stages/prefilter.py）
 
         # 拟真输入状态：私聊时发送“正在输入...”让对方看到 bot 在打字
         try:
@@ -1661,7 +898,11 @@ class LLMHandler:
         from anima.contracts.access import DeprecatedCoreAccess, facade_enabled
 
         _legacy_surface = facade_enabled()  # 旧 flag 名保留；现语义 = legacy 表面开关
-        _meta = {"group_presence": event.get("group_presence", "")}
+        _meta = {
+            "group_presence": event.get("group_presence", ""),
+            "trace": trace,
+            "_handler": self,  # 前置 stage 需要 handler 态（唤醒窗/冷却/忽略名单）
+        }
         if _legacy_surface:
             _meta["core"] = self.core
 
@@ -1680,83 +921,13 @@ class LLMHandler:
         # ctx.core 永远存在（Facade 表面）；Stage 迁移到 ctx.core.<facade>() 在 3c 进行。
         ctx.core = DeprecatedCoreAccess(self.core)
 
-        # 霸凌检测（自我保护协议）：收到消息时先过 detector，命中则标记 context。
-        # 后续 generation 阶段据此决定「冷回 / 沉默」，发送阶段据此抑制分段。
-        try:
-            from anima.cognitive.bullying_detector import detect_bullying
-            from anima.memory.chat_memory import get_chat_memory
-            _cm = get_chat_memory()
-            _recent_texts: list[str] = []
-            if detail_type == "group" and group_id:
-                _recent_texts = [m["content"] for m in
-                                 _cm.get_context("group", int(group_id), recent_rounds=8, user_id=int(user_id))
-                                 if m.get("role") == "user"]
-            else:
-                _recent_texts = [m["content"] for m in
-                                 _cm.get_context("private", int(user_id), recent_rounds=8, user_id=int(user_id))
-                                 if m.get("role") == "user"]
-            _bully = detect_bullying(int(user_id), text, _recent_texts[-8:])
-            # #7 霸凌统一（2026-08-28）：①playful 抵消（复用 _detect_hurtful 的
-            # playful_markers 单源）——有戏派玩笑「滚，别烦本喵」不算霸凌；②单点分级
-            # 喂 feel + generation（severity/recent_count 合并为轻/重）。
-            # ③ 目标判定 + 主人豁免（2026-08-29 修复误判）：私聊/群里「提到骂人词但
-            # 不是骂本喵」不能触发沉默（如「是不是觉得群里的人太傻逼了」是问 bot 看法，
-            # 不是攻击 bot）；owner 绝不因霸凌检测被静默。
-            _severity = int(_bully["severity"])
-            _recent = int(_bully["recent_count"])
-            # 主人豁免：owner 不会被霸凌沉默（ta 可以说狠话，是 bot 的主人）。
-            _is_owner = self._is_owner(int(user_id))
-            if _is_owner:
-                _bully = {"is_bullying": False, "severity": 0, "recent_count": 0}
-                _severity = 0
-                _recent = 0
-                logger.info("[霸凌] 主人豁免 user=%s 不触发沉默", user_id)
-            elif _bully["is_bullying"] and _severity > 0:
-                # 目标判定：问句 / 谈论第三方 / 指代别人 → 非对 bot 的攻击
-                _q = (text or "").strip()
-                _mention_other = re.search(
-                    r"(群里的人|群里的|别人|他们|那些人|大家|某位|那个谁|你说.*(?:是不是|吗|[?？]))",
-                    _q,
-                )
-                _is_question = bool(_q.endswith(("？", "?", "吗", "嘛")))
-                if _is_question or _mention_other:
-                    _bully = {"is_bullying": False, "severity": 0, "recent_count": 0}
-                    _severity = 0
-                    _recent = 0
-                    logger.info("[霸凌] 非对 bot 攻击（问句/谈他者）user=%s 不沉默", user_id)
-            if _bully["is_bullying"] and _severity > 0:
-                try:
-                    from anima.pipeline.stages._shared import _detect_hurtful
-                    if not _detect_hurtful(text):
-                        # 玩笑着说（playful 抵消）→ 压到轻级，不误判霸凌
-                        _severity = 1
-                        logger.info("[霸凌] playful 抵消 user=%s", user_id)
-                except Exception:
-                    logger.debug("playful 抵消检查失败（已隔离）", exc_info=True)
-            if _bully["is_bullying"]:
-                from anima.cognitive.inner_state.bullying_feel import classify as _bully_classify
-                _level = _bully_classify(_severity, _recent)
-                ctx.meta["bullying_detected"] = True
-                ctx.meta["bullying_recent_count"] = _recent
-                ctx.meta["bullying_severity"] = _severity
-                ctx.meta["bullying_level"] = _level   # 统一分级：mild / severe（单点）
-                logger.info("[霸凌检测] user=%s level=%s recent=%d sev=%d",
-                            user_id, _level, _recent, _severity)
-                # L5 霸凌分级接内在（2026-08-28 点亮）：轻度只 mood 低落；
-                # 严重/连续 → mood + relation 轻微降 + 记 scar。不报复不外泄。
-                try:
-                    from anima.cognitive.inner_state.bullying_feel import apply_bullying_signal
-                    _dd_l5 = getattr(getattr(self.core.config, "persistence", None),
-                                     "data_dir", "data")
-                    _l5 = apply_bullying_signal(_dd_l5, int(user_id), _severity, _recent)
-                    ctx.meta["bullying_feel"] = _l5["level"]
-                except Exception:
-                    logger.debug("霸凌分级施加失败（已隔离）", exc_info=True)
-        except Exception:
-            logger.exception("霸凌检测异常（已隔离，不阻塞回复）")
+        # 霸凌检测 → bullying_stage（队列④第二刀，见 anima/pipeline/stages/prefilter.py）
 
         # 执行流水线。收束窗口外连续到达的私聊仍可能有多个 handle 协程，
         # 必须在此串行化，确保后一回合读取到前一回合已写入的用户/助手记忆。
+        # 记录生成起点时刻：防抖/闸门耗时不算「生成窗口」，用户在窗口内补的
+        # 消息已被防抖合并；之后到达的才是需要新鲜度重估的。
+        _turn_start_ts = time.time()
         async with self._turn_lock(detail_type, group_id, user_id):
             ctx = await self.pipeline.run(ctx)
 
@@ -1796,7 +967,7 @@ class LLMHandler:
         if detail_type == "group":
             try:
                 from anima.llm.group_gate import is_direct_group_call
-                at_trigger = bool(is_direct_group_call(event, text))
+                at_trigger = bool(is_direct_group_call(event, ctx.text))
             except Exception:
                 at_trigger = False
         segments = _build_reply_segments(
@@ -1814,6 +985,40 @@ class LLMHandler:
         segments = _maybe_append_feedback_ack(
             segments, detail_type=detail_type, fb=_fb_detected, enabled=_ack_on,
         )
+
+        # 新鲜度重估：LLM 生成可能耗时数秒到数十秒，期间用户可能已改主意。
+        # 首段发出前扫一遍生成窗口内同一用户的入站消息，命中撤销信号则整条
+        # 让路——不占用群友注意力，也不回答已被取消的问题。仅群聊（渠道的
+        # 入站缓冲按群组织）；渠道缺失（如内存桩测试）时静默跳过。
+        # 必须在 quality.record_reply 之前：被弃答的回复不能计入回复统计。
+        _channel = getattr(self.core.gateway, "channel", None)
+        if (detail_type == "group" and _channel is not None
+                and hasattr(_channel, "inbounds_since")):
+            try:
+                _stale = _inbound_matches(
+                    _channel.inbounds_since(group_id, _turn_start_ts),
+                    user_id, is_cancel_signal,
+                )
+            except Exception:
+                logger.exception("新鲜度检查失败（忽略，按正常发送）")
+                _stale = False
+            if _stale:
+                logger.info("[新鲜度][trace=%s] 生成期间用户撤销，丢弃在途回复", trace)
+                quality = getattr(self.core, "reply_quality", None)
+                if quality:
+                    try:
+                        quality.record_gate_skip("stale_dropped")
+                    except Exception:
+                        logger.debug("stale_dropped 遥测记录失败", exc_info=True)
+                _audit = getattr(self.core, "audit", None)
+                if _audit:
+                    try:
+                        _audit.emit("reply_stale_dropped", trace=trace,
+                                    group_id=int(group_id) if group_id else None,
+                                    user_id=int(user_id) if user_id else None)
+                    except Exception:
+                        pass
+                return
 
         quality = getattr(self.core, "reply_quality", None)
         if quality:
@@ -1845,20 +1050,34 @@ class LLMHandler:
                     logger.info("[霸凌] 抑制后续分段 trace=%s", trace)
                     break
                 msg_segs = _truncate_first_text_segment(msg_segs, 30)
-            # 分段语境感知（P1）：发出后续段前，若用户已插话调侃则中断并自嘲收尾
-            if idx > 0 and context_aware and _should_interrupt_for_teasing(
-                getattr(self.core.gateway, "channel", None), group_id, last_send_ts
-            ):
-                logger.info(
-                    "[分段中断] 用户在段%d后插话调侃，停止后续发送 trace=%s", idx, trace
+            # 分段语境感知（P1 + 会话连续性）：发出后续段前看一眼上一段后的插话——
+            # 撤销 → 静默停止；纠正 → 停止并让位给纠正后的新回复；调侃 → 自嘲收尾。
+            if idx > 0 and context_aware:
+                _intr = _classify_send_interrupt(
+                    getattr(self.core.gateway, "channel", None), group_id, last_send_ts,
+                    user_id=user_id,
                 )
-                try:
-                    await self.core.gateway.send(
-                        OutboundMsg(detail_type, target_id, "（被你抓包了…本喵闭嘴喵）")
+                if _intr == "cancel":
+                    logger.info(
+                        "[分段中断] 用户在段%d后撤销，停止后续发送 trace=%s", idx, trace
                     )
-                except Exception:
-                    logger.exception("分段中断自嘲回应发送失败")
-                break
+                    break
+                if _intr == "correction":
+                    logger.info(
+                        "[分段中断] 用户在段%d后纠正，停止后续发送等新回复 trace=%s", idx, trace
+                    )
+                    break
+                if _intr == "teasing":
+                    logger.info(
+                        "[分段中断] 用户在段%d后插话调侃，停止后续发送 trace=%s", idx, trace
+                    )
+                    try:
+                        await self.core.gateway.send(
+                            OutboundMsg(detail_type, target_id, "（被你抓包了…本喵闭嘴喵）")
+                        )
+                    except Exception:
+                        logger.exception("分段中断自嘲回应发送失败")
+                    break
             if delay > 0:
                 await asyncio.sleep(delay)
             mid = await self.core.gateway.send(
@@ -1885,10 +1104,13 @@ class LLMHandler:
                         and group_id
                     ):
                         agenda_factory = self.core.propose_agenda
-                    episodes.observe(
-                        detail_type, group_id, user_id, "assistant", ctx.reply,
-                        agenda_factory=agenda_factory,
-                    )
+                    if ctx.meta.get("promise_agenda_created"):
+                        logger.debug("承诺跟进议程已由生成阶段创建，跳过 episodes 二次建档")
+                    else:
+                        episodes.observe(
+                            detail_type, group_id, user_id, "assistant", ctx.reply,
+                            agenda_factory=agenda_factory,
+                        )
                 except Exception:
                     logger.exception("回复情节记忆写入失败")
 
@@ -2706,12 +1928,53 @@ def is_teasing_interrupt(text: str) -> bool:
     return bool(_TEASING_RE.search(text or ""))
 
 
-def _should_interrupt_for_teasing(channel: "Any", group_id: "int | None", since_ts: float) -> bool:
-    """分段发送中，若用户在上一分段后插话调侃，返回 True（供发送循环中断用）。"""
+def _classify_send_interrupt(channel: "Any", group_id: "int | None", since_ts: float,
+                             user_id: "int | None" = None) -> "str | None":
+    """上一分段后的最新插话分类：cancel / correction / teasing / None。
+
+    撤销/纠正只认**同一用户**——跨用户无法取消别人正在接收的回复
+    （2026-09-06 复审 R8：原实现任意群成员可在分段间隙打断他人回复）。
+    调侃保留任意群成员语义：对 bot 的社会性打断（"闭嘴/别说了"）属合法
+    反馈，且自嘲回应有界。私聊（group_id=None）或渠道无入站缓冲时 None。
+    """
     if channel is None or not hasattr(channel, "latest_inbound_since"):
-        return False
+        return None
     intr = channel.latest_inbound_since(group_id, since_ts)
-    return intr is not None and is_teasing_interrupt(intr[1])
+    if not intr:
+        return None
+    uid, text = intr[0], intr[1] or ""
+    if is_cancel_signal(text) or is_correction_signal(text):
+        if user_id is None:
+            return None
+        try:
+            if int(uid) != int(user_id):
+                return None
+        except (TypeError, ValueError):
+            return None
+        return "cancel" if is_cancel_signal(text) else "correction"
+    if is_teasing_interrupt(text):
+        return "teasing"
+    return None
+
+
+def _should_interrupt_for_teasing(channel: "Any", group_id: "int | None", since_ts: float) -> bool:
+    """分段发送中，若用户在上一分段后插话调侃，返回 True（保留旧接口）。"""
+    return _classify_send_interrupt(channel, group_id, since_ts) == "teasing"
+
+
+def _inbound_matches(inbounds: "Any", user_id: "Any", predicate) -> bool:
+    """inbounds 为 [(user_id, text)]：任一同一用户的消息命中谓词即 True。"""
+    try:
+        _uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+    for uid, txt in inbounds or []:
+        try:
+            if int(uid) == _uid and predicate(txt or ""):
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _truncate_first_text_segment(msg_segs: "list[dict]", max_len: int = 30) -> "list[dict]":

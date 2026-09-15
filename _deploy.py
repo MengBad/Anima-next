@@ -13,6 +13,8 @@
   - 上传前对远程 data/chat_memory.json 做时间戳备份，迁移出错可回滚。
   - --dry-run 先验证连通性与环境，再决定是否真推，降低误操作风险。
   - 部署后自动重启 anima 服务并自检。
+  - 公开源码包按白名单生成（anima/webui/schemas + 构建许可文件），不携带任何隐私数据。
+  - 依赖安装镜像源失败自动回退官方 PyPI 重试。
 """
 import os
 import sys
@@ -505,6 +507,23 @@ def main():
         print(f"--allow-dirty: 额外纳入 {len(dirty_extras)} 个未跟踪源码文件")
     plan = _plan_upload(_build_exclude(args.with_config), dirty_extras)
     source_plan = _plan_upload(_build_exclude(False), dirty_extras)
+    # 隐私收口（2026-09-06 复审 R1）：公开源码包改【白名单制】。此前黑名单式
+    # 逐个剔除（先 persona_core.yaml）被复审证伪——_journal.txt / _vps_log_output.txt
+    # （真实QQ/群号/关系JSON/对话片段）、relation.py 种子、含真实QQ的测试、
+    # PROJECT_REPORTV2*（VPS 拓扑）等都曾随包公开。AGPL「对应源码」只需运行
+    # 时本体：anima/ + webui/ 前端源码 + schemas/ + 构建与许可文件。
+    # 运行时文件不受影响（上传计划仍为全量 tracked 清单）。
+    _SRC_PREFIXES = ("anima/", "webui/", "schemas/")
+    _SRC_FILES = {
+        "pyproject.toml", "requirements.txt", "LICENSE", "README.md",
+        "config/default.yaml",
+    }
+    _src_root = REMOTE_ROOT.rstrip("/") + "/"
+    source_plan = [
+        (src, remote) for src, remote in source_plan
+        if (lambda rel: rel in _SRC_FILES or rel.startswith(_SRC_PREFIXES))(
+            remote.replace("\\", "/").removeprefix(_src_root))
+    ]
     release_tmp, source_archive, release_manifest = _build_source_archive(
         source_plan, version, git_info,
     )
@@ -563,6 +582,16 @@ def main():
     # 保护生产用户数据：源码包（gitignored 的 data/）绝不参与同步，
     # 但为防未来任何意外（bundle 误含 data/、或 cp -a 覆盖），部署前先快照、
     # 部署后强制恢复——data/ 永远以生产机上那份为准，不被源码覆盖。
+    # O3（收敛计划）：停机窗口——先停 anima 再做数据/依赖操作。
+    # 旧进程带旧 data 目录 inode 运行到关机，会 EROFS 且丢关机态；
+    # 代价是部署期间 bot 下线（含 pip 安装时长），换取零数据丢失。
+    print("[STOP] 停机窗口：停止 anima 以安全执行数据/依赖操作...")
+    run("systemctl stop anima")
+    # O3 自愈：5 分钟后系统级自动拉起（systemd-run 瞬态定时器，独立于
+    # 部署进程/SSH 存活）——若部署中途断连，anima 最迟 5 分钟后恢复；
+    # 正常流程的 restart 会覆盖此定时器，无副作用。
+    run("systemd-run --on-active=300 --unit=anima-resurrector "
+        "systemctl start anima 2>&1 | tail -1 || true")
     run(f"rm -rf {REMOTE_ROOT}/data.deploy-bak && "
         f"cp -a {REMOTE_ROOT}/data {REMOTE_ROOT}/data.deploy-bak 2>/dev/null || true")
     run(
@@ -604,9 +633,17 @@ def main():
         f"PY"
     )
 
-    # 安装依赖
-    run(f"set -o pipefail; {REMOTE_ROOT}/venv/bin/pip install -e "
-        f"'{REMOTE_ROOT}[qq,vector,dev,sylann,docs]' 2>&1 | tail -8")
+    # 安装依赖。默认走 VPS 配置的镜像源（清华）；镜像拉不到构建依赖
+    # （如 setuptools>=77，2026-09-06 实测镜像不可用而官方 pypi.org 可达）
+    # 时回退官方 PyPI 重试，避免部署卡死在依赖步。
+    try:
+        run(f"set -o pipefail; {REMOTE_ROOT}/venv/bin/pip install -e "
+            f"'{REMOTE_ROOT}[qq,vector,dev,sylann,docs]' 2>&1 | tail -8")
+    except RemoteCommandError:
+        print("[PIP] 镜像源安装失败，回退官方 PyPI 重试…")
+        run(f"set -o pipefail; PIP_INDEX_URL=https://pypi.org/simple/ "
+            f"{REMOTE_ROOT}/venv/bin/pip install -e "
+            f"'{REMOTE_ROOT}[qq,vector,dev,sylann,docs]' 2>&1 | tail -8")
 
     # 修正权限
     run(f"chown -R anima:anima {REMOTE_ROOT}")

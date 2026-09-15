@@ -39,7 +39,7 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from anima.capability_authorization_fact import (
+from anima.capability.authorization_fact import (
     AuthorizationFactStore,
     verify_authorization_fact,
 )
@@ -54,7 +54,7 @@ def _digest(payload) -> str:
 
 @pytest.fixture()
 def flow(tmp_path):
-    from anima.capability_execution_dispatch import DispatchFlow  # RED
+    from anima.capability.execution_dispatch import DispatchFlow  # RED
 
     return DispatchFlow(str(tmp_path))
 
@@ -122,7 +122,7 @@ def test_c_evidence_immutable_after_record(flow, tmp_path):
 
 
 def test_c2_tampered_execution_fact_fails_closed(flow, tmp_path):
-    from anima.capability_execution_dispatch import (
+    from anima.capability.execution_dispatch import (
         ExecutionFact,
         verify_execution_fact,
     )
@@ -142,7 +142,7 @@ def test_c2_tampered_execution_fact_fails_closed(flow, tmp_path):
 # D. Replay safety: same authz_id never re-dispatched/re-recorded
 # --------------------------------------------------------------------------
 def test_d_replay_safe_same_authz(flow, tmp_path):
-    from anima.capability_execution_dispatch import verify_execution_fact
+    from anima.capability.execution_dispatch import verify_execution_fact
 
     flow.approve(**_authz_kwargs())
     first_draft = flow.dispatch("authz-dispatch-1")
@@ -161,7 +161,7 @@ def test_d_replay_safe_same_authz(flow, tmp_path):
 
 
 def test_d2_dispatch_unknown_authz_fails_closed(flow, tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactReadError
+    from anima.capability.authorization_fact import AuthorizationFactReadError
 
     with pytest.raises(AuthorizationFactReadError):
         flow.dispatch("ghost-authz")  # no authorization -> no dispatch
@@ -171,8 +171,8 @@ def test_d2_dispatch_unknown_authz_fails_closed(flow, tmp_path):
 # E. Cross-sink consistency: authz fact != execution fact
 # --------------------------------------------------------------------------
 def test_e_cross_sink_disjoint_fields(flow, tmp_path):
-    from anima.capability_execution_dispatch import ExecutionFact
-    from anima.capability_authorization_fact import AuthorizationFact
+    from anima.capability.execution_dispatch import ExecutionFact
+    from anima.capability.authorization_fact import AuthorizationFact
 
     flow.approve(**_authz_kwargs())
     recorded = flow.record(flow.dispatch("authz-dispatch-1"))
@@ -191,7 +191,7 @@ def test_e_cross_sink_disjoint_fields(flow, tmp_path):
 # F. Non-escalation: neither fact ever upgrades to execution vocabulary
 # --------------------------------------------------------------------------
 def test_f_neither_fact_escalates(flow, tmp_path):
-    from anima.capability_execution_dispatch import verify_execution_fact
+    from anima.capability.execution_dispatch import verify_execution_fact
 
     flow.approve(**_authz_kwargs())
     recorded = flow.record(flow.dispatch("authz-dispatch-1"))
@@ -226,7 +226,7 @@ def test_h_execution_fact_is_immutable(flow, tmp_path):
 # --------------------------------------------------------------------------
 # static boundary: no executor/provider surface, no frozen imports
 # --------------------------------------------------------------------------
-_MODULE_PATH = "anima/capability_execution_dispatch.py"
+_MODULE_PATH = "anima/capability/execution_dispatch.py"
 
 
 def test_i_no_executor_provider_surface(flow, tmp_path):

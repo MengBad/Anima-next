@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
-from anima.capability_authorization_fact import (
+from anima.capability.authorization_fact import (
     AuthorizationFact,
     AuthorizationFactReadError,
     AuthorizationFactStore,

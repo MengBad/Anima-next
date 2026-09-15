@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-16，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # ACCEPTANCE_REPORT — R6–R9 代码层 + 生产验收
 
 > 验收范围：R6.1-R6.5 / R7 / R8 / R9（自治 Agent 操作系统基座）

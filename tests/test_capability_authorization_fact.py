@@ -69,7 +69,7 @@ def _fact_kwargs(**overrides):
 # A. Authorization isolation: approved/authorized != executed
 # --------------------------------------------------------------------------
 def test_a_authorization_fact_has_no_execution_semantics(tmp_path):
-    from anima.capability_authorization_fact import (  # RED
+    from anima.capability.authorization_fact import (  # RED
         AuthorizationFact,
         AuthorizationFactStore,
     )
@@ -89,7 +89,7 @@ def test_a_authorization_fact_has_no_execution_semantics(tmp_path):
 
 
 def test_a2_authorization_does_not_create_execution_fact(tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactStore
+    from anima.capability.authorization_fact import AuthorizationFactStore
 
     store = AuthorizationFactStore(str(tmp_path))
     store.record(**_fact_kwargs())
@@ -105,7 +105,7 @@ def test_a2_authorization_does_not_create_execution_fact(tmp_path):
 # D. Replay safety: same authz_id verifies repeatedly, never re-records
 # --------------------------------------------------------------------------
 def test_d_same_authz_id_is_replay_safe(tmp_path):
-    from anima.capability_authorization_fact import (
+    from anima.capability.authorization_fact import (
         AuthorizationFactStore,
         verify_authorization_fact,
     )
@@ -133,7 +133,7 @@ def test_d_same_authz_id_is_replay_safe(tmp_path):
 # F. Non-escalation: authz evidence never upgrades to execution
 # --------------------------------------------------------------------------
 def test_f_authz_never_escalates(tmp_path):
-    from anima.capability_authorization_fact import (
+    from anima.capability.authorization_fact import (
         AuthorizationFactStore,
         verify_authorization_fact,
     )
@@ -153,7 +153,7 @@ def test_f_authz_never_escalates(tmp_path):
 
 
 def test_f2_tampered_authz_digest_fails_closed(tmp_path):
-    from anima.capability_authorization_fact import (
+    from anima.capability.authorization_fact import (
         AuthorizationFact,
         AuthorizationFactStore,
         verify_authorization_fact,
@@ -174,7 +174,7 @@ def test_f2_tampered_authz_digest_fails_closed(tmp_path):
 # storage integrity: missing/corrupt fail closed, immutable
 # --------------------------------------------------------------------------
 def test_g_missing_fact_returns_none(tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactStore
+    from anima.capability.authorization_fact import AuthorizationFactStore
 
     store = AuthorizationFactStore(str(tmp_path))
     assert store.load("ghost-authz") is None
@@ -182,7 +182,7 @@ def test_g_missing_fact_returns_none(tmp_path):
 
 
 def test_g2_corrupt_fact_fails_closed(tmp_path):
-    from anima.capability_authorization_fact import (
+    from anima.capability.authorization_fact import (
         AuthorizationFactStore,
         AuthorizationFactReadError,
     )
@@ -197,7 +197,7 @@ def test_g2_corrupt_fact_fails_closed(tmp_path):
 
 
 def test_h_fact_is_immutable(tmp_path):
-    from anima.capability_authorization_fact import AuthorizationFactStore
+    from anima.capability.authorization_fact import AuthorizationFactStore
 
     fact = AuthorizationFactStore(str(tmp_path)).record(**_fact_kwargs())
     with pytest.raises(FrozenInstanceError):
@@ -207,11 +207,11 @@ def test_h_fact_is_immutable(tmp_path):
 # --------------------------------------------------------------------------
 # static boundary: no execution surface, no frozen imports
 # --------------------------------------------------------------------------
-_MODULE_PATH = "anima/capability_authorization_fact.py"
+_MODULE_PATH = "anima/capability/authorization_fact.py"
 
 
 def test_i_no_execution_surface(tmp_path):
-    from anima.capability_authorization_fact import (
+    from anima.capability.authorization_fact import (
         AuthorizationFactStore,
     )
 

@@ -85,6 +85,22 @@ class SkillDraftManager:
     def _save(self) -> None:
         self.persistence.write_json(self.path, [asdict(item) for item in self.items.values()])
 
+    def _composable_tools(self) -> list[str]:
+        """当前允许被声明式技能组合的工具名（与 SkillRegistry 同一套规则）。"""
+        from anima.skills.registry import validate_tool_composition
+        from anima.skills.models import SkillExecution, SkillManifest
+
+        tools = getattr(self.core, "tools", None)
+        names: list[str] = []
+        for name, tool in (getattr(tools, "tools", {}) or {}).items():
+            probe = SkillManifest(
+                id="probe", name="probe", description="probe",
+                execution=SkillExecution(type="tool", tool=name, template="probe"),
+            )
+            if not validate_tool_composition(probe, tools):
+                names.append(name)
+        return sorted(names)
+
     @scoped_llm("skill_draft", "generate")
     async def create_from_request(self, request: str) -> SkillDraft:
         request = request.strip()[:1200]
@@ -93,13 +109,24 @@ class SkillDraftManager:
         llm = getattr(self.core, "llm", None)
         if llm is None:
             raise RuntimeError("当前没有可用 LLM，无法生成草案")
+        composable = self._composable_tools()
+        tool_hint = (
+            "第三种是声明式工具组合（推荐用于「查成员/查群/搜网后整理」这类需求）："
+            '{"type":"tool","tool":"<下面清单里的工具名>","template":"整理指令",'
+            '"content_summary":true}。'
+            "tool 只能取下面清单里的值，绝不能自造工具名；content_summary=true 表示"
+            "先把工具结果交给整理指令改写，false 表示原样返回。"
+            "允许组合的工具清单：" + (", ".join(composable) or "（当前无可用工具）")
+        )
         prompt = (
             "把用户需求设计成一个安全的 Anima Skill。只能输出 JSON 对象，字段必须符合："
-            "id,name,description,min_level,parameters,execution。execution 只能是"
+            "id,name,description,min_level,parameters,execution。execution 有两种基础形式："
             '{"type":"prompt","template":"..."}，或固定公开 HTTPS 网页探查 '
             '{"type":"http_get","template":"https://example.com/status","content_summary":false}。'
-            "http_get 只能访问固定公开 HTTPS；可在查询字符串值中使用已声明参数，禁止改 host/path、重定向、登录、cookie 或请求头。"
+            + tool_hint +
+            " http_get 只能访问固定公开 HTTPS；可在查询字符串值中使用已声明参数，禁止改 host/path、重定向、登录、cookie 或请求头。"
             "min_level 必须是字符串 readonly 或 user，绝不能输出数字权限等级。"
+            "tool 型技能的 parameters 必须与目标工具的参数名完全一致。"
             "不得写代码、shell、安装包，不要声称已经执行外部操作。\n用户需求：" + request
         )
         raw = await llm.chat([{"role": "user", "content": prompt}], temperature=0.2, max_tokens=900)
@@ -131,6 +158,20 @@ class SkillDraftManager:
             errors.append("模板引用了未声明参数: " + ", ".join(sorted(unknown)))
         if parsed.min_level not in {"readonly", "user"}:
             errors.append("自动生成的 Skill 只能申请 readonly 或 user 权限")
+        if parsed.execution.type == "tool":
+            # P2-2：组合型技能在「批准安装前」就要挡住不可组合的目标，
+            # 否则草案能通过审核、却在安装时被静默跳过（等于骗了审批人）。
+            from anima.skills.registry import validate_tool_composition
+
+            problem = validate_tool_composition(parsed, getattr(self.core, "tools", None))
+            if problem:
+                errors.append(problem)
+            else:
+                target = self.core.tools.tools[parsed.execution.tool]
+                arg_names = set(getattr(target, "parameters", {}) or {})
+                if allowed - arg_names:
+                    errors.append("声明了目标工具不存在的参数: "
+                                  + ", ".join(sorted(allowed - arg_names)))
         if parsed.execution.type == "http_get":
             if parsed.parameters and not _valid_http_parameters(template, parsed.parameters):
                 errors.append("HTTP Skill 不允许参数或 URL 插值")

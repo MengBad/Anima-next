@@ -204,8 +204,28 @@ class WebUIServer:
             },
         )
 
+    # 登录防爆破：按来源 IP 滑动窗口限流（2026-09-06 复审 R5）。
+    _LOGIN_RATE_MAX = 10
+    _LOGIN_RATE_WINDOW = 900.0  # 15 分钟
+
+    def _login_rate_ok(self, request: web.Request) -> bool:
+        ip = request.remote or "unknown"
+        reg = getattr(self, "_login_attempts", None)
+        if reg is None:
+            reg = self._login_attempts = {}
+        now = time.time()
+        window = reg.setdefault(ip, [])
+        while window and now - window[0] > self._LOGIN_RATE_WINDOW:
+            window.pop(0)
+        if len(window) >= self._LOGIN_RATE_MAX:
+            return False
+        window.append(now)
+        return True
+
     async def login(self, request: web.Request) -> web.Response:
         """验证 WebUI token 并建立 HttpOnly 会话。"""
+        if not self._login_rate_ok(request):
+            raise web.HTTPTooManyRequests(text="尝试过于频繁，请稍后再试")
         configured = self.config.token.get_secret_value() if self.config.token else ""
         try:
             body = await request.json()
@@ -214,6 +234,11 @@ class WebUIServer:
             raise web.HTTPBadRequest(text="需要 JSON token")
         if not configured or supplied != configured:
             raise web.HTTPUnauthorized(text="Token 不正确")
+        # 登录成功清空该 IP 的失败窗口
+        try:
+            (getattr(self, "_login_attempts", {}) or {}).pop(request.remote or "unknown", None)
+        except Exception:
+            pass
         response = web.json_response({"ok": True})
         response.set_cookie("anima_webui_token", configured, httponly=True, samesite="Strict")
         # CSRF token 与 auth token 分离，即使 XSS 读取 CSRF cookie 也无法获得认证 token
@@ -295,9 +320,8 @@ class WebUIServer:
             supplied = request.headers.get("Authorization", "").removeprefix("Bearer ")
             if not supplied:
                 supplied = request.cookies.get("anima_webui_token", "")
-            # 仅允许首次打开仪表盘时通过 query 建立 HttpOnly Cookie，API 不接受 query token。
-            if not supplied and request.path in SPA_PATHS and request.query.get("token"):
-                supplied = request.query.get("token", "")
+            # 不再接受 ?token= 建立 Cookie：token 进 URL 会落入访问日志/浏览器
+            # 历史/Referer（2026-09-06 复审 R5）。首次访问走 /login 表单。
             if not supplied and request.path in SPA_PATHS:
                 return await self.login_page(request)
             if supplied != token:
@@ -2442,10 +2466,10 @@ class WebUIServer:
             maintenance = surf.autonomous_maintenance()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             maintenance = {}
-        # P6：个人能力演进摘要（只读，能力生态接口可用性）
+        # P2-2：已装技能清单（只读；比死桩的 skill_evolution() 更能说明能力生态现状）
         skill = {}
         try:
-            skill = surf.skill_evolution()
+            skill = surf.abilities()
         except Exception:  # noqa: BLE001 - 聚合失败不阻断全景
             skill = {}
         if self.core.audit:
@@ -2542,38 +2566,12 @@ class WebUIServer:
         from anima.os.control_surface import HumanAIControlSurface
         surf = HumanAIControlSurface(self.core)
         cmd = surf.parse_command(text)
-        # 只读意图：附加实时预览数据（不改任何状态）
-        if cmd.intent in ("health", "recover"):
-            ov = surf.overview()
-            cmd.preview = cmd.preview or "当前 Autonomous OS 全景"
-            payload = {"command": cmd.to_dict(), "overview": ov.to_dict()}
-        elif cmd.intent == "stability":
-            try:
-                payload = {
-                    "command": cmd.to_dict(),
-                    "stability": {
-                        "7d": surf.stability_summary(7),
-                        "30d": surf.stability_summary(30),
-                        "90d": surf.stability_summary(90),
-                    },
-                }
-            except Exception:  # noqa: BLE001
-                payload = {"command": cmd.to_dict(), "stability": {}}
-        elif cmd.intent == "observe":
-            try:
-                report = surf.environment_report()
-            except Exception:  # noqa: BLE001
-                report = {}
-            cmd.preview = cmd.preview or "当前真实环境观测报告"
-            payload = {"command": cmd.to_dict(), "environment": report}
-        elif cmd.intent == "impact":
-            try:
-                report = surf.evolution_impact()
-            except Exception:  # noqa: BLE001
-                report = {}
-            cmd.preview = cmd.preview or "当前演化影响评分"
-            payload = {"command": cmd.to_dict(), "impact": report}
-        elif cmd.intent == "society":
+        # P3-3：只读意图取数走控制面**唯一**实现（与 QQ 侧共用），避免两处 elif
+        # 链各自漂移出不同的 intent→数据映射。
+        payload: dict = {"command": cmd.to_dict()}
+        payload.update(await surf.run_readonly(cmd, text))
+        if cmd.intent == "society":
+            # 多视角辩论会触发多轮 LLM，故不进只读白名单，由本端点显式承担。
             try:
                 from anima.agent.agent_society import run_society_debate
                 record, verdict = await run_society_debate(text, "")
@@ -2582,34 +2580,17 @@ class WebUIServer:
             except Exception:  # noqa: BLE001
                 report = {"available": False, "reason": "society 辩论异常"}
             cmd.preview = cmd.preview or "Agent 社会多视角辩论结果"
-            payload = {"command": cmd.to_dict(), "society": report}
-        elif cmd.intent == "memory":
-            try:
-                report = surf.long_term_memory(query=text or None)
-            except Exception:  # noqa: BLE001
-                report = {"available": False, "reason": "long_term_memory 异常"}
-            cmd.preview = cmd.preview or "长期记忆查询结果"
-            payload = {"command": cmd.to_dict(), "memory": report}
-        elif cmd.intent == "maintenance":
-            try:
-                report = surf.autonomous_maintenance()
-            except Exception:  # noqa: BLE001
-                report = {"available": False, "reason": "autonomous_maintenance 异常"}
-            cmd.preview = cmd.preview or "自治维护扫描结果（提案待 Owner 批准）"
-            payload = {"command": cmd.to_dict(), "maintenance": report}
+            payload["command"] = cmd.to_dict()
+            payload["society"] = report
         elif cmd.intent == "skill":
+            # 该意图会落 SkillDraft（有副作用），属控制面显式动作，同样不进只读白名单。
             try:
-                report = surf.skill_evolution(request=text or "")
+                report = await surf.skill_evolution(request=text or "", create_draft=True)
             except Exception:  # noqa: BLE001
                 report = {"available": False, "reason": "skill_evolution 异常"}
             cmd.preview = cmd.preview or "个人能力演进评估（采纳仍须 Owner）"
-            payload = {"command": cmd.to_dict(), "skill": report}
-        elif cmd.intent == "list_proposals":
-            from anima.agent.self_evolution import list_evolution_proposals
-            items = list_evolution_proposals()
-            payload = {"command": cmd.to_dict(), "proposals": items}
-        else:
-            payload = {"command": cmd.to_dict()}
+            payload["command"] = cmd.to_dict()
+            payload["skill"] = report
         if self.core.audit:
             self.core.audit.emit(
                 "webui_os_command_parsed", reviewer=owner_id,
@@ -2631,15 +2612,8 @@ class WebUIServer:
             "script-src 'self'; connect-src 'self'; font-src 'self'; object-src 'none'; "
             "base-uri 'self'; frame-ancestors 'none'"
         )
-        token = self.config.token.get_secret_value() if self.config.token else ""
-        if token and request.query.get("token") == token:
-            response.set_cookie("anima_webui_token", token, httponly=True, samesite="Strict")
-            csrf_token = secrets.token_urlsafe(32)
-            self._csrf_tokens.add(csrf_token)
-            if len(self._csrf_tokens) > 64:
-                self._csrf_tokens.clear()
-                self._csrf_tokens.add(csrf_token)
-            response.set_cookie("anima_webui_csrf", csrf_token, httponly=False, samesite="Strict")
+        # ?token= 建 Cookie 的通路已移除（token 进 URL 泄露面，R5）：认证只走
+        # /login 表单换 HttpOnly Cookie。
         return response
 
     async def subject(self, request: web.Request) -> web.Response:

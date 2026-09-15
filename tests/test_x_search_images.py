@@ -470,8 +470,16 @@ async def test_relevance_filter_returns_empty_when_all_irrelevant(monkeypatch, t
 # P3-2: X 搬图内容分级——风格信号识别
 # ---------------------------------------------------------------------------
 def test_detect_style_hint_anime():
-    for q in ["二次元萌图", "来点动漫壁纸", "男娘图", "猫娘", "动画截图", "卡通人物"]:
+    # 注意：男娘/伪娘/femboy 是跨次元词（X 上多为写实 cos），不强制 anime 分级，
+    # 避免写实男娘图被风格分级砍光（见 x_search 实测修复）。
+    for q in ["二次元萌图", "来点动漫壁纸", "猫娘", "动画截图", "卡通人物", "cos"]:
         assert _detect_style_hint(q) == "anime", q
+
+
+def test_detect_style_hint_ambiguous_not_forced():
+    # 跨次元/模糊词不应强制风格分级，否则真实风格内容被砍（fail-safe 变 fail-closed）。
+    for q in ["男娘图", "来点男娘图喵", "femboy", "伪娘", "女装大佬"]:
+        assert _detect_style_hint(q) is None, q
 
 
 def test_detect_style_hint_realistic():

@@ -16,6 +16,30 @@ class GroupPresence:
     last_summoned: float = 0.0
 
 
+_managers: dict[str, "GroupPresenceManager"] = {}
+_default_dir = "data"
+
+
+def set_group_presence_data_dir(data_dir: str) -> None:
+    global _default_dir
+    _default_dir = data_dir
+
+
+def get_group_presence(data_dir=None) -> "GroupPresenceManager":
+    """进程级单例（按 data_dir 隔离）。
+
+    深审 P1：simulated_life/autonomy 共 5 个调用点此前 import 不存在的
+    get_group_presence，ImportError 被静默吞掉——晚安/晨问/旁观独白/群活跃度
+    欲望功能全部失效。与 AnimaCore 的 core.group_presence 共享同一实例。
+    """
+    global _default_dir
+    if data_dir is None:
+        data_dir = _default_dir
+    if data_dir not in _managers:
+        _managers[data_dir] = GroupPresenceManager(data_dir)
+    return _managers[data_dir]
+
+
 class GroupPresenceManager:
     def __init__(self, data_dir: str):
         self.persistence = PersistenceProvider(data_dir)
@@ -32,6 +56,13 @@ class GroupPresenceManager:
 
     def _save(self) -> None:
         self.persistence.write_json("group_presence.json", [asdict(item) for item in self.items.values()])
+
+    def get_active_groups(self, limit: int = 3, within_sec: float = 3600.0) -> list[int]:
+        """按最近活跃度返回群 id（message_count 降序），供早安/主动表达挑群。"""
+        now = time.time()
+        items = [it for it in self.items.values() if now - it.last_seen <= within_sec]
+        items.sort(key=lambda it: -it.message_count)
+        return [it.group_id for it in items[: max(0, int(limit))]]
 
     def observe(self, group_id: int, *, summoned: bool = False) -> GroupPresence:
         now = time.time()

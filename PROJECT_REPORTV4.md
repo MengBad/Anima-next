@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-07-29，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # Anima-next 交接报告（V4 - 收尾+观察期启动版）
 
 > 生成时间：2026-07-29 ｜ 面向：观察期数据收集

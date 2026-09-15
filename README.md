@@ -87,6 +87,20 @@ Anima-next 是一个**独立运行的、OpenClaw 风格的全智能 QQ 机器人
 - **执行隔离**：CPU / 内存 / 超时 / 进程数 / seccomp 策略档 + 资源记账。
 - **SylannEngine**（可选，`sylanne-core 2.5.0`）：语义评估 / 可选 embedding / 会话状态 / 伤害影响注入 / 心跳 tick；只提供粗粒度语气建议，不发送 QQ 消息、不读聊天记忆、不调用工具、不绕过护栏。默认 `disabled`，低权重 `active`。
 
+### 生产接线状态（WIRED vs 默认 OFF）
+
+上面列的是「代码里有」，不等于「线上在跑」。完整三档清单（WIRED / WIRED·默认 OFF / 库级无入口）与踩坑记录见 **[MAINTENANCE.md §3](MAINTENANCE.md)**。最容易误判的几条：
+
+| 状态 | 例子 |
+|---|---|
+| **WIRED（默认开启）** | 工具注册表 / 五段 pipeline / Heartbeat / 记忆 / 审计 / `react.memory_first` / `react.freshness_footer` / `debt_tracking` / `task_agent.verify_steps`（步骤验收 + 失败重规划 + 并行批次） / `repo_read.enabled`（只读代码访问，工具本身仅 Owner + 私聊） |
+| **WIRED 但默认 OFF** | `self_code.enabled`、`image_generation.enabled`、`x_browser.enabled`、`qzone` / `voice` / `meme` / `gate`、`danger.*` 全家、`capability_layer.*`（受治理能力层）、`memory.long_term_semantic`（语义召回，可选增量读路径）、`exploration.share_enabled`、`social.bot_*` |
+| **库级（无生产入口）** | `runtime.resolving_executor`、`runtime.pilot_*`、`runtime.bridge_bootstrap`、`runtime.startup_recovery`、`core/exceptions.py`、`core/paths.Paths` |
+
+⚠️ 表中是**代码默认值**：生产真实值以 VPS `/opt/anima/config.yaml` 为准（`_deploy.py` 默认不覆盖生产配置）。核实手段：`python -m anima doctor`、WebUI 配置页、`journalctl -u anima`。
+
+⚠️ **同一个 `0`，语义可能相反**（易踩坑，详见 MAINTENANCE §3.4）：`exploration.daily_limit: 0` = 不限制（内部读取配额）；`exploration.daily_share_limit: 0` = 当天完全不分享（外发闸门 → fail-closed）。
+
 ---
 
 ## 系统架构
@@ -188,13 +202,13 @@ systemctl restart anima
 systemctl show --property=ActiveEnterTimestamp anima
 ```
 
-首次访问 `http://127.0.0.1:8088/?token=<token>` 会种下 HttpOnly Cookie；调用 API 用 `Authorization: Bearer <token>`。`webui.token` 为空时观察接口可用、控制接口被拒。
+首次访问 `http://127.0.0.1:8088/?token=<token>` 会种下 HttpOnly Cookie；调用 API 用 `Authorization: Bearer <token>`。`webui.token` 未配置时**全部接口 fail-closed 锁定（503），仅登录页可渲染**——生产必须先配置 ≥32 位随机 token。
 
 ---
 
 ## WebUI API
 
-所有 `/api/*` 均可观察；控制类接口需 Token + owner。主要端点分组：
+所有 `/api/*` 均需 Bearer token（或登录 Cookie）认证；观察类接口无需 owner，控制类接口需 owner。主要端点分组：
 
 **健康 / 运维**
 - `GET /api/health`、`/api/health/history`、`/api/modules/status`、`/api/evaluation`
@@ -248,14 +262,21 @@ systemctl show --property=ActiveEnterTimestamp anima
 
 ```text
 !anima status | pause | resume
-!anima skills | skills reload
+!anima skills | abilities | skills reload
 !anima draft create 帮我学习一个只读公开网页状态查询能力
 !anima drafts | draft preview <ID> | draft approve <ID>
 !anima subscribe bili <直播间号> <群号> | subscriptions | unsubscribe <ID>
 !anima remind <群号> <分钟> <内容>
 !anima calendar daily|weekly ... | calendar list | calendar cancel <ID>
 !anima approvals | approve <ID> | deny <ID>
+!anima os 查看健康           # 受限自然语言 OS 指令（确定性规则，无 LLM）
+!anima os 近 30 天稳不稳｜观察环境趋势｜演化影响评分｜依赖自检｜列出演化提案
+!anima os 你还记得我的习惯吗  # 长期记忆查询（语义召回需 memory.long_term_semantic）
 ```
+
+`!anima os` 的三条边界（P3-3，均 fail-closed）：解析器不认识的输入只回用法、不执行；
+**特权意图（批准/拒绝提案）只返回待确认动作 + 既有 Owner 授权端点，QQ 侧不执行**；
+只跑只读白名单（落草案的 `skill`、多轮 LLM 的 `society` 请在 WebUI 控制面走）。
 
 ---
 
@@ -303,7 +324,7 @@ python -m anima ops-cleanup                 # 清理僵尸 SelfCode / 粘滞笔�
 python -m anima x-diag                      # X 搬图模块诊断
 ```
 
-- Python `3.12+`；`tests/` 平铺 420 个 `test_*.py`，覆盖核心/认知/治理/演化/WebUI/安全/试点等（现有若干 `.pytest-*` scratch 目录为缓存，勿并入版本控制）。
+- Python `3.12+`；`tests/` 平铺 420+ 个 `test_*.py`，覆盖核心/认知/治理/演化/WebUI/安全/试点等（现有若干 `.pytest-*` scratch 目录为缓存，勿并入版本控制）。
 - 测试不会读写生产 `data/`；以全量绿为准。
 
 ---
@@ -379,10 +400,10 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/health
 - [DEPLOYMENT_OPERATOR_GUIDE.md](DEPLOYMENT_OPERATOR_GUIDE.md)：部署运维操作指南（接管前检查/启停/健康检查/回滚/禁止自动修复）。
 - [RELEASE_POLICY.md](RELEASE_POLICY.md)：发布门禁与回滚纪律。
 - [PROJECT_STATE.md](PROJECT_STATE.md)：当前状态快照与增量。
-- [AGENTS.md](AGENTS.md)：开发协作总纲（架构/命令/环境/注意事项）。
+- [AGENTS.md](AGENTS.md)：开发协作总纲（**历史快照，停更于 2026-07-23**，测试基线/环境变量等描述已过时；现行入口以本文件与 [MAINTENANCE.md](MAINTENANCE.md) 为准）。
 
 ---
 
 ## 许可证与对应源码
 
-Anima-next 按 [`AGPL-3.0-only`](LICENSE) 发布。通过网络使用 WebUI 的用户可在公开 `/source` 页面取得与当前部署版本对应的源码归档（由部署脚本从发布清单生成，不含 `config.yaml`、`.env`、`data/`、密钥/Token/虚拟环境/缓存/日志）。修改后向网络用户提供服务时，应继续保留 Source 入口并提供修改版本的完整对应源码。许可证正文见 [LICENSE](LICENSE)。
+Anima-next 按 [`AGPL-3.0-only`](LICENSE) 发布。通过网络使用 WebUI 的用户可在公开 `/source` 页面取得与当前部署版本对应的源码归档（由部署脚本按**白名单**从发布清单生成：仅含 `anima/`、`webui/`、`schemas/` 与构建/许可文件；不含 `config.yaml`、`config/persona_core.yaml`（含主人个人数据）、`.env`、`data/`、密钥/Token、测试、运维文档、虚拟环境/缓存/日志）。修改后向网络用户提供服务时，应继续保留 Source 入口并提供修改版本的完整对应源码。许可证正文见 [LICENSE](LICENSE)。

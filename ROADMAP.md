@@ -1,3 +1,13 @@
+> [HISTORICAL] 本文档停更于 2026-08-17，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+>
+> **当前路线（2026-09-15 起，Owner 显式授权）**：智能提升执行单（Phase 0–3）正在推进
+> 对话主路径能力——记忆优先、LongTerm 注入、履约（Debt）、记忆压缩、Owner 受控 browser、
+> 主动优先级、verify+replan、Skills/P6、搜网时效、生产 WIRED 清单。
+> 它与 **Foundation 冻结运维**（`capability_contracts/`、RFC-0001/0002/0003 契约、
+> recovery / governance 语义）是**两条独立轨道**：前者已由 Owner 授权推进；
+> 后者维持冻结，任何扩展仍需 observed contradiction + 单独授权。
+> `TASK_QUEUE.json` / `ANIMA_STAGE_STATE.json` 已标 DEPRECATED，不代表当前阶段。
+
 # ROADMAP — ANIMA 长期路线图
 
 > 目标：从 AI Runtime 演进为 安全、自治理、可扩展、可审计、支持多 Agent 协作、

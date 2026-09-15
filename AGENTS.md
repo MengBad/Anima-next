@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-07-26，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # AGENTS.md
 
 This file provides guidance to Lingma (lingma.aliyun.com) when working with code in this repository.

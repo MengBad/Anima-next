@@ -284,10 +284,17 @@ async def _filter_images_by_relevance(session, query: str,
 def _detect_style_hint(query: str) -> str | None:
     """从查询词识别期望的画风：'anime'（二次元）/ 'realistic'（三次元），无则 None。"""
     q = str(query or "").lower()
-    anime_markers = ("二次元", "动漫", "动画", "anime", "萌", "漫画", "卡通", "猫娘", "男娘", "壁纸",
+    # 「男娘 / femboy / 伪娘 / 女装大佬」等跨次元：X 上绝大多数是真人 cosplay（三次元），
+    # 也有二次元版本。强制 anime 分级会把大量真实男娘图砍掉（实测 2026-09-03：10 候选相关性
+    # 全过，风格分级(anime) 砍到 1 张），属于 fail-safe 变 fail-closed。故这些词不进 anime 强判。
+    ambiguous_markers = ("男娘", "femboy", "伪娘", "女装大佬", "女装", "crossdress")
+    anime_markers = ("二次元", "动漫", "动画", "anime", "萌", "漫画", "卡通", "猫娘", "壁纸",
                      "插画", "手绘", "立绘", "老婆", "galgame", "cos", "纸片人")
     realistic_markers = ("三次元", "真人", "写实", "realistic", "照片", "摄影", "现实", "真实",
                          "实拍", "人像", "肉", "真人女", "写真")
+    if any(m in q for m in ambiguous_markers):
+        # 跨界词：除非另有强二次元/写实信号，不强制风格分级，直接发相关性通过的结果。
+        return None
     hit_a = any(m in q for m in anime_markers)
     hit_r = any(m in q for m in realistic_markers)
     if hit_a and not hit_r:
@@ -482,16 +489,22 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
             if _cand_paths:
                 _ok, _filtered = await _filter_images_by_relevance(session, query, _cand_paths)
                 if _ok:
-                    # 视觉成功：信任判定。filtered 可能为空（都不相关）——宁可不发，也不发无关图。
-                    downloaded = _filtered[: limit]
+                    # 视觉成功：优先信任判定。但若候选存在却被判定全不相关（filtered 空），
+                    # 保底发候选前若干张——尤其「再抽」时 fresh 去重后候选骤减到 1~2 张，
+                    # Gemini 对极少量图的「全不相关」判定不可靠，否则用户永远拿不到新图
+                    # （实测 2026-09-04：再抽只留 2 张候选，相关性过滤判全不相关 -> 空手）。
+                    downloaded = _filtered[: limit] if _filtered else _cand_paths[: min(limit, 1)]
                     # P3-2 内容分级：查询带明确风格信号时，再只保留匹配该风格的图。
                     _style = _detect_style_hint(query)
                     if _style and downloaded:
                         _sok, _styled = await _grade_images_by_style(session, _style, downloaded)
                         if _sok:
-                            # 分级成功：信任。可能为空（都不匹配风格）——宁可不发，不发错风格。
-                            downloaded = _styled[: limit]
-                        # 分级失败/超时：保底全发（保持 relevance 结果），不因分级空手
+                            # 分级成功：优先用风格匹配结果。但若被过度过滤（空/极少），保底回退
+                            # 当前已通过相关性（或相关性空手兜底）的结果——「相关性已通过却因风格
+                            # 分级空手」是 fail-safe 变 fail-closed（实测男娘图：相关性 10 全过，
+                            # 风格(anime) 砍到 1）。回退对象是 downloaded（可能已是相关性空手兜底）。
+                            downloaded = _styled[: limit] if _styled else downloaded[: limit]
+                    # 分级失败/超时：保底全发（保持 relevance 结果），不因分级空手
                 else:
                     # 视觉不可用/失败/超时：保底全发，不因视觉问题空手。
                     downloaded = _cand_paths[: limit]
@@ -500,6 +513,11 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
             # 记录这些 URL 已发过（会话内去重，下次自动避开）
             try:
                 session.mark_images_seen(_candidate_urls[: limit])
+            except NameError:
+                # 节流复用路径 downloaded 来自上下文、_candidate_urls 未定义：
+                # 此前 NameError 被下面的宽 except 吞掉、seen 去重永不登记。
+                # 复用的图本就来自本次回复，跳过登记在语义上正确。
+                logger.debug("节流复用路径无候选 URL，跳过 seen 登记")
             except Exception:  # noqa: BLE001
                 logger.debug("mark_images_seen 失败（忽略）")
         # 同回复节流：记录本次已抓取的 query，后续同回复内重复调用不再重复下载/视觉过滤

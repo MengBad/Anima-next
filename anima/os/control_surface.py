@@ -62,6 +62,87 @@ class ParsedCommand:
         }
 
 
+# ---------------------------------------------------------------------------
+# 只读结果 → QQ 短文本（P3-3）
+# ---------------------------------------------------------------------------
+_MAX_LINES = 14
+
+
+def _flatten_readonly(obj: Any, prefix: str = "", depth: int = 0) -> list[str]:
+    """把只读聚合结果压成「键 = 值 / 键: N 项」行，容忍结构漂移。
+
+    刻意用通用展平而不是逐字段硬编码：这些聚合结构会随迭代变化，硬编码的
+    格式化函数会在字段改名后静默输出空串——那又是一种「假完整」。
+    """
+    if depth >= 3:
+        return [f"{prefix} = …"]
+    if isinstance(obj, dict):
+        lines: list[str] = []
+        for k, v in list(obj.items())[:_MAX_LINES]:
+            lines.extend(_flatten_readonly(v, f"{prefix}{k}." if prefix else f"{k}", depth + 1))
+        return lines
+    if isinstance(obj, (list, tuple)):
+        return [f"{prefix}: {len(obj)} 项"]
+    if isinstance(obj, str) and len(obj) > 160:
+        obj = obj[:160] + "…"
+    return [f"{prefix} = {obj}"]
+
+
+def format_readonly_reply(cmd: "ParsedCommand", data: dict[str, Any],
+                          *, max_chars: int = 1200) -> str:
+    """把只读意图数据渲染成 QQ 可读短文本（纯函数，可单测）。
+
+    诚实优先：``available=False`` 直接说不可用与原因；结果被截断时明说「已截断」。
+    """
+    title = (getattr(cmd, "preview", "") or "").strip() or f"意图：{getattr(cmd, 'intent', '?')}"
+    lines: list[str] = [title]
+
+    # P3-1：长期记忆要走特殊渲染——把「语义检索有没有真的跑」如实说出来。
+    mem = data.get("memory")
+    if isinstance(mem, dict) and getattr(cmd, "intent", "") == "memory":
+        if mem.get("available") is False:
+            lines.append(f"记忆库不可用：{mem.get('reason', '未知原因')}")
+            return "\n".join(lines)
+        lines.append(f"知识 {mem.get('knowledge_count', 0)} 条 / "
+                     f"行为模式 {mem.get('pattern_count', 0)} 条")
+        if mem.get("query"):
+            lines.append(f"查询：「{mem['query']}」")
+        for k in (mem.get("knowledge_matches") or [])[:3]:
+            lines.append(f"· 知识命中：{str(k.get('statement', ''))[:120]}")
+        for p in (mem.get("pattern_matches") or [])[:2]:
+            lines.append(f"· 模式命中：{str(p.get('pattern', ''))[:120]}")
+        for s in (mem.get("semantic_matches") or [])[:3]:
+            lines.append(f"· 语义命中（{s.get('similarity')}）：{str(s.get('text', ''))[:120]}")
+        if mem.get("vector_used"):
+            lines.append("（已做语义检索）")
+        elif mem.get("vector_reason"):
+            lines.append(f"⚠️ 未做语义检索：{mem['vector_reason']}")
+        for w in (mem.get("recent_why") or [])[:2]:
+            lines.append(f"· 设计原因：{str(w)[:120]}")
+
+    for key, val in data.items():
+        if key == "memory":
+            continue
+        if isinstance(val, dict) and val.get("available") is False:
+            lines.append(f"{key} 不可用：{val.get('reason', '未知原因')}")
+            continue
+        if key == "proposals" and isinstance(val, list):
+            lines.append(f"待审提案 {len(val)} 条")
+            for it in val[:5]:
+                if isinstance(it, dict):
+                    lines.append(f"· {it.get('id', '?')} {str(it.get('title', ''))[:80]}")
+            continue
+        lines.extend(_flatten_readonly(val, f"{key}."))
+
+    body = lines[:_MAX_LINES]
+    if len(lines) > _MAX_LINES:
+        body.append(f"…（共 {len(lines)} 行，已截断）")
+    text = "\n".join(body)
+    if len(text) > max_chars:
+        text = text[:max_chars] + f"…（超过 {max_chars} 字，已截断）"
+    return text
+
+
 class HumanAIControlSurface:
     """Human-AI OS 控制面：聚合全景 + 解析受限指令。"""
 
@@ -465,6 +546,35 @@ class HumanAIControlSurface:
             logger.exception("society 辩论异常(留痕，不再静默)")
             return {"available": False, "reason": "society 辩论异常"}
 
+    def _long_term_store(self):
+        """取长期记忆实例（P3-1）。
+
+        优先复用 ``core.long_term``——它由 ``AnimaCore`` 装配，并在向量记忆初始化后
+        被回填 ``embedder``；只有 core 上没有时才按 ``pipeline.stages.memory`` 的同
+        一约定惰性构造并挂回 core（避免同进程出现两个指向不同路径的实例）。
+        """
+        store = getattr(self._core, "long_term", None)
+        if store is None:
+            cfg = getattr(self._core, "config", None)
+            data_dir = getattr(getattr(cfg, "persistence", None), "data_dir", "data")
+            from ..memory.long_term import LongTermMemory
+
+            store = LongTermMemory(str(data_dir))
+            try:
+                self._core.long_term = store
+            except Exception:  # noqa: BLE001 - 挂不上去也不影响本次查询
+                pass
+        # embedder 兜底：core 可能在其他路径上注入了 vector_memory
+        if getattr(store, "embedder", None) is None:
+            vm = getattr(self._core, "vector_memory", None)
+            emb = getattr(vm, "embedding", None) if vm is not None else None
+            if emb is not None:
+                try:
+                    store.embedder = emb
+                except Exception:  # noqa: BLE001
+                    logger.debug("long_term.embedder 回填失败", exc_info=True)
+        return store
+
     def long_term_memory(self, query: str | None = None) -> dict[str, Any]:
         """只读查询长期记忆（P4）：事件/知识/行为模式三层 + 设计原因。
 
@@ -474,11 +584,8 @@ class HumanAIControlSurface:
         """
         if self._core is None:
             return {"available": False, "reason": "core 未注入"}
-        data_dir = getattr(getattr(self._core, "config", None), "persistence", None)
-        root = getattr(data_dir, "data_dir", "data") if data_dir else "data"
         try:
-            from ..memory.long_term import LongTermMemory
-            mem = LongTermMemory(root)
+            mem = self._long_term_store()
             if query:
                 return mem.query(query)
             know = mem.knowledge()
@@ -493,6 +600,45 @@ class HumanAIControlSurface:
             }
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "long_term_memory 聚合异常"}
+
+    async def long_term_memory_semantic(self, query: str | None = None) -> dict[str, Any]:
+        """只读长期记忆查询：关键词 + **可选**语义召回（P3-1）。
+
+        开关 ``memory.long_term_semantic``（默认 **false**）：
+
+        - false → 与 :meth:`long_term_memory` 等价（纯关键词），并带上
+          ``vector_used=False`` 与原因，调用方一眼能看出「没做语义检索」而不是
+          「语义检索没找到」；
+        - true 且 embedder 可用 → 在关键词结果之上叠加语义召回，并把
+          ``vector_used`` / ``semantic_matches`` / 候选扫描量如实返回。
+
+        任何情况下都**只读**——不写入、不改访问计数、不落盘。
+        """
+        if self._core is None:
+            return {"available": False, "reason": "core 未注入"}
+        mem_cfg = getattr(getattr(self._core, "config", None), "memory", None)
+        enabled = bool(getattr(mem_cfg, "long_term_semantic", False))
+        if not enabled or not query:
+            out = self.long_term_memory(query)
+            if isinstance(out, dict):
+                out.setdefault("vector_used", False)
+                out.setdefault(
+                    "vector_reason",
+                    "memory.long_term_semantic=false：本次仅关键词检索"
+                    if not enabled else "无查询词：返回长期记忆摘要")
+            return out
+        try:
+            store = self._long_term_store()
+            return await store.query_semantic(
+                query,
+                max_candidates=int(
+                    getattr(mem_cfg, "long_term_semantic_max_candidates", 60) or 60),
+                threshold=float(
+                    getattr(mem_cfg, "long_term_semantic_threshold", 0.35) or 0.35),
+            )
+        except Exception:  # noqa: BLE001 - 语义路径异常必须降级而非失败
+            logger.warning("long_term 语义检索异常，降级为关键词", exc_info=True)
+            return self.long_term_memory(query)
 
     def autonomous_maintenance(self) -> dict[str, Any]:
         """只读触发一次自治维护扫描（P5）：检测→风险分析→生成待审提案（不执行）。
@@ -536,26 +682,73 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 扫描失败不阻断控制面
             return {"available": False, "reason": "autonomous_maintenance 扫描异常"}
 
-    def skill_evolution(self, request: str = "") -> dict[str, Any]:
-        """只读触发一次个人能力演进评估（P6）：提案→沙箱→Benchmark→采纳判定（不采纳）。
+    def abilities(self) -> dict[str, Any]:
+        """已加载的声明式技能清单（P2-2，只读）。"""
+        skills = getattr(self._core, "skills", None)
+        if skills is None:
+            return {"available": False, "reason": "Skills 未启用"}
+        rows = skills.describe() if hasattr(skills, "describe") else []
+        return {
+            "available": True,
+            "count": len(rows),
+            "items": rows,
+            "errors": dict(getattr(skills, "errors", {}) or {}),
+            "note": "tool 型技能的 level 是「技能声明等级」与「被组合工具等级」的较大者"
+                    "（无提权上界）；技能安装仍需 Owner 在 draft 审批门放行。",
+        }
+
+    async def skill_evolution(self, request: str = "", *, create_draft: bool = False) -> dict[str, Any]:
+        """触发一次个人能力演进评估（P6）：提案→沙箱→Benchmark→采纳判定。
 
         **采纳仍须 Owner**：即便评估为 adoptable，也只返回结论，绝不自我批准安装。
+
+        P2-2 真接线（此前是死桩：构造了空 SkillEvolutionAgent 却连它都没调用）：
+        - 复用 ``core.skill_drafts``（SkillDraftManager）作为草案生成器，它的 prompt 里
+          会带上「当前可被组合的工具清单」，LLM 无法自造工具名；
+        - 评估结果落地到控制面返回，含 sandbox_errors 与 benchmark 明细，便于 Owner 判断；
+        - ``create_draft=True`` 时才真正落一条 pending_review 草案（会消耗一次 LLM 调用），
+          默认 False 只做「给定 manifest 的评估」，不产生任何持久化副作用。
         """
         if not request:
             return {"available": False, "reason": "缺少能力需求描述"}
+        drafts = getattr(self._core, "skill_drafts", None)
+        llm = getattr(self._core, "llm", None)
+        if drafts is None and llm is None:
+            return {"available": False,
+                    "reason": "缺少提案生成器（skill_drafts 未初始化且无 LLM）"}
         try:
             from ..skills.evolution import SkillEvolutionAgent
-            agent = SkillEvolutionAgent()
-            # 控制面无 LLM 提案器时，仅对已给 manifest 做评估；这里要求 request 描述，
-            # 真实接线可在有 LLM 时注入 propose_fn。无提案器 → 诚实返回不可用。
+
+            agent = SkillEvolutionAgent(draft_manager=drafts)
+            draft = None
+            if create_draft:
+                if drafts is None:
+                    return {"available": False, "reason": "未初始化 skill_drafts，无法落草案"}
+                draft = await drafts.create_from_request(request)
+                manifest = dict(draft.manifest)
+                draft_id = draft.id
+            else:
+                return {
+                    "available": True,
+                    "request": request,
+                    "dry_run": True,
+                    "note": "未传 create_draft，仅校验提案链路是否可用；"
+                            "传 create_draft=True 才会真正生成待审草案（消耗一次 LLM 调用）。",
+                    "proposer": "skill_drafts" if drafts is not None else "llm",
+                }
+            evaluation = agent.evaluate(draft_id, request, manifest)
             return {
                 "available": True,
-                "note": "评估需提案生成器（propose_fn）或 draft_manager；缺省仅暴露能力生命周期接口，"
-                        "不自动生成 Skill。",
                 "request": request,
+                "draft_id": draft_id,
+                "evaluation": evaluation.to_dict(),
+                "draft_errors": list(draft.errors),
+                "note": "草案已落 pending_review，采纳须 Owner 走 !anima draft approve；"
+                        "本控制面不执行批准。",
             }
-        except Exception:  # noqa: BLE001
-            return {"available": False, "reason": "skill_evolution 评估异常"}
+        except Exception as exc:  # noqa: BLE001 - 控制面不因单次评估异常而崩
+            logger.warning("skill_evolution 评估失败: %s", type(exc).__name__)
+            return {"available": False, "reason": f"skill_evolution 评估异常: {type(exc).__name__}"}
 
     # ------------------------------------------------------------------
     # 受限自然语言指令解析（白名单 + 确定性规则，无 LLM）
@@ -661,3 +854,66 @@ class HumanAIControlSurface:
             )
 
         return ParsedCommand(intent="unknown", preview=f"未识别指令：{t[:40]}")
+
+    # ------------------------------------------------------------------
+    # 只读意图执行（P3-3：WebUI 与 QQ 共用的**唯一**实现）
+    # ------------------------------------------------------------------
+    # 本表就是「QQ 侧允许执行的意图」白名单，不在表内的一律不执行（fail-closed）。
+    # 只读 = 不写盘、不改权限、不执行系统动作；`list_proposals` 是只读列表。
+    READONLY_INTENTS: frozenset[str] = frozenset({
+        "health", "recover", "stability", "observe", "impact",
+        "memory", "maintenance", "list_proposals",
+    })
+
+    async def run_readonly(self, cmd: "ParsedCommand", text: str = "") -> dict[str, Any]:
+        """执行**只读**意图，返回 ``{payload_key: data}``；不适用则返回 ``{}``。
+
+        铁律：``needs_confirmation=True`` 的意图（批准 / 拒绝提案）**永不在此执行**，
+        只由解析层给出待确认端点；``skill`` / ``society`` 这两个会落草案或触发多轮
+        LLM 的意图也不属于只读白名单，由各自调用方显式处理（WebUI 有，QQ 没有）。
+
+        每一路都独立 try/except：单路失败只影响该路，不把整条查询打挂。
+        """
+        intent = getattr(cmd, "intent", "") or ""
+        if getattr(cmd, "needs_confirmation", False):
+            return {}
+        if intent not in self.READONLY_INTENTS:
+            return {}
+        if intent in ("health", "recover"):
+            try:
+                return {"overview": self.overview().to_dict()}
+            except Exception:  # noqa: BLE001
+                return {}
+        if intent == "stability":
+            out: dict[str, Any] = {}
+            for w in (7, 30, 90):
+                try:
+                    out[f"{w}d"] = self.stability_summary(w)
+                except Exception:  # noqa: BLE001
+                    out[f"{w}d"] = {"available": False, "reason": "stability 聚合异常"}
+            return {"stability": out}
+        if intent == "observe":
+            try:
+                return {"environment": self.environment_report()}
+            except Exception:  # noqa: BLE001
+                return {}
+        if intent == "impact":
+            try:
+                return {"impact": self.evolution_impact()}
+            except Exception:  # noqa: BLE001
+                return {}
+        if intent == "memory":
+            # P3-1：走「关键词 +（可选）语义召回」读路径（只读）
+            return {"memory": await self.long_term_memory_semantic(query=text or None)}
+        if intent == "maintenance":
+            try:
+                return {"maintenance": self.autonomous_maintenance()}
+            except Exception:  # noqa: BLE001
+                return {}
+        if intent == "list_proposals":
+            try:
+                from ..agent.self_evolution import list_evolution_proposals
+                return {"proposals": list_evolution_proposals()}
+            except Exception:  # noqa: BLE001
+                return {}
+        return {}

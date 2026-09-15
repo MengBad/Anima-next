@@ -1,0 +1,24 @@
+id: web_brief
+name: 联网速览
+version: "1.0.0"
+description: 联网搜索后整理成带来源与时间标注的要点摘要，而不是把原始搜索结果直接丢出去。
+min_level: user
+parameters:
+  query:
+    type: string
+    description: 要查的内容，简练中文
+    required: true
+  num_results:
+    type: integer
+    description: 抓取结果条数，默认 5
+execution:
+  type: tool
+  tool: web_search
+  content_summary: true
+  template: |
+    把上面的联网检索结果整理成 3-5 条要点，每条尽量短。
+    硬性要求：
+    1. 凡涉及时间、数字、版本、价格的结论，必须紧跟来源（站点名或链接）与发布/抓取时间；
+    2. 资料里没有明确日期的，写「未标注日期」，不要自己推断「今天」「最近」；
+    3. 检索失败、结果为空或明显不相关时，直接如实说「没查到」，不要用常识补全成像是查到的样子；
+    4. 不要输出「根据我的搜索结果」这类过程性描述，直接给结论。

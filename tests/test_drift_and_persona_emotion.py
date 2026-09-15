@@ -3,7 +3,7 @@
 from types import SimpleNamespace
 
 from anima.cognitive.learning import SelfLearning
-from anima.pipeline.stages import SYSTEM_PROMPT, load_persona_template
+from anima.pipeline.stages import load_persona_template
 
 
 def test_apply_drift_config_updates_budgets(tmp_path):
@@ -44,9 +44,6 @@ def test_persona_template_has_emotional_problem_solving_path():
     assert "解决问题时" in tmpl
     assert ("本喵帮你瞅瞅" in tmpl) or ("别慌" in tmpl)
     assert "工具失败" in tmpl
-    # 内联兜底也要对齐关键段（防 yaml 缺失时降级丢情感路径）
-    assert "解决问题时" in SYSTEM_PROMPT
-    assert "工具失败" in SYSTEM_PROMPT
 
 
 def test_persona_keeps_identity_and_not_assistant():

@@ -98,6 +98,22 @@ class AgendaQueue:
         ]
         return max(candidates, key=lambda item: item.priority, default=None)
 
+    def ready_items(self, group_id: int | None = None,
+                    now: float | None = None) -> list["AgendaItem"]:
+        """返回全部「到点可发」的议程（未排序）。
+
+        P1-4：``peek_ready`` 只给最高优先级那一条，队首被挡（群 autonomy=false、
+        全局冷却、claim 失败）时整轮就什么都不做。给 autonomy 一个可排序的完整
+        候选集，由 ``core.proactive.rank_agenda`` 排序 + 逐个尝试。
+        """
+        now = time.time() if now is None else now
+        self._prune_expired(now)
+        return [
+            item for item in self.items
+            if item.status == "pending" and item.not_before_at <= now
+            and (group_id is None or item.group_id == group_id)
+        ]
+
     def consume(self, item_id: str) -> bool:
         return self._set_status(item_id, "consumed")
 

@@ -67,6 +67,7 @@ def _issue_from_audit_denials(denial_events: list[dict[str, Any]]) -> list[DevIs
 def collect_self_monitor_issues(
     selfcode_manager: Any = None,
     audit_denials: list[dict[str, Any]] | None = None,
+    reply_quality_report: dict[str, Any] | None = None,
     *,
     min_severity: str = "low",
 ) -> list[DevIssue]:
@@ -74,8 +75,28 @@ def collect_self_monitor_issues(
 
     - selfcode_manager：可选，调用其 ``evaluate_tools()`` 获取低效工具建议。
     - audit_denials：可选，R6.5 审计证据中筛选出的 DENY 事件列表。
+    - reply_quality_report：可选，reply_quality.report() 快照（收敛计划 E1：
+      工具失败/不可用回复退化时自动生成自治信号，此前该信号从未流入 R8 闭环）。
     """
     issues: list[DevIssue] = []
+    if reply_quality_report:
+        rep = reply_quality_report.get("report", reply_quality_report)
+        try:
+            tf = int(rep.get("tool_failures", 0) or 0)
+            tc = int(rep.get("tool_calls", 0) or 0)
+            unavail = int(rep.get("unavailable_replies", 0) or 0)
+        except (TypeError, ValueError):
+            tf, tc, unavail = 0, 0, 0
+        if tf >= 3 or unavail >= 2 or (tc >= 5 and tf / max(1, tc) >= 0.25):
+            issues.append(DevIssue(
+                title=f"回复质量退化：工具失败 {tf}/{tc}，不可用回复 {unavail}",
+                detail=("reply_quality 自治信号触发（watch/退化）。建议排查 LLM 网关、"
+                        "代理链路与工具实现；数据见 /api/reply-quality。"),
+                source="self_monitor",
+                capability="code.develop",
+                required_scopes=frozenset({"write"}),
+                severity="high" if (tf >= 5 or unavail >= 3) else "normal",
+            ))
     if selfcode_manager is not None and hasattr(selfcode_manager, "evaluate_tools"):
         try:
             suggestions = selfcode_manager.evaluate_tools()

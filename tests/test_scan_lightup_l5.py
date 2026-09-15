@@ -68,6 +68,7 @@ def test_non_bullying_no_change(tmp_path, monkeypatch):
 
 def test_handler_wiring_contract():
     import io
-    src = io.open("anima/llm/handler.py", encoding="utf-8").read()
+    # 队列④第二刀：布线迁至 prefilter stage
+    src = io.open("anima/pipeline/stages/prefilter.py", encoding="utf-8").read()
     assert "apply_bullying_signal" in src
     assert "L5 霸凌分级接内在" in src

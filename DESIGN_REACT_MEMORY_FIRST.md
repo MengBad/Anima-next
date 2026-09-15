@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-07-29，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # 【设计文档】ReAct 记忆优先策略
 
 > 目标：解决 ReAct 一上来就 `web_search` 的问题，让内部记忆（跨群成员事实 / 历史对话 / web 缓存）
@@ -179,4 +181,25 @@ if name == "web_search" and ok:
 - `test_memory_first_toggle_off`：`memory_first=False` → 不注入引导、priority 不改变排序。
 
 ---
-*设计基线：Anima-next 生产路径 `G:/Anima-next`，部署于 VPS `/opt/anima`。本文件仅设计，未实现。待用户确认后进入实现阶段。*
+*设计基线：Anima-next 生产路径 `G:/Anima-next`，部署于 VPS `/opt/anima`。*
+
+---
+
+## 7. 实现状态（2026-09-15 更新：已实现）
+
+状态：**已实现并合入主路径**，回归测试见 `tests/test_react_memory_first.py`（14 项）。
+总开关 `config.react.memory_first`（默认 `true`，置 `false` 一键回滚，见 §4.4）。
+
+### 实现偏差（相对本设计，均经代码现状校准）
+
+| # | 设计原文 | 实际实现 | 原因 |
+|---|---|---|---|
+| 1 | §1.1 两个引导「偶发同时命中时都注入」 | 改为**互斥分流**：`_REALTIME_TOOL_RE` 命中时只注入实时引导，未命中才考虑记忆引导 | `_REALTIME_TOOL_RE` 刻意宽松（含「是什么/为什么/资料/百科」），实测会与记忆词大面积重叠；同发两条互相矛盾的指令比不注入更糟。语义与 §4.2「记忆优先只在问题无实时词时生效」一致 |
+| 2 | §2.1 `get_schemas()` 无条件按 priority 升序 | 新增 `sort_by_priority` 关键字，**默认 False**，仅 ReAct 主路径显式传 True | legacy schema 的返回顺序属于 M0.3（RFC-0001 §5.4）「逐字节不变」冻结契约，由 `test_capability_*` 系列守护；无条件排序会让 4 个冻结契约测试变红 |
+| 3 | §2.2 在 `react.py` 里 `asyncio.create_task` 沉淀 web 结果 | **不新增**：`tools/builtin/web.py:329-340` 已在 `tool_web_search` 内同步完成（try/except 静默） | 已有实现更优——无悬挂 task、无并发写盘竞争。不重复造轮子 |
+| 4 | §6 新增 `crossgroup/memory/web_knowledge.py` | 未新建，复用既有 `anima/memory/web_knowledge.py` | 计划明确要求「勿再建副本」 |
+
+### 未实现（本期刻意不做）
+
+- §5 A/B 分流埋点（`memory_first_ab`）：先用总开关观察，确认方向正确再投入埋点框架。
+- §3.1 的降幅数字仍是估算，未经 A/B 实测校准。

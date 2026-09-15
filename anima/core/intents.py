@@ -72,11 +72,25 @@ class IntentLedger:
             raise ValueError("意图必须包含有效目标和内容")
         self.expire(save=False)
         normalized = str(content).strip()
+        now_ts = time.time()
+        try:
+            from difflib import SequenceMatcher
+        except Exception:  # pragma: no cover
+            SequenceMatcher = None
         for item in self.items.values():
             if (item.status in OPEN_STATUSES and item.kind == kind and item.source == source
-                    and item.target_kind == target_kind and item.target_id == int(target_id)
-                    and item.content == normalized):
-                return item
+                    and item.target_kind == target_kind and item.target_id == int(target_id)):
+                if item.content == normalized:
+                    return item
+                # 深审 P2-4：同源同目标 24h 内高相似内容（换措辞重复承诺）拒绝
+                # 重复建档——content 全等去重挡不住动态文本
+                try:
+                    if (now_ts - float(item.created_at or 0) < 86400
+                            and SequenceMatcher is not None
+                            and SequenceMatcher(None, item.content, normalized).ratio() >= 0.8):
+                        return item
+                except Exception:
+                    pass
         item = IntentRecord(kind, source, target_kind, target_id, normalized, priority, not_before_at, expires_at)
         self.items[item.id] = item
         self.save()

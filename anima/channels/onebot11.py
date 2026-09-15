@@ -1361,6 +1361,19 @@ class OneBot11Adapter(Module):
                 return (uid, text)
         return None
 
+    def inbounds_since(self, group_id: "int | None", since_ts: float) -> "list[tuple[int, str]]":
+        """返回 since_ts 之后的全部入站消息 [(user_id, text)]（时间升序）。
+
+        供 handler 出站前的新鲜度重估使用：扫一遍生成窗口内的入站，
+        判断同一用户是否已撤销（区别于 latest_* 只看最新一条）。
+        """
+        if group_id is None:
+            return []
+        buf = self._recent_inbound.get(int(group_id))
+        if not buf:
+            return []
+        return [(uid, text) for ts, uid, text in buf if ts > since_ts]
+
     async def get_group_member_list(self, group_id: int) -> Optional[list[dict]]:
         """获取群成员列表。"""
         resp = await self._call_action(
@@ -1390,6 +1403,26 @@ class OneBot11Adapter(Module):
         """获取群基本信息（群名/人数/公告等）。"""
         resp = await self._call_action(
             "get_group_info", {"group_id": group_id}, timeout=10.0
+        )
+        return resp if isinstance(resp, dict) else None
+
+    async def get_group_honor_info(self, group_id: int,
+                                   honor_type: str = "all") -> Optional[dict]:
+        """获取群荣誉榜（龙王 / 群聊之火 / 群聊炽焰 / 冒尖小春笋 / 快乐源泉）。
+
+        纯只读查询，走 OneBot11 ``get_group_honor_info``。``honor_type`` 取
+        ``all``/``talkative``/``performer``/``legend``/``strong_newbie``/``emotion``。
+
+        P2-4：此前唯一消费方 ``tools/builtin/honor.py`` 误调不存在的
+        ``anima.core.gateway.get_gateway()``，且异常被吞，导致该工具**永远**返回
+        「这个群好像没开荣誉榜喵」——注册表里有、schema 正常、实际 100% 失效。
+        现补上真实通道方法，返回值语义明确：``None`` = 拿不到（未连/超时/不支持），
+        调用方必须如实说明而不是编数据。
+        """
+        resp = await self._call_action(
+            "get_group_honor_info",
+            {"group_id": int(group_id), "type": str(honor_type or "all")},
+            timeout=10.0,
         )
         return resp if isinstance(resp, dict) else None
 

@@ -141,6 +141,7 @@ class ReplyQuality:
             "unfamiliar": "gate_skip_unfamiliar",
             "end_signal": "gate_skip_end_signal",
             "passive_cooldown": "gate_skip_passive_cooldown",
+            "stale_dropped": "gate_skip_stale_dropped",
         }.get(str(reason or ""), "gate_skip_other")
         metrics = self._metrics()
         metrics[key] = int(metrics.get(key, 0) or 0) + 1

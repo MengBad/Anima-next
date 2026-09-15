@@ -181,6 +181,31 @@ fields:
       default: true
       required: false
       hint: "群聊仅当被 @、被回复或文本提到「哈基米」时回复；私聊始终回复"
+    wake_session_ttl_sec:
+      type: float
+      default: 60.0
+      required: false
+      hint: "被@/回复/喊名后窗内可自然续话的时长（秒），调短可降连环刷屏"
+    passive_reply_cooldown_sec:
+      type: float
+      default: 45.0
+      required: false
+      hint: "每用户被动回复冷却（秒）：刚回过又未点名时跳过，0=关"
+    correction_exempt_cooldown:
+      type: bool
+      default: true
+      required: false
+      hint: "唤醒窗内命中纠正/补充词（「不对，我说的是X」）时豁免上述冷却"
+    fatigue_mention_soft:
+      type: int
+      default: 6
+      required: false
+      hint: "5分钟内被@超过该次数触发疲劳情绪（overwhelmed）"
+    fatigue_mention_hard:
+      type: int
+      default: 8
+      required: false
+      hint: "超过该次数直接罐头短回复跳过 LLM（owner 豁免）"
     active_reply_prob:
       type: float
       default: 0.04
@@ -329,6 +354,20 @@ fields:
       required: false
       hint: "单个语义回合最长等待秒数，防止持续输入永久不回复"
 
+  proxy_mgmt:
+    enabled:
+      type: bool
+      default: true
+      required: false
+      hint: "WebUI 代理节点管理（mihomo 控制器：列节点/切换/测延迟/导入订阅）"
+    controller_url:
+      type: url
+      default: "http://127.0.0.1:9090"
+      required: false
+    config_path:
+      type: str
+      default: "/usr/local/share/mihomo/config.yaml"
+      required: false
   webui:
     enabled:
       type: bool
@@ -472,3 +511,1189 @@ fields:
       default: "same-host"
       required: false
       hint: "same-host | remote"
+
+  # ---- 以下 31 节由审计补齐(2026-09-01)，覆盖 AnimaConfig 全部配置节 ----
+
+  memory:
+    # 宪法记忆(constitution)水合配置
+    long_term_context:
+      type: bool
+      default: true
+      required: false
+    long_term_write:
+      # preference=仅偏好/决策句与 Owner 私聊；all=每条消息；off=只读不写
+      type: str
+      default: "preference"
+      required: false
+    hydrate_period_hours:
+      type: float
+      default: 6.0
+      required: false
+    # P3-1：长期记忆语义召回读路径（默认关；仅服务 Owner 主动查询，不进 per-message 热路径）
+    long_term_semantic:
+      type: bool
+      default: false
+      required: false
+    long_term_semantic_max_candidates:
+      type: int
+      default: 60
+      required: false
+    long_term_semantic_threshold:
+      type: float
+      default: 0.35
+      required: false
+    # 收敛计划 M2 统一检索聚合层（补录：字段早已存在于 MemoryConfig，此前漏进 schema）
+    unified_recall_enabled:
+      type: bool
+      default: false
+      required: false
+    # 收敛计划 M3 保留期分层（声明性配置位）
+    retention_layers:
+      type: dict
+      default: {detail_days: 7, gist_days: 30, persona: permanent}
+      required: false
+
+  crossgroup:
+    # 跨群记忆+群氛围
+    enabled:
+      type: bool
+      default: true
+      required: false
+    observe_all_messages:
+      type: bool
+      default: true
+      required: false
+    min_fact_text_len:
+      type: int
+      default: 6
+      required: false
+    extraction_model:
+      type: str
+      default: ""
+      required: false
+    max_facts_per_user:
+      type: int
+      default: 50
+      required: false
+
+  tool_learning:
+    # 工具自学习
+    enabled:
+      type: bool
+      default: true
+      required: false
+    summarize_interval:
+      type: int
+      default: 10
+      required: false
+    records_max:
+      type: int
+      default: 200
+      required: false
+    inject_top_k:
+      type: int
+      default: 4
+      required: false
+
+  capabilities:
+    # 内生能力自生长
+    enabled:
+      type: bool
+      default: true
+      required: false
+    initial_confidence:
+      type: float
+      default: 0.3
+      required: false
+    auto_register_confidence:
+      type: float
+      default: 0.65
+      required: false
+    dynamic_daily_quota:
+      type: int
+      default: 8
+      required: false
+    max_total:
+      type: int
+      default: 40
+      required: false
+    unused_drop_days:
+      type: int
+      default: 30
+      required: false
+    unused_decay_days:
+      type: int
+      default: 14
+      required: false
+    dedup_text_threshold:
+      type: float
+      default: 0.5
+      required: false
+    max_zero_usage:
+      type: int
+      default: 12
+      required: false
+    min_create_text_len:
+      type: int
+      default: 6
+      required: false
+
+  capability_layer:
+    # 治理能力层(默认OFF)
+    capability_mode:
+      type: bool
+      default: false
+      required: false
+    pilot_capability_allowlist:
+      type: list
+      default: null
+      required: false
+    capability_gateway_mode:
+      type: bool
+      default: false
+      required: false
+    governance_audit_enabled:
+      type: bool
+      default: false
+      required: false
+    health_evidence_enabled:
+      type: bool
+      default: false
+      required: false
+    transition_audit_enabled:
+      type: bool
+      default: false
+      required: false
+    governance_data_dir:
+      type: str
+      default: "governance"
+      required: false
+    python_exec_enabled:
+      type: bool
+      default: false
+      required: false
+    python_exec_permission_level:
+      type: int
+      default: 2
+      required: false
+    python_exec_require_audit:
+      type: bool
+      default: true
+      required: false
+
+  notes_compact:
+    # 自我笔记压缩
+    enabled:
+      type: bool
+      default: true
+      required: false
+    notes_max_keep:
+      type: int
+      default: 300
+      required: false
+    compact_every_ruminations:
+      type: int
+      default: 6
+      required: false
+    compact_model:
+      type: str
+      default: ""
+      required: false
+
+  rumination:
+    # 反刍范围
+    scope:
+      type: str
+      default: "group_only"
+      required: false
+    max_sessions:
+      type: int
+      default: 6
+      required: false
+
+  sticker:
+    # 表情包系统
+    enabled:
+      type: bool
+      default: true
+      required: false
+    auto_collect:
+      type: bool
+      default: true
+      required: false
+    collect_mode:
+      type: str
+      default: "cooldown"
+      required: false
+    collect_probability:
+      type: float
+      default: 0.3
+      required: false
+    collect_cooldown_sec:
+      type: float
+      default: 30.0
+      required: false
+    collect_min_interval:
+      type: float
+      default: 3.0
+      required: false
+    max_stickers:
+      type: int
+      default: 500
+      required: false
+    label_throttle_per_user:
+      type: int
+      default: 600
+      required: false
+    label_model:
+      type: str
+      default: ""
+      required: false
+    label_by_vision:
+      type: bool
+      default: true
+      required: false
+    require_owner_review:
+      type: bool
+      default: true
+      required: false
+    pending_capacity:
+      type: int
+      default: 200
+      required: false
+    default_scope:
+      type: str
+      default: "local"
+      required: false
+    collect_allowlist:
+      type: list
+      default: []
+      required: false
+    collect_blocklist:
+      type: list
+      default: []
+      required: false
+    send_allowlist:
+      type: list
+      default: []
+      required: false
+    send_blocklist:
+      type: list
+      default: []
+      required: false
+    share_across_groups:
+      type: bool
+      default: false
+      required: false
+    always_atmosphere:
+      type: list
+      default: ["humorous", "casual"]
+      required: false
+    recent_window:
+      type: int
+      default: 4
+      required: false
+    gif_min_interval_sec:
+      type: int
+      default: 1800
+      required: false
+    classify_at_collect:
+      type: bool
+      default: true
+      required: false
+    llm_select:
+      type: bool
+      default: true
+      required: false
+    select_model:
+      type: str
+      default: ""
+      required: false
+    phash_dedup:
+      type: bool
+      default: true
+      required: false
+    phash_threshold:
+      type: int
+      default: 20
+      required: false
+    smart_select:
+      type: bool
+      default: true
+      required: false
+    select_weights:
+      type: dict
+      default: {"desc": 0.35, "tag": 0.25, "scene": 0.2, "bm25": 0.2, "emb": 0.2, "favorite": 0.3, "recency": 0.1, "negation": 0.5, "top_k": 3}
+      required: false
+    self_review:
+      type: bool
+      default: true
+      required: false
+    natural_forget:
+      type: bool
+      default: true
+      required: false
+    forget_age_days:
+      type: float
+      default: 60.0
+      required: false
+    forget_used_max:
+      type: int
+      default: 2
+      required: false
+    forget_last_used_days:
+      type: float
+      default: 30.0
+      required: false
+    send_probability:
+      type: float
+      default: 0.1
+      required: false
+    send_by_emotion:
+      type: bool
+      default: true
+      required: false
+    send_cooldown_sec:
+      type: float
+      default: 20.0
+      required: false
+    small_emoji_channel:
+      type: bool
+      default: true
+      required: false
+    intent_gate:
+      type: bool
+      default: true
+      required: false
+    intent_gate_serious_atmospheres:
+      type: list
+      default: ["formal", "help", "support"]
+      required: false
+
+  bilibili_read:
+    # B站视频字幕总结
+    enabled:
+      type: bool
+      default: true
+      required: false
+    sessdata:
+      type: str
+      default: ""
+      required: false
+    bili_jct:
+      type: str
+      default: ""
+      required: false
+    summary_model:
+      type: str
+      default: ""
+      required: false
+    max_subtitle_length:
+      type: int
+      default: 4000
+      required: false
+
+  vision:
+    # 多模态视觉
+    enabled:
+      type: bool
+      default: true
+      required: false
+    model:
+      type: str
+      default: ""
+      required: false
+    max_inline_bytes:
+      type: int
+      default: 2097152
+      required: false
+    max_source_bytes:
+      type: int
+      default: 33554432
+      required: false
+    max_request_image_bytes:
+      type: int
+      default: 3145728
+      required: false
+    max_dimension:
+      type: int
+      default: 1280
+      required: false
+    max_animation_frames:
+      type: int
+      default: 3
+      required: false
+    describe_throttle_per_user:
+      type: int
+      default: 600
+      required: false
+    comprehend_in_chat:
+      type: bool
+      default: true
+      required: false
+    store_desc_to_memory:
+      type: bool
+      default: true
+      required: false
+
+  audio:
+    # 语音转写
+    transcription_enabled:
+      type: bool
+      default: true
+      required: false
+    model:
+      type: str
+      default: ""
+      required: false
+    max_bytes:
+      type: int
+      default: 10485760
+      required: false
+    throttle_per_user:
+      type: int
+      default: 120
+      required: false
+
+  sylann:
+    # SylannEngine(可选)
+    enabled:
+      type: bool
+      default: false
+      required: false
+    mode:
+      type: str
+      default: "disabled"
+      required: false
+    data_dir:
+      type: str
+      default: "sylann"
+      required: false
+    weight:
+      type: float
+      default: 0.15
+      required: false
+    engine_mode:
+      type: str
+      default: "lite"
+      required: false
+    assessor_enabled:
+      type: bool
+      default: true
+      required: false
+    pel_core_enabled:
+      type: bool
+      default: true
+      required: false
+    tick_sessions_limit:
+      type: int
+      default: 32
+      required: false
+
+  skills:
+    # Skill 清单
+    enabled:
+      type: bool
+      default: true
+      required: false
+    dir:
+      type: str
+      default: "skills"
+      required: false
+    allow_prompt:
+      type: bool
+      default: true
+      required: false
+    max_loaded:
+      type: int
+      default: 32
+      required: false
+
+  reply_split:
+    # 拟人分段+打字延迟
+    enabled:
+      type: bool
+      default: true
+      required: false
+    max_segments:
+      type: int
+      default: 2
+      required: false
+    min_segment_len:
+      type: int
+      default: 40
+      required: false
+    max_segment_len:
+      type: int
+      default: 90
+      required: false
+    trigger_threshold:
+      type: int
+      default: 150
+      required: false
+    tail_merge_threshold:
+      type: int
+      default: 15
+      required: false
+    delay_enabled:
+      type: bool
+      default: true
+      required: false
+    delay_base:
+      type: float
+      default: 0.4
+      required: false
+    delay_factor:
+      type: float
+      default: 0.02
+      required: false
+    delay_jitter:
+      type: float
+      default: 0.3
+      required: false
+    context_aware_interrupt:
+      type: bool
+      default: true
+      required: false
+
+  debounce:
+    # 群聊防抖
+    group_enabled:
+      type: bool
+      default: true
+      required: false
+    group_wait_sec:
+      type: float
+      default: 2.0
+      required: false
+    group_max_wait_sec:
+      type: float
+      default: 6.0
+      required: false
+    adaptive:
+      type: bool
+      default: true
+      required: false
+    short_msg_threshold:
+      type: int
+      default: 10
+      required: false
+
+  soul:
+    # 灵魂能量槽(EMA)
+    enabled:
+      type: bool
+      default: true
+      required: false
+    ema_alpha:
+      type: float
+      default: 0.3
+      required: false
+    persist_interval_sec:
+      type: float
+      default: 60.0
+      required: false
+
+  gate:
+    # 意图门控
+    enabled:
+      type: bool
+      default: false
+      required: false
+    model:
+      type: str
+      default: ""
+      required: false
+    timeout_ms:
+      type: int
+      default: 500
+      required: false
+    fallback_to_full:
+      type: bool
+      default: true
+      required: false
+
+  qzone:
+    # Q空间说说
+    enabled:
+      type: bool
+      default: false
+      required: false
+    daily_max:
+      type: int
+      default: 2
+      required: false
+    cooldown_sec:
+      type: int
+      default: 14400
+      required: false
+
+  qq_status:
+    # QQ在线状态
+    enabled:
+      type: bool
+      default: false
+      required: false
+
+  voice:
+    # 语音出站
+    enabled:
+      type: bool
+      default: false
+      required: false
+    auto_probability:
+      type: float
+      default: 0.1
+      required: false
+
+  meme:
+    # 梗图/戳一戳互动
+    enabled:
+      type: bool
+      default: false
+      required: false
+    petpet_on_poke:
+      type: float
+      default: 0.3
+      required: false
+
+  scrapling:
+    # Scrapling 网页抓取
+    enabled:
+      type: bool
+      default: false
+      required: false
+
+  tavily:
+    # Tavily 网页搜索
+    enabled:
+      type: bool
+      default: true
+      required: false
+    api_key:
+      type: str
+      default: null
+      required: false
+    search_depth:
+      type: str
+      default: "advanced"
+      required: false
+    max_results:
+      type: int
+      default: 5
+      required: false
+    include_answer:
+      type: bool
+      default: true
+      required: false
+
+  react:
+    # P0-1 Memory-First：ReAct 工具选择策略（一键回滚点，见 DESIGN_REACT_MEMORY_FIRST.md §4.4）
+    memory_first:
+      type: bool
+      default: true
+      required: false
+    # P2-3 时效兜底脚注（用过时效工具但回答无日期痕迹时追加时效声明）
+    freshness_footer:
+      type: bool
+      default: true
+      required: false
+
+  debt_tracking:
+    # P1-1 承诺追踪（DESIGN_DEBT_TRACKING.md）；enabled=false 即完全关闭
+    enabled:
+      type: bool
+      default: true
+      required: false
+    keyword_only_mode:
+      type: bool
+      default: true
+      required: false
+    reminded_max:
+      type: int
+      default: 3
+      required: false
+    remind_interval_sec:
+      type: int
+      default: 86400
+      required: false
+    grace_hours:
+      type: float
+      default: 48.0
+      required: false
+    inject_to_cognition:
+      type: bool
+      default: true
+      required: false
+
+  memory_compression:
+    # P1-2 记忆压缩（DESIGN_MEMORY_COMPRESSION.md）；enabled=false 即夜间不整理
+    enabled:
+      type: bool
+      default: true
+      required: false
+    sim_threshold:
+      type: float
+      default: 0.85
+      required: false
+    max_facts_per_user:
+      type: int
+      default: 30
+      required: false
+    daily_decay:
+      type: float
+      default: 0.99
+      required: false
+    run_hour:
+      type: int
+      default: -1
+      required: false
+    min_facts_to_llm:
+      type: int
+      default: 40
+      required: false
+    interval_sec:
+      type: int
+      default: 86400
+      required: false
+
+  task_agent:
+    # P2-1 多步任务执行策略（verify / replan / 并行）
+    verify_steps:
+      type: bool
+      default: true
+      required: false
+    max_replans:
+      type: int
+      default: 2
+      required: false
+    parallel_steps:
+      type: bool
+      default: true
+      required: false
+    max_parallel:
+      type: int
+      default: 4
+      required: false
+
+  owner_browser:
+    # P1-3 Owner 受控浏览器（仅私聊；enabled=false 完全不注册）
+    enabled:
+      type: bool
+      default: true
+      required: false
+
+  repo_read:
+    # P3-2 受控仓库只读访问（OWNER + 私聊；只读、根约束、拒绝名单、有界、审计）
+    enabled:
+      type: bool
+      default: true
+      required: false
+    max_bytes:
+      type: int
+      default: 20000
+      required: false
+    max_lines:
+      type: int
+      default: 400
+      required: false
+    max_files:
+      type: int
+      default: 40
+      required: false
+    max_hits:
+      type: int
+      default: 40
+      required: false
+    deny_extra:
+      type: list
+      default: []
+      required: false
+    private_only:
+      type: bool
+      default: true
+      required: false
+    allowed_actions:
+      type: str
+      default: "navigate,extract"
+      required: false
+
+  proactive:
+    # P1-4 主动优先级队列（优先级注册表见 core/proactive.py）
+    enabled:
+      type: bool
+      default: true
+      required: false
+    subscription_failure_threshold:
+      type: int
+      default: 3
+      required: false
+    subscription_anomaly_cooldown_sec:
+      type: int
+      default: 21600
+      required: false
+    urgent_threshold:
+      type: float
+      default: 0.7
+      required: false
+    source_priority:
+      type: dict
+      default: {}
+      required: false
+
+  context:
+    # 上下文 token 预算
+    input_token_budget:
+      type: int
+      default: 12000
+      required: false
+    system_token_budget:
+      type: int
+      default: 8000
+      required: false
+    image_token_estimate:
+      type: int
+      default: 768
+      required: false
+    tool_result_token_budget:
+      type: int
+      default: 1800
+      required: false
+
+  exploration:
+    # 自主探索
+    enabled:
+      type: bool
+      default: true
+      required: false
+    interval_sec:
+      type: int
+      default: 3600
+      required: false
+    daily_limit:
+      type: int
+      default: 3
+      required: false
+      description: 当日探索次数上限；0 表示不限制
+    min_desire_intensity:
+      type: float
+      default: 0.4
+      required: false
+    sources:
+      type: list
+      default: null
+      required: false
+    novelty_window_sec:
+      type: int
+      default: 604800
+      required: false
+    max_notes:
+      type: int
+      default: 200
+      required: false
+    share_enabled:
+      type: bool
+      default: false
+      required: false
+      description: 默认关闭；必须显式开启才会把探索结果主动分享到群
+    daily_share_limit:
+      type: int
+      default: 1
+      required: false
+      description: 当日外发分享条数上限；0 表示当天完全不分享（fail-closed，与 daily_limit 的 0 语义相反）
+    share_min_score:
+      type: float
+      default: 0.75
+      required: false
+      description: value_score 低于此值不外发
+    share_groups:
+      type: list
+      default: null
+      required: false
+      description: 非空时构成白名单，仅名单内群可接收分享；空表示仅沿欲望来源群
+    x_timeline_limit:
+      type: int
+      default: 8
+      required: false
+    proxy:
+      type: str
+      default: ""
+      required: false
+
+  x_browser:
+    # X(Twitter)搬图
+    enabled:
+      type: bool
+      default: false
+      required: false
+    proxy:
+      type: str
+      default: ""
+      required: false
+    browser_engine:
+      type: str
+      default: "chromium"
+      required: false
+    username:
+      type: str
+      default: ""
+      required: false
+    password:
+      type: str
+      default: ""
+      required: false
+    data_dir:
+      type: str
+      default: "data/x_browser"
+      required: false
+    search_daily_limit:
+      type: int
+      default: 10
+      required: false
+    timeline_daily_limit:
+      type: int
+      default: 10
+      required: false
+    warmup_days:
+      type: int
+      default: 14
+      required: false
+    explore_keywords:
+      type: list
+      default: null
+      required: false
+
+  contradiction:
+    # 矛盾检测
+    enabled:
+      type: bool
+      default: false
+      required: false
+    max:
+      type: int
+      default: 50
+      required: false
+    dedup_recent:
+      type: int
+      default: 10
+      required: false
+    recall_threshold:
+      type: float
+      default: 0.8
+      required: false
+    model:
+      type: str
+      default: ""
+      required: false
+
+  danger:
+    # 危险行为/自升级提案(默认OFF)
+    enabled:
+      type: bool
+      default: false
+      required: false
+    active_info_collection:
+      type: bool
+      default: true
+      required: false
+    relationship_inference:
+      type: bool
+      default: true
+      required: false
+    stance_propagation:
+      type: bool
+      default: false
+      required: false
+    stance_propagation_confirm:
+      type: bool
+      default: false
+      required: false
+    identity_crisis:
+      type: bool
+      default: false
+      required: false
+    autonomous_web:
+      type: bool
+      default: false
+      required: false
+    memory_infection:
+      type: bool
+      default: false
+      required: false
+    memory_infection_confirm:
+      type: bool
+      default: false
+      required: false
+    core_mutation:
+      type: bool
+      default: false
+      required: false
+    core_mutation_confirm:
+      type: bool
+      default: false
+      required: false
+    autonomous_web_extract_chars:
+      type: int
+      default: 1500
+      required: false
+    memory_infection_max_repeats:
+      type: int
+      default: 2
+      required: false
+    info_collection_can_speak:
+      type: bool
+      default: false
+      required: false
+    stance_max_age_seconds:
+      type: int
+      default: 300
+      required: false
+    self_improvement:
+      type: bool
+      default: false
+      required: false
+    self_improvement_confirm:
+      type: bool
+      default: false
+      required: false
+    self_improvement_min_intensity:
+      type: float
+      default: 0.7
+      required: false
+    self_improvement_cooldown_sec:
+      type: int
+      default: 3600
+      required: false
+    self_improvement_synth_prob:
+      type: float
+      default: 0.1
+      required: false
+    self_improvement_skip_when_faults:
+      type: bool
+      default: true
+      required: false
+    self_improvement_max_running:
+      type: int
+      default: 2
+      required: false
+    self_improvement_max_recent_failed:
+      type: int
+      default: 3
+      required: false
+    self_improvement_failure_window_sec:
+      type: int
+      default: 7200
+      required: false
+
+  iteration:
+    # 受控迭代/自治修复
+    enabled:
+      type: bool
+      default: true
+      required: false
+    auto_repair:
+      type: bool
+      default: false
+      required: false
+    auto_restart:
+      type: bool
+      default: true
+      required: false
+    daily_quota:
+      type: int
+      default: 1
+      required: false
+    ticket_cooldown_sec:
+      type: int
+      default: 21600
+      required: false
+    auto_repair_cooldown_sec:
+      type: int
+      default: 3600
+      required: false
+    max_files_per_patch:
+      type: int
+      default: 2
+      required: false
+    max_file_chars:
+      type: int
+      default: 120000
+      required: false
+    pytest_timeout_sec:
+      type: int
+      default: 120
+      required: false
+
+  social:
+    # 社交(欢迎/告别/戳一戳/机器人间互动)
+    welcome_new_member:
+      type: bool
+      default: true
+      required: false
+    farewell_member:
+      type: bool
+      default: true
+      required: false
+    poke_back:
+      type: bool
+      default: true
+      required: false
+    poke_back_probability:
+      type: float
+      default: 0.6
+      required: false
+    welcome_cooldown_sec:
+      type: int
+      default: 300
+      required: false
+    farewell_cooldown_sec:
+      type: int
+      default: 60
+      required: false
+    bot_social_enabled:
+      type: bool
+      default: true
+      required: false
+    bot_cooldown_sec:
+      type: int
+      default: 30
+      required: false
+    bot_loop_max_depth:
+      type: int
+      default: 2
+      required: false
+    bot_discovery_enabled:
+      type: bool
+      default: false
+      required: false
+    bot_talk_enabled:
+      type: bool
+      default: false
+      required: false
+    bot_whisper_enabled:
+      type: bool
+      default: false
+      required: false
+    bot_whisper_daily_limit:
+      type: int
+      default: 10
+      required: false
+
+  persona:
+    # 人格(错别字/怪癖/种子关系)
+    typo_probability:
+      type: float
+      default: 0.03
+      required: false
+    quirk_probability:
+      type: float
+      default: 0.04
+      required: false
+    quirk_daily_max:
+      type: int
+      default: 3
+      required: false
+    seed_relations:
+      type: list
+      default: null
+      required: false

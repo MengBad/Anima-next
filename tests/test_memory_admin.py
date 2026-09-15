@@ -76,5 +76,6 @@ async def test_non_owner_cannot_manage_others_memory(tmp_path):
     consumed = await handler._handle_command(
         {"raw": {}}, "!anima memory show 42", 2, None, "private",
     )
-    assert consumed is False
-    assert handler.core.gateway.sent == []
+    # 2026-09-06 B4：非 owner 的 !anima 指令显式拒绝（消费 + 提示），不再落进 LLM
+    assert consumed is True
+    assert handler.core.gateway.sent and "只有主人能用" in str(handler.core.gateway.sent[-1].message)

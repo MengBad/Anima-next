@@ -5,6 +5,8 @@ import types
 
 import pytest
 
+from anima.pipeline import Pipeline
+from anima.pipeline.stages.prefilter import prefilter_stage
 from anima.llm.handler import (
     LLMHandler,
     is_direct_group_call,
@@ -84,7 +86,7 @@ async def test_handler_ignores_unaddressed_group_message_but_answers_name_call()
         ctx.reply = "在，咋了"
         return ctx
 
-    handler.pipeline = types.SimpleNamespace(run=fake_run)
+    handler.pipeline = Pipeline().use(prefilter_stage).use(fake_run)
     base = {
         "user_id": 10001,
         "group_id": 20001,
@@ -134,7 +136,7 @@ async def test_group_policy_can_override_reply_gate_without_affecting_other_grou
         ctx.reply = "在呢"
         return ctx
 
-    handler.pipeline = types.SimpleNamespace(run=fake_run)
+    handler.pipeline = Pipeline().use(prefilter_stage).use(fake_run)
     base = {
         "user_id": 10001, "text": "正常群聊", "mentions_self": False, "reply_to_self": False,
         "raw": {"message_type": "group", "sender": {"nickname": "测试用户"}},
@@ -187,7 +189,7 @@ async def test_reply_id_only_resolves_original_sender_before_gate():
         ctx.reply = "接着说"
         return ctx
 
-    handler.pipeline = types.SimpleNamespace(run=fake_run)
+    handler.pipeline = Pipeline().use(prefilter_stage).use(fake_run)
     event = {
         "text": "然后呢",
         "user_id": 10001,

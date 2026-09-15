@@ -3,23 +3,15 @@
 
 新增顶层 anima/capability_*.py 或向 anima/capability_contracts 落文件即 CI 红(fail-closed),
 承接「CI 永不自动改码/部署/绕过失败」。
+
+2026-09-12（队列①）：16 个顶层 B5-merge shim 已整体 git mv 至 anima/capability/_archive/，
+冻结语义反转为「顶层不得再出现任何 capability_* 文件」。
 """
 import glob
 import os
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-
-FREEZE_TOP_CAPABILITY = frozenset({
-    "capability_activation_contract.py", "capability_activation_proof.py",
-    "capability_authorization_fact.py", "capability_evolution_contract.py",
-    "capability_execution_dispatch.py", "capability_health_evidence_linker.py",
-    "capability_intent_fact.py", "capability_runtime_consumption.py",
-    "capability_runtime_evidence_integration.py", "capability_runtime_evidence_reconciliation.py",
-    "capability_runtime_execution_ledger_reader.py", "capability_runtime_observation.py",
-    "capability_runtime_observation_store.py", "capability_runtime_workflow_snapshot.py",
-    "capability_staged_activation.py", "capability_suspend_revocation.py",
-})
 
 
 def _files(root: Path, pattern: str) -> set[str]:
@@ -28,7 +20,7 @@ def _files(root: Path, pattern: str) -> set[str]:
 
 def test_top_level_capability_layer_is_frozen():
     actual = _files(ROOT, "anima/capability_*.py")
-    assert actual == set(FREEZE_TOP_CAPABILITY), ("顶层 capability_* 集合漂移! 新能力代码必须进 anima/capability/。",)
+    assert actual == set(), ("顶层 capability_* 已全部归档且不得回填! 新能力代码必须进 anima/capability/。",)
 
 
 def test_capability_contracts_freeze_store_empty():

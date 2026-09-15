@@ -23,6 +23,8 @@ from .sticker import make_sticker_tools
 from .merge import make_merge_forward
 from .honor import make_group_honor
 from .agent_tools import register_agent_tools
+from .reminder import register_reminder_tools
+from .repo import register_repo_tools
 from .code_exec import make_code_exec_tool
 
 # ---------------------------------------------------------------------------
@@ -248,6 +250,7 @@ def register_all_builtin(registry, core=None) -> None:
         {"name": {"type": "string", "description": "目标用户 QQ 号或昵称"}},
         make_get_user_relations(core),
         min_level=LEVEL_USER,
+        priority=1,  # P0-1 记忆优先：成员关系优先于搜网
     ))
     registry.register(Tool(
         "get_member_facts",
@@ -255,6 +258,7 @@ def register_all_builtin(registry, core=None) -> None:
         {"name": {"type": "string", "description": "目标用户 QQ 号或昵称"}},
         make_get_member_facts(core),
         min_level=LEVEL_USER,
+        priority=1,  # P0-1 记忆优先
     ))
 
     registry.register(Tool(
@@ -266,6 +270,7 @@ def register_all_builtin(registry, core=None) -> None:
         tool_query_web_memory,
         required=["query"],
         min_level=LEVEL_USER,
+        priority=1,  # P0-1 记忆优先：本地网页记忆先于联网搜索
     ))
     registry.register(Tool(
         "web_search",
@@ -282,6 +287,7 @@ def register_all_builtin(registry, core=None) -> None:
         # M0.3.1 Pilot：唯一标注点。additive —— name / handler / min_level 均未变。
         capability_ids=[PILOT_CAPABILITY_ID],
         granted_scopes={"network": True},
+        priority=3,  # P0-1：联网是记忆未命中后的次选
     ))
     registry.register(Tool(
         "x_search",
@@ -370,11 +376,19 @@ def register_all_builtin(registry, core=None) -> None:
     # --- A3 新增：合并转发整理员 ---
     registry.register(make_merge_forward())
 
-    # --- A5 新增：群荣誉读者（只读）---
-    registry.register(make_group_honor())
-
     # --- 需要 core 的工具 ---
     if core is not None:
+        # A5 群荣誉读者（只读）。P2-4：此前被无条件注册、却调用不存在的
+        # `get_gateway()`（异常被吞），等于注册了一个 100% 失效的工具；
+        # 现与 social 系列一致改为需要 core 的真实通道访问。
+        registry.register(make_group_honor(core))
+
+        # P2-2：提醒（复用 P1-1 债账本，不另起一套存储）
+        register_reminder_tools(registry, core)
+
+        # P3-2：受控仓库读取 + 有依据的改进提案（OWNER + 私聊，配置可一键停用）
+        register_repo_tools(registry, core)
+
         # Phase 2：Owner/Admin 专属 Agent 通用工具（受护栏 + 审计门控）
         register_agent_tools(registry, core)
 
@@ -480,6 +494,7 @@ def register_all_builtin(registry, core=None) -> None:
                 "with_name": {"type": "string", "description": "另一个人（可选，查两人之间的关系）"},
             },
             make_get_user_relations(core), required=["name"], min_level=LEVEL_USER,
+            priority=1,  # P0-1 记忆优先
         ))
         registry.register(Tool(
             "get_member_facts",
@@ -490,6 +505,7 @@ def register_all_builtin(registry, core=None) -> None:
                 "limit": {"type": "integer", "description": "返回事实条数上限，默认 10"},
             },
             make_get_member_facts(core), required=["name"], min_level=LEVEL_USER,
+            priority=1,  # P0-1 记忆优先
         ))
         registry.register(Tool(
             "get_group_info",

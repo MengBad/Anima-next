@@ -82,3 +82,8 @@ _vps_verify.py
 _prod_accept.py
 _ssh_test.py
 _*.local.env
+tmp_ux/
+
+# 本地 git 事故备份（对象库损坏留证目录，禁止上传）
+.git.broken-*/
+.git.corrupt-*/

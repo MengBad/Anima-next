@@ -96,21 +96,41 @@ class TestQuirkSystem:
 
 class TestSeedRelations:
     def test_seed_owner_close(self, tmp_path):
-        """吴雨萌(1562290139) 初始 CLOSE"""
-        from anima.cognitive.relation import get_relation, Stage, _relation_engines
+        """注入的种子关系生效：主人 CLOSE（源码零内嵌真实个人信息）"""
+        from anima.cognitive.relation import (
+            get_relation, set_seed_relations, Stage, _relation_engines)
         _relation_engines.clear()
-        eng = get_relation(str(tmp_path))
-        rel = eng.get(1562290139)
-        assert rel.stage == Stage.CLOSE
-        assert rel.familiarity >= 0.8
+        set_seed_relations([
+            {"qq": 1111111111, "name": "主人A", "stage": "CLOSE",
+             "familiarity": 0.9, "trust": 0.95, "valence": 0.7,
+             "tags": ["开发者", "主人"]},
+        ])
+        try:
+            eng = get_relation(str(tmp_path))
+            rel = eng.get(1111111111)
+            assert rel.stage == Stage.CLOSE
+            assert rel.familiarity >= 0.8
+        finally:
+            set_seed_relations([])
+            _relation_engines.clear()
 
-    def test_seed_huachu_friend(self, tmp_path):
-        """华初(1371704917) 初始 FRIEND"""
-        from anima.cognitive.relation import get_relation, Stage, _relation_engines
+    def test_seed_friend_and_unconfigured_empty(self, tmp_path):
+        """朋友种子生效；未配置种子时零内嵌、关系从空白自然生长"""
+        from anima.cognitive.relation import (
+            get_relation, set_seed_relations, Stage, _relation_engines)
         _relation_engines.clear()
-        eng = get_relation(str(tmp_path))
-        rel = eng.get(1371704917)
-        assert rel.stage == Stage.FRIEND
+        set_seed_relations([
+            {"qq": 2222222222, "name": "朋友B", "stage": "FRIEND",
+             "familiarity": 0.6, "trust": 0.7, "valence": 0.4},
+        ])
+        try:
+            eng = get_relation(str(tmp_path))
+            assert eng.get(2222222222).stage == Stage.FRIEND
+        finally:
+            set_seed_relations([])
+            _relation_engines.clear()
+        eng2 = get_relation(str(tmp_path) + "_empty")
+        assert eng2.get(2222222222).stage == Stage.STRANGER
 
 
 # ---------------------------------------------------------------------------

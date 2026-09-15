@@ -28,11 +28,16 @@ class OwnerAgent:
         # 让 agent_tools._audit 能直接找到 AgentAuditor（否则工具审计会落到 core.audit）
         core.agent_auditor = self.auditor
         self.store = AgentTaskStore(persistence)
+        _cfg = getattr(core.config, "task_agent", None)
         self.executor = AgentExecutor(
             core, self.store,
             planner=TaskPlanner(getattr(core, "llm", None)),
             auditor=self.auditor,
             notify=self._notify,
+            verify_steps=bool(getattr(_cfg, "verify_steps", True)),
+            max_replans=getattr(_cfg, "max_replans", None),
+            parallel_steps=bool(getattr(_cfg, "parallel_steps", True)),
+            max_parallel=getattr(_cfg, "max_parallel", None),
         )
 
     async def _notify(self, task: AgentTask, message: str) -> None:

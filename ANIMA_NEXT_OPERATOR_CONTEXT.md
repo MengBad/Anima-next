@@ -1,3 +1,5 @@
+> [HISTORICAL] 本文档停更于 2026-08-10，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+
 # ANIMA_NEXT_OPERATOR_CONTEXT.md
 
 > 进入「接管 / 继承 / 运行维护」模式的一次性加载文件。

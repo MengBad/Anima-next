@@ -32,8 +32,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Mapping
 
-from anima.capability_activation_contract import PlanStatus
-from anima.capability_activation_proof import ActivationRecord
+from anima.capability.activation_contract import PlanStatus
+from anima.capability.activation_proof import ActivationRecord
 
 _NOT_ACTIVATED = PlanStatus.NOT_ACTIVATED
 _SYNTHETIC_ONLY = "synthetic-only"

@@ -330,6 +330,16 @@ class DesireSystem:
             self.persist()
         return satisfied
 
+    def mark_expressed(self, desire: Optional["Desire"], factor: float = 0.75) -> None:
+        """A1（队列③）：主动表达后部分释放强度并落盘——说过的欲望自然降温，
+        避免心跳反复念叨同一话题；降到阈值以下视为已满足。"""
+        if desire is not None and desire in self.desires:
+            desire.intensity = max(0.05, desire.intensity * factor)
+            if desire.intensity <= 0.1:
+                desire.resolved = True
+                desire.intensity = 0.0
+            self.persist()
+
     def get_active(self, min_intensity: float = 0.3) -> list[Desire]:
         """获取活跃的欲望列表（intensity >= min_intensity）。"""
         self.decay()
