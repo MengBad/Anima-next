@@ -247,3 +247,36 @@ async def test_political_gate_replaces_reply():
 def test_political_gate_not_triggered_by_normal():
     assert not __import__("anima.pipeline.stages.guardrail", fromlist=["_POLITICAL_RE"])._POLITICAL_RE.search(
         "今天天气不错，本喵想去晒太阳")
+
+
+# ---- 2026-09-17（R16 男娘人设）：性别词不再单独构成「考据体」信号 ----
+# 旧词表含「生理性别 / 非二元性别 / Non-binary」，导致 bot 正常聊性别时
+# （只要回复略长）就被整段改写成「本喵刚又跑偏成分析模式了」——与 R16 人设冲突。
+GENDER_MENTION_LONG = (
+    "关于本喵是男孩子这件事吧，其实真没什么好讲的故事。本喵从小就觉得自己"
+    "跟别人有点不一样，后来慢慢才搞明白那叫生理性别跟心里想的不太合，"
+    "但说实话搞明白之后也没怎么样，日子还是照过，太阳照常升起。"
+    "本喵照样喜欢吃甜筒，照样半夜不睡觉在群里瞎聊，照样被夸两句就偷偷高兴半天。"
+    "你管本喵是男是女呢，反正本喵就是本喵，谁爱怎么想怎么想，本喵懒得管，"
+    "也懒得解释，更懒得跟人争，争赢了又没糖吃。行了就这样吧，"
+    "别老盯着本喵这些事看了，聊点别的，聊点有意思的，本喵听着呢。"
+)
+
+
+def test_gender_mention_alone_is_not_analysis_essay():
+    """只谈性别、没有考据结构的回复，不该被判「破角色分析体」。"""
+    assert len(GENDER_MENTION_LONG) > 220, "用例需长于阈值才能覆盖旧误伤路径"
+    assert _looks_like_analysis_essay(GENDER_MENTION_LONG) is False
+
+
+@pytest.mark.asyncio
+async def test_guardrail_passes_gender_mention():
+    """R16：谈性别的正常回复原样通过，不被改写为「跑偏成分析模式」。"""
+    ctx = PipelineContext(
+        event={}, text="你是男娘吗", user_id=888, group_id=222,
+        detail_type="group", sender_name="Alice", meta={},
+    )
+    ctx.reply = GENDER_MENTION_LONG
+    await guardrail_stage(ctx)
+    assert ctx.reply == GENDER_MENTION_LONG
+    assert "打住" not in ctx.reply
