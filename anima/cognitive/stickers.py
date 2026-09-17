@@ -212,6 +212,8 @@ class StickerManager:
         self.phash_dedup = True           # 收集时用 pHash 近似去重（默认开）
         self.phash_threshold = 20         # pHash 汉明阈值
         self.smart_select = True          # 选图走 BM25+hybrid+embedding 加权随机（默认开，可配置关闭）
+        # 跨群白名单（fail-closed）：非空时只有列出的群能复用别群库存，见 _eligible
+        self.cross_group_allowlist: list[str] = []
 
     def apply_config(self, config: Any) -> None:
         """把运行时 StickerConfig 同步到长生命周期单例。"""
@@ -238,6 +240,10 @@ class StickerManager:
         self.forget_age_days = max(1.0, float(getattr(config, "forget_age_days", self.forget_age_days)))
         self.forget_used_max = max(0, int(getattr(config, "forget_used_max", self.forget_used_max)))
         self.forget_last_used_days = max(0.0, float(getattr(config, "forget_last_used_days", self.forget_last_used_days)))
+        self.cross_group_allowlist = [
+            str(x).strip() for x in (getattr(config, "cross_group_allowlist", None) or [])
+            if str(x).strip()
+        ]
         self._enforce_cap()
         if self.natural_forget_enabled:
             self.natural_forget()
@@ -722,8 +728,17 @@ class StickerManager:
                 continue
             # 默认 local 只在来源群使用。allow_cross_group 是上层 Owner 的明确
             # 全局覆写开关（兼容既有配置）；没有该开关时任何 scope 都不跨群。
-            if group_id is not None and not allow_cross_group and str(item.get("src_group")) != group_key:
-                continue
+            if group_id is not None and str(item.get("src_group")) != group_key:
+                if not allow_cross_group:
+                    continue
+                # scope=public 是 Owner 逐条给出的跨群许可（per-item），与
+                # cross_group_allowlist（per-group）互补；默认 local = fail-closed，
+                # 所以必须显式改过 scope 的图才走得通这条捷径。
+                if str(item.get("scope") or "local") != "public":
+                    # 显式白名单（fail-closed）：配置非空时，只有列出的群能用别群库存；
+                    # 未列出的群（含以后新加入的群）一律不放行。留空 = 沿用旧的全局语义。
+                    if self.cross_group_allowlist and group_key not in self.cross_group_allowlist:
+                        continue
             if (str(item.get("ext", "")).lower() == ".gif"
                     and now - self._last_gif_by_group.get(group_key, 0) < self.gif_min_interval_sec):
                 continue

@@ -763,7 +763,13 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             logger.warning("人格纠偏重试仍失败，使用本地降级回复")
             reply = "本喵刚刚被奇怪的话带跑偏啦，重新来：你想和本喵聊点什么？"
 
-    if not reply or reply.strip() in {"（想了一下不知道说什么...）", "（思考中...）"}:
+    # 占位/空串守卫：共用 `react.is_placeholder_reply()`（前缀判定）。
+    # 此前这里是把两个占位串写成一个**精确集合**再比对 —— 被
+    # `_apply_freshness_footer()` 追加脚注后不再命中 → 占位串原样发给用户（09-18）。
+    # 精确集合的比较形式故意不在本注释里复现：机制守卫会连同注释一起扫描，见
+    # `tests/test_react_placeholder_escape.py::test_no_exact_placeholder_set_guard_remains`。
+    from anima.agent.react import is_placeholder_reply
+    if is_placeholder_reply(reply):
         logger.warning("LLM 返回空或占位兜底")
         if re.search(r"(直播|天气|搜索|查一下|多少|几点|开了吗)", ctx.text or ""):
             ctx.reply = "本喵这边没查到准信喵，你换个说法或过会儿再问本喵一次？"

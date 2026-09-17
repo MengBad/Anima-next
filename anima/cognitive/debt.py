@@ -1,6 +1,8 @@
 """承诺追踪（P1-1 · debt）—— bot「说话算数」的结构化债账本。
 
-设计来源：``DESIGN_DEBT_TRACKING.md``。
+设计来源：``DESIGN_COMMITMENT_TRACKING.md``（2026-09-18 前名为 ``DESIGN_DEBT_TRACKING.md``；
+改名原因：本系统管的是"bot 对用户的**人际承诺**"，与工程债无关，原名易与
+``ENGINEERING_DEBT_LEDGER.md``（工程债台账）混淆）。
 
 与既有 ``_detect_promise_and_schedule`` 的关系（避免双轨）：
 后者在 generation 阶段检测 **bot 自己的回复** 里的承诺句，并建一条 agenda 主动跟进。

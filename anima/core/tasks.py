@@ -135,7 +135,7 @@ class OwnerTaskAgent:
             return await self._execute_locked(task)
 
     async def _execute_locked(self, task: Task) -> str:
-        from anima.agent.react import ReActLoop
+        from anima.agent.react import ReActLoop, is_placeholder_reply
 
         task = self.core.tasks.claim(task.id)
         messages = [{"role": "system", "content": (
@@ -155,6 +155,15 @@ class OwnerTaskAgent:
             loop = ReActLoop(self.core.llm, self.core.tools, max_rounds=8, permission_level=4)
             result = await loop.run(messages, temperature=0.2, max_tokens=800)
             result_text = str(result).strip()
+            # 🔴 空/占位结果**不是完成**（09-18）。这里原本对 ReAct 返回值没有任何占位守卫：
+            # 上游全空时占位串会进 `task.evidence`，同时任务被判 `completed` —— 假完成，
+            # 且污染后续「这任务做过了」的判断。判定与 ReAct 共用同一函数，避免各自腐烂。
+            if is_placeholder_reply(result_text):
+                task.status = "failed"
+                task.evidence.append("上游返回空结果（空串/占位），未取得任何结论")
+                task.updated_at = time.time()
+                self.core.tasks._save()
+                return "任务未取得结论：上游返回空结果，请稍后重试或换个更具体的问法。"
             trace = getattr(loop, "tool_trace", [])
             pending = any("等待主人审批" in str(item.get("result", "")) for item in trace)
             pending = pending or any(word in result_text for word in ("需要审批", "等待审批", "需要确认后"))

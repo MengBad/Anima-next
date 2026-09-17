@@ -1200,7 +1200,7 @@ fields:
       required: false
 
   debt_tracking:
-    # P1-1 承诺追踪（DESIGN_DEBT_TRACKING.md）；enabled=false 即完全关闭
+    # P1-1 承诺追踪（DESIGN_COMMITMENT_TRACKING.md；2026-09-18 前名 DESIGN_DEBT_TRACKING.md）；enabled=false 即完全关闭
     enabled:
       type: bool
       default: true

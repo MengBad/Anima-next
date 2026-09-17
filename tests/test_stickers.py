@@ -177,6 +177,54 @@ def test_sticker_is_group_scoped_by_default(tmp_path):
     assert mgr.pick("开心", group_id=1002, allow_cross_group=True)
 
 
+def _seed_group_stock(tmp_path, src_group=1001, label="开心"):
+    """在 src_group 里放一张带标签的可发图，返回其 key。"""
+    mgr = StickerManager(str(tmp_path), max_stickers=10, label_throttle_per_user=0)
+    f = _img(tmp_path, f"stock_{src_group}.jpg")
+    asyncio.run(mgr.collect([{"url": "", "file": f}], 123, src_group, "x"))
+    key = list(mgr._read_meta())[0]
+    meta = mgr._read_meta(); meta[key]["labels"] = [label]; mgr._write_meta(meta)
+    return mgr, key
+
+
+def test_cross_group_allowlist_fail_closed(tmp_path):
+    """跨群白名单：只有显式列出的群可用别群库存；未列出的群（含未来新群）fail-closed。"""
+    mgr, _ = _seed_group_stock(tmp_path, src_group=1001)
+    mgr.apply_config(type("_Cfg", (), {"cross_group_allowlist": ["1002"]})())
+    # 来源群自己永远可用
+    assert mgr.pick("开心", group_id=1001)
+    # 白名单内的群可跨
+    assert mgr.pick("开心", group_id=1002, allow_cross_group=True)
+    # 未列出的群即便全局开关打开也不可跨
+    assert mgr.pick("开心", group_id=1003, allow_cross_group=True) is None
+
+
+def test_cross_group_allowlist_empty_keeps_legacy_semantics(tmp_path):
+    """白名单留空 = 向后兼容：仍由 share_across_groups 全局开关决定。"""
+    mgr, _ = _seed_group_stock(tmp_path, src_group=1001)
+    mgr.apply_config(type("_Cfg", (), {"cross_group_allowlist": []})())
+    assert mgr.pick("开心", group_id=1003, allow_cross_group=True)
+    # 全局开关关闭时仍然隔离
+    assert mgr.pick("开心", group_id=1003) is None
+
+
+def test_scope_public_is_a_per_item_cross_group_licence(tmp_path):
+    """scope 是 Owner 逐条给出的跨群许可（per-item），与白名单（per-group）互补。
+
+    修复前 `_eligible` 完全不读 `scope` —— 收集时写入、`meme scope` 能改、
+    WebUI 有校验，但唯一的发送过滤点忽略它，等于一个假承诺。
+    """
+    mgr, key = _seed_group_stock(tmp_path, src_group=1001)
+    mgr.apply_config(type("_Cfg", (), {"cross_group_allowlist": ["1002"]})())
+    # 默认 scope=local：白名单外的群拿不到
+    assert mgr.pick("开心", group_id=1003, allow_cross_group=True) is None
+    # 标为 public 后，白名单外的群也能用
+    meta = mgr._read_meta(); meta[key]["scope"] = "public"; mgr._write_meta(meta)
+    assert mgr.pick("开心", group_id=1003, allow_cross_group=True)
+    # 但全局开关关闭时 scope=public 依旧不生效（fail-closed 不变）
+    assert mgr.pick("开心", group_id=1003) is None
+
+
 def test_cap_enforce(tmp_path):
     mgr = StickerManager(str(tmp_path), max_stickers=3, label_throttle_per_user=0)
     for i in range(5):

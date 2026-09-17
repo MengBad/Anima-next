@@ -238,3 +238,89 @@ async def test_legacy_danger_web_switch_delegates_to_allowlisted_explorer(tmp_pa
     danger = DangerBehaviors(core, SimpleNamespace(autonomous_web=True))
     await danger.maybe_autonomous_web(SimpleNamespace())
     assert called == [True]
+
+
+def _mixed_source_pool():
+    """模拟真实抓取结果：B 站带播放量，BBC / X 没有 popularity，X 的 url 全部相同。
+
+    标题刻意与话题词无词面交集，以便隔离「归一化 + 反垄断轮转」这个被测属性；
+    相关性优势（overlap）属于另一条正交规则，不该混进本组断言。
+    """
+    items = []
+    for i in range(20):
+        items.append(ExplorationSourceItem(
+            source="B站热门", title=f"热门条目{i}", summary="",
+            url=f"https://www.bilibili.com/video/BV{i}",
+            popularity=1_200_000 - i * 30_000,
+        ))
+    for i in range(20):
+        items.append(ExplorationSourceItem(
+            source="BBC 中文", title=f"海外报道{i}", summary="",
+            url=f"https://www.bbc.com/zhongwen/{i}", popularity=0,
+        ))
+    for i in range(8):
+        items.append(ExplorationSourceItem(
+            source="X时间线", title=f"推文内容{i}", summary=f"某条推文正文{i}",
+            url="https://x.com/home", popularity=0,
+        ))
+    return items
+
+
+def test_pick_item_does_not_let_play_count_monopolise_the_slot(tmp_path):
+    """popularity 跨来源不可比：B 站是播放量（log10 后 ≈0.6），BBC/维基/X 恒为 0。
+
+    修复前直接用原始 popularity 混在一起取 argmax，B 站结构性垄断唯一记忆槽
+    （实测「哔哩哔哩热门」「今日新闻热点」「具体好奇问题」三个主题全部选出 B 站）。
+    """
+    core = make_core(tmp_path)
+    manager = ExplorationManager(core, core.config.exploration)
+    items = _mixed_source_pool()
+
+    first = manager._pick_item("今日新闻热点", items)
+    assert first is not None
+    manager.state["last_picked_source"] = first.source
+    second = manager._pick_item("今日新闻热点", items)
+    assert second is not None and second.source != first.source
+
+
+def test_x_source_is_reachable_for_a_news_topic(tmp_path):
+    """反垄断轮转让位后，X 这种「无热度指标」的来源也能拿到记忆槽。"""
+    core = make_core(tmp_path)
+    manager = ExplorationManager(core, core.config.exploration)
+    manager.state["last_picked_source"] = "BBC 中文"
+
+    picked = manager._pick_item("今日新闻热点", _mixed_source_pool())
+
+    assert picked is not None and picked.source == "X时间线"
+
+
+def test_shared_url_source_gets_content_scoped_dedup_keys(tmp_path):
+    """X 抽取只返回推文文本、没有逐条链接，同一来源下 url 恒等。
+
+    若拿 url 当跨轮去重键，该来源一经命中就被永久屏蔽（实测 8/8 全被屏蔽）。
+    不共享 url 的来源保持按 url 去重，既有 seen 数据无需迁移。
+    """
+    core = make_core(tmp_path)
+    manager = ExplorationManager(core, core.config.exploration)
+    pool = _mixed_source_pool()
+    tweets = [it for it in pool if it.source == "X时间线"]
+
+    keys = {manager._item_key(it) for it in tweets}
+    assert len(keys) == len(tweets)
+    assert "https://x.com/home" not in keys
+    # 向后兼容：B 站等逐条有链接的来源，去重键仍是 url 本身
+    bili = [it for it in pool if it.source == "B站热门"][0]
+    assert manager._item_key(bili) == bili.url
+
+
+def test_stored_note_only_blocks_the_same_tweet(tmp_path):
+    """落库一条 X 笔记后，同来源的其他推文仍可入选（而不是整源失效）。"""
+    core = make_core(tmp_path)
+    manager = ExplorationManager(core, core.config.exploration)
+    tweets = [it for it in _mixed_source_pool() if it.source == "X时间线"]
+
+    manager._store_note("今日新闻热点", tweets[0], "摘要", None)
+    picked = manager._pick_item("今日新闻热点", tweets)
+
+    assert picked is not None
+    assert picked.title != tweets[0].title

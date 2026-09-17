@@ -633,19 +633,59 @@ class ExplorationManager:
             "consecutive_failures": int(prev.get("consecutive_failures", 0) or 0) + 1,
         }
 
+    # 抽取只返回文本、没有逐条链接的来源：同一来源下 url 恒等。这类来源不能拿 url
+    # 当跨轮去重键，否则该来源一经命中就被永久屏蔽（实测 8/8 全被屏蔽）。
+    # 新增同类来源时必须登记到这里。
+    _SHARED_URL_SOURCES = frozenset({"X时间线", "X搜索"})
+
+    @classmethod
+    def _item_key(cls, item: ExplorationSourceItem) -> str:
+        """跨轮去重键。逐条有链接的来源用 url（兼容既有 seen 数据，无需迁移）；
+        共享 url 的来源改用 url + 内容摘要的复合键。"""
+        if item.source in cls._SHARED_URL_SOURCES:
+            digest = hashlib.sha1(
+                f"{item.title}\x00{item.summary}".encode("utf-8")
+            ).hexdigest()[:16]
+            return f"{item.url}#{digest}"
+        return item.url
+
     def _pick_item(self, topic: str, items: list[ExplorationSourceItem]) -> ExplorationSourceItem | None:
         seen = self.state.setdefault("seen", {})
         tokens = _search_terms(topic)
+        rows = [
+            item for item in items
+            if item.title and item.url and self._item_key(item) not in seen
+        ]
+        if not rows:
+            return None
+        # popularity 在不同来源间不可比：B 站是播放量（log10 后 ≈0.6），BBC / 维基 /
+        # X 恒为 0。混在一起取 argmax 会让 B 站结构性垄断唯一记忆槽（实测「哔哩哔哩
+        # 热门」「今日新闻热点」「具体好奇问题」三个主题全部选出 B 站）。故先按来源
+        # 分组、在来源内做 log 后 min-max 归一，让各来源的候选站在同一量纲上比较。
+        by_source: dict[str, list[ExplorationSourceItem]] = {}
+        for item in rows:
+            by_source.setdefault(item.source, []).append(item)
+        # 反垄断：上一轮产出的来源本轮降权，避免单一来源连续霸占记忆槽。
+        last_source = str(self.state.get("last_picked_source") or "")
         ranked = []
-        for index, item in enumerate(items):
-            if not item.title or not item.url or item.url in seen:
-                continue
-            haystack = f"{item.title} {item.summary}".lower()
-            overlap = sum(1 for token in tokens if token in haystack)
-            popularity = math.log10(max(1, item.popularity)) / 10.0
-            source_bias = 0.15 if ("哔哩" in topic and item.source == "B站热门") else 0.0
-            source_bias += 0.15 if ("新闻" in topic and item.source != "B站热门") else 0.0
-            ranked.append((overlap * 0.35 + popularity + source_bias - index * 0.002, item))
+        for source, group in by_source.items():
+            logs = [math.log10(max(1, item.popularity)) for item in group]
+            low, high = min(logs), max(logs)
+            # 来源内按出现顺序（榜单名次）做微弱 tiebreak，不再用跨来源的绝对下标——
+            # 后者会系统性惩罚排在抓取列表后面的来源。
+            for ordinal, item in enumerate(group):
+                raw = math.log10(max(1, item.popularity))
+                popularity = 1.0 if high <= low else (raw - low) / (high - low)
+                haystack = f"{item.title} {item.summary}".lower()
+                overlap = sum(1 for token in tokens if token in haystack)
+                source_bias = 0.15 if ("哔哩" in topic and item.source == "B站热门") else 0.0
+                source_bias += 0.15 if ("新闻" in topic and item.source != "B站热门") else 0.0
+                source_penalty = 0.2 if (last_source and source == last_source) else 0.0
+                score = (
+                    overlap * 0.35 + popularity * 0.35 + source_bias
+                    - source_penalty - ordinal * 0.002
+                )
+                ranked.append((score, item))
         ranked.sort(key=lambda pair: pair[0], reverse=True)
         return ranked[0][1] if ranked else None
 
@@ -690,7 +730,8 @@ class ExplorationManager:
             value_score=round(score, 3), source_group_id=source_group_id,
         )
         self.state.setdefault("notes", []).append(asdict(note))
-        self.state.setdefault("seen", {})[item.url] = time.time()
+        self.state.setdefault("seen", {})[self._item_key(item)] = time.time()
+        self.state["last_picked_source"] = item.source
         return note
 
     def _resolve_desire(self, desire: Any) -> None:

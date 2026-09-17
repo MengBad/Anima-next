@@ -1,4 +1,4 @@
-"""P1-1 承诺追踪（Debt）回归测试 —— DESIGN_DEBT_TRACKING.md。
+"""P1-1 承诺追踪（Debt）回归测试 —— DESIGN_COMMITMENT_TRACKING.md（2026-09-18 前名 DESIGN_DEBT_TRACKING.md）。
 
 覆盖：时间解析 / 记账 / 状态机 / 完成取消信号 / 到期检查 / 落盘 / 空账不编造。
 """
