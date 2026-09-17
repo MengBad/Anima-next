@@ -324,8 +324,20 @@ def _decide_morning_dream_share(
     return (True, False)       # 抽中分享（成功后再标记）
 
 
-def _constitution_drive(mood_arousal, mood_valence, relation_depth=0.2, threat=0.0):
-    """T1.1 轻量宪法桥：用可见 runtime 信号沉淀最小 Memory → Constitution M1 链 → Drive dict。
+def _constitution_drive(mood_arousal, mood_valence, relation_depth=0.2, threat=0.0,
+                        memory=None):
+    """T1.1 轻量宪法桥：Memory → Constitution M1 链(Identity→Need→Affect→Drive) → Drive dict。
+
+    2026-09-18（B1，审计整改）：链首 Memory 改为**优先读取真实水合记忆**——调用方从
+    ``MemoryAuthority.snapshot_memory()`` 传入 ``memory``。仅当调用方显式传 None 时才退回
+    「现场合成替身 Memory」，且返回体用 ``memory_source``（``live`` / ``live-empty`` /
+    ``synthetic``）+ ``record_counts`` + ``identity_traits`` 如实标注来源，杜绝"链首是替身
+    却对外标称已接线"的静默（这是 2026-09-18 审计发现的第一条边替身问题）。
+
+    ⚠️ 已知边界（台账 D-13）：当前水合只产 ``episode``，而 ``derive_identity`` 只把 ``semantic``
+    的数值字段聚成 traits ⇒ 真实记忆下 ``identity_traits=0``、``need.urgency=0``，Drive 激活退化为
+    只由 Perception(novelty) 决定。故在 Reflection→Memory 闭环补齐前，接真记忆 ≈ 让门**更保守**
+    （fail-closed），不会凭空产生驱动。
 
     Constitution 只产出趋近/回避取向(Drive)，不改任何出站语言，只可能压制主动表达。
     任何一步失败返回 None(fail-closed)。
@@ -340,32 +352,45 @@ def _constitution_drive(mood_arousal, mood_valence, relation_depth=0.2, threat=0
         logger.debug("constitution 引擎不可用，跳过 Drive 桥", exc_info=True)
         return None
     try:
-        _mem = _C.Memory(
-            semantic=[_C.MemoryRecord(
-                kind="semantic",
-                content={"valence": round(float(mood_valence), 3),
-                         "arousal": round(float(mood_arousal), 3)},
-                salience=min(1.0, abs(float(mood_valence))),
-            )],
-            relations=[_C.MemoryRecord(
-                kind="relation",
-                content={"depth": round(float(relation_depth), 3)},
-                salience=min(1.0, float(relation_depth)),
-            )],
-        )
+        if memory is None:
+            # 显式替身回退：无 MemoryAuthority 时保持旧行为，但标注来源（不再伪装为真实记忆）
+            _mem = _C.Memory(
+                semantic=[_C.MemoryRecord(
+                    kind="semantic",
+                    content={"valence": round(float(mood_valence), 3),
+                             "arousal": round(float(mood_arousal), 3)},
+                    salience=min(1.0, abs(float(mood_valence))),
+                )],
+                relations=[_C.MemoryRecord(
+                    kind="relation",
+                    content={"depth": round(float(relation_depth), 3)},
+                    salience=min(1.0, float(relation_depth)),
+                )],
+            )
+            _src = "synthetic"
+        else:
+            # 真实记忆：只读快照，绝不改源（f(Memory) 契约：purity over 便利）
+            _mem = memory.snapshot() if hasattr(memory, "snapshot") else memory
+            _src = "live" if (_mem.episodes or _mem.semantic or _mem.relations) else "live-empty"
         _percept = _C.Perception(signals={
             "novelty": max(0.0, float(mood_arousal)),
             "threat": max(0.0, float(threat)),
         })
-        _drive = derive_drive(
-            derive_affect(derive_need(derive_identity(_mem)), _percept)
-        )
+        _identity = derive_identity(_mem)
+        _drive = derive_drive(derive_affect(derive_need(_identity), _percept))
         _ori = _drive.orientation
         return {
             "activated": bool(_drive.activated),
             "approach": float(_ori.get(_C.OrientationAxis.APPROACH, 0.0)),
             "avoid": float(_ori.get(_C.OrientationAxis.AVOID, 0.0)),
             "intensity": float(_ori.get(_C.OrientationAxis.INTENSITY, 0.0)),
+            "memory_source": _src,
+            "record_counts": {
+                "episodes": len(_mem.episodes),
+                "semantic": len(_mem.semantic),
+                "relations": len(_mem.relations),
+            },
+            "identity_traits": len(_identity.traits),
         }
     except Exception:
         logger.debug("Drive 推导失败，fail-closed 视为无驱动的主动", exc_info=True)
@@ -1190,8 +1215,11 @@ class Heartbeat:
             drive_origin = self._constitution_drive_snapshot(group_id)
             if drive_origin and not _drive_gate_ok(drive_origin):
                 logger.info(
-                    "[宪法Drive] 群%s 无趋近驱动(activated=%s approach=%s avoid=%s)，压制主动说话",
-                    group_id, drive_origin["activated"], drive_origin["approach"], drive_origin["avoid"],
+                    "[宪法Drive] 群%s 无趋近驱动(activated=%s approach=%s avoid=%s "
+                    "mem=%s traits=%s)，压制主动说话",
+                    group_id, drive_origin["activated"], drive_origin["approach"],
+                    drive_origin["avoid"], drive_origin.get("memory_source", "?"),
+                    drive_origin.get("identity_traits", "?"),
                 )
                 has_hook = False
         if subject is not None and has_hook:
@@ -1214,6 +1242,11 @@ class Heartbeat:
                                 approach=round(drive_origin["approach"], 3),
                                 avoid=round(drive_origin["avoid"], 3),
                                 intensity=round(drive_origin.get("intensity", 0.0), 3),
+                                # 2026-09-18（B1）：把链首来源与可达 trait 数一并留痕，
+                                # 使"接线是否真的接上"可审计（D-13 未闭合时 traits 恒 0）。
+                                memory_source=drive_origin.get("memory_source", "?"),
+                                identity_traits=int(drive_origin.get("identity_traits", 0) or 0),
+                                record_counts=drive_origin.get("record_counts", {}),
                             )
                         except Exception:
                             logger.exception("Drive trace 审计失败（已隔离）")
@@ -1431,7 +1464,12 @@ class Heartbeat:
     # ------------------------------------------------------------------
 
     def _constitution_drive_snapshot(self, group_id: int):
-        """汇集群级 today 信号 → 轻量宪法桥 → 带 gate_ok 的 Drive，供主动表达 trace。失败返回 None。"""
+        """汇集群级 today 信号 → 轻量宪法桥 → 带 gate_ok 的 Drive，供主动表达 trace。失败返回 None。
+
+        2026-09-18（B1）：链首改为读**真实水合记忆** ``core.memory_authority.snapshot_memory()``；
+        取不到时才退回合成的替身（并在 ``memory_source`` 里如实标注）。mood 标量仍作为
+        Perception(novelty/avoid) 输入——它们本来就是"此刻感知"，不是记忆。
+        """
         data_dir = str(getattr(self.core.config.persistence, "data_dir", "data"))
         arousal, valence = 0.2, 0.1
         try:
@@ -1442,7 +1480,15 @@ class Heartbeat:
         except Exception:
             logger.debug("Drive 桥 mood 读取失败，用默认", exc_info=True)
         threat = max(0.0, -valence)
-        d = _constitution_drive(arousal, valence, 0.2, threat)
+        memory = None
+        try:
+            _auth = getattr(self.core, "memory_authority", None)
+            if _auth is not None:
+                memory = _auth.snapshot_memory()
+        except Exception:
+            memory = None
+            logger.debug("Drive 桥 memory_authority 读取失败，退回合成替身", exc_info=True)
+        d = _constitution_drive(arousal, valence, 0.2, threat, memory=memory)
         if d:
             d["gate_ok"] = _drive_gate_ok(d)
         return d

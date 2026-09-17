@@ -137,6 +137,12 @@ class AutonomyConfig(BaseModel):
     proactive_grounding: bool = True
     # T1.1: Constitution(M1) Drive 门。True=主动表达须源于趋近 Drive(approach>avoid)才开口，
     #      且把 Drive 记入审计 trace。默认关(fail-closed,行为不变)。Constitution 只改意图/表达倾向，不改出站语言。
+    # 2026-09-18（B1，审计整改）：Drive 桥链首改为读**真实水合记忆**
+    #      (`core.memory_authority.snapshot_memory()`)，原为现场合成替身 Memory。
+    # 🔴 翻转此门之前必读：水合目前只产 `episode`，而 `derive_identity` 只把 `semantic`
+    #      的数值字段聚成 traits ⇒ 真实记忆下 `identity_traits == 0`、`need.urgency == 0`，
+    #      Drive 激活退化为只由 Perception(novelty > 0.75) 决定 = 绝大多数时候不开口。
+    #      先闭合 Reflection→Memory 闭环(工程债台账 D-13)，再开此门；否则等于自设压制。
     drive_gate: bool = False
     # 群最近一次人类发言距今 ≥ 该秒数，才考虑主动插话（避免对话正嗨时打断）。
     active_silence_min_sec: int = 300
@@ -295,12 +301,20 @@ class CapabilityLayerConfig(BaseModel):
     # 治理证据落盘目录（相对 persistence.data_dir；绝对路径按原样使用）。
     governance_data_dir: str = "governance"
 
-    # --- R5 PHASE 13：python.exec 受治理激活主开关（默认 OFF / fail-closed）------
+    # --- R5 PHASE 13：python.exec 受治理激活主开关（**代码默认** OFF / fail-closed）----
     # 仅当本开关为 True **且** capability_gateway_mode 为 True 时，python_exec
-    # provider 才会被注册进 CapabilityRegistry；生产两者皆 False → python.exec
-    # 完全不可达（双重 fail-closed）。本 R5 部署保持默认 False，不开放给用户。
+    # provider 才会被注册进 CapabilityRegistry。
+    # ⚠️ 2026-09-18 实测订正：旧注释称「生产两者皆 False → python.exec 完全不可达」，
+    #    **与生产实配不符**。生产 config.yaml 实际已置
+    #    capability_mode/capability_gateway_mode/governance_audit_enabled/python_exec_enabled
+    #    四项为 true（owner 授权，代码留痕见 anima/tools/__init__.py:193「R5 PHASE 13
+    #    re-open (owner-authorized 2026-08-15)」）⇒ provider **已注册且 owner 可达**。
+    #    实测使用量为 0（resolution 事件全为 search.web；审计/日志 0 命中）。
+    #    注意：空 pilot_capability_allowlist **挡不住 python.exec**（见 tools/__init__.py:194）。
+    #    真实门 = gateway 四道 fail-closed 门 + provider 的 owner-only 边界。
+    #    详见 reports/2026-09-18_phase_a_honesty_pass.md A2 节。
     python_exec_enabled: bool = False
-    # 激活参数（仅在 python_exec_enabled=True 时生效；本 R5 部署不触发）。
+    # 激活参数（仅在 python_exec_enabled=True 时生效）。
     python_exec_permission_level: int = 2
     python_exec_require_audit: bool = True
 
@@ -345,6 +359,23 @@ class StickerConfig(BaseModel):
     send_allowlist: list[str] = []
     send_blocklist: list[str] = []
     share_across_groups: bool = False   # 默认仅在来源群复用，跨群需显式开启
+    # 跨群白名单（fail-closed）：非空时，即便 share_across_groups=True，也只有列出的群
+    # 能用别群的库存；未列出的群（含以后新加入的群）一律不放行。留空 = 沿用全局开关语义。
+    cross_group_allowlist: list[str] = []
+
+    @field_validator("cross_group_allowlist", mode="before")
+    @classmethod
+    def _coerce_cross_group_allowlist(cls, v):
+        """YAML 里 `[727631526]` 会被解析成 int 列表，群号一律按字符串归一。
+
+        不加这层会把一个未加引号的数字变成 ValidationError，而配置加载失败
+        会让整个服务起不来（2026-09-17 实际发生过一次）。
+        """
+        if v is None:
+            return []
+        if isinstance(v, (str, int, float)):
+            v = [v]
+        return [str(x).strip() for x in v if str(x).strip()]
     always_atmosphere: list[str] = ["humorous", "casual"]  # 允许带图的群氛围
     recent_window: int = 4          # 同一群最近 N 张不重复（候选不足时允许复用）
     gif_min_interval_sec: int = 1800  # 同一群动图最小间隔，避免刷屏
@@ -650,7 +681,7 @@ class MemoryCompressionConfig(BaseModel):
 
 
 class DebtTrackingConfig(BaseModel):
-    """P1-1 承诺追踪（DESIGN_DEBT_TRACKING.md）。
+    """P1-1 承诺追踪（DESIGN_COMMITMENT_TRACKING.md；2026-09-18 前名为 DESIGN_DEBT_TRACKING.md）。
 
     ``enabled=false`` → 不记账、不提醒、不注入，完全退化为无债状态（一键回滚）。
     ``keyword_only_mode`` 默认 true：只走关键词漏斗，零 LLM 成本、零额外延迟。
