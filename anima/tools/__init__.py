@@ -35,6 +35,157 @@ _TOOL_INTERNAL_MARKERS = (
 )
 _SAFE_TOOL_FAILURE = "工具暂时不可用，未获得可验证结果。"
 
+# --- P0（2026-09-18）：失败结果的「原因保留」通道 ---------------------------------
+# 问题（生产实测）：x_search 额度用尽时 `x_browser.search()` 毫秒级返回
+# `note="今日搜索额度已用尽"`（不启动浏览器 → 零日志），但该串命中上面
+# `_TOOL_FAILURE_PREFIXES` 里的 "X 搜索未完成" → 被 normalize 整句折叠成
+# `_SAFE_TOOL_FAILURE`。模型因此**分不清**「额度用完，次日自动恢复」与
+# 「接口真挂了（故障）」，只能对用户说「推特检索接口挂了调不通」——错误归因。
+#
+# 机制：工具用 `tool_unavailable(<原因码>)` 构造失败结果，形态固定为
+# `工具暂时不可用（原因：<原因码>）`；normalize 见到**白名单内的原因码**原样放行。
+#
+# 语义零变更（刻意如此）：
+#   * 该串仍以 "工具暂时不可用" 开头 → `tool_result_ok()` 仍为 False
+#     → 审计 / 遥测 / `reply_quality.tool_failures` 口径逐字节不变；
+#   * governance `OutcomeNormalizer._FAILURE_PREFIXES` 同样含该前缀 → 仍归 FAILURE。
+# 即：**只增加「模型可见文本的信息量」，不改变任何成功/失败判定**。
+#
+# 安全边界：白名单只收「行为性、可对外」的原因码；**异常文本 / 堆栈 / 内部标识
+# 永不入内**；非白名单原因一律退化为通用串（fail-closed）。
+_TOOL_UNAVAILABLE_PREFIX = "工具暂时不可用（原因："
+_TOOL_UNAVAILABLE_SUFFIX = "）"
+
+TOOL_REASON_X_DISABLED = "X 浏览器未启用"
+TOOL_REASON_X_QUOTA_SEARCH = "X 搜索今日额度已用尽，次日 00:00 自动恢复"
+TOOL_REASON_X_QUOTA_TIMELINE = "X 时间线今日额度已用尽，次日 00:00 自动恢复"
+TOOL_REASON_X_RISK_COOLDOWN = "X 触发风控冷却，稍后自动恢复"
+TOOL_REASON_X_EMPTY_RENDER = "X 页面未渲染出内容，稍后重试"
+TOOL_REASON_X_NOT_LOGGED_IN = "X 登录态失效，需重新登录"
+
+_TOOL_REASON_WHITELIST = frozenset({
+    TOOL_REASON_X_DISABLED,
+    TOOL_REASON_X_QUOTA_SEARCH,
+    TOOL_REASON_X_QUOTA_TIMELINE,
+    TOOL_REASON_X_RISK_COOLDOWN,
+    TOOL_REASON_X_EMPTY_RENDER,
+    TOOL_REASON_X_NOT_LOGGED_IN,
+})
+
+
+def tool_unavailable(reason: str) -> str:
+    """构造「可保留原因」的失败结果（P0，2026-09-18）。
+
+    ``reason`` 必须取自 ``TOOL_REASON_*`` 白名单；否则（含任何异常文本）退化为
+    ``_SAFE_TOOL_FAILURE``——原因只留在工具自己的日志里，不进模型上下文。
+    """
+    reason = str(reason or "").strip()
+    if reason not in _TOOL_REASON_WHITELIST:
+        return _SAFE_TOOL_FAILURE
+    return _TOOL_UNAVAILABLE_PREFIX + reason + _TOOL_UNAVAILABLE_SUFFIX
+
+
+# --- 09-18 fail-open 审计：失败判定「完备化」----------------------------------------
+# 起因：`_TOOL_FAILURE_PREFIXES` 是**前缀允许清单**，而工具失败文本是自由散文
+# （各 handler 自己拼的中文句子）。09-18 对**全部注册点**做 AST 审计（解析每个
+# ``Tool(...)`` 的 handler → 扫其 return 字面量 → 与 ``tool_result_ok()`` 对表），
+# 实测 **47 处「正在报告失败却被判成功」**，横跨 9 个文件（其中 45 处可解析到具体
+# 工具名，共 26 个工具；另 2 处注册点的 handler 是动态表达式）。复现：
+# ``.workbuddy/tmp/audit_full.py`` → 对表 ``tool_result_ok()`` → FAIL-OPEN 计数。
+#
+# 这不是文案问题 —— ``ok`` 是真实控制流：
+#   * ``anima/agent/react.py:223`` → ``_FRESHNESS_TOOLS`` 门控 + 工具轨迹；
+#   * ``anima/agent/executor.py:412`` → 判定一个 ``AgentTask`` 步骤**是否成功**。
+#     被沙箱护栏**拒绝**的 ``agent_*`` 步骤此前被当作「成功结果」返回（安全相关）。
+#
+# 红线：``_TOOL_FAILURE_PREFIXES`` **逐字节未动**。
+#   F8.11 的 R1 把该元组冻结给「治理 slice」——那是防止治理为了自家分类去改动
+#   模型面契约。本次改动的起因是**工具层自身缺陷**（不是治理需要），故不改原元组，
+#   新增独立元组，使两处改动各自可追溯、可回滚。
+#
+# 另一条不可让步的边界（P0 教训）：**判定修正不得顺带夺走模型看到的失败原因**。
+# 这些串此前以「成功」身份**原样**进入模型上下文；若修判定时一并折叠成
+# ``_SAFE_TOOL_FAILURE``，模型会从「知道为什么」退化为「只知道失败了」——反向回归。
+# 故 ``normalize_tool_result()`` 对本文件的失败形态**原样放行**（见该函数）。
+_TOOL_FAILURE_PREFIXES_EXT = (
+    # 全角冒号：原表只收了 ASCII "错误:"，而 6 处 return 用全角 "错误："。
+    "错误：",
+    # 同一形态的前缀变体（capability.py:64 动态能力工具的 handler）
+    "内部错误：",
+    # 以下逐条对应一个真实可达的 return（file:line 为审计锚点）
+    "计算出错",              # system.py:37    calculate
+    "搜索时出错了",           # web.py:412      web_search（治理侧注册表已收，工具侧漏收）
+    "生图失败",              # owner.py:64     generate_image
+    "改图失败",              # owner.py:93     edit_image
+    "整理失败",              # merge.py:47     merge_forward
+    "查询关系失败",           # social.py:235   get_user_relations
+    "创建 SkillDraft 失败",   # owner.py:23     propose_skill_draft
+    "列目录失败",             # repo.py:60      repo_list
+    "读取失败",              # repo.py:72      repo_read
+    "搜索失败",              # repo.py:81      repo_grep
+    "[self_code] 执行异常",   # owner.py:48     self_code
+    "B 站视频理解功能未启用",   # bilibili.py:285 bilibili_read
+    "读取 B 站视频失败",       # bilibili.py:418,475
+    "下载字幕失败",           # bilibili.py:448
+    "运行状态暂时不可用",      # system.py:110   get_runtime_status
+    "群信息查询不可用",        # social.py:297   get_group_info
+    "群成员查询不可用",        # social.py:134   get_group_members
+    "戳一戳功能不可用",        # social.py:36    group_poke
+    "禁言功能不可用",          # social.py:334   group_ban
+    "踢人功能不可用",          # social.py:352   group_kick
+    "修改名片功能不可用",      # social.py:318   set_group_card
+    "表情检索暂不可用",        # sticker.py:101  sticker 检索
+    "图片数据无法解析",        # sticker.py:151  sticker 偷取
+    "网页探查失败",           # skills/registry.py:154
+    "当前未配置 LLM",         # skills/registry.py:168
+    "技能不可用",             # skills/registry.py:214
+    "群荣誉榜查询不可用",      # honor.py:65     group_honor
+    "群荣誉榜查询出错",        # honor.py:80
+    "没能从 OneBot 取到",     # honor.py:83（后续为动态群号）
+)
+
+# 「失败族」：整族默认失败，族内**成功形态**显式列出 —— 这是 **fail-closed**
+# 写法：族内以后新增的失败串会被自动捕获，无需再逐条补清单。
+#   `[agent] ` = agent_tools.py 的 6 个 OWNER 沙箱工具；实测 21 条 `[agent] ` 返回
+#   里**只有** `已写入` 是成功（其余为参数缺失 / 路径拒绝 / 护栏拒绝 / 超时 / 执行失败）。
+#   族内若新增成功形态（如 `已删除`）会被判失败 —— 这是刻意的保守方向：宁可少记一次
+#   成功，也不放过一次「被拒绝却当成成功」。
+_TOOL_FAILURE_FAMILIES: "tuple[tuple[str, tuple[str, ...]], ...]" = (
+    ("[agent] ", ("[agent] 已写入",)),
+)
+
+# 固定前缀表达不了的动态失败形态（各只有一个可达点，逐条注明）
+# 刻意**不**用裸 `失败` 作词尾匹配：那会把 web_search / agent_http 返回的**网页正文**
+# 中恰好以「失败」结尾的片段误判为失败。只收这两个精确词尾。
+_TOOL_FAILURE_SUFFIXES = ("信息失败", "列表失败")   # social.py:304 / social.py:164
+_TOOL_FAILURE_INFIXES = ("接口暂时不可用",)         # bilibili.py:233 部分结果 + 明确降级指示
+
+
+def _has_internal_marker(text: str) -> bool:
+    """文本含内部实现细节（堆栈 / 沙箱 errno 等）→ 永不入模型上下文。"""
+    lower = text.lower()
+    return any(m.lower() in lower for m in _TOOL_INTERNAL_MARKERS)
+
+
+def _matches_legacy_failure(text: str) -> bool:
+    """命中**冻结**的旧前缀表（命中即沿用 P0-1 的折叠语义）。"""
+    lower = text.lower()
+    return any(lower.startswith(p.lower()) for p in _TOOL_FAILURE_PREFIXES)
+
+
+def _matches_extended_failure(text: str) -> bool:
+    """命中 09-18 补齐的失败形态（前缀族 / 族 / 后缀 / 中缀）。"""
+    lower = text.lower()
+    if any(lower.startswith(p.lower()) for p in _TOOL_FAILURE_PREFIXES_EXT):
+        return True
+    for family, ok_forms in _TOOL_FAILURE_FAMILIES:
+        if text.startswith(family) and not any(text.startswith(ok) for ok in ok_forms):
+            return True
+    if any(text.endswith(s) for s in _TOOL_FAILURE_SUFFIXES):
+        return True
+    return any(m in text for m in _TOOL_FAILURE_INFIXES)
+
+
 # F8.9.1：受治理 Gateway pilot 集合（精确豁免，非泛化机制）。
 # 仅此清单内的 capability 在 ``capability_gateway_mode=ON`` 时走 Line B Gateway；
 # 其余（含其余 mixed-mode capability）仍走 Line A。扩展新成员须显式追加并走独立 slice，
@@ -111,18 +262,55 @@ def get_call_context() -> dict[str, Any]:
 
 
 def tool_result_ok(result: object) -> bool:
+    """工具结果是否算「成功」= 非空 ∧ 不含内部细节 ∧ 未命中任何失败注册表。
+
+    失败注册表共四层（历史顺序，语义互不重叠）：
+      1. ``_TOOL_FAILURE_PREFIXES``          —— 冻结的旧前缀（F8.11 R1，逐字节不动）
+      2. ``_TOOL_FAILURE_PREFIXES_EXT``      —— 09-18 审计补齐的前缀
+      3. ``_TOOL_FAILURE_FAMILIES``          —— 族前缀 + 族内成功例外（fail-closed）
+      4. ``_TOOL_FAILURE_SUFFIXES/_INFIXES`` —— 固定前缀表达不了的动态形态
+    """
     text = str(result or "").strip()
-    lower = text.lower()
-    return bool(text) and not any(lower.startswith(prefix.lower()) for prefix in _TOOL_FAILURE_PREFIXES) \
-        and not any(marker.lower() in lower for marker in _TOOL_INTERNAL_MARKERS)
+    if not text:
+        return False
+    if _has_internal_marker(text) or _matches_legacy_failure(text):
+        return False
+    return not _matches_extended_failure(text)
 
 
 def normalize_tool_result(result: object) -> tuple[str, bool]:
-    """统一工具出站契约：失败细节留日志，模型只得到稳定、可验证的状态。"""
+    """统一工具出站契约：内部细节留日志，模型只得到安全、**有信息量**的状态。
+
+    分支顺序即优先级：
+      1. 含内部细节（堆栈 / errno / unshare 等）→ 折叠为 ``_SAFE_TOOL_FAILURE``；
+      2. 命中**冻结**的旧前缀：P0-1 白名单原因码原样放行，其余折叠
+         —— 与改造前**逐字节一致**（改造不改旧语义）；
+      3. 命中 09-18 补齐的失败形态 → ``ok=False``，但**文本原样返回**。
+
+    第 3 条的理由：这些是作者手写、可对模型的中文提示，此前以「成功」身份原样进入
+    上下文。若修判定时顺带折叠，模型会从「知道为什么」退化为「只知道失败了」——
+    等于用修 bug 换来一次信息量回归。故**只修判定，不动文本**。
+    """
     text = str(result or "").strip()
-    if not tool_result_ok(text):
+    if not text:
         return _SAFE_TOOL_FAILURE, False
+    if _has_internal_marker(text):
+        return _SAFE_TOOL_FAILURE, False
+    if _matches_legacy_failure(text):
+        kept = _kept_reason(text)
+        return (kept, False) if kept is not None else (_SAFE_TOOL_FAILURE, False)
+    if _matches_extended_failure(text):
+        return text, False
     return text, True
+
+
+def _kept_reason(text: str) -> Optional[str]:
+    """白名单原因透传；非白名单返回 ``None``（调用方折叠为通用失败串）。"""
+    if not (text.startswith(_TOOL_UNAVAILABLE_PREFIX)
+            and text.endswith(_TOOL_UNAVAILABLE_SUFFIX)):
+        return None
+    reason = text[len(_TOOL_UNAVAILABLE_PREFIX):-len(_TOOL_UNAVAILABLE_SUFFIX)]
+    return text if reason in _TOOL_REASON_WHITELIST else None
 
 
 # 工具所需最低权限等级
@@ -408,9 +596,13 @@ class ToolRegistry:
         bootstrap_filesystem_read(registry, executor=self._make_filesystem_executor())
         bootstrap_filesystem_write(registry, executor=self._make_filesystem_write_executor())
         bootstrap_search_web(registry, executor=self._make_search_web_executor())
-        # R5 PHASE 13：python.exec 受治理 provider（默认 OFF / fail-closed）。
+        # R5 PHASE 13：python.exec 受治理 provider（**代码默认** OFF / fail-closed）。
         # 仅当 capability_layer.python_exec_enabled=True 且本网关已构建（capability_gateway_mode=True）
-        # 时才注册；生产两者皆 False → 本 bootstrap 不执行 → python.exec 完全不可达。
+        # 时才注册。
+        # ⚠️ 2026-09-18 实测订正：旧注释称「生产两者皆 False → 本 bootstrap 不执行」，
+        #    **与生产实配不符**：生产两项皆 true ⇒ 本分支**确实执行**，provider 已注册。
+        #    另注意：本 provider 非 capability_only，故**不经 pilot allowlist 门**
+        #    （见上方 :194-195），空 allowlist 不能阻止它。
         _pyexec_cfg = getattr(self.core.config, "capability_layer", None) if self.core else None
         _pyexec_on = bool(getattr(_pyexec_cfg, "python_exec_enabled", False)) if _pyexec_cfg else False
         if _pyexec_on:

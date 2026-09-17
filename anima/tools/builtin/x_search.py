@@ -25,6 +25,45 @@ logger = logging.getLogger("anima.tools.x_search")
 _RELEVANCE_TIMEOUT = 20.0
 
 
+def _note_to_reason(note: str) -> str:
+    """把 x_browser 的失败 ``note`` 映射成**白名单原因码**（P0，2026-09-18）。
+
+    背景：额度用尽时 ``x_browser.search()`` 毫秒级返回（不启动浏览器、零日志），
+    ``note`` 本来带着真实原因，但整句会被 ``anima.tools.normalize_tool_result()``
+    折叠成通用串 ``"工具暂时不可用，未获得可验证结果。"`` —— 模型因此分不清
+    「额度用完（次日恢复）」和「接口挂了」，对用户给出错误归因。
+
+    本函数只映射「**已定性、可对外**」的原因；未命中（尤其异常文本
+    ``"X 搜索异常: ..."``）返回 ``""``，交由工具层折叠 —— 异常细节只留在日志。
+    """
+    note = str(note or "")
+    if not note:
+        return ""
+    # 局部导入：与本文件既有 `get_call_context` 用法一致，避免 builtin ↔ tools 的
+    # 模块级导入顺序耦合。
+    from anima.tools import (
+        TOOL_REASON_X_DISABLED,
+        TOOL_REASON_X_EMPTY_RENDER,
+        TOOL_REASON_X_NOT_LOGGED_IN,
+        TOOL_REASON_X_QUOTA_SEARCH,
+        TOOL_REASON_X_QUOTA_TIMELINE,
+        TOOL_REASON_X_RISK_COOLDOWN,
+    )
+
+    for needle, reason in (
+        ("今日搜索额度已用尽", TOOL_REASON_X_QUOTA_SEARCH),
+        ("今日时间线额度已用尽", TOOL_REASON_X_QUOTA_TIMELINE),
+        ("x_browser 未启用", TOOL_REASON_X_DISABLED),
+        ("X 浏览器未启用", TOOL_REASON_X_DISABLED),
+        ("未登录态", TOOL_REASON_X_NOT_LOGGED_IN),
+        ("风控拦截", TOOL_REASON_X_RISK_COOLDOWN),
+        ("未渲染出内容", TOOL_REASON_X_EMPTY_RENDER),
+    ):
+        if needle in note:
+            return reason
+    return ""
+
+
 async def _download_image(url: str, dest_dir: Path, proxy: str | None = None) -> str | None:
     """下载单张图片到本地，返回本地路径；失败返回 None。
 
@@ -436,14 +475,27 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
     try:
         session = get_x_browser()
         if session is None or not session.enabled:
-            return "X 浏览器未启用（config.x_browser.enabled=false）。"
+            # P0（09-18）：与「额度用尽 / 风控冷却」同属**已定性原因**，保留给模型。
+            # 旧行为返回裸串 → 命中失败前缀 → 折叠成通用串 → 模型又归因成「接口挂了」。
+            from anima.tools import TOOL_REASON_X_DISABLED, tool_unavailable
+
+            return tool_unavailable(TOOL_REASON_X_DISABLED)
         res = await session.search(query, limit=limit, fresh=fresh, images_only=want_images)
     except Exception as e:  # noqa: BLE001
         logger.warning("x_search 调用失败（已隔离）: %s", e)
         return f"X 搜索失败：{e}"
 
     if not res.get("ok"):
-        note = res.get("note", "")
+        note = str(res.get("note", "") or "").strip()
+        if note:
+            logger.info("x_search 未完成: %s", note)
+        # P0（09-18）：已定性的原因（额度/未启用/登录态/风控/空壳）保留给模型；
+        # 未定性的 note 走老路径，由工具层折叠为通用串，不泄漏内部细节。
+        reason = _note_to_reason(note)
+        if reason:
+            from anima.tools import tool_unavailable
+
+            return tool_unavailable(reason)
         return f"X 搜索未完成：{note}" if note else "X 搜索未完成（未知原因）。"
 
     tweets = res.get("tweets", [])

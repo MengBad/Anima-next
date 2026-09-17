@@ -85,6 +85,15 @@ class LLMClient:
         self.last_failover_at = 0.0
         self.last_failover_from = ""
         self.last_failover_to = ""
+        # 「HTTP 200 但补全为空」= 上游降级。它**不是**成功（旧行为把它当成功 →
+        # fallback_models 永无机会、熔断器不计数 → 用户看到硬编码罐头话术）。
+        # 计数独立于账本：账本只在最终成功/失败时记一行，若不单独计数，这种降级
+        # 一旦被备用模型接住就从遥测里彻底消失。
+        self.empty_completion_count = 0
+        self.last_empty_completion_at = 0.0
+        self.last_empty_completion_model = ""
+        # 本次候选模型是否以「200-空」告终（`_post` 据此放行 failover）。
+        self._empty_completion = False
 
     def set_usage_ledger(self, ledger: UsageLedger | None) -> None:
         self.usage_ledger = ledger
@@ -499,6 +508,51 @@ class LLMClient:
     def _is_failoverable_status(status: int | None) -> bool:
         return status is None or status in {408, 409, 425, 429, 500, 502, 503, 504}
 
+    @staticmethod
+    def _is_empty_completion(data: Any) -> bool:
+        """判定「HTTP 200 但补全为空」——上游降级，必须可 failover。
+
+        判定为空的形态（全部实测自生产 09-17 的 25 次零输出）：
+          * 无 ``choices`` 字段，或 ``choices`` 为空列表；
+          * 首个 choice 的 ``message`` 里 ``content`` 缺失/``None``/纯空白，
+            **且**没有任何 ``tool_calls`` / ``function_call``；
+          * 只有 ``reasoning_content`` 而 ``content`` 为空 —— 调用方（``_request`` /
+            ``_request_structured``）只读 ``content``，对用户而言照样是空回复。
+
+        刻意**不**判为空（fail-open，保持原行为）：
+          * ``data`` 非 dict、``choices[0]`` 非 dict、``message`` 非 dict —— 协议变体
+            无从判定，宁可当成功也不误伤成失败；
+          * 带 ``tool_calls`` 的空 ``content`` —— 这是**合法**的（模型在本轮只发工具调用）。
+
+        注意：本方法**只**看响应体形状，不改 ``last_status`` —— 遥测里的 HTTP 码
+        必须保持真实（200 就是 200），降级由 ``empty_completion_count`` 单独承载。
+        """
+        if not isinstance(data, dict):
+            return False
+        choices = data.get("choices")
+        if not isinstance(choices, list) or not choices:
+            return True
+        first = choices[0]
+        if not isinstance(first, dict):
+            return False
+        message = first.get("message")
+        if not isinstance(message, dict):
+            return False
+        if message.get("tool_calls") or message.get("function_call"):
+            return False
+        content = message.get("content")
+        if isinstance(content, list):  # 多模态/分段 content
+            text = "".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict)
+            )
+        elif content is None:
+            text = ""
+        else:
+            text = str(content)
+        return not text.strip()
+
     async def _post(self, payload: dict[str, Any], headers: dict[str, str]) -> dict | None:
         """发送 LLM 请求。请求体超限(413)或预检超安全上限时，先剥离图片/截断历史
         降级重试一次，避免整条回复被静默丢弃。"""
@@ -544,6 +598,7 @@ class LLMClient:
         data: dict | None = None
         for position, candidate in enumerate(candidates):
             payload["model"] = candidate
+            self._empty_completion = False  # 逐候选重置，避免上一位的降级污染本位的判定
             data = await self._try_post(payload, headers)
             if data is None and self.last_status == 413:
                 # 413：先再压图片保留视觉，再不行才剥离图片/截断历史。
@@ -575,6 +630,11 @@ class LLMClient:
                 self.circuit_open_until = 0.0
                 await self._record_usage(payload, data, started, retry_start, "ok")
                 return data
+            # 200-空：`last_status` 保持真实的 200，但补全为空属上游降级 → 必须换候选
+            # 模型。`_is_failoverable_status()` 只看 HTTP 码（200 不在可重试集合里），
+            # 在这里显式放行，否则 `fallback_models` 永远等不到机会。
+            if self._empty_completion:
+                continue
             # 鉴权、参数、载荷等非瞬态问题切模型没有意义，也不能无限尝试。
             if not self._is_failoverable_status(self.last_status):
                 break
@@ -648,6 +708,22 @@ class LLMClient:
                         except (aiohttp.ContentTypeError, ValueError) as exc:
                             self._set_error(f"invalid_json:{type(exc).__name__}")
                             return None
+                        if self._is_empty_completion(data):
+                            # 200-空 = 上游降级，**不是**成功。刻意不在此消耗原地重试：
+                            # 同一模型 + 同一 prompt 复现同一退化的概率高，代价却是整轮
+                            # 延迟（retries × (调用 + 退避)）；直接判本次候选失败，交给
+                            # `_post` 换下一个候选模型——成本上界 = +1 次调用/候选。
+                            self._empty_completion = True
+                            self.empty_completion_count += 1
+                            self.last_empty_completion_at = time.time()
+                            self.last_empty_completion_model = str(payload.get("model") or "")
+                            self._set_error("empty_completion")
+                            logger.warning(
+                                "LLM 返回 HTTP 200 但补全为空（无 content 且无 tool_calls）："
+                                "model=%s，判定为上游降级，本次候选不作为成功，改试下一个候选模型",
+                                payload.get("model"),
+                            )
+                            return None
                         self.last_error = ""
                         self.last_success_at = time.time()
                         return data
@@ -717,6 +793,9 @@ class LLMClient:
             "circuit_open_count": self.circuit_open_count,
             "fallback_models": list(self.fallback_models),
             "failover_count": self.failover_count,
+            "empty_completion_count": self.empty_completion_count,
+            "last_empty_completion_at": self.last_empty_completion_at or None,
+            "last_empty_completion_model": self.last_empty_completion_model,
             "last_failover_at": self.last_failover_at or None,
             "last_failover_from": self.last_failover_from,
             "last_failover_to": self.last_failover_to,

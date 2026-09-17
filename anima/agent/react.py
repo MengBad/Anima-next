@@ -48,6 +48,29 @@ _DATE_TOKEN_RE = re.compile(
     r"\d{4}-\d{2}-\d{2}|\d{1,2}[:：]\d{2}",
 )
 
+#: 内部占位串 —— **不是内容**，绝不允许出现在任何消费方拿到的结果里。
+#: `（想了一下不知道说什么...）` 目前**没有任何产生点**（全库只剩守卫在引用它），
+#: 保留只为兼容仍在轮转的旧回复/旧日志，**不要删**。
+_PLACEHOLDER_REPLIES = ("（思考中...）", "（想了一下不知道说什么...）")
+
+
+def is_placeholder_reply(text: object) -> bool:
+    """判定「非内容」占位串（空串同样算非内容）。
+
+    🔴 用**前缀**判定，**不是**精确相等 —— 这是 09-18 缺陷的核心教训：
+    占位串可能被**追加**装饰（典型是 `_apply_freshness_footer()` 直接拼时效脚注，
+    因为它没有前导换行，结果是 `（思考中...）（以上来自联网检索；…）`），
+    而下游两处守卫当时都写成 `reply.strip() in {"（思考中...）", …}` 的**精确集合**，
+    装饰后**静默不命中** → 占位串原样直达用户。
+
+    装饰只可能**追加**（不会前置），所以前缀判定足够，且不会误伤正文里提到
+    这两个串的正常回答。共享此函数，避免各消费方各写一份判定再各自腐烂。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return True
+    return any(t.startswith(p) for p in _PLACEHOLDER_REPLIES)
+
 
 class ReActLoop:
     """ReAct 执行循环。"""
@@ -86,6 +109,10 @@ class ReActLoop:
         """
         if not self.freshness_footer or not content:
             return content
+        if is_placeholder_reply(content):
+            # 占位串不是回答，补时间口径毫无意义；更糟的是拼接后会变成
+            # `（思考中...）（以上来自联网检索；…）`，让下游「精确相等」守卫失效（09-18）。
+            return content
         if not self._freshness_tools_used:
             return content
         if _DATE_TOKEN_RE.search(content):
@@ -93,6 +120,26 @@ class ReActLoop:
         stamp = datetime.date.today().isoformat()
         return content + _FRESHNESS_FOOTER.format(date=stamp)
 
+    def _empty_content_fallback(self) -> str:
+        """上游把自己说空了 —— （content 空 **且** 纯对话重试也空）时的**唯一**出口。
+
+        🔴 绝不返回内部占位串。占位串一旦产出，就有三个消费方，而**只有一个有守卫**：
+
+        | 消费方 | 占位守卫 |
+        |---|---|
+        | `pipeline/stages/generation.py:718/756` | 有（此前是精确相等 → 被装饰后失效） |
+        | `agent/executor.py:447` | **无** → 占位串成为该 step 的「结果」 |
+        | `core/tasks.py:156` | **无** → 进 `task.evidence` 且任务被判 `completed` |
+
+        所以封堵必须落在**源头**（这里），而不是给三个消费方各补一份判定 ——
+        后者迟早会漏掉第四个消费方，或像 09-18 那样被一行装饰整体击穿。
+        """
+        if self.tool_trace and any(not item.get("ok") for item in self.tool_trace):
+            return "本喵工具这边没查到准信喵，你换个说法再问一次？"
+        if self.tool_trace:
+            # 工具都“成功”但模型仍空回复：仍要出口，避免用户感觉 bot 死机。
+            return "本喵查了一圈但没整理出有用结论喵，你换个具体视频链接（带 BV）再丢一次？"
+        return "本喵刚卡住一下，你再说一遍喵？"
 
     async def _finalize_content(self, messages: list[dict], temperature: float,
                                 max_tokens: int,
@@ -163,7 +210,20 @@ class ReActLoop:
                     content = await self._finalize_content(
                         messages, temperature, max_tokens
                     )
-                return self._apply_freshness_footer(content or "（思考中...）")
+                if is_placeholder_reply(content):
+                    # 🔴 源头封堵（09-18）：此前这里是 `content or "（思考中...）"`，
+                    # 占位串再被时效脚注装饰后，下游精确相等守卫全部失效 →
+                    # 用户看到 `（思考中...）（以上来自联网检索；…）`；
+                    # executor/tasks 两个无守卫消费方还会把它当成有效结果。
+                    if content and content.strip():
+                        logger.warning(
+                            "ReAct 最终回复为占位串（上游全空），改用兜底出口: %r",
+                            str(content)[:60],
+                        )
+                    else:
+                        logger.warning("ReAct 最终回复为空（上游全空），改用兜底出口")
+                    return self._empty_content_fallback()
+                return self._apply_freshness_footer(content)
 
             # 反工具死循环：工具调用签名与上一轮完全相同（同一查询重复搜）
             # → 立即转出最终回复，避免 5 轮空转把延迟拖到 15s 且最终仍可能 content 空。
@@ -285,11 +345,7 @@ class ReActLoop:
         content = await self._finalize_content(
             current_msgs, temperature, max_tokens, final
         )
-        if content and content.strip() not in {"（想了一下不知道说什么...）", "（思考中...）"}:
+        if not is_placeholder_reply(content):
             return self._apply_freshness_footer(content)
-        if self.tool_trace and any(not item.get("ok") for item in self.tool_trace):
-            return "本喵工具这边没查到准信喵，你换个说法再问一次？"
-        if self.tool_trace:
-            # 工具都“成功”但模型仍空回复：仍要出口，避免用户感觉 bot 死机。
-            return "本喵查了一圈但没整理出有用结论喵，你换个具体视频链接（带 BV）再丢一次？"
-        return "本喵刚卡住一下，你再说一遍喵？"
+        # 上游全空 → 与「早退路径」共用同一个兜底出口（单一口径，避免两处各自漂移）
+        return self._empty_content_fallback()
