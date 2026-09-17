@@ -6,6 +6,16 @@ Anima-next 是一个**独立运行的、OpenClaw 风格的全智能 QQ 机器人
 
 当前版本：`0.3.0rc2`（`anima/__init__.py`）。项目按 **AGPL-3.0-only** 许可发布。生产部署在 VPS `/opt/anima`，经 `_deploy.py` 发布，本仓库是唯一生产源码。历史 AstrBot 插件形态 `G:/Anima` 已冻结，不再开发新功能。
 
+> **文档坐标（2026-09-18 建立，避免同一问题有四份答案）**
+> - 定位 / 许可证 / 理论层关系的**唯一权威**：**[`docs/VISION.md`](docs/VISION.md)**
+> - 阶段编号（六套并行编号 → 单一坐标）：**[`docs/PHASE_COORDINATES.md`](docs/PHASE_COORDINATES.md)**
+> - 未决事项（唯一工程债台账）：**[`ENGINEERING_DEBT_LEDGER.md`](ENGINEERING_DEBT_LEDGER.md)**
+> - 运行时执行面（F5 `runtime/` · `pilot/` · A/B 双轨归属）：**[`docs/RUNTIME_SURFACE_STATUS.md`](docs/RUNTIME_SURFACE_STATUS.md)**
+> - 生产实配（脱敏模板 + 漂移检查）：`config/production.example.yaml` · `deploy/check_config_drift.py`
+>
+> 🔴 引用本文档的"能力治理开关默认关闭"时请一并注意：**代码默认 ≠ 生产实配**
+> （见 `MAINTENANCE.md` 治理开关表的第 3 列）。
+
 ---
 
 ## 目录

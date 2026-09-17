@@ -1,4 +1,10 @@
 > [HISTORICAL] 本文档停更于 2026-07-29，仅作历史参考；现状以 README.md / MAINTENANCE.md / schemas/config.schema.yaml 为准。
+>
+> ⚠️ **2026-09-18 改名**：原名 `DESIGN_DEBT_TRACKING.md`。改名原因：本文档写的是
+> **「承诺追踪系统」** —— 让 bot 记得自己欠了谁什么（**人际承诺**），属于功能设计；
+> 而名字里的 "debt" 会被读成**工程债**。工程债台账是另一份：
+> [`ENGINEERING_DEBT_LEDGER.md`](ENGINEERING_DEBT_LEDGER.md)。两者无关。
+> 实现位于 `anima/cognitive/debt.py`，开关为 `debt_tracking.enabled`。
 
 # 【设计文档】承诺追踪系统（进化2 · debt）
 

@@ -31,23 +31,35 @@ Recovery 链   : HealthEvidence → HealthPolicyEvaluator → RecoveryDecision �
 
 ## F8.x 文档映射
 
-| 编号 | 主题 | 文档 | 状态 |
+> ⚠️ **2026-09-18 核对订正（审查 P1-5）**：本表此前列出 F8.4–F8.12 的**具体文件名**，
+> 读起来像"这些文档就在 `capability_contracts/` 下"，实际**它们不在本仓库**。
+> 已用两条独立方法核对：
+> 1. `capability_contracts/` 目录枚举 —— 只有 `f8.13_convergence_rfc_v0.1.md` 与 F9.x / phase* 系列；
+> 2. `git log --all --name-only -- '*f8.*'` —— 历史中**只出现过 `f8.13`**（提交 `afea135`）。
+>
+> ⇒ 结论：F8.1–F8.12 的独立 scope-freeze 文档**既不在工作树、也不在本仓库的 git 历史里**
+> （可能产生于当时的独立工作区）。本表保留编号与状态（它们记录了治理进程），
+> 但**文件名一栏改为诚实标注**，不再给出不存在的路径。
+> 如需追回：本机 git 历史已两次损坏，`reports/2026-09-15_git_incident_and_p3_delivery_2026-09-15.md`
+> 记载了当时的恢复范围；若仍找不到，应视为**已丢失**，而不是继续当成可引用依据。
+
+| 编号 | 主题 | 文档在库？ | 状态 |
 |---|---|---|---|
-| F8.1–F8.2 | capability governance 早期切片（概念前驱，无独立文档） | — | 概念引用 |
-| F8.3 | Resolution 审计（Selection Audit） | 引用自 `f8.4`/`f8.13` | 已闭环 |
-| F8.4 | Scope Freeze Proposal | `f8.4_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.5 | Scope Freeze Proposal | `f8.5_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.6 | Scope Freeze Proposal | `f8.6_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.7 | AuditStore（持久 sink，opt-in） | `f8.7_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.8 | Lifecycle / Recovery Observer（QUARANTINED 方向） | `f8.8_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.9.1 | sub-slice | `f8.9.1_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.9.2 | sub-slice | `f8.9.2_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.9.3 | sub-slice（evidence 接入点） | `f8.9.3_scope_freeze_proposal_v0.1.md` | 已闭环 |
-| F8.10 | Health Signal Boundary | `f8.10_health_signal_boundary_scope_freeze_v0.1.md` | 已闭环 |
-| F8.10.1 | Evidence Emission（注入点） | `f8.10.1_evidence_emission_scope_freeze_v0.1.md` | 已闭环 |
-| F8.11 | Execution Outcome Normalization（三态） | `f8.11_execution_outcome_normalization_scope_freeze_v0.1.md` | 已闭环 |
-| F8.12 | Recovery（QUARANTINED→ACTIVE 决策层） | `f8.12_recovery_rfc_v0.1.md` + `f8.12_recovery_rfc_scope_freeze_v0.1.md` + `f8.12_recovery_implementation_scope_freeze_v0.1.md` | 已闭环（实现 `3667441`） |
-| **F8.13** | **Convergence Boundary（收口）** | **`f8.13_convergence_rfc_v0.1.md`（正式）+ `f8.13_convergence_scope_freeze_v0.1.md`（只读勘察 ADR）** | **✅ 收口** |
+| F8.1–F8.2 | capability governance 早期切片（概念前驱） | ❌ 无独立文档（本就是概念引用） | 概念引用 |
+| F8.3 | Resolution 审计（Selection Audit） | ❌ 不在库（原引用自 `f8.4`/`f8.13`） | 已闭环 |
+| F8.4 | Scope Freeze Proposal | ❌ **不在库** | 已闭环 |
+| F8.5 | Scope Freeze Proposal | ❌ **不在库** | 已闭环 |
+| F8.6 | Scope Freeze Proposal | ❌ **不在库** | 已闭环 |
+| F8.7 | AuditStore（持久 sink，opt-in） | ❌ **不在库** | 已闭环 |
+| F8.8 | Lifecycle / Recovery Observer（QUARANTINED 方向） | ❌ **不在库** | 已闭环 |
+| F8.9.1 | sub-slice | ❌ **不在库** | 已闭环 |
+| F8.9.2 | sub-slice | ❌ **不在库** | 已闭环 |
+| F8.9.3 | sub-slice（evidence 接入点） | ❌ **不在库** | 已闭环 |
+| F8.10 | Health Signal Boundary | ❌ **不在库** | 已闭环 |
+| F8.10.1 | Evidence Emission（注入点） | ❌ **不在库** | 已闭环 |
+| F8.11 | Execution Outcome Normalization（三态） | ❌ **不在库** | 已闭环 |
+| F8.12 | Recovery（QUARANTINED→ACTIVE 决策层） | ❌ **不在库** | 已闭环（实现 `3667441`） |
+| **F8.13** | **Convergence Boundary（收口）** | ✅ `f8.13_convergence_rfc_v0.1.md` + 本索引 | **✅ 收口** |
 
 ## 收口裁定（F8.13）
 

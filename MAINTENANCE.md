@@ -8,6 +8,24 @@
 - 生产 = VPS `/opt/anima` 裸 systemd 进程，经 `_deploy.py` 发布；Docker（Dockerfile/docker-compose）为可选的容器化替代路径。
 - `anima/` 下 **23 个顶层包**（含 `__init__.py`）+ `util/` 命名空间目录、约 400 个 `.py`；`tests/` 平铺 420 个 `test_*.py`。
 - **很多模块是「库级 / 试点 / 测试层」**，未接生产 `cli/startup` 主链路——维护前先确认某功能是否真的上线（见 §3 接线清单）。
+- 🔴 **配置有三个不同的真源，互不等价**，禁止互相替代：
+  | 文件 | 角色 | 是否生产实配 |
+  |---|---|---|
+  | `/opt/anima/config.yaml` | **生产真源**（服务器手工件） | ✅ 唯一 |
+  | `config/default.yaml` | 仓库**默认值模板**（已过期，缺 7 个段，见台账 D-06） | ❌ |
+  | `config/production.example.yaml` | 生产键集的**脱敏模板**（2026-09-18 建立） | ❌（键集等价、值脱敏） |
+  ⇒ **任何"开关状态"结论必须读生产文件**，读代码默认值或读文档都会得出错误结论（这正是审查 P0-2 的成因）。
+  漂移检查：`python deploy/check_config_drift.py`（只读；未登记键应为 0）。
+- 🔴 **配置变更没有可查台账**：生产无 `data/config_changes.json`、无 `data/config_backups/`。
+  `ConfigDriftMonitor`（`anima/core/config_drift.py`）虽然已接线
+  （`anima/core/anima_core.py:109` 建基线 + `anima/core/autonomy.py:725` 每 tick 自检），
+  但**基线是每次开机时从同一份配置快照的** ⇒ **结构上无法发现"停机改配置再启动"这类翻转**。
+  史上 `config_permission_drift` 审计事件 **0 条**（2026-09-18 实测）。跨重启的变更只有走
+  `config_service`（WebUI / change-set）才会留下台账。
+- 🔴 **生产 `config.yaml` 含 6 处明文密钥**：`llm.api_key` · `vector.embedding_api_key` ·
+  `vector.rerank_api_key` · `webui.token` · `tavily.api_key` · `x_browser.password`。
+  前 5 类中已有 5 个支持环境变量注入（见 `anima/core/config.py:1019-1032`）；
+  **`webui.token` 与 `x_browser.password` 无 env 通道**，需代码改动（台账 D-07）。
 
 ---
 
@@ -182,17 +200,39 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 | `conversation.natural_feedback_ack` | `false` | §17 安全版反馈自然回话（仅私聊 + 已有主回复时追加轻确认，不双发） |
 | `contradiction.enabled` | `false` | 矛盾检测（仅在向量命中强相关旧记忆时才调 LLM） |
 
-**b) 能力治理（fail-closed，默认全 OFF）**
+**b) 能力治理（代码默认全 OFF；⚠️ 生产实配已开启其中四项）**
 
-| 配置键 | 默认 | 作用 |
-|---|---|---|
-| `capability_layer.capability_mode` | `false` | 输出 capability schema（否则 legacy Tool schema）；`false` 时逐字节保持旧行为 |
-| `capability_layer.capability_gateway_mode` | `false` | 受治理 Gateway pilot（Line B）；pilot 白名单见 `_GATEWAY_PILOT_CAPABILITIES` |
-| `capability_layer.governance_audit_enabled` | `false` | Resolution 审计链 `resolution_events.jsonl` |
-| `capability_layer.health_evidence_enabled` | `false` | Health 证据链 `health_evidence.jsonl` |
-| `capability_layer.transition_audit_enabled` | `false` | 生命周期迁移链 `lifecycle_transitions.jsonl` |
-| `capability_layer.python_exec_enabled` | `false` | `python.exec` provider 注册与可达（需与上面两个 mode 同时为真） |
-| `iteration.auto_repair` | `false` | 自治运维档 3：自动生成补丁并 apply（`iteration.enabled` 本身默认 ON） |
+> 🔴 **本表第 3 列是 2026-09-18 对生产 `/opt/anima/config.yaml` 的实测值，不是推测。**
+> 此前本表只有"默认"一列，读起来像"生产也关着"，而这正是「治理文档说关、生产开着」
+> 之所以能长期不被发现的直接原因（审查 P0-2/P0-3）。**开关状态结论必须读生产文件。**
+
+| 配置键 | 代码默认 | 生产实配 (2026-09-18) | 作用 |
+|---|---|---|---|
+| `capability_layer.capability_mode` | `false` | **`true`** | 输出 capability schema（否则 legacy Tool schema）；`false` 时逐字节保持旧行为 |
+| `capability_layer.capability_gateway_mode` | `false` | **`true`** | 受治理 Gateway pilot（Line B）；pilot 白名单见 `_GATEWAY_PILOT_CAPABILITIES` |
+| `capability_layer.governance_audit_enabled` | `false` | **`true`** | Resolution 审计链 `resolution_events.jsonl`（写入 `<data_dir>/governance/`） |
+| `capability_layer.python_exec_enabled` | `false` | **`true`** 🔴 | `python.exec` provider 注册与**可达**（需与上面两个 mode 同时为真 —— 生产三者皆真） |
+| `capability_layer.health_evidence_enabled` | `false` | `false` | Health 证据链 `health_evidence.jsonl` |
+| `capability_layer.transition_audit_enabled` | `false` | `false` | 生命周期迁移链 `lifecycle_transitions.jsonl` |
+| `capability_layer.pilot_capability_allowlist` | `[]` | `[]` | 空 = 拒绝全部 **pilot-only** 路由（fail-closed） |
+| `iteration.auto_repair` | `false` | `false` | 自治运维档 3：自动生成补丁并 apply（`iteration.enabled` 本身默认 ON，生产为 `true`；`iteration.auto_restart` 生产亦为 `true`） |
+
+🔴 **关于 `python_exec_enabled` 的易误读点（2026-09-18 实测钉死）**
+
+- 该翻转**经 owner 授权**，代码留痕：`anima/tools/__init__.py:193`
+  「R5 PHASE 13 re-open (owner-authorized 2026-08-15)：追加 python.exec 到受治理 pilot 清单」。
+- 翻转**未走** `config_service` / `config_recovery` ⇒ 生产无 `data/config_changes.json`、
+  无 `data/config_backups/`，**时间点与操作者不能由服务器自证**；只能由最早一条
+  `search.web` 路由事件反推上界（≤ 2026-09-05 13:48）。
+- ⚠️ **空 `pilot_capability_allowlist` 挡不住 `python.exec`。** pilot allowlist 门只作用于
+  `capability_only=True` 的 provider（`anima/tools/__init__.py:977-979`），而 python.exec
+  不是（同文件 `:194-195` 明写「不经 pilot allowlist 门，直达 `_governed_capability_route`」）。
+  它的真实门是 gateway 内四道 fail-closed 门（kill_switch / grant / audit_sink / isolator）
+  + provider 的 **owner-only** 边界；前两门在代码里以 `kill_switch=False, grant=True` 构造
+  （`anima/tools/__init__.py:607-609`）。
+  ⇒ **结论：owner 主体在生产可通过受治理路径调用 `python.exec`。**
+- 实测使用量 = **0**：`resolution_events.jsonl` 的 16 条事件**全为 `search.web`**；
+  `python.exec` 在审计与 journal 中 0 命中。
 
 **c) 危险自升级 `danger.*`（默认全 OFF；只生成 WebUI 待审工程任务，**绝不自动安装**）**
 
@@ -424,7 +464,16 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 - `rbac.py`/`isolation.py`/`evidence.py`：R6.3/6.4/6.5 工业级组件，**库函数未接线**（RUNTIME_WIRED=False）。
 - `audit/event_chain.py`：R6.2 端到端审计事件链（caller/capability/permission/provider/sandbox/result）。
 - `health/`、`ops/`、`audit/`：三链正交（ResolutionEvent/HealthEvidence/LifecycleTransition 各自独立 store 不合并）+ HashChain 防篡改。
-- 数据：`data/resolution_events.jsonl`、`data/health_evidence.jsonl`、`data/lifecycle_transitions.jsonl`（工具 `governance_audit_enabled`/`health_evidence_enabled`(默认False)/`transition_audit_enabled` 门控）。
+- 数据：**落盘目录可配** —— `capability_layer.governance_data_dir`（默认 `"governance"`，
+  相对 `persistence.data_dir` 解析；给绝对路径则按原样使用。实现见 `anima/tools/__init__.py:1219-1228`）。
+  三个文件名**固定不可配**（刻意：避免运维把三条链写进同一文件而丢失链间边界）。
+  - 解析后路径：`<data_dir>/<governance_data_dir>/resolution_events.jsonl`
+    · `.../health_evidence.jsonl` · `.../lifecycle_transitions.jsonl`
+  - 生产实配：`governance_data_dir: "governance"` ⇒ 实际为 **`data/governance/resolution_events.jsonl`**
+    （2026-09-18 实测存在，8555 B / 16 条事件）。⚠️ 此前本行写作 `data/resolution_events.jsonl`
+    且未提 `governance_data_dir` 可配 —— 照着找会找不到文件（审查 P1-8）。
+  - 门控：`governance_audit_enabled` / `health_evidence_enabled`（默认 False）/
+    `transition_audit_enabled`；生产仅第一项为 `true`。
 
 **contracts/**（M0.1 内核协议层，纯契约零运行时逻辑）
 - `access.py`：`DeprecatedCoreAccess`（memory/config/outbound/telemetry/permission/agenda/tools 7 facade）+ `RAW_ACCESS_*` 后门 allowlist；raw 访问强制记 caller+审计。**WIRED（llm/handler ctx.core）**。

@@ -1,0 +1,322 @@
+# =============================================================================
+# Anima 生产配置 —— 脱敏模板（NOT a live file）
+# =============================================================================
+#
+# 用途
+#   让「生产实配」第一次进入版本控制，且不泄露任何密钥/个人标识。
+#   生产真源是服务器上的 /opt/anima/config.yaml（**仍不入库**，见下"为什么"）。
+#
+# 为什么生产 config.yaml 不入库
+#   2026-09-18 实测：生产 config.yaml 内**明文**存有 6 处密钥 ——
+#     llm.api_key(48) · vector.embedding_api_key(51) · vector.rerank_api_key(51)
+#     · webui.token(40) · tavily.api_key(58) · x_browser.password(13)
+#   直接追踪会把它们写进 git 历史；而本机 git 历史已丢失两次、远程是唯一第二副本。
+#
+# 历史事故（本文件存在的理由）
+#   `.gitignore:11` 忽略 config.yaml ⇒ 生产是「服务器手工件」，与仓库 config/default.yaml
+#   是两个真源。后果：治理文档连续三处写「能力治理默认全 OFF / never flipped to True」，
+#   而生产实际把 capability_mode / capability_gateway_mode / governance_audit_enabled /
+#   python_exec_enabled **四项全设为 true**，长期无人发现（2026-09-18 审查 P0-2 / P0-3）。
+#   **任何"开关状态"结论必须读生产文件，不能读代码默认值、也不能读文档。**
+#
+# 本文件怎么用
+#   1) 人类查阅：生产覆盖了哪些键、哪些键是生产独有。
+#   2) 机器检查：`python deploy/check_config_drift.py`
+#      以「config/default.yaml ∪ 本模板」为参考，报告生产侧**未登记**的键（应恒为 0）、
+#      生产显式为 true 的开关面、以及疑似明文密钥。
+#   3) 值一律以占位符表示；本文件承担**键集与开关面**，不承担值比对。
+#
+# 生成依据：2026-09-18 生产 /opt/anima/config.yaml（mtime 2026-09-17 07:48:31，9766 B）
+#           掩码导出后与仓库 config/default.yaml 做结构差异得出。
+# 动态键约定：`permissions.group_policies` 以群号为键，条目数随运营变化，
+#           漂移检查对该前缀做通配归约（`<id>` → `*`），模板只需给一个样例形状。
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 密钥：优先全部走环境变量（load_config 支持注入，见 anima/core/config.py:1019-1032）
+# ---------------------------------------------------------------------------
+# 已支持 env 注入的键（生产目前仍是明文写在 yaml 里 —— 建议迁移，需 owner 决定）：
+#   ANIMA_LLM_API_KEY         -> llm.api_key
+#   ANIMA_LLM_ENDPOINT        -> llm.endpoint
+#   ANIMA_EMBEDDING_API_KEY   -> vector.embedding_api_key
+#   ANIMA_RERANK_API_KEY      -> vector.rerank_api_key
+#   ANIMA_TAVILY_API_KEY      -> tavily.api_key
+#
+# 🔴 无 env 注入通道的密钥（无法只靠配置外置，需要代码改动）：
+#   webui.token       —— 生产为明文 40 字符。台账 D-07。
+#   x_browser.password—— 生产为明文 13 字符。台账 D-07。
+
+llm:
+  api_key: "<ANIMA_LLM_API_KEY 或明文占位>"
+  endpoint: "<your-openai-compatible-endpoint>"   # 生产为自建 CPA 端点
+  model: "gemini-3.8-flash-high"
+  model_prices: {}
+  module_models:
+    image_generation: "gemini-3.1-flash-image"
+    selfcode: "DeepSeek-V4-Flash-AMD"
+
+vector:
+  embedding_api_key: "<ANIMA_EMBEDDING_API_KEY>"
+  embedding_endpoint: "<your-embedding-endpoint>"
+  embedding_model: "BAAI/bge-m3"
+  embedding_dim: 1024
+  rerank_api_key: "<ANIMA_RERANK_API_KEY>"
+  rerank_endpoint: "<your-rerank-endpoint>"
+  rerank_model: "BAAI/bge-reranker-v2-m3"
+  rerank_enabled: true
+  rerank_top_n: 5
+
+webui:
+  enabled: true
+  host: "0.0.0.0"
+  token: "<REDACTED —— 生产为明文，无 env 通道>"
+
+qq:
+  self_id: 0                  # 生产填真实 bot QQ
+  access_token: null
+  known_bot_ids: []
+  typing_indicator: true
+
+permissions:
+  owners: [0]                 # 生产填真实 owner QQ
+  admins: [0]
+  banned: []
+  banned_groups: []
+  readonly: []
+  readonly_groups: []
+  # 动态键：按群号配置。生产实有 2 个群，字段形状如下（数值以实际为准）。
+  group_policies:
+    "0":                      # ← 群号占位；漂移检查做通配归约
+      autonomy: true
+      familiar_min: 0.95
+      reply_mode: "familiar"
+
+# ---------------------------------------------------------------------------
+# 🔴 能力治理开关（本模板存在的**主要原因**）
+# ---------------------------------------------------------------------------
+# 代码默认值全部 false（anima/core/config.py:261-305 CapabilityLayerConfig）。
+# 生产实测（2026-09-18）：下列四项已为 true。
+# Owner 于 2026-09-18 确认这些翻转**经其授权**；代码亦留痕
+# （`anima/tools/__init__.py:193`「R5 PHASE 13 re-open (owner-authorized 2026-08-15)」）。
+# 翻转**未走** config_service / config_recovery ⇒ 生产无 config_changes.json /
+# config_backups，时间点与操作者不可从服务器自证；仅能由最早路由事件反推上界
+# （≤ 2026-09-05 13:48，见 reports/2026-09-18_phase_a_honesty_pass.md A2 节）。
+capability_layer:
+  capability_mode: true                  # ① 能力路由总开关
+  capability_gateway_mode: true           # ② 受治理 Gateway（Line B）
+  governance_audit_enabled: true          # ③ Resolution 审计链落盘
+  python_exec_enabled: true               # ④ 🔴 governed python.exec 注册与可达
+  governance_data_dir: "governance"       # 解析为 <data_dir>/governance
+  pilot_capability_allowlist: []          # 空 = 拒绝全部「pilot-only」路由（fail-closed）
+  health_evidence_enabled: false
+  transition_audit_enabled: false
+  python_exec_permission_level: 2
+  python_exec_require_audit: true
+
+# ⚠️ 关于 ④ + 空 allowlist 的**易误读点**（2026-09-18 实测订正）：
+#   空 `pilot_capability_allowlist` **挡不住 python.exec**。
+#   pilot allowlist 门只作用于 `capability_only=True` 的 provider
+#   （anima/tools/__init__.py:977-979），而 python.exec 的 provider 不是
+#   capability_only（同文件:194-195 明写「不经 pilot allowlist 门，直达
+#   _governed_capability_route」）⇒ 它的实际门是 gateway.handle 内四道
+#   fail-closed 门（kill_switch / grant / audit_sink / isolator）+ provider 的
+#   **owner-only** 边界，而前两门在代码里以 `kill_switch=False, grant=True`
+#   构造（tools/__init__.py:607-609）。
+#   结论：**owner 主体在生产可通过受治理路径调用 python.exec。**
+#   实测使用量 = 0（resolution 事件 16 条全为 search.web；审计/日志 0 命中）。
+
+# ---------------------------------------------------------------------------
+# 生产**显式覆盖**了仓库默认值的键（值级差异，2026-09-18 实测）
+# ---------------------------------------------------------------------------
+autonomy:
+  sleep_enabled: true
+  sleep_start_hour: 1
+  sleep_end_hour: 5
+  sleep_silent_prob: 0.8
+  sleepy_llm_enabled: true
+  sleepy_max_tokens: 0                   # 生产覆盖
+  sleepy_temperature: 0.4
+  reply_only_when_mentioned: true
+  proactive_grounding: true
+  secret_auto_enabled: true
+  morning_greeting_enabled: false
+  morning_dream_share_enabled: false
+  active_daily_max_per_group: 20
+  active_global_cooldown_sec: 1800
+  familiar_reply_min: 0.92
+  other_bot_names: []                    # 生产填真实竞品 bot 昵称列表
+
+context:
+  input_token_budget: 0                  # 生产覆盖了默认 12000
+  system_token_budget: 0                 # 生产覆盖了默认 8000
+  tool_result_token_budget: 0
+  image_token_estimate: 0
+
+drift:
+  window_ceiling: 0.8
+
+gate:
+  enabled: true
+  model: "gemini-3-flash"
+
+image_generation:
+  enabled: true
+  fallback_models: ["grok-imagine-image", "grok-imagine-image-quality"]
+
+meme:
+  enabled: true
+
+qq_status:
+  enabled: true
+
+self_code:
+  enabled: true
+
+sylann:
+  enabled: true
+  mode: "active"
+
+conversation:
+  natural_feedback_ack: true
+
+reply_split:
+  context_aware_interrupt: true
+
+memory:
+  unified_recall_enabled: true
+
+exploration:
+  proxy: "http://127.0.0.1:7890"
+  sources: ["bilibili_popular", "bbc_zhongwen", "bilibili_search", "wikipedia_zh", "x_timeline"]
+  x_timeline_limit: 8
+
+capabilities:
+  dedup_text_threshold: 0.5
+  max_zero_usage: 12
+
+persona:
+  typo_probability: 0.04
+  seed_relations: []                     # 生产填真实人物（含 QQ），本模板不落个人标识
+
+sticker:
+  share_across_groups: true
+  cross_group_allowlist: []              # 生产填群号字符串
+  classify_at_collect: true
+  label_by_vision: true
+  label_model: "gemini-3.6-flash"
+  llm_select: true
+  select_model: "gemini-3.6-flash"
+  send_by_emotion: true
+  send_probability: 0.3
+  send_cooldown_sec: 20.0
+
+vision:
+  model: "gemini-3.6-flash"
+
+# ---------------------------------------------------------------------------
+# 生产**独有**的段（仓库 config/default.yaml 里没有、生产 config.yaml 有）
+# ---------------------------------------------------------------------------
+# 这些段在代码中均有对应 Config 类，默认值照常生效；列在此处是为了让
+# `deploy/check_config_drift.py` 的「未登记键」归零。
+contradiction:                           # config.py:757，代码默认 enabled=False
+  enabled: true                          # ← 生产已开启（内容侧矛盾检测）
+  max: 50
+  dedup_recent: 10
+  recall_threshold: 0.8
+  model: ""
+
+danger:                                  # config.py:773，代码默认整体关闭
+  enabled: true                          # ← 🔴 生产已开启高危自主行为层
+  active_info_collection: true
+  info_collection_can_speak: false
+  autonomous_web: false
+  autonomous_web_extract_chars: 1500
+  core_mutation: true                    # 🔴 可改写长期文件（需 _confirm 二次开关）
+  core_mutation_confirm: true
+  identity_crisis: true
+  relationship_inference: true
+  memory_infection: false
+  memory_infection_confirm: false
+  memory_infection_max_repeats: 2
+  self_improvement: true
+  self_improvement_confirm: true
+  self_improvement_cooldown_sec: 7200
+  self_improvement_failure_window_sec: 7200
+  self_improvement_max_recent_failed: 3
+  self_improvement_max_running: 2
+  self_improvement_min_intensity: 0.7
+  self_improvement_skip_when_faults: true
+  self_improvement_synth_prob: 0.05
+  stance_propagation: false
+  stance_propagation_confirm: false
+  stance_max_age_seconds: 300
+
+iteration:                               # config.py:843（注意 enabled 默认即为 ON）
+  enabled: true
+  auto_restart: true                     # 自治运维档 2
+  auto_repair: false                     # 档 3，生产关闭
+  auto_repair_cooldown_sec: 3600
+  daily_quota: 1
+  max_file_chars: 120000
+  max_files_per_patch: 2
+  pytest_timeout_sec: 120
+  ticket_cooldown_sec: 21600
+
+scrapling:                               # config.py:576
+  enabled: false
+
+social:                                  # config.py:864
+  bot_social_enabled: true
+  bot_discovery_enabled: false
+  bot_talk_enabled: false
+  bot_whisper_enabled: false
+  bot_whisper_daily_limit: 10
+  bot_loop_max_depth: 2
+  bot_cooldown_sec: 30
+  poke_back: true
+  poke_back_probability: 0.6
+  welcome_new_member: true
+  welcome_cooldown_sec: 300
+  farewell_member: true
+  farewell_cooldown_sec: 60
+
+tavily:                                  # config.py:581
+  api_key: "<ANIMA_TAVILY_API_KEY 或明文占位>"
+  enabled: true
+  include_answer: true
+  max_results: 5
+  search_depth: "advanced"
+
+x_browser:                               # config.py:734
+  enabled: true
+  browser_engine: "chromium"
+  data_dir: "data/x_browser"
+  username: "<x-account>"
+  password: "<REDACTED —— 生产为明文，无 env 通道>"
+  proxy: "http://127.0.0.1:7890"
+  warmup_days: 14
+  search_daily_limit: 10
+  timeline_daily_limit: 10
+  explore_keywords: []
+
+# ---------------------------------------------------------------------------
+# ⚠️ 反向缺口：**仓库 config/default.yaml 缺失、而代码中存在**的段（7 个）
+# ---------------------------------------------------------------------------
+# 这不是生产的问题，是**仓库模板本身已过期**：
+#   debt_tracking · memory_compression · owner_browser · proactive · proxy_mgmt · react · task_agent
+# 它们在 config.py 中均有 Config 类与默认值，运行时照常生效；但 default.yaml 不再反映全貌，
+# 因此"照 default.yaml 抄一份配置"会静默丢掉这 7 个段（值走代码默认，不报错）。
+# 台账 ID：D-06。修复方式为补齐 default.yaml，属独立改动，本轮未做。
+
+# ---------------------------------------------------------------------------
+# 尚未在生产的 config.yaml 中出现、但会被代码读取的开关（默认值即生效）
+# ---------------------------------------------------------------------------
+# autonomy.drive_gate: false
+#   宪法 Drive 门（T1.1，config.py:140）。生产未设置 ⇒ false ⇒ `_constitution_drive`
+#   整条路径**不执行**，宪法派生链对线上产出为 0。这是刻意的 fail-closed 设计。
+#
+# memory.hydrate_period_hours: 6.0
+#   MemoryConfig 已声明（config.py:905），字段**可用**（实测设 2.5 可读回）；
+#   生产未设置 ⇒ 走默认 6h。
+#   ⚠️ 2026-09-18 审查报告曾称其为"哑配置（未声明字段）"，经实测**该指控不成立**，
+#      已在执行报告中订正。

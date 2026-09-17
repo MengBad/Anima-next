@@ -1,6 +1,13 @@
+> ⚠️ **本文件是 Anima Console 前端原型的设计说明，不是项目愿景。**
+> 项目定位、许可证、理论层的正本见 [`docs/VISION.md`](../docs/VISION.md)。
+> 2026-09-18 修正：此前本文件把项目描述为「AI 伴侣 bot 框架」，并把许可证写成
+> `[MIT](../../LICENSE)` —— 名字与路径均错（仓库 `LICENSE` 是 **AGPL-3.0**，
+> 且 `../../LICENSE` 指向仓库之外）。已按 `docs/VISION.md` 订正。
+
 # Anima Console
 
-面向 [Anima](https://github.com/)（一个可自托管的 AI 伴侣 bot 框架）的**网页管理面板**高保真原型。
+面向 **Anima-next**（owner 长期自用的个人 Autonomous Agent Operating System，
+非商业产品；见 [`docs/VISION.md`](../docs/VISION.md)）的**网页管理面板**高保真原型。
 
 > 状态：设计原型（单文件静态 HTML，零构建）。后端尚未实现，数据均为内置示例。
 
@@ -47,4 +54,5 @@ Anima Console
 
 ## 许可证
 
-[MIT](../../LICENSE) —— 可自由用于个人或商业项目。
+与仓库一致：**AGPL-3.0-only** —— 见仓库根 [`LICENSE`](../LICENSE)。
+不是 MIT；不可用于闭源商业项目。（此前本行写 `[MIT](../../LICENSE)`，为事实错误。）
