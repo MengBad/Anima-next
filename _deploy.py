@@ -436,6 +436,49 @@ def fnmatch(name: str, pat: str) -> bool:
     return _fn.fnmatch(name, pat)
 
 
+def _check_config_permissions(run, *, fix: bool) -> None:
+    """部署后配置权限自检（工程债 D-21）。
+
+    生产 ``/opt/anima/config.yaml`` 含明文密钥，而 ``data/`` 下同类文件实测全是 ``600``
+    —— 2026-09-18 只读实测该文件是 **644**，是权限面上的唯一例外。
+
+    分级处置（fail-closed 只用在真正危险的那一档，避免把部署卡死在"卫生问题"上）：
+
+    - 组/其他**可写** → 硬失败（任何人可改配置 = 可改治理开关）；
+    - 组/其他**可读** → 告警 + 打印精确处置命令；``--fix-config-perms`` 可自动收紧；
+    - 仅 owner 可读写 → OK。
+
+    探测只用 ``stat``，**不读取文件内容**（不触碰密钥）。
+    """
+    target = f"{REMOTE_ROOT}/config.yaml"
+    raw = run(f"stat -c '%a %U:%G' {target} 2>/dev/null || echo MISSING", silent=True).strip()
+    if not raw or raw == "MISSING":
+        print(f"[PERM] {target} 不存在，跳过权限自检。")
+        return
+    parts = raw.split()
+    try:
+        mode = int(parts[0], 8)
+    except (ValueError, IndexError):
+        print(f"[PERM] 无法解析 stat 输出 {raw!r}，跳过权限自检。")
+        return
+    owner = parts[1] if len(parts) > 1 else "?"
+    if mode & 0o022:
+        raise RemoteCommandError(
+            f"[PERM] 危险：{target} 组/其他可写（mode={mode:o} owner={owner}）；"
+            f"配置可改 = 治理开关可改，拒绝继续。请先 chmod 600 {target}"
+        )
+    if mode & 0o044:
+        print(f"[PERM] 告警：{target} 组/其他可读（mode={mode:o} owner={owner}），"
+              "而该文件含明文密钥（data/ 下同类文件均为 600）。")
+        if fix:
+            run(f"chmod 600 {target} && chown anima:anima {target}")
+            print("[PERM] 已由 --fix-config-perms 收紧为 600 anima:anima。")
+        else:
+            print(f"[PERM] 处置（1 行）：chmod 600 {target}    # 或在部署时加 --fix-config-perms")
+        return
+    print(f"[PERM] OK：{target} mode={mode:o} owner={owner}（仅 owner 可读写）。")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Anima VPS 部署")
     parser.add_argument("--dry-run", action="store_true",
@@ -445,6 +488,11 @@ def main():
     parser.add_argument(
         "--allow-dirty", action="store_true",
         help="紧急情况下允许从脏工作区部署；发布身份会明确标记 dirty",
+    )
+    parser.add_argument(
+        "--fix-config-perms",
+        action="store_true",
+        help="部署后若 config.yaml 组/其他可读，自动 chmod 600（债 D-21）",
     )
     args = parser.parse_args()
 
@@ -606,6 +654,9 @@ def main():
         f"mv {REMOTE_ROOT}/data.deploy-bak {REMOTE_ROOT}/data 2>/dev/null || true")
     release_tmp.cleanup()
     print("[UPLOAD] Done. (one source bundle)")
+
+    # 债 D-21：配置权限自检（只读 stat；危险档硬失败，卫生档告警）。
+    _check_config_permissions(run, fix=args.fix_config_perms)
 
     # Vite 资源名带 hash，单纯 cp 更新会让旧版 app-*.js/css 永久留在 VPS。
     # 仅按当前 index.html 的引用列表清理这两类静态编译产物：绝不触及用户数据、配置、
