@@ -92,21 +92,41 @@ def test_exception_text_never_reaches_model():
         assert ok is False
 
 
-# 已记在案的**邻近缺口**（本轮 P0 未动，等单独授权）：
-# ``_TOOL_FAILURE_PREFIXES`` 收的是 ``X 搜索失败 / X 搜索未完成 / X 搜索模块不可用 /
-# X 浏览器未启用``，**不含** ``X 搜索异常``。所以
+# 已收口（D-18，2026-09-18）：
+# ``_TOOL_FAILURE_PREFIXES``（冻结表）收的是 ``X 搜索失败 / X 搜索未完成 /
+# X 搜索模块不可用 / X 浏览器未启用``，**不含** ``X 搜索异常``。台账曾把它定性为
+# 「属产品判断」并由 owner 决定 —— 该定性被推翻两次：
+#   (a) 它产自 ``x_browser`` 的 ``except Exception`` 分支，是**客观异常信号**，
+#       不是措辞偏好；
+#   (b) 它**不能**进 ``_TOOL_FAILURE_PREFIXES_EXT``（那张表的语义是"判失败但保留
+#       文本"，放进去会把 ``TypeError: ...`` 照样送进模型上下文）。
 #
-#     tool_result_ok("X 搜索异常: TypeError: ...") is True     # ← 会被当成"成功"
-#
-# 目前不构成实际泄漏：``x_browser`` 的 ``"X 搜索异常: {e}"`` 只作为 ``note`` 返回，
-# 经 ``tool_x_search`` 必然被包成 ``"X 搜索未完成：..."``（见下面的端到端用例）。
-# 但若将来有任何路径把该 note 裸串当结果返回，就会既算成功又泄漏异常文本。
-def test_latent_gap_documented_raw_prefix_not_registered():
-    from anima.tools import _TOOL_FAILURE_PREFIXES
+# 正解是独立新表 ``_TOOL_COLLAPSE_PREFIXES``（判失败 **且** 折叠），冻结表逐字节未动。
+def test_exception_prefixes_are_registered_as_collapsing():
+    from anima.tools import (
+        _TOOL_COLLAPSE_PREFIXES, _TOOL_FAILURE_PREFIXES, _TOOL_FAILURE_PREFIXES_EXT,
+    )
 
+    # 冻结表仍然逐字节未动（F8.11 R1）
     assert not any(p.startswith("X 搜索异常") for p in _TOOL_FAILURE_PREFIXES)
-    # 但经过真实路径（note → tool_x_search）它是安全的：
-    # 见 test_e2e_unmapped_note_still_collapses。
+    # 也不在"保留文本"的 EXT 表里（那会导致异常文本入上下文）
+    assert not any(p.startswith("X 搜索异常") for p in _TOOL_FAILURE_PREFIXES_EXT)
+    # 而在"必须折叠"表里
+    for prefix in ("X 搜索异常", "X 时间线异常"):
+        assert prefix in _TOOL_COLLAPSE_PREFIXES, f"{prefix} 未收进折叠表"
+
+    # 裸串：判失败 **且** 异常文本被折叠掉
+    for raw in ("X 搜索异常: TypeError: boom",
+                "X 时间线异常: ConnectionResetError(104, 'Connection reset by peer')"):
+        assert tool_result_ok(raw) is False, f"裸异常串仍被当成功: {raw!r}"
+        text, ok = normalize_tool_result(raw)
+        assert ok is False
+        assert text == _SAFE_TOOL_FAILURE, f"异常文本泄漏: {text!r}"
+
+    # 反向：EXT 表的语义（保留文本）没有被这次改动影响
+    ext_sample = "计算出错：除数为零"     # system.py:37
+    text, ok = normalize_tool_result(ext_sample)
+    assert ok is False and text == ext_sample, "EXT 表应保留文本（信息量）"
 
 
 # ---------------------------------------------------------------------------

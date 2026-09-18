@@ -144,6 +144,24 @@ _TOOL_FAILURE_PREFIXES_EXT = (
     "没能从 OneBot 取到",     # honor.py:83（后续为动态群号）
 )
 
+# 「必须折叠」前缀（2026-09-18，债 D-18）—— 第三类语义，别与上面两张表混用：
+#   `_TOOL_FAILURE_PREFIXES`（冻结）：判定失败 + 折叠（除白名单原因码）
+#   `_TOOL_FAILURE_PREFIXES_EXT`     ：判定失败 + **保留文本**（作者手写、对模型有信息量）
+#   `_TOOL_COLLAPSE_PREFIXES`（本表）：判定失败 + **折叠** —— 因为文本本身是**异常信息**
+#     （异常类型名 / errno / 调用栈片段），不该进模型上下文。
+#
+# 台账此前把 `X 搜索异常` 定性为「属产品判断、等 owner 决定」，**双重错误**：
+#   (a) 它产自 `x_browser` 的 `except Exception`（:521 search / :569 timeline），是客观
+#       异常信号，不是措辞偏好；
+#   (b) 它不能进 EXT 表 —— EXT 语义是"保留文本"，放进去会**判定失败但仍把异常文本送进
+#       上下文**，比修复前更糟。`_TOOL_INTERNAL_MARKERS` 也兜不住它（只认 `[stderr]` /
+#       `Traceback` / `Permission denied` 等固定词，不认 `TypeError` 这类裸异常名）。
+# 冻结表逐字节未动（F8.11 R1）：本条走独立新表，不改旧表。
+_TOOL_COLLAPSE_PREFIXES = (
+    "X 搜索异常",            # x_browser.py:521  search() except 分支的 note
+    "X 时间线异常",          # x_browser.py:569  home_timeline() except 分支
+)
+
 # 「失败族」：整族默认失败，族内**成功形态**显式列出 —— 这是 **fail-closed**
 # 写法：族内以后新增的失败串会被自动捕获，无需再逐条补清单。
 #   `[agent] ` = agent_tools.py 的 6 个 OWNER 沙箱工具；实测 21 条 `[agent] ` 返回
@@ -171,6 +189,12 @@ def _matches_legacy_failure(text: str) -> bool:
     """命中**冻结**的旧前缀表（命中即沿用 P0-1 的折叠语义）。"""
     lower = text.lower()
     return any(lower.startswith(p.lower()) for p in _TOOL_FAILURE_PREFIXES)
+
+
+def _matches_collapse_failure(text: str) -> bool:
+    """命中「必须折叠」前缀：异常信息，判定失败且文本不进上下文（D-18）。"""
+    lower = text.lower()
+    return any(lower.startswith(p.lower()) for p in _TOOL_COLLAPSE_PREFIXES)
 
 
 def _matches_extended_failure(text: str) -> bool:
@@ -264,16 +288,18 @@ def get_call_context() -> dict[str, Any]:
 def tool_result_ok(result: object) -> bool:
     """工具结果是否算「成功」= 非空 ∧ 不含内部细节 ∧ 未命中任何失败注册表。
 
-    失败注册表共四层（历史顺序，语义互不重叠）：
+    失败注册表共五层（历史顺序，语义互不重叠）：
       1. ``_TOOL_FAILURE_PREFIXES``          —— 冻结的旧前缀（F8.11 R1，逐字节不动）
-      2. ``_TOOL_FAILURE_PREFIXES_EXT``      —— 09-18 审计补齐的前缀
-      3. ``_TOOL_FAILURE_FAMILIES``          —— 族前缀 + 族内成功例外（fail-closed）
-      4. ``_TOOL_FAILURE_SUFFIXES/_INFIXES`` —— 固定前缀表达不了的动态形态
+      2. ``_TOOL_COLLAPSE_PREFIXES``         —— 异常信息前缀（判定失败 + 折叠，D-18）
+      3. ``_TOOL_FAILURE_PREFIXES_EXT``      —— 09-18 审计补齐的前缀
+      4. ``_TOOL_FAILURE_FAMILIES``          —— 族前缀 + 族内成功例外（fail-closed）
+      5. ``_TOOL_FAILURE_SUFFIXES/_INFIXES`` —— 固定前缀表达不了的动态形态
     """
     text = str(result or "").strip()
     if not text:
         return False
-    if _has_internal_marker(text) or _matches_legacy_failure(text):
+    if (_has_internal_marker(text) or _matches_legacy_failure(text)
+            or _matches_collapse_failure(text)):
         return False
     return not _matches_extended_failure(text)
 
@@ -285,11 +311,14 @@ def normalize_tool_result(result: object) -> tuple[str, bool]:
       1. 含内部细节（堆栈 / errno / unshare 等）→ 折叠为 ``_SAFE_TOOL_FAILURE``；
       2. 命中**冻结**的旧前缀：P0-1 白名单原因码原样放行，其余折叠
          —— 与改造前**逐字节一致**（改造不改旧语义）；
-      3. 命中 09-18 补齐的失败形态 → ``ok=False``，但**文本原样返回**。
+      3. 命中「必须折叠」的异常前缀（D-18）→ 折叠（异常文本不入上下文）；
+      4. 命中 09-18 补齐的失败形态 → ``ok=False``，但**文本原样返回**。
 
-    第 3 条的理由：这些是作者手写、可对模型的中文提示，此前以「成功」身份原样进入
+    第 4 条的理由：这些是作者手写、可对模型的中文提示，此前以「成功」身份原样进入
     上下文。若修判定时顺带折叠，模型会从「知道为什么」退化为「只知道失败了」——
     等于用修 bug 换来一次信息量回归。故**只修判定，不动文本**。
+    第 3 条正相反：那里的文本是异常信息，保留它就是泄漏 —— 差别在**文本性质**，
+    不在严重度。
     """
     text = str(result or "").strip()
     if not text:
@@ -299,6 +328,8 @@ def normalize_tool_result(result: object) -> tuple[str, bool]:
     if _matches_legacy_failure(text):
         kept = _kept_reason(text)
         return (kept, False) if kept is not None else (_SAFE_TOOL_FAILURE, False)
+    if _matches_collapse_failure(text):
+        return _SAFE_TOOL_FAILURE, False
     if _matches_extended_failure(text):
         return text, False
     return text, True

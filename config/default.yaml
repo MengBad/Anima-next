@@ -415,3 +415,109 @@ persona:
   #     trust: 0.95
   #     valence: 0.7
   #     tags: ["开发者", "主人"]
+
+# ---------------------------------------------------------------------------
+# 以下段此前在 default.yaml 中**缺失**（债 D-06）。它们在代码里有默认值，所以
+# 运行时不受影响；但缺段会让「仓库默认」与「生产实配」的键集无法对齐
+# （deploy/check_config_drift.py 依赖这份键集做参考）。
+#
+# 补齐原则：**只补形状、不改值** —— 值一律取 AnimaConfig 的代码默认。
+# 校验：`tests/test_default_yaml_completeness.py` 会断言此处每个段都在、
+# 且 load_config('config/default.yaml') 与补齐前逐字段一致。
+# 补齐日期：2026-09-18
+# ---------------------------------------------------------------------------
+capability_layer:
+  capability_gateway_mode: false
+  capability_mode: false
+  governance_audit_enabled: false
+  governance_data_dir: governance
+  health_evidence_enabled: false
+  pilot_capability_allowlist: []
+  python_exec_enabled: false
+  python_exec_permission_level: 2
+  python_exec_require_audit: true
+  transition_audit_enabled: false
+contradiction:
+  dedup_recent: 10
+  enabled: false
+  max: 50
+  model: ''
+  recall_threshold: 0.8
+danger:
+  active_info_collection: true
+  autonomous_web: false
+  autonomous_web_extract_chars: 1500
+  core_mutation: false
+  core_mutation_confirm: false
+  enabled: false
+  identity_crisis: false
+  info_collection_can_speak: false
+  memory_infection: false
+  memory_infection_confirm: false
+  memory_infection_max_repeats: 2
+  relationship_inference: true
+  self_improvement: false
+  self_improvement_confirm: false
+  self_improvement_cooldown_sec: 3600
+  self_improvement_failure_window_sec: 7200
+  self_improvement_max_recent_failed: 3
+  self_improvement_max_running: 2
+  self_improvement_min_intensity: 0.7
+  self_improvement_skip_when_faults: true
+  self_improvement_synth_prob: 0.1
+  stance_max_age_seconds: 300
+  stance_propagation: false
+  stance_propagation_confirm: false
+iteration:
+  auto_repair: false
+  auto_repair_cooldown_sec: 3600
+  auto_restart: true
+  daily_quota: 1
+  enabled: true
+  max_file_chars: 120000
+  max_files_per_patch: 2
+  pytest_timeout_sec: 120
+  ticket_cooldown_sec: 21600
+repo_read:
+  deny_extra: []
+  enabled: true
+  max_bytes: 20000
+  max_files: 40
+  max_hits: 40
+  max_lines: 400
+rumination:
+  max_sessions: 6
+  scope: group_only
+scrapling:
+  enabled: false
+social:
+  bot_cooldown_sec: 30
+  bot_discovery_enabled: false
+  bot_loop_max_depth: 2
+  bot_social_enabled: true
+  bot_talk_enabled: false
+  bot_whisper_daily_limit: 10
+  bot_whisper_enabled: false
+  farewell_cooldown_sec: 60
+  farewell_member: true
+  poke_back: true
+  poke_back_probability: 0.6
+  welcome_cooldown_sec: 300
+  welcome_new_member: true
+tavily:
+  api_key: ''
+  enabled: true
+  include_answer: true
+  max_results: 5
+  search_depth: advanced
+x_browser:
+  browser_engine: chromium
+  data_dir: data/x_browser
+  enabled: false
+  explore_keywords: []
+  password: ''
+  proxy: ''
+  search_daily_limit: 10
+  timeline_daily_limit: 10
+  username: ''
+  warmup_days: 14

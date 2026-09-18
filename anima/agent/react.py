@@ -138,7 +138,10 @@ class ReActLoop:
             return "本喵工具这边没查到准信喵，你换个说法再问一次？"
         if self.tool_trace:
             # 工具都“成功”但模型仍空回复：仍要出口，避免用户感觉 bot 死机。
-            return "本喵查了一圈但没整理出有用结论喵，你换个具体视频链接（带 BV）再丢一次？"
+            # ⚠️ 措辞必须**场景无关**：这是通用出口，而此前写的是「换个具体视频链接
+            # （带 BV）再丢一次」——那是 B 站专属要求，用户问天气/代码时收到这句就荒谬
+            # （债 D-19）。场景专属的引导留在各自工具内（如 bilibili.py），不放进兜底。
+            return "本喵查了一圈但没整理出有用的结论喵，你换个说法、或者把条件说细一点再问我一次？"
         return "本喵刚卡住一下，你再说一遍喵？"
 
     async def _finalize_content(self, messages: list[dict], temperature: float,
