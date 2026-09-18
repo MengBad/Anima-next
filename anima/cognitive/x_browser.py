@@ -73,7 +73,12 @@ class XBrowserSession:
         self._context = None
         self._lock = asyncio.Lock()
         self._last_used = 0.0
-        self._daily = {"date": "", "search": 0, "timeline": 0}
+        # 每日额度计数：**落盘**（P0，2026-09-18 D-20）。原先只在内存 ⇒ 进程一重启就归零，
+        # 而生产实测曾在一夜内被重启 6 次 ⇒ `search_daily_limit=10` 的事实上限不成立。
+        # 现在：init 时从 data_dir/daily_quota.json 续用当日计数，跨日归零，计数即落盘。
+        self._daily = self._load_daily()
+        # 额度用尽每天只告警一次（用尽本身是「毫秒级、零日志」的静默失败元凶）。
+        self._quota_warned: set[str] = set()
         # 会话级「已发配图」URL 集合：fresh 去重用，避免「拿其他的」反复发同一批。
         self._seen_image_urls: set[str] = set()
         # X 风控退避：detected 空壳（页面能开但抽不到图）视为被 X 临时风控，标记一段
@@ -93,16 +98,93 @@ class XBrowserSession:
     def _day_key(self) -> str:
         return time.strftime("%Y-%m-%d")
 
+    def _quota_path(self) -> Path:
+        return self.data_dir / "daily_quota.json"
+
+    def _load_daily(self) -> dict[str, Any]:
+        """读取落盘的当日额度计数；跨日 / 文件缺失 / 损坏 → 归零。
+
+        归零而非「视为已用尽」是刻意的：本限流器护的是 X 账号风控与成本，不是安全边界，
+        宁宽松也不制造「看起来接口挂了」的新故障模式 —— 那正是本次要修的现象。
+        损坏时留 warning（把静默变成有日志）。
+        """
+        fresh = {"date": self._day_key(), "search": 0, "timeline": 0}
+        try:
+            p = self._quota_path()
+            if not p.exists():
+                return fresh
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if str(raw.get("date", "")) != self._day_key():
+                logger.info("X 额度计数跨日归零（上次记录 %s）", raw.get("date"))
+                return fresh
+            return {
+                "date": self._day_key(),
+                "search": max(0, int(raw.get("search", 0) or 0)),
+                "timeline": max(0, int(raw.get("timeline", 0) or 0)),
+            }
+        except Exception:  # noqa: BLE001 - 计数损坏不能影响搜索能力本身
+            logger.warning("X 额度计数读取失败，本次归零（文件损坏/权限）", exc_info=True)
+            return fresh
+
+    def _persist_daily(self) -> None:
+        """原子写回当日计数。失败只降级为内存计数（不影响搜索本身）。"""
+        try:
+            p = self._quota_path()
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(json.dumps(self._daily, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, p)
+        except Exception:  # noqa: BLE001
+            logger.warning("X 额度计数落盘失败（继续用内存计数）", exc_info=True)
+
+    def _sync_from_disk(self) -> None:
+        """把磁盘计数并回内存（取较大值）。
+
+        `cli.py:806` 与惰性单例（`get_x_browser` / `set_x_browser`）可能各持有一个会话实例、
+        共用同一 `data_dir` ⇒ 只靠各自内存副本互相覆盖会丢计数。取 max 是刻意偏保守的方向
+        （宁可少给一次额度，也不多给）。
+        """
+        try:
+            p = self._quota_path()
+            if not p.exists():
+                return
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if str(raw.get("date", "")) != self._day_key():
+                return
+            for k in ("search", "timeline"):
+                self._daily[k] = max(int(self._daily.get(k, 0) or 0),
+                                     int(raw.get(k, 0) or 0))
+        except Exception:  # noqa: BLE001
+            logger.debug("X 额度计数并回失败，忽略", exc_info=True)
+
     def _within_limit(self, kind: str) -> bool:
+        """额度检查。用尽时**必须留一条显式日志**（此前是毫秒级静默返回）。"""
         limit = int(getattr(self.config, f"{kind}_daily_limit", 0) or 0)
         if limit <= 0:
             return True
         if self._daily.get("date") != self._day_key():
             self._daily = {"date": self._day_key(), "search": 0, "timeline": 0}
-        return self._daily.get(kind, 0) < limit
+            self._quota_warned.clear()
+            self._persist_daily()
+        self._sync_from_disk()
+        used = int(self._daily.get(kind, 0) or 0)
+        if used >= limit:
+            if kind not in self._quota_warned:
+                self._quota_warned.add(kind)
+                logger.warning(
+                    "X %s 今日额度已用尽（%d/%d，计数落盘：%s）— 后续调用将快速失败，"
+                    "次日 00:00 自动恢复（删除该文件可人工重置）",
+                    kind, used, limit, self._quota_path(),
+                )
+            return False
+        return True
 
     def _bump(self, kind: str) -> None:
+        self._sync_from_disk()
         self._daily[kind] = self._daily.get(kind, 0) + 1
+        # limit<=0（不限制）的 kind 无需落盘：省 IO，也避免留下误导性计数文件。
+        # （内存计数照加，`stats()` 仍可观测。）
+        if int(getattr(self.config, f"{kind}_daily_limit", 0) or 0) > 0:
+            self._persist_daily()
 
     def stats(self) -> dict[str, Any]:
         """会话级 X 搬图运行统计（P2-2 失败可视化用，只读）。"""
