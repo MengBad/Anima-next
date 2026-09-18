@@ -17,6 +17,20 @@ from anima.core.config_drift import ConfigDriftMonitor
 from anima.core.config import AnimaConfig, PermissionConfig, SecurityConfig, WebUIConfig
 
 
+@pytest.fixture(autouse=True)
+def _isolate_drift_baseline(tmp_path, monkeypatch):
+    """把漂移基线隔离到 tmp_path。
+
+    自 2026-09-18（债 D-08）起基线会**落盘**到 `persistence.data_dir`。默认配置
+    指向仓库的 `data/` ⇒ 不隔离会有两个后果：测试相互污染（前一个测试落的基线被
+    后一个读到，产生假漂移）且往仓库写文件。
+    """
+    monkeypatch.setattr(
+        "anima.core.config_drift._default_baseline_path",
+        lambda cfg: tmp_path / "config_drift_baseline.json",
+    )
+
+
 def _cfg(**overrides):
     """用默认值构造一份配置，并按 overrides 点路径修改（键用 '.' 分隔层级）。"""
     cfg = AnimaConfig(

@@ -16,8 +16,11 @@ WebUI / config change-set 的受控变更后，应显式 repin 重新校准基�
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
+from pathlib import Path
 from typing import Any, Optional
 
 logger = logging.getLogger("anima.core.config_drift")
@@ -75,18 +78,98 @@ def _stable(value: Any) -> Any:
     return value
 
 
+def _default_baseline_path(cfg: Any) -> Path:
+    """基线文件位置：`<persistence.data_dir>/config_drift_baseline.json`。"""
+    try:
+        data_dir = str(getattr(getattr(cfg, "persistence", None), "data_dir", "data") or "data")
+    except Exception:  # noqa: BLE001 - 取不到就退回默认目录
+        data_dir = "data"
+    return Path(data_dir) / "config_drift_baseline.json"
+
+
+def _canon(value: Any) -> Any:
+    """把 JSON 往返后的值转回 `_get_path` 的规范形式（list→排序 tuple，dict 递归）。
+
+    不做这一步，落盘的 `("a", "b")` 读回成 `["a", "b"]`（不相等）⇒ 比对会**永远报漂移**。
+    """
+    if isinstance(value, list):
+        return tuple(sorted(str(x) for x in value))
+    if isinstance(value, dict):
+        return {str(k): _canon(v) for k, v in sorted(value.items())}
+    return value
+
+
 class ConfigDriftMonitor:
-    """敏感配置基线比对器（无状态快照 + 周期性比对）。
+    """敏感配置基线比对器（基线**跨重启持久化** + 周期性比对）。
 
     一个实例对应一套基线；owner 经 WebUI 显式 repin 时，调用方应替换
     core.config_drift 为新实例（或在实例上调用 repin）。
+
+    持久化（2026-09-18，债 D-08）——为什么必须落盘：
+        基线原先只在内存、且由**本次启动的**配置建立 ⇒ 「手工改 `config.yaml` 然后
+        `systemctl restart anima`」这条**生产上最常用的变更路径**完全绕过本监控：
+        新进程把新值当基线，`config_permission_drift` 永远 0 条。落盘后基线跨重启
+        续用，重启期变更会立刻以 `baseline_source="persisted"` 呈现。
+        首次运行（盘上无基线）仍沿用「首见即基线」的 fail-closed 语义，并把该次
+        基线落盘 —— 因此**从第二次启动起**才具备跨重启可见性。
     """
 
-    def __init__(self, cfg: Any, actor: str = "bootstrap"):
-        self._baseline: dict[str, Any] = self._snapshot(cfg)
-        self._baseline_at = time.time()
-        self._baseline_actor = actor
+    def __init__(self, cfg: Any, actor: str = "bootstrap", baseline_path: Any = None):
+        self._baseline_path: Path = (
+            Path(baseline_path) if baseline_path else _default_baseline_path(cfg)
+        )
+        loaded = self._load_baseline()
+        if loaded is not None:
+            self._baseline, self._baseline_at, self._baseline_actor = loaded
+            self._baseline_source = "persisted"
+        else:
+            self._baseline = self._snapshot(cfg)
+            self._baseline_at = time.time()
+            self._baseline_actor = actor
+            self._baseline_source = "bootstrap"
+            self._persist_baseline()
+        # 漂移告警去重签名保持**内存**：重启后同一漂移最多再报一次，这是刻意的
+        # （重启正是「配置可能被改过」的信号，值得再提醒一次），噪音有界。
         self._last_signature: Optional[str] = None
+
+    def _load_baseline(self) -> Optional[tuple[dict[str, Any], float, str]]:
+        """读取落盘基线；不存在/损坏 → None（调用方按「首见即基线」处理）。"""
+        try:
+            p = self._baseline_path
+            if not p.exists():
+                return None
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            baseline = raw.get("baseline")
+            if not isinstance(baseline, dict) or not baseline:
+                logger.warning("漂移基线文件形状异常，按「首见即基线」处理: %s", p)
+                return None
+            return (
+                {str(k): _canon(v) for k, v in baseline.items()},
+                float(raw.get("at", 0.0) or 0.0),
+                str(raw.get("actor", "unknown")),
+            )
+        except Exception:  # noqa: BLE001 - 基线读不了不能影响启动
+            logger.warning("漂移基线读取失败，按「首见即基线」处理", exc_info=True)
+            return None
+
+    def _persist_baseline(self) -> None:
+        """原子写回基线；失败只降级为内存基线（不阻断启动）。"""
+        try:
+            p = self._baseline_path
+            p.parent.mkdir(parents=True, exist_ok=True)
+            payload = {
+                "baseline": self._baseline,
+                "at": self._baseline_at,
+                "actor": self._baseline_actor,
+                "source": self._baseline_source,
+            }
+            tmp = p.with_name(p.name + ".tmp")
+            tmp.write_text(
+                json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8"
+            )
+            os.replace(tmp, p)
+        except Exception:  # noqa: BLE001
+            logger.warning("漂移基线落盘失败（本次仅内存基线）", exc_info=True)
 
     @staticmethod
     def _snapshot(cfg: Any) -> dict[str, Any]:
@@ -110,6 +193,9 @@ class ConfigDriftMonitor:
             "drift_detected": bool(drifted),
             "baseline_at": self._baseline_at,
             "baseline_actor": self._baseline_actor,
+            # "persisted" = 基线跨重启续用（因此本次重启期的变更是**可见**的）
+            # "bootstrap" = 基线由本次启动建立（此时重启期变更不可见，属已知盲区）
+            "baseline_source": self._baseline_source,
             "items": drifted,
             "dangerous": [d for d in drifted if d["severity"] == "danger"],
             "watched_fields": len(self._baseline),
@@ -138,11 +224,13 @@ class ConfigDriftMonitor:
         return True
 
     def repin(self, cfg: Any, actor: str) -> None:
-        """在受控变更后重新校准基线。"""
+        """在受控变更后重新校准基线（并落盘，使校准跨重启成立）。"""
         self._baseline = self._snapshot(cfg)
         self._baseline_at = time.time()
         self._baseline_actor = actor
+        self._baseline_source = "repinned"
         self._last_signature = None
+        self._persist_baseline()
 
     @staticmethod
     def _severity(field: str, before: Any, after: Any) -> str:
