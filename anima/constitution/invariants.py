@@ -14,8 +14,15 @@ Checks
                                       — ``func(upstream, ...)`` must not mutate upstream
 - ``check_constitution_invariants()``  — run all of the above over the real engines
 
-Run ``check_constitution_invariants()`` in CI / at boot so any regression in the
-derivation chain is caught before it can corrupt a live life.
+Run ``check_constitution_invariants()`` in CI — the one call site is
+``tests/test_constitution_m1.py::test_constitution_invariants_hold`` — so any regression
+in the derivation chain is caught before it can corrupt a live life.
+
+NOTE (2026-09-18, debt D-13): this paragraph used to read "in CI / **at boot**". There is
+no boot call site, and claiming one made the guard look wired where it was not. The claim
+is now narrowed to what is verifiable: exactly one CI call site, named above. The companion
+test ``tests/test_constitution_memory_closure.py`` fails if that call site disappears, so
+this sentence can no longer drift away from the truth.
 """
 from __future__ import annotations
 
