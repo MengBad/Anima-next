@@ -293,6 +293,126 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
   回归由 `tests/test_p34_exploration_share.py` 双向锁死（含 RED 验证）。
   注意：`image_generation.daily_limit` 的 `0 = 不限制` 是**既有成文约定**，本次未改动。
 
+### 3.5 术语与命名排查口径（`capability` / `allowlist`）
+
+> 起因：`capability` 有**两个同名不同物**（债 D-15），`allowlist` 有**一张被普遍误读的表**
+> （债 D-10）。凡在日志 / 配置 / 代码里看到这两个词，先按下表确认**是哪一层**再下结论。
+
+**① 看到 `capability`，先确认是哪一层**
+
+实测依据：抽查 journal 近 30 天 **1063 行**含 `capability` 的日志，**全部**来自
+`anima.tools.capability`（自生长能力层），治理关键字命中 **0** —— 也就是说，日志里
+出现的几乎都不是治理面。
+
+| 层 | 形态 | 是什么 | 排查命令 |
+|---|---|---|---|
+| 治理面 | `capability_layer.*`（config） | 受治理 Gateway / pilot 门（**安全开关**） | `grep -n capability_layer /opt/anima/config.yaml` |
+| 自生长能力 | `capabilities.*`（config）+ `anima/tools/capability.py` | bot 自己注册的工具能力 | `journalctl -u anima \| grep anima.tools.capability` |
+| 组件目录 | `anima/capability/` | 治理组件（gateway / contracts / health） | `ls /opt/anima/anima/capability/` |
+
+**② 看到 `allowlist`，先确认是哪张表**
+
+| 名字 | 管什么 | 空值含义 |
+|---|---|---|
+| `capability_layer.pilot_capability_allowlist` | **只管** `capability_only=True` 的 provider | 空 = 拒绝全部 **pilot-only** 路由（**不是**「拒绝一切」） |
+| `_GATEWAY_PILOT_CAPABILITIES`（`tools/__init__.py:189+`） | Gateway pilot 的精确豁免集合 | 与上表配合，**不是同一张表** |
+| `crossgroup.cross_group_allowlist` | **只**作用于群聊隔离（私聊 `group_id=None` 不适用） | 空 = 不隔离任何群 |
+| 发布归档白名单（`_deploy.py`） | 打包哪些目录 | 与权限无关 |
+
+🔴 **易误读点**：`python.exec` **不经** pilot allowlist 门 —— `anima/tools/__init__.py:194-195`
+明写它 `capability_only=False`、直达 `_governed_capability_route`。所以**空 allowlist
+挡不住它**；它真实的门是 Gateway 四道 fail-closed + provider 的 owner-only 边界。
+⇒ 任何「空 allowlist = 全拒」的表述都是错的（债 D-10）。
+
+### 3.6 系统提示词预算阶梯与「片段被丢」排查口径
+
+> 起因：债 D-27 原写「`capabilities` 段**从不进** prompt / 100% 被丢弃」，
+> 2026-09-18 用生产落盘计数器**实测证伪**。本节给出"一次就能读到真相"的路径，
+> 避免再用「翻 journal 数日志」这种考古法。
+
+**① 三层预算，各有各的口径**
+
+| 层 | 配置键 | 生产实测 | 代码默认 | 被裁对象 |
+|---|---|---|---|---|
+| system 段 | `context.system_token_budget` | **10000** | 8000 | 可选片段（`PromptFragment`） |
+| messages 段 | `context.input_token_budget` | 12000 | 12000 | 历史消息 |
+| 工具结果 | `context.tool_result_token_budget` | 1800 | 1800 | 单条工具返回 |
+
+`base`（人格模板）与 `suffix`（身份锁定 / 猫娘口吻 / 话题纪律 / 身份边界）**不可裁**；
+`protected=True` 的片段（`inner_state` / `hard_facts`）也**不可裁**。
+`required = base + suffix` 一旦超过预算，日志出
+`Context system protected content exceeds budget` —— **这才是真事故**。
+
+**② 谁先死：优先级阶梯（值低者先丢）**
+
+裁剪算法（`pipeline/context.py::compose_system`）：按 `(priority, 注入顺序)` **升序**丢，
+丢到 `total <= budget` 即停。`capabilities` 的 priority = **20**
+（`pipeline/stages/cognition.py:697`），**是全表最低** ⇒
+**只要发生任何片段丢弃，它必是第一个被丢的**。相邻梯队：
+
+| priority | key | 说明 |
+|---|---|---|
+| **20** | `capabilities` | 个人能力片段（自生长能力） |
+| 25 / 30 | `external_exploration` / `tool_learning` | 探索笔记 / 工具心得 |
+| 40–45 | `identity_crisis` / `sylann_expression` / `milestones` | |
+| 50–60 | `group_presence` / `social_graph` / `vector_recall` / `conversation_depth` | |
+| 70–100 | `mood` / `relationship` / `episodic_context` / `scar_triggered` | 最高 |
+
+⚠️ 两点纪律：
+
+1. `capabilities` 的"首要被弃"是**优先级设计的必然结果，不是 bug**。
+2. **不要用 `grep journal` 反推发生率** —— 那条 INFO 日志**只在真发生丢弃时才打**，
+   分母不在日志里。照它计数会得出"100% 被丢"的错误结论（D-27 就是这么写错的）。
+
+**③ 正确读法：查逐日落盘的计数器（比 journal 权威）**
+
+```bash
+# 生产机，只读
+/opt/anima/venv/bin/python - <<'PY'
+import json, pathlib
+d = json.loads(pathlib.Path("/opt/anima/data/reply_quality.json").read_text("utf-8"))
+for k in sorted(d["days"])[-14:]:
+    r = d["days"][k]
+    req = r.get("context_requests") or 0
+    tot = r.get("context_system_tokens_total") or 0
+    print("%s req=%-4d avg_sys=%-6.0f frag_dropped=%-4d hist_dropped=%-4d protected_over=%d" % (
+        k, req, (tot / req) if req else 0,
+        r.get("context_fragments_dropped") or 0,
+        r.get("context_history_dropped") or 0,
+        r.get("context_protected_over_budget") or 0))
+PY
+```
+
+| 字段 | 语义 |
+|---|---|
+| `context_requests` | **分母**：本日 cognition 运行次数 |
+| `context_fragments_dropped` | **分子**：发生片段丢弃的运行数 |
+| `context_system_tokens_total ÷ context_requests` | 系统段均值；**逼近 budget 就是顶格信号** |
+| `context_history_dropped` | 消息历史被裁条数 |
+| `context_protected_over_budget` | **不可裁核心超预算次数**（>0 必须查） |
+
+**④ 2026-09-18 基线（供日后对比）**
+
+| 窗口 | requests | avg 系统段 tokens | 片段丢弃 | 丢弃率 |
+|---|---|---|---|---|
+| 2026-07-12 .. 08-31 | 1077 | 7816 | 969 | 90.0% |
+| 2026-09-01 .. 09-16 | 145 | 7270 | **0** | **0.0%** |
+| 2026-09-17 .. 09-18 | 124 | **9230** | 59 | 47.6% |
+| 65 天合计 | 1346 | 7887 | 1028 | **76.4%** |
+
+⇒ 「系统段顶格」**不是长期常态**：09-01～09-16 连续 16 天均值仅 7270、丢弃 **0 次**；
+09-17 起均值跳到 9230 才开始丢。**顶格是"内容增长"的结果，要盯的是均值趋势，不是某一条日志。**
+
+**⑤ 想调整时的门**
+
+- 要 `capabilities` **每次都在** → 抬 `system_token_budget` 至 ≥ 10500
+  （每次调用多约 700 tokens，**属行为扩张**，需授权 + 实测）。
+- 要**彻底不算** → 删 `cognition.py:690-699` 的片段块
+  （会真的改变"系统段没顶格"那类运行的行为）。
+- 能力的**主通道是工具面**（`register_as_independent_tool=true` → 启动注册为 Tool，
+  日志可见 `内生能力: 启动注册 N 个到工具面`），提示词片段只是「主动倾向」的冗余叙述
+  ⇒ 取舍看的是**倾向**，不是**可用性**。
+
 ---
 
 ## 4. 模块级维护指南

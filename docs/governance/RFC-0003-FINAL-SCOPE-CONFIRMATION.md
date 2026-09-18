@@ -44,3 +44,17 @@ no engineering action has been taken and none is authorized by this package.
 > re-litigation. Approval (Option A) was received 2026-08-07; Implementation is authorized subject to
 > the M0.4.x readiness gate, and no code is written before that gate. The blank
 > `APPROVAL_RECORD_TEMPLATE.md` is retained as the canonical form.
+
+---
+
+## Status update — 2026-09-18 (debt D-16)
+
+> 本节由维护者追加，**不修改上文任何历史表述**。上文在它写作的时刻是准确的。
+
+- **RFC-0003 状态正式回退为 `Deferred`**（自 2026-09-18 起计）。审批记录保留、裁定仍有效，
+  只是**未激活**：自 2026-08-07 起约 6 周**无任何实现**，全库无 Workflow DSL 代码。
+- **重启的前置条件**：见 `RFC-0002-FINAL-SCOPE-CONFIRMATION.md` 同名小节 ——
+  必须先闭合债 D-13（Reflection → Memory 闭环）、先裁定债 D-14（执行基建的三种去向），
+  并取得一次显式重新授权。
+- 治理语义提醒：`APPROVED` 与 `Deferred` 的区别不在文档，而在**是否存在排期与 owner**。
+  当前两者都没有，所以如实标 `Deferred`，以免读者以为它正在进行中。

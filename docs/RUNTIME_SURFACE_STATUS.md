@@ -55,16 +55,33 @@
 
 ---
 
-## 3. 待 owner 拍板的三个面（本轮**不**代决）
+## 3. 三个面的裁定（2026-09-18 收口 · 债 D-14）
 
-| # | 面 | 模块状态 | 产物状态 | 可选处置 |
+| # | 面 | 模块状态 | 产物状态 | **裁定** |
 |---|---|---|---|---|
-| C-1 | `runtime/` 执行基建（含 `providers/`、`capability_resolver`） | **已接线** | 零 | (a) 接一个真实 producer（新入口 + 授权）／(b) 保持休眠，但**文档写明"已接线、未驱动"** |
-| C-2 | `pilot/`（`canary*`/`entry_gate`/`message_adapter`/`identity_*`…） | **部分接线**（`conversation_evidence` 与 `safety_filter` 已被生产用） | 零 | 同上；注意 C-2 不能整包封存，只能"逐模块"判定 |
-| C-3 | RFC-0002 / RFC-0003（已 APPROVED，无实现） | 未实现 | 无 | 本轮按 **Deferred** 记录（纯文档动作）；实现需独立授权 |
+| C-1 | `runtime/` 执行基建（含 `providers/`、`capability_resolver`） | **已接线** | 零 | **(b) 保持休眠** + 本文明示"已接线、未驱动" + **停止在该面追加功能**（见下方策略声明） |
+| C-2 | `pilot/`（`canary*`/`entry_gate`/`message_adapter`/`identity_*`…） | **部分接线**（`conversation_evidence` 与 `safety_filter` 已被生产用） | 零 | **逐模块**：已承重的按承重维护；未驱动的并入 (b) |
+| C-3 | RFC-0002 / RFC-0003（已 APPROVED，无实现） | 未实现 | 无 | **`Deferred`**（正式回退，见两份 FINAL-SCOPE 的 Status update） |
 
-**本轮实际动作**：只做 (b) 的文档侧 —— 把上述事实写清；**不改任何代码路径、不接任何 producer、不动任何配置**。
-理由：`审计通过 ≠ 运行时授权`；且 C-1/C-2 的任何"接线"都会新建生产写入路径，属必须显式授权的改面。
+**为何不是 (a) 接 producer**：任何"接线"都会新建生产写入路径（`start_run` / ledger 落盘），
+而当前**没有消费方**——`drive_gate` 在生产不存在（默认 `False`），宪法链对线上产出为 0。
+先接 producer 等于制造第二批"零产物基建"，且会绕开独立授权窗口。⇒ 判 (a) 不成立，取 (b)。
+
+### 3.1 策略声明（对该面的处置纪律）
+
+自 2026-09-18 起，对 `runtime/` 与未承重的 `pilot/` 模块：
+
+1. **不新增功能**。该面处于"已接线、未驱动"，新增代码只会扩大无人验证的表面积。
+2. **允许的改动只有三类**：修 bug（尤其 ImportError 类，见 `deploy/check_orphan_imports.py`）、
+   修文档、删死代码。任何"加能力"的改动需先有 C-1/C-2 的重新裁定。
+3. **`SEALED`（封存/停维护）不是合法选项** —— 39 个模块中 31 个有生产导入者，
+   封存会直接打断 `cli.py:342-343` / `tools/__init__.py:584,609,782` /
+    `pipeline/stages/memory.py:105` / `sylann_suggestion_controller.py:32` /
+   `governance/gateway.py:38` 的 import。
+4. **改动前先跑一次产物面检查**（§6 命令②）：若 `data/{workflow_runs,execution_ledger,pilot,observation}`
+   开始出现，说明有东西已在驱动该面 —— 那时本声明作废，必须重新裁定。
+
+> 一句话：**模块可达、无人驱动 —— 保持这个状态，别往里加东西，也别封存它。**
 
 ---
 
