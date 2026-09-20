@@ -30,7 +30,7 @@ from anima.llm.group_gate import (  # noqa: F401
     classify_group_reply_skip,
     should_reply_in_group,
 )
-from anima.util.name_clean import clean_display_name
+from anima.util.name_clean import clean_display_name, sender_display_name
 
 if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
@@ -664,7 +664,9 @@ class LLMHandler(AnimaCommandsMixin):
         group_id = event.get("group_id")
         raw = event.get("raw", {})
         detail_type = raw.get("message_type", "private")
-        sender_name = clean_display_name(raw.get("sender", {}).get("nickname", str(user_id)))
+        # 🔴 群名片优先于 QQ 昵称（2026-09-20 深审）：群里用的一直是群名片「Aki」，
+        # 只读 nickname 会拿到 QQ 昵称「Rezon」⇒ 主动发言张口叫错人。
+        sender_name = sender_display_name(raw.get("sender"), user_id)
 
         if not user_id:
             return
@@ -934,6 +936,13 @@ class LLMHandler(AnimaCommandsMixin):
         # 发送回复
         if not ctx.should_reply or not ctx.reply:
             if ctx.should_reply:
+                # I4（2026-09-19）：应回复却无正文 —— 此前只写 audit/quality（均不进
+                # journal），线上出现「ReAct 跑完却无出站」时事后不可归因。补一条
+                # warning，让每个静默出口都能按 trace 定位（纯可观测，零行为变更）。
+                logger.warning(
+                    "[无出站][trace=%s] 应回复但正文为空：stop_reason=%s text_len=%d reply_len=%d",
+                    trace, ctx.stop_reason or "-", len(ctx.text or ""), len(ctx.reply or ""),
+                )
                 llm = getattr(self.core, "llm", None)
                 health = llm.health() if llm and hasattr(llm, "health") else {}
                 if audit:

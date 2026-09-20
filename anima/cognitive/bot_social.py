@@ -22,6 +22,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Optional
 
+from anima.util.name_clean import sender_display_name
+
 logger = logging.getLogger("anima.cognitive.bot_social")
 
 _BEIJING = timezone(timedelta(hours=8))
@@ -581,7 +583,9 @@ def classify_bot_reply_skip(
     if detect_bot_loop(event.get("group_id"), self_id, max_depth, now):
         return "bot_loop"
     # 放行：更新关系 + 设冷却
-    name = ((event.get("sender") or {}) or {}).get("nickname") or ""
+    # 🔴 群名片优先（2026-09-20）：此前直读 `sender["nickname"]` ⇒ 记录的是对方的
+    #   **QQ 昵称**而非本群显示名，与 handler/commands 那个「Rezon vs Aki」同源。
+    name = sender_display_name(event.get("sender"), sender_uid)
     try:
         BotRelationStore(data_dir).record_interaction(sender_uid, name, "mentioned_me", now)
         cool.set_cooldown(sender_uid, now + cooldown_sec)

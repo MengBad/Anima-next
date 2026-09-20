@@ -52,8 +52,13 @@ def parse_due_hint(text: str, now: Optional[float] = None) -> tuple[Optional[flo
         return now + 7 * _DAY_SECONDS, t, True  # 无法可靠解析到具体星期 → 仍标模糊
     if "周末" in t:
         return now + 3 * _DAY_SECONDS, t, True
-    if "稍后" in t or "等下" in t or "待会" in t:
-        return now + 2 * 3600, t, False
+    if "稍后" in t or "等下" in t or "待会" in t or "过会儿" in t:
+        # 🔴 口头语**不给精确时间**（2026-09-20 深审实测）：bot 自己回复里一句
+        #   「等下，你怎么也抢本喵的自称啊」被解析成 now+2h 且 fuzzy=False（自认精确），
+        #   债务于是被当成"2 小时后就到期" —— 而那句话根本不是承诺。
+        # 口头语与 `下周 / 周末` 同级：只表示"待会儿再说"，走模糊策略
+        # （创建满 1 天后提醒一次），**绝不硬算时间戳**。
+        return None, t, True
     m = re.search(r"(\d+)\s*(小时|钟头)\s*(后|之内|内)?", t)
     if m:
         try:

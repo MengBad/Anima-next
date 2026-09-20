@@ -15,6 +15,11 @@ logger = logging.getLogger("anima.pipeline.stages")
 
 # OneBot/CQ 是传输格式，不是对话正文。
 from anima.constants import CQ_TRANSPORT_RE as _CQ_TRANSPORT_RE
+# 承诺判别唯一口径（详见 `anima/constants.COMMITMENT_RE` 的注释）。
+# 此前这里自己写了一份含**裸时间词**（下次/等下/一会儿/让本喵…）的正则，
+# 导致玩笑与斗嘴被记成承诺 —— 生产实测 agenda/commitments/debts 三本账里
+# 大片是假账，再由主动发言去"跟进"一件不存在的事。
+from anima.constants import COMMITMENT_RE as _PROMISE_RE
 
 
 def _bg_task_done(task: asyncio.Task) -> None:
@@ -94,12 +99,18 @@ _DERAIL_HISTORY_MAX = 1000
 # 承诺跟进检测
 # ---------------------------------------------------------------------------
 
-_PROMISE_RE = re.compile(
-    r"(回头帮你|待会儿帮你|下次|过会儿|稍后|等下|一会儿|"
-    r"本喵去查|本喵帮你|帮你查|帮你看看|回头再|下次再|"
-    r"等本喵|让本喵|本喵先记|记下了|记住了)",
-    re.I,
-)
+#: 承诺跟进议程的**最小延迟**（秒）。2026-09-20 深审实测：10:44:10 记下的
+#: 一条"承诺"议程 `not_before_at=0.0`，**13 秒后**（10:44:23）就被主动发言问出口
+#: ——「对了，Rezon 之前说的那事后来怎么样了？」。用户侧读起来就是"莫名其妙
+#: 突然说起不相干的事"。`episodes._capture_commitment` 用的是 `due_at`（≥6h），
+#: 这里对齐同一口径：**刚说完的事不许立刻追问**。
+_PROMISE_FOLLOWUP_DELAY_SEC = 6 * 3600
+#: 议程在"可发言"之后仍保留的有效期，避免 not_before 一推迟就撞上原 4h 过期。
+_PROMISE_FOLLOWUP_TTL_SEC = 6 * 3600
+
+# `_PROMISE_RE` 由本文件顶部的 `from anima.constants import COMMITMENT_RE as _PROMISE_RE`
+# 提供 —— 旧的自研版本（含裸时间词 下次/等下/一会儿/让本喵…）已删除，
+# 免得两套词表并存时后者静默覆盖前者（本次就踩过：import 加了、旧定义没删）。
 
 # K1: 工具失败 + 承诺重试的检测
 _FAILURE_RE = re.compile(
@@ -107,6 +118,12 @@ _FAILURE_RE = re.compile(
     r"工具失败|请求失败|没查到准信|脑子卡了)",
     re.I,
 )
+# ⚠️ 这一份**不是**独立的承诺判据，而是「工具失败后的重试承诺」专用词表：
+#    它**必须与 `_FAILURE_RE` 共现**才会被采纳 —— 见 `_detect_promise_and_schedule`
+#    的 `if not has_promise and not (has_failure and has_retry_promise): return`。
+#    单吃这些词**不会**造假账，这正是它没有并入 `COMMITMENT_RE` 的原因
+#    （`COMMITMENT_RE` = 无条件承诺；本表 = 有条件重试）。
+#    🔴 动它之前先确认那条共现约束还在 —— 一旦拆开，它就是第三份裸词表。
 _RETRY_PROMISE_RE = re.compile(
     r"(等下再帮你|回头再查|过会儿再|下次再帮|稍后再|"
     r"本喵再试|再帮你查|回头补上)",
@@ -168,9 +185,11 @@ def _detect_promise_and_schedule(ctx: "PipelineContext") -> None:
             source = "promise_followup"
             priority = 0.45
 
+        _not_before = time.time() + _PROMISE_FOLLOWUP_DELAY_SEC
         core.propose_agenda(
             int(ctx.group_id), intent, priority=priority,
-            expires_at=time.time() + 4 * 3600, source=source,
+            not_before_at=_not_before,
+            expires_at=_not_before + _PROMISE_FOLLOWUP_TTL_SEC, source=source,
         )
         # 深审 P1-2：标记本回复已建承诺跟进议程，供 handler 的 episodes.observe
         # 跳过第二次建档（双路径曾让用户几小时内被重复追问 2-3 次）

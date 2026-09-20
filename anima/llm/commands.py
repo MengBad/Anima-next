@@ -1002,7 +1002,9 @@ class AnimaCommandsMixin:
         else:
             from anima.crossgroup import get_crossgroup_manager
             cgm = get_crossgroup_manager()
-            sender_name = event.get("raw", {}).get("sender", {}).get("nickname", str(user_id))
+            from anima.util.name_clean import sender_display_name
+            # 群名片优先于 QQ 昵称（同 handler：跨群事实要记在"群里怎么叫他"名下）
+            sender_name = sender_display_name(event.get("raw", {}).get("sender"), user_id)
             src = str(group_id) if detail_type == "group" else "private"
             # P1-2：手动补种/纠偏是 Owner 显式声明的事实，给满置信度 1.0，
             # 绝不参与夜间衰减淘汰（private 源本就在保护名单；群内手动种也应高于 LLM 猜测的 0.5）。

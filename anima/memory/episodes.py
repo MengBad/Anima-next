@@ -8,20 +8,22 @@ import uuid
 from dataclasses import asdict, dataclass
 
 from anima.core.persistence import PersistenceProvider
+from anima.constants import COMMITMENT_RE as _COMMITMENT_HINT
 
 
-# 用户侧约定 / bot 侧承诺（口语常见面）
-_COMMITMENT_HINT = re.compile(
-    r"(?:"
-    r"我会|我帮你|我来|答应|约好|说好|"
-    r"别忘了|记得帮|记得提醒|提醒我|记得叫|"
-    r"明天|明日|今晚|稍后|待会|回头|下次|到时候|"
-    r"本喵会|本喵帮|本喵来|本喵记得|哈基米会"
-    r")"
-)
-_BOT_PROMISE_HINT = re.compile(
-    r"(?:本喵会|本喵帮|本喵来|本喵记得|我会帮|我会记|帮你查|帮你看|帮你盯|记下了|到时候告诉)"
-)
+# 用户侧约定 / bot 侧承诺 —— 🔴 判据**唯一口径在 `anima/constants.COMMITMENT_RE`**。
+# 2026-09-20 深审：这里原本自己写了一份含裸时间词（明天/今晚/稍后/下次/到时候）的
+# 正则，于是「别踩电源键喵…今晚就别想睡了」「困死了…明天再折腾」这类闲聊被记成
+# 承诺 —— 生产 commitments.json **14/14 条全是假账**。改为复用共享词表：时间词必须
+# 与「为某人做某事」的标志词同现才算承诺；裸时间词单独出现不构成承诺。
+#
+# 🔴 2026-09-20 复检（第二轮）：这里**还曾有第二份** `_BOT_PROMISE_HINT`（bot 侧专用，
+#   含裸 `本喵会`），而 `observe()` 的判据是
+#       `_COMMITMENT_HINT.search(text) or (role == "bot" and _BOT_PROMISE_HINT.search(text))`
+#   —— 于是「哼哼，本喵会的本事可多着呢」这类**能力陈述**在 `role="bot"` 时照样
+#   记成承诺 ⇒ 刚清掉的假账会从这里重新长回来。**已删除该词表**：bot 侧与 user 侧
+#   共用 `COMMITMENT_RE`（其第一人称段已含 `本喵会(?![不的])` 等，且要求 12 字内
+#   出现动作词，足以区分"会做某事"与"会去做"）。
 # 威胁 / 角色扮演攻击语境——即使含时间词也不算承诺
 _THREAT_ROLEPLAY_RE = re.compile(
     r"(?:死定了|气死|弄死|打死|踩死|掐死|咬死|"
@@ -105,7 +107,9 @@ class EpisodicMemory:
         text = str(text or "").strip()
         if not text:
             return None
-        has_commit = bool(_COMMITMENT_HINT.search(text) or (role == "bot" and _BOT_PROMISE_HINT.search(text)))
+        # 判据单一真源（2026-09-20 复检）：bot 侧**不再**有独立词表（原 `_BOT_PROMISE_HINT`
+        # 含裸 `本喵会`，会让能力陈述在 role="bot" 时记成承诺）。
+        has_commit = bool(_COMMITMENT_HINT.search(text))
         # 威胁 / 角色扮演攻击语境不算承诺（“你今晚死定了”≠ 承诺）
         if has_commit and _THREAT_ROLEPLAY_RE.search(text):
             has_commit = False
@@ -140,15 +144,13 @@ class EpisodicMemory:
         for item in self.commitments:
             if item.status == "open" and item.scope == episode.scope and item.user_id == episode.user_id and item.text == episode.summary:
                 return item
+        # 🔴 统一 +6h（2026-09-20 复检）：此前按**裸时间词**分支算
+        #   （明天/明日→+20h、今晚→+4h、稍后·待会·回头→+2h、下次→+24h）——
+        #   这是**第三处**裸时间词（另两处在 `constants.COMMITMENT_RE` 与
+        #   `cognitive/debt.parse_due_hint`，均已收口）。与 `_shared` 的
+        #   `_PROMISE_FOLLOWUP_DELAY_SEC` 同一口径：承诺一律"至少 6h 后才跟进"，
+        #   不再看词猜时间。
         due_at = time.time() + 6 * 3600
-        if any(token in episode.summary for token in ("明天", "明日")):
-            due_at = time.time() + 20 * 3600
-        elif "今晚" in episode.summary:
-            due_at = time.time() + 4 * 3600
-        elif any(token in episode.summary for token in ("稍后", "待会", "回头")):
-            due_at = time.time() + 2 * 3600
-        elif "下次" in episode.summary:
-            due_at = time.time() + 24 * 3600
         item = Commitment(episode.scope, episode.user_id, episode.summary, episode.id, due_at=due_at)
         # 仅群聊可自动生成跟进议程；私聊只保留约定，避免误发到群。
         if agenda_factory is not None and group_id:

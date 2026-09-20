@@ -165,11 +165,16 @@ class TestPromiseDetection:
     """承诺跟进检测测试。"""
 
     def test_promise_regex_matches(self):
-        """承诺关键词应被检测到。"""
+        """承诺关键词应被检测到。
+
+        2026-09-20 深审订正：本用例原先把 **「下次再聊」** 也列为"应检测到的承诺"
+        —— 那是告别语，不是承诺，却恰好把"裸时间词单独构成承诺"这个缺陷**固化成
+        了断言**（生产因此累积 14 条假 commitments、11 条假 promise_followup）。
+        现已移入下面的非承诺列表，真正的承诺语义见 `test_commitment_precision.py`。
+        """
         from anima.pipeline.stages import _PROMISE_RE
         promises = [
             "回头帮你查一下",
-            "下次再聊",
             "本喵去查查",
             "帮你看看",
             "记下了",
@@ -178,12 +183,19 @@ class TestPromiseDetection:
             assert _PROMISE_RE.search(text), f"应检测到承诺: {text}"
 
     def test_promise_regex_non_matches(self):
-        """非承诺语句不应被检测。"""
+        """非承诺语句不应被检测。
+
+        🔴 裸时间词（下次/明天/今晚/到时候/等下…）**单独出现不算承诺** ——
+        这是 2026-09-20 修复的核心；「下次再聊」是告别语，曾被误判为承诺。
+        """
         from anima.pipeline.stages import _PROMISE_RE
         non_promises = [
             "今天天气不错",
             "你好",
             "本喵觉得不行",
+            "下次再聊",
+            "别踩电源键喵 那台还在挂着任务，按下去今晚就别想睡了",
+            "哈欠……困死了，快去睡觉，明天再折腾……",
         ]
         for text in non_promises:
             assert not _PROMISE_RE.search(text), f"不应检测到承诺: {text}"

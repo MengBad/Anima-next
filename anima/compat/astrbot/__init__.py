@@ -28,6 +28,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional, Union, get_args, get_origin, get_type_hints
 
 from anima.core.gateway import OutboundMsg
+from anima.util.name_clean import sender_display_name
 from anima.llm.usage import llm_scope
 
 logger = logging.getLogger("anima.compat")
@@ -282,7 +283,9 @@ class AstrMessageEvent:
             group_id=raw.get("group_id"),
             message=MessageChain(msg_data),
             message_id=raw.get("message_id", 0),
-            sender_name=sender.get("nickname", ""),
+            # 🔴 群名片优先（2026-09-20）：与 `handler` / `commands` 同一口径。
+            #   `sender_info` 仍原样保留 `nickname` / `card` 两个字段（API 契约）。
+            sender_name=sender_display_name(sender),
             message_str=msg_str,
             unified_msg_origin=raw.get("unified_msg_origin", ""),
             sender_info=sender_info,

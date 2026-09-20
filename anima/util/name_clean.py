@@ -18,3 +18,21 @@ def clean_display_name(name: str) -> str:
     cleaned = _DECOR_RE.sub("", name)
     cleaned = re.sub(r"\s+", "", cleaned).strip()
     return cleaned or name
+
+
+def sender_display_name(sender: object, fallback: object = "") -> str:
+    """从 OneBot `sender` 对象取「该在群里怎么称呼这个人」。
+
+    🔴 **群名片（`card`）优先于 QQ 昵称（`nickname`）** —— 2026-09-20 深审实测：
+    只读 `nickname` 会让 bot 用**全局 QQ 昵称**叫群里的人。群里用的一直是群名片
+    「Aki」，bot 却张口叫「Rezon」（那是 ta 的 QQ 昵称），群友当场解释
+    「rezon是aki的那个号…不读群昵称读qq昵称」，用户侧读起来就是"叫错人"。
+
+    群名片为空（私聊 / 未设置）时回退 QQ 昵称，再回退 `fallback`（通常是 QQ 号）。
+    集中在 `util/name_clean` 里，`handler` / `commands` 共用同一份，避免再次分叉。
+    """
+    s = sender if isinstance(sender, dict) else {}
+    raw = str(s.get("card") or "").strip() or str(s.get("nickname") or "").strip()
+    if not raw:
+        return str(fallback or "")
+    return clean_display_name(raw) or str(fallback or "")
