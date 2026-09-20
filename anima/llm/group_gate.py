@@ -237,7 +237,11 @@ def is_familiar_idle_unaddressed(event: dict, text: str) -> bool:
     if is_direct_group_call(event, text):
         return False
     raw = text or ""
-    if re.search(r"\[CQ:at,", raw, re.I) and not event.get("mentions_self"):
+    # I6（2026-09-19）：原判据 `re.search(r"\[CQ:at,", raw)` 是死分支——`event["text"]`
+    # 由纯 text 段拼接（onebot11.py:361），CQ 已被剥离，该正则永不命中。改用协议层
+    # `at_uids`（onebot11.py:364，已排除 bot 自身）。能走到这里 ⇒ `is_direct_group_call`
+    # 已返回 False ⇒ 必非「@ 我」，故无需再判 mentions_self。
+    if event.get("at_uids"):
         return True
     plain = _plain_group_text(raw)
     if not plain:
@@ -264,7 +268,11 @@ def _is_session_thread_idle(event: dict, text: str) -> bool:
     if is_direct_group_call(event, text):
         return False
     raw = text or ""
-    if re.search(r"\[CQ:at,", raw, re.I) and not event.get("mentions_self"):
+    # I6（2026-09-19）：原判据 `re.search(r"\[CQ:at,", raw)` 是死分支——`event["text"]`
+    # 由纯 text 段拼接（onebot11.py:361），CQ 已被剥离，该正则永不命中。改用协议层
+    # `at_uids`（onebot11.py:364，已排除 bot 自身）。能走到这里 ⇒ `is_direct_group_call`
+    # 已返回 False ⇒ 必非「@ 我」，故无需再判 mentions_self。
+    if event.get("at_uids"):
         return True
     plain = _plain_group_text(raw)
     if not plain:

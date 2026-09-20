@@ -48,6 +48,15 @@ def test_session_still_blocks_other_bot():
     assert _classify(evt, "沙琪玛 你作业写完了吗", session_active=True) == "other_bot"
 
 
+def test_session_still_blocks_atting_others():
+    # I6 回归：会话窗内 @ 别人（长句）必须拦住 —— 旧 `[CQ:at,` 文本判据是死分支，
+    # 长句会落到长度闸并被放行（实测 L. 的连发即走此窗）
+    evt = _evt(at_uids=["12345"])
+    assert _classify(
+        evt, "12345 你觉得今天晚上我们吃什么比较好呢", session_active=True
+    ) == "idle"
+
+
 def test_direct_call_always_passes_regardless_of_session():
     evt = _evt(mentions_self=True)
     assert _classify(evt, "哈基米 帮我看下这个", session_active=False) is None

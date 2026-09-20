@@ -213,7 +213,7 @@ class AnimaCore:
         )
         item = self.agenda.push(AgendaItem(
             group_id, text_intent, priority, not_before_at, expires_at,
-            intent_id=intent.id,
+            intent_id=intent.id, source=source,
         ))
         self.audit.emit("agenda_created", agenda_id=item.id, group_id=item.group_id,
                         priority=item.priority, intent_id=intent.id, source=source)

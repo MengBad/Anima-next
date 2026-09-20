@@ -351,12 +351,10 @@ class WebUIServer:
         except Exception:
             channel_health = {}
 
-        # 认知模块状态矩阵
-        cognitive_status = {}
-        try:
-            cognitive_status = self.core.cognitive_status()
-        except Exception:
-            pass
+        # I8（2026-09-19）：移除恒空的 cognitive_modules 死字段。
+        # 原因：它依赖只读不写的 AnimaCore._services（register_service() 全库零调用），
+        # 故 /api/health 里永远是 {}，对任何 dashboard 都是误导性空对象；且全仓无消费者。
+        # 真实可观测面是 /api/modules/status（modules_status handler）。此处不动 Core（冻结面）。
 
         # 资源概览
         resources: dict = {}
@@ -390,7 +388,6 @@ class WebUIServer:
             "audio": self.core.llm_handler.audio_health() if self.core.llm_handler and hasattr(self.core.llm_handler, "audio_health") else None,
             "sylann": self.core.sylann.health() if self.core.sylann else {"enabled": False},
             "history": self.core.health_history.health(),
-            "cognitive_modules": cognitive_status,
             "metrics": get_metrics().snapshot(),
             "resources": resources,
             "timestamp": time.time(),

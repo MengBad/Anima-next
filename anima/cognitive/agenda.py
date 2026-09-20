@@ -47,6 +47,12 @@ class AgendaItem:
     id: str = ""
     status: str = "pending"
     intent_id: str = ""
+    # 来源标签（promise_followup / commitment / dream / system …）。
+    # 🔴 2026-09-20 补：`propose_agenda(source=…)` 原先只进了 subject 与 audit，
+    # **没落进 AgendaItem** ⇒ 盘上的 agenda.json 完全看不出条目来自哪条通道，
+    # 清理假承诺时只能靠"文本形状"反推（见 reports/2026-09-20_intent_fix_p0.md）。
+    # 加为**带默认值的尾字段**：旧文件缺该键 → 默认 "system"，`AgendaItem(**raw)` 不炸。
+    source: str = "system"
 
     def __post_init__(self) -> None:
         if not self.id:
@@ -78,7 +84,21 @@ class AgendaQueue:
                 continue
         self._prune_expired(save=False)
 
+    #: 终态条目（`consumed` / `cancelled` / `expired`）的保留上限；`pending` **全留**。
+    #: 🔴 2026-09-20：此前 `save()` 全量写 `self.items`，而 `_prune_expired()` 只把
+    #:   pending 转成 expired、**从不删除** ⇒ `agenda.json` 只增不减（对比
+    #:   `episodes[-1000:]` / `commitments[-500:]` 都有上限）。终态条目已无行为作用，
+    #:   只占盘、拉长排查时的噪声。
+    _TERMINAL_KEEP = 200
+
     def save(self) -> None:
+        terminal_idx = [i for i, item in enumerate(self.items) if item.status != "pending"]
+        overflow = len(terminal_idx) - self._TERMINAL_KEEP
+        if overflow > 0:
+            # 丢**最旧**的终态，保留原顺序（`peek_ready` 取 max priority，顺序不敏感，
+            # 但重排会让"和上一轮日志对比"变难）。
+            drop = set(terminal_idx[:overflow])
+            self.items = [it for i, it in enumerate(self.items) if i not in drop]
         self.persistence.write_json("agenda.json", [asdict(item) for item in self.items])
 
     def push(self, item: AgendaItem) -> AgendaItem:

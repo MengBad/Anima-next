@@ -178,4 +178,5 @@ async def test_generation_stage_falls_back_when_react_raises(monkeypatch):
     result = await generation_stage(ctx)
     assert result == StageResult.CONTINUE
     assert ctx.reply, "生成阶段异常后必须设置降级回复，不能静默不回"
-    assert "脑子卡了一下" in ctx.reply
+    from anima.pipeline.stages.generation import _DEGRADE_FALLBACKS
+    assert ctx.reply in _DEGRADE_FALLBACKS, f"降级回复应出自话术池，实得 {ctx.reply!r}"

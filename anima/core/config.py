@@ -143,7 +143,18 @@ class AutonomyConfig(BaseModel):
     #      的数值字段聚成 traits ⇒ 真实记忆下 `identity_traits == 0`、`need.urgency == 0`，
     #      Drive 激活退化为只由 Perception(novelty > 0.75) 决定 = 绝大多数时候不开口。
     #      先闭合 Reflection→Memory 闭环(工程债台账 D-13)，再开此门；否则等于自设压制。
+    #      2026-09-18 后段：D-13 口径 (a)（真实 producer）**已接上**，但那只补了"闭环有人调"，
+    #      **第二层（数值 trait 通道）仍未闭** ⇒ 上面 `identity_traits==0` 的结论不变。
+    #      因此"接了 producer" ≠ "可以开此门"；开此门前必须先把 traits 变成非空。
     drive_gate: bool = False
+    # T1.1/D-13 验收 (a)：宪法 Reflection→Memory 的**真实 producer** 开关。
+    # True=每次真实主动承载结束后，把那次承载结果经 reflect() 沉淀进宪法记忆
+    #      (`anima/constitution/reflection_loop.py`)，并记审计
+    #      `constitution_reflection_sedimented`。默认关（行为不变）。
+    # 🔴 该闭环**不产生数值 trait**：reflect() 只产文本 lesson，而 derive_identity 只聚合
+    #      semantic 的数值字段 ⇒ 开它之后 `identity_traits` 仍为 0。它补的是"闭环有生产
+    #      producer"这一条，**不等于** drive_gate 可以翻转（后者还需一条数值 trait 生产路径）。
+    constitution_reflection_loop: bool = False
     # 群最近一次人类发言距今 ≥ 该秒数，才考虑主动插话（避免对话正嗨时打断）。
     active_silence_min_sec: int = 300
     # 全局两次主动发言的最小间隔（秒），防止多群同时刷屏。

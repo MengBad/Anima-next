@@ -30,10 +30,14 @@ def test_idle_detects_short_unaddressed_phrases():
     assert is_familiar_idle_unaddressed({}, "什么时候更新")
     # pure CQ / empty after strip
     assert is_familiar_idle_unaddressed({}, "[CQ:image,file=x.jpg]")
-    # @ someone else, not bot
+    # @ someone else, not bot —— 判据是协议层 at_uids（I6：event["text"] 由 text 段拼接、
+    # CQ 已剥离，旧的 `[CQ:at,` 文本判据在 OneBot 路径永不命中）
+    assert is_familiar_idle_unaddressed({"at_uids": ["12345"]}, "约吗")
+    # I6 核心回归：长句 @ 别人在旧死分支下会被误接（判据从不命中 → 落到长度闸 →
+    # 长句放行），新判据必须拦住它
     assert is_familiar_idle_unaddressed(
-        {"mentions_self": False},
-        "[CQ:at,qq=12345] 约吗",
+        {"at_uids": ["12345"]},
+        "12345 你觉得今天晚上我们吃什么比较好呢",
     )
 
 
