@@ -147,8 +147,8 @@ autonomy:
   other_bot_names: []                    # 生产填真实竞品 bot 昵称列表
 
 context:
-  input_token_budget: 0                  # 生产覆盖了默认 12000
-  system_token_budget: 0                 # 生产覆盖了默认 8000
+  input_token_budget: 0                  # 生产覆盖了默认 12000；当前生产 16000（2026-09-20 抬，给聊天历史留量）
+  system_token_budget: 0                 # 生产覆盖了默认 8000；当前生产 11000（D-27）
   tool_result_token_budget: 0
   image_token_estimate: 0
 
