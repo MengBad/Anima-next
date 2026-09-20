@@ -91,11 +91,11 @@
 
 | 概念 | **A 族** = `anima/constitution/`（RFC-0100 生命层，理论已冻结） | **B 族** = 运行时（`cognitive/` + `memory/` + `agent/` + `pipeline/`，真正驱动 bot） | 现状 |
 |---|---|---|---|
-| Memory | `MemoryEngine` / `MemoryAuthority`（水合 chat_memory → episode） | `memory/chat_memory.py`、`memory/crossgroup/*` | A 族**只被读**、无写入闭环（D-13） |
+| Memory | `MemoryEngine` / `MemoryAuthority`（水合 chat_memory → episode） | `memory/chat_memory.py`、`memory/crossgroup/*` | A 族**读 + 反思沉淀写**：D-13 (a) 已接生产 producer（开关默认关） |
 | Identity | `Identity = derive_identity(Memory)`（纯函数、无 setter） | `config/persona_core.yaml` + `generation.py` 注入器链 | A 族**半悬空**：仅 Drive 桥调用，且链首曾是替身（D-01） |
 | Affect | `Affect = derive_affect(Need, Perception)` | `cognitive/mood.py`（arousal/valence 标量） | 两套并存；A 族只被 Drive 桥读 |
 | Drive | `Drive = derive_drive(Affect)` | **无对应物** | A 族独有；生产 `drive_gate=False` ⇒ 整链不执行 |
-| Reflection | `ReflectionResult → MemoryAuthority.ingest` | `cognitive/rumination*` | A 族闭环**断**（D-13） |
+| Reflection | `ReflectionResult → MemoryAuthority.ingest` | `cognitive/rumination*` | A 族闭环**已接**（D-13 (a)）：`constitution/reflection_loop.py`，开关 `autonomy.constitution_reflection_loop` 默认关。⚠️ **数值 trait 通道仍缺**（D-13 第二层）⇒ `identity_traits` 恒 0 |
 | Planning / Task | `Plan` / `Task` / `WorkflowRun`（`constitution/state.py`） | `agent/planner.py`、`agent/devloop.py` | A 族未驱动 |
 
 **一句话**：A 族是"已经写好的理论层"，B 族是"实际在跑的工程层"；两者不是新旧替代关系，

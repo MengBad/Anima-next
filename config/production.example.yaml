@@ -287,7 +287,7 @@ tavily:                                  # config.py:581
   max_results: 5
   search_depth: "advanced"
 
-x_browser:                               # config.py:734
+x_browser:                               # config.py:759
   enabled: true
   browser_engine: "chromium"
   data_dir: "data/x_browser"
@@ -295,8 +295,8 @@ x_browser:                               # config.py:734
   password: "<REDACTED —— 生产为明文，无 env 通道>"
   proxy: "http://127.0.0.1:7890"
   warmup_days: 14
-  search_daily_limit: 10
-  timeline_daily_limit: 10
+  search_daily_limit: 0                  # 0 = 不限制（生产 2026-09-19 起，owner 授权「推特搜索额度无限」）
+  timeline_daily_limit: 10               # 仍限 10/日 —— 时间线喂后台探索（非用户可见），保持账号风险面不变
   explore_keywords: []
 
 # ---------------------------------------------------------------------------

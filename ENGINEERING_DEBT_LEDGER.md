@@ -19,14 +19,15 @@
 
 | 状态 | 条数 | 条目 |
 |---|---|---|
-| `FIXED` | 18 | D-01/02/03/04/05/06/08/09/10/15/18/19/20/23/24/25/26/28 |
+| `FIXED` | 21 | D-01/02/03/04/05/06/08/09/10/11/15/18/19/20/21/23/24/25/26/27/28 |
 | `VERIFIED-NON-ISSUE`（实测证伪） | 2 | D-12（数据轮转）、D-22（context 预算=0） |
 | `DECIDED`（口径裁定，非代码改动） | 1 | D-14 |
 | `DEFERRED`（显式挂起，含重启前置条件） | 1 | D-16 |
-| `CLOSED-AS-UNDERSTOOD`（归真后判定"不改逻辑"） | 1 | D-27 |
-| `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 1 | D-21 |
-| `OPEN` | 2 | D-13（生命链闭环）、D-17（17 项受 OS 阻塞） |
-| `NEEDS-OWNER` | 2 | D-07（明文密钥外置）、D-11（废弃模块与孤儿清理） |
+| `CLOSED-AS-UNDERSTOOD`（归真后判定"不改逻辑"） | 0 | ——（D-27 经 **owner 显式授权**改判 `FIXED`：抬至 11000，见下） |
+| `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 0 | ——（D-21 已于 09-18 部署窗口执行，见下） |
+| `PARTIALLY-CLOSED`（口径 (a) 达成 / (b) 仍需 owner 裁定） | 1 | D-13 |
+| `OPEN` | 1 | D-17（17 项受 OS 阻塞） |
+| `NEEDS-OWNER` | 1 | D-07（明文密钥外置） |
 | `SEALED` | 1 | D-29 |
 | **合计** | **29** | |
 
@@ -69,7 +70,9 @@
   自带 semantic 使 `need.urgency` 恒为 `1.0`（**激活门被顶开**）。
   ⇒ **若在 D-13 闭合前翻转 `drive_gate=True`，主动表达会被显著压制（fail-closed）**。
   生产 `drive_gate` 现为 `False`，故本轮对线上行为**零影响**。
-- **未闭合项**：D-13（Reflection → Memory 无 producer）—— 闭合前生命链"接上但不活"。
+- **后续（原"未闭合项"）**：D-13 已于 09-18 后段达成口径 (a)（真实 producer 已接上），
+  但**第二层（数值 trait 通道）仍未闭** ⇒ 生命链目前是"**已接通、仍不活**"。
+  ⇒ 上面那条"不得翻转 `drive_gate`"的结论**依然成立**，见 D-13 末节。
 
 ## D-02 · 治理文档声明与生产实态不符 —— `FIXED`（本轮）
 
@@ -163,14 +166,23 @@
   「空 allowlist = 拒绝全部 **pilot-only** 路由」，并给出 python.exec 的真实门清单。
   （本轮已写入 MAINTENANCE 的"易误读点"，但治理文档侧尚未逐处核。**
 
-## D-11 · 12 个生产废弃模块 + 潜在 ImportError 地雷 —— `NEEDS-OWNER`（E4 已量化并交付扫描器）
+## D-11 · 12 个生产废弃模块 + 潜在 ImportError 地雷 —— `FIXED`（09-18 部署窗口后：25 件封存）
 
 - **来源**：审查 P2-3。
 - **证据**：生产独有 12 个模块（`pipeline/stages.py` 2204 行死代码、`image_request.py`、
   8×`capability/runtime_*.py`、2×`webui/*_page.py`）；
   `anima/capability/runtime_evidence_integration.py:53` 引用已归档模块。
 - **验收口径**：先修 `:53` 的引用，再删除/封存 12 个模块；删除前后各跑一次全量回归。
-- **卡点**：删生产文件属独立授权（审查明确列为"独立授权任务"）。
+- **处置（2026-09-18）**：
+  - RED 基线：孤儿扫描 rc=1 / `active_ref_count=28`；`pytest` 收集 **12 ERROR + Interrupted**。
+  - 备份：`/root/d11-20260918/pre-d11-20260918.tar.gz`（124,380 B，sha256 `bedee68d…`，25/25 验证）。
+  - **封存式**移动（可 reverse）至 `/root/d11-20260918/removed/`：12 模块 + 13 测试，共 25 件。
+  - 四道门全过：生产残留 0/25；孤儿扫描 **rc 1→0、active 28→0**；
+    `pytest` **ERROR 0（3970 可收集）**；重启后 pid `1804330`、零 Traceback、启动里程碑齐全。
+  - 一致性门复跑：1077 文件、differ 0；「仅生产有」= **2**，即**有意保留**的 2 个
+    `persona_core` 备份 yaml（判定为留档，不属孤儿）。
+  - root 污染 0/0/0。
+- **卡点（已解除）**：删生产文件属独立授权 —— **09-18 获 owner 显式授权后执行**。
 
 ## D-12 · 数据轮转 —— `VERIFIED-NON-ISSUE`（2026-09-18 实测证伪，附算术）
 
@@ -196,13 +208,60 @@
 - **验收口径（已达成）**：给出每个存储的上限锚点 + 算术校验，并纠正原文表述。
 - **⚠️ 教训**：审查用"体积变大"推断"无轮转"是**未查上限锚点**的推断；体积增长与有上限并不矛盾。
 
-## D-13 · Reflection → Memory 闭环无生产 producer —— `OPEN`（E2：已归真 + 5 条回归守卫钉死）
+## D-13 · Reflection → Memory 闭环无生产 producer —— `PARTIALLY-CLOSED`
+（09-18 后段：口径 (a) 已达成；第二层「数值 trait 通道」另需 owner 裁定）
 
 - **来源**：审查 P1-2。
-- **证据**：`MemoryAuthority.ingest` 全库无生产调用者（仅 `invariants.py:28` 导入）；
+- **证据（修复前）**：`MemoryAuthority.ingest` 全库无生产调用者（仅 `invariants.py:28` 导入自检）；
   `constitution/invariants.py:17` 自称 "Run in CI / at boot" 但无 boot/CI 调用点。
-- **验收口径**：二选一 —— 接上真实 producer，或在文档标注"未闭合"并把
+- **验收口径**：二选一 —— (a) 接上真实 producer，或 (b) 在文档标注"未闭合"并把
   `invariants` 的 CI/boot 接线点删掉或实现。**不允许继续自称 Run in CI。**
+
+### (b) 已达成 —— E2（09-18 前段）
+
+`invariants` docstring 归真（显式写明 "no boot call site"）+ 5 条回归守卫钉死断层形状
+（`tests/test_constitution_memory_closure.py`，含把该自称钉在真实 CI 调用点上的 meta 守卫）。
+
+### (a) 已达成 —— 09-18 后段（本次）
+
+- **新增** `anima/constitution/reflection_loop.py`（`ReflectionSedimenter`）= 真实 producer，
+  只**复用**既有引擎（`reflect()` → `MemoryAuthority.ingest()`），不新增存储、不新增持久化路径。
+- **接线点**：`anima/core/autonomy.py::Heartbeat._constitution_sediment_carrying`，
+  由 `Heartbeat` 在**一次真实承载结束之后**调用（claim 到 `proactive_intent` 才算承载过）——
+  输入是真实发生的 success/failure，**不是**现场合成的常量替身（与 D-01 同一条纪律）。
+- **开关**：`autonomy.constitution_reflection_loop`，**默认 `False`**（生产行为不变）。
+- **审计**：每次沉淀 emit `constitution_reflection_sedimented`
+  （`status` / `records` / `identity_traits` / `evidence_ref`）⇒「闭环是否真的跑过」可外部核查，
+  而不必靠读代码相信。
+- **有界**：`MemoryEngine.ingest_episode` 无上限且不去重（`memory_engine.py:36`），
+  故有界性由本层负责：RFC-0109 指纹去重 + 进程内条数上限（`DEFAULT_MAX_RECORDS=200`）。
+  ⚠️ 去重粒度**比直觉粗**：`_fingerprint` 只哈希 `(plan_ref, status, outcome, lessons)`、
+  **不含 timestamp**（`reflection.py:81-91`）⇒「同一群里同样的结果」永远算同一次经验，
+  只会沉淀一条。这是引擎既定形状，本层**不对抗**（已用守卫钉死）。
+- **验收**：`tests/test_constitution_reflection_loop.py` **13 passed**；
+  constitution 四文件 **137 passed**；config/schema/drift 子集 **192 passed**；全量回归见部署窗口报告。
+- **RED 证明**：① 本次改动前 `anima/` 全树不存在任何 `ReflectionSedimenter` / `.sediment(`
+  调用点，meta 守卫 `test_production_call_site_exists` 必然失败；
+  ② 首轮运行 **2 个测试变红**，抓出「误以为 timestamp 参与指纹」的错误假设 ⇒
+  改的是**测试与文档**，不是引擎（`_fingerprint` 属 RFC-0109，不擅自改）。
+
+### 🔴 第二层（仍未闭，需 owner 裁定）
+
+**接通闭环 ≠ 链变活**。`reflect()` 产出的 semantic 记录只有**文本** `{"lesson": <str>}`
+（`reflection.py:67`），而 `derive_identity` 只把 semantic 的**数值**字段聚成 traits
+（`identity.py:35-36`）⇒ 闭环接通后 `identity_traits` **仍然是 0**、`need.urgency` 仍然是 0。
+该事实已用守卫钉死（`test_loop_does_not_fabricate_numeric_traits`）。
+
+⇒ **`autonomy.drive_gate` 的前置条件仍然不满足，不得翻转**（翻转 = 主动表达被静默压死）。
+要让 traits 非空必须补一条**数值 trait 生产路径**，二选一：
+
+1. 让 Reflection 真做 LLM 蒸馏并输出**数值自评** —— RFC-0109 目前只做 M1.9 启发式模拟，
+   这属于引擎演进（Foundation Evolution F1 通道）；
+2. 由本层 sediment 数值语义记录 —— 但「什么算 trait」是 **RFC-0101 Identity vs RFC-0103 Affect**
+   的边界决策（mood 是 Affect，不是 Identity），**不可由执行层擅自定义**。
+
+另：`reflect()` 对 `FAILED` **不产任何记录**（`reflection.py:52`），故失败的承载不留记忆 ——
+本层如实返回 `filtered`，**不伪造**一条"失败记忆"。
 
 ## D-14 · F5 / M0.x 执行基建：**模块已接线 / 产物为零** —— `DECIDED`（E7：裁定 (b) 保持休眠）
 
@@ -291,11 +350,14 @@
   且 `_daily` **只在内存 ⇒ 重启即重置**。
 - **验收口径**：额度计数落盘（跨重启连续）＋ 用尽时写一条显式审计/日志。
 
-## D-21 · 生产 `config.yaml` 文件权限 —— `CONFIRMED-PENDING-DEPLOY`（E8：实读 644）
+## D-21 · 生产 `config.yaml` 文件权限 —— `FIXED`（09-18 部署窗口：实读 644 → `chmod 600`）
 
 - **来源**：`reports/2026-08-27_vision_gap_plan.md` D2（当时报 644）。
 - **验收口径**：实测权限；若仍为组/其他可读，`chmod 600` 并在 `_deploy.py`
   启动自检加权限断言。
+- **处置（2026-09-18）**：实读确认原为 **644** → 已 `chmod 600`
+  （owner/size/md5 **未变**，即内容未被触碰）；改回用 `_deploy.py --fix-config-perms`。
+  重启后三服务 active、零 Traceback。
 
 ## D-22 · `context.*_token_budget = 0` 语义 —— `VERIFIED-NON-ISSUE`（原判断被自身取证反驳）
 
@@ -349,7 +411,7 @@
 - **来源**：D-03 配套。
 - **处置**：`deploy/check_config_drift.py`（只读，退出码可用于巡检/CI）。
 
-## D-27 · 系统提示词预算长期顶格 —— `CLOSED-AS-UNDERSTOOD`（E8：原前提被实测证伪）
+## D-27 · 系统提示词预算长期顶格 —— `FIXED`（09-18 后段：**owner 显式授权**抬至 11000）
 
 - **来源**：既有体检基线（09-18 计 38/38，tokens 均值 ~9534/10000）。
 - **✅ 归因闭环（2026-09-18 生产只读实测）**：生产 `context` 的**精确取值**为
@@ -357,8 +419,28 @@
   `tool_result_token_budget 1800`（`config.yaml:297-301`）。
   那个 **10000** 正是体检里 "~9534/**10000**" 的分母 ⇒ 顶格是**阈值偏小 / 段本身偏大**，
   **与"0 语义"无关**（D-22 已被三重证伪：掩码规则、`ge=1024`、生产实读）。
-- **验收口径**：二选一 —— 抬 `system_token_budget`，或明确裁掉 `capabilities` 段
-  （现在它 100% 被丢弃，等于白占构造开销）。**未确认前不改任何逻辑。**
+- **原验收口径**：二选一 —— 抬 `system_token_budget`，或明确裁掉 `capabilities` 段
+  （它 100% 被丢弃，等于白占构造开销）。**未确认前不改任何逻辑。**
+- **⚠️ 裁定变更（本轮）**：E8 原判 `CLOSED-AS-UNDERSTOOD`（"只归真、不改逻辑"）已被 **owner 显式授权
+  覆盖** —— owner 在 09-18 后段的三项授权中选择"抬预算"。这是**有意的行为扩张**，不是债的修复：
+  抬升后系统提示词可以变长 ⇒ 单请求 token 成本与构造开销上升，属可接受范围内的取舍。
+- **✅ 处置（2026-09-18 后段）**：
+  - 生产 `config.yaml` → `context.system_token_budget: 10000 → 11000`（**只改生产**，不动
+    `config/default.yaml` 的代码默认 8000）。
+  - 备份 `/root/budget-20260918/config.yaml.pre-11000`；`load_config` 复核 `= 11000`；
+    重启 pid `1807161`；零 Traceback；`config.yaml` 仍 `600 anima:anima`（md5 未因权限变动）。
+- **📊 实测量化（`data/reply_quality.json`，权威口径）**：
+  09-18 当日 `context_requests 46` / `context_fragments_dropped 27` = **58.7%**，
+  `context_history_dropped 20`，`context_protected_over_budget 0`（09-17 为 **1**）；
+  系统提示词均值 **440230/46 = 9570 tokens = 预算的 95.7%**。
+  改动前的丢弃行取值为 `tokens=9931~9974/10000` —— **即使已丢弃，仍停在预算的 ~99%**，
+  这正是"分母偏小"的直接证据，也说明 +1000 余量方向正确。
+- **⚠️ 效果判定：方向性证据，**不**足以声称丢弃率已下降**。
+  抬升后到 D-13 部署重启之间只有 **Δ2** 个 context 请求（0 次新丢弃）。
+  **样本受限的原因已定位且不是故障**：`heartbeat_age_sec=25.4`（bot 活着），近 30 min 入站 43 条，
+  但 `gate_skip_idle=143` ⇒ 绝大多数消息**未被点名叫它、被回复闸门正常拒答**，因此不构造 context。
+  ⇒ **收口口径**：等一个完整流量日后重读 `context_fragments_dropped / context_requests`；
+  该值若显著低于 09-18 的 58.7%，才算效果成立。
 
 ## D-28 · GitHub ↔ 生产无自动一致性门 —— `FIXED`（E8：交付 `check_github_prod_parity.py`）
 
