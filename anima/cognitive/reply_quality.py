@@ -51,6 +51,23 @@ def _empty() -> dict[str, int]:
         "context_fragments_dropped": 0,
         "context_history_dropped": 0,
         "context_protected_over_budget": 0,
+        # 兜底 / 降级出站（口径：这一条出站**不是**模型正常生成的正文，
+        # 而是护栏改写或降级话术替身）。按原因分桶，未知一律进 fallback_other。
+        # 2026-09-19：此前兜底出口只 `return` 文本、不留结构化痕迹，
+        # 话术改成多变体后连 `grep 文案` 也不再可靠 ⇒ 补可观测面。
+        "fallback_no_tool": 0,        # react：无工具痕迹却没生成出正文
+        "fallback_tool_failed": 0,    # react：有工具失败痕迹且没生成出正文
+        "fallback_tool_ok": 0,        # react：工具都成功但模型仍空回复
+        "fallback_breaker": 0,        # generation：LLM 熔断器打开
+        "fallback_react_error": 0,    # generation：ReAct 抛异常
+        "fallback_empty_reply": 0,    # generation：LLM 返回空/占位串
+        "fallback_mechanical": 0,     # guardrail：机械短语命中被改写
+        "fallback_leak_blocked": 0,   # guardrail：危险内容被拦截
+        "fallback_analysis_essay": 0, # guardrail：破角色分析体被改写
+        "fallback_political": 0,      # guardrail：政治敏感话题回避
+        "fallback_cold_bullying": 0,  # generation：被霸凌时的简短冷回（COLD_RESPONSES）
+        "fallback_cold_avoidance": 0, # generation：回避期（scar）的极短冷回
+        "fallback_other": 0,          # 不在白名单的 kind（防拼错导致键无界增长）
     }
 
 
@@ -147,6 +164,34 @@ class ReplyQuality:
         metrics[key] = int(metrics.get(key, 0) or 0) + 1
         self._save()
 
+    def record_fallback(self, kind: str) -> None:
+        """记录一次「兜底出站」。
+
+        口径：这一条最终出站**不是模型正常生成的正文**，而是护栏改写或降级话术替身。
+        用途是让「机器话术出站占比」可被观测 —— 此前兜底出口只 `return` 文本、
+        不留任何结构化痕迹，话术改为多变体后连 `grep 文案` 也不再可靠。
+
+        kind 走白名单映射（与 `record_gate_skip` 同口径）：**未知一律进
+        `fallback_other`**，避免调用方拼错键名导致计数器无界增长。
+        """
+        key = {
+            "no_tool": "fallback_no_tool",
+            "tool_failed": "fallback_tool_failed",
+            "tool_ok": "fallback_tool_ok",
+            "breaker": "fallback_breaker",
+            "react_error": "fallback_react_error",
+            "empty_reply": "fallback_empty_reply",
+            "mechanical": "fallback_mechanical",
+            "leak_blocked": "fallback_leak_blocked",
+            "analysis_essay": "fallback_analysis_essay",
+            "political": "fallback_political",
+            "cold_bullying": "fallback_cold_bullying",
+            "cold_avoidance": "fallback_cold_avoidance",
+        }.get(str(kind or ""), "fallback_other")
+        metrics = self._metrics()
+        metrics[key] = int(metrics.get(key, 0) or 0) + 1
+        self._save()
+
     def record_guard_fixation(self) -> None:
         metrics = self._metrics()
         metrics["guard_fixation_rewrite"] = int(metrics.get("guard_fixation_rewrite", 0) or 0) + 1
@@ -194,6 +239,10 @@ class ReplyQuality:
             sum((int(result.get("context_fragments_dropped", 0) or 0),
                  int(result.get("context_history_dropped", 0) or 0))) / requests if requests else 0.0
         )
+        # 兜底出站合计：按 **前缀** 汇总 —— 将来新增 kind 自动纳入，无需改这里。
+        result["fallback_total"] = sum(
+            int(v or 0) for k, v in result.items() if str(k).startswith("fallback_")
+        )
         return result
 
     def format_report(self, day: str | None = None) -> str:
@@ -201,6 +250,7 @@ class ReplyQuality:
         return (
             f"回复质量日报 {report['date']}：回复 {report['total_replies']}，"
             f"不可用 {report['unavailable_replies']}，应回却空 {report.get('empty_should_reply', 0)}，"
+            f"兜底出站 {report.get('fallback_total', 0)}，"
             f"超长 {report['overlong_replies']}，"
             f"标签泄漏 {report['label_leaks']}，身份泄漏 {report['identity_leaks']}，"
             f"复读 {report['repeated_replies']}；工具失败 {report['tool_failures']}/{report['tool_calls']}，"

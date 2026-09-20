@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import random
 import re
 import time
 from collections import deque
@@ -18,6 +19,31 @@ from ._shared import (
 from .generation import _strip_speaker_labels
 
 logger = logging.getLogger("anima.pipeline.stages")
+
+#: 机械回复改写话术池（`BANNED_PHRASES` 命中 / 「作为…AI」变体 两处出口共用，2026-09-19 去模板化）。
+#: 触发条件 = 模型输出了「作为AI / 抱歉我不能 / 我无法回答」这类机械话术；这里给自然的猫娘反应，
+#: 不解释「被过滤了」，避免把护栏的存在暴露给用户。
+_MECHANICAL_REWRITES = (
+    "啊这……本喵脑子卡了一下。",
+    "唔……这话本喵接不太上来，你换个说法喵？",
+    "本喵刚想说的词儿跑了……换个话题呗？",
+)
+
+def _record_fallback(ctx: "PipelineContext", kind: str) -> None:
+    """兜底出站计数（经 M0.1 Facade，fail-soft）。
+
+    口径见 `ReplyQuality.record_fallback`。护栏改写 = 用户看到的那句话**不是**
+    模型原本想说的，而是被替换过的 ⇒ 它属于「机器话术出站」，必须与正常生成
+    的正文分开计数，否则「人格完善」的效果无从度量。
+
+    `ctx.core` 由 handler 无条件注入；缺失时静默失败，绝不破坏回复路径
+    （与 `guardrail_stage` 里 `record_guard_fixation` 同一套 fail-soft 口径）。
+    """
+    try:
+        ctx.core.telemetry().record_fallback(kind)
+    except Exception:
+        logger.debug("兜底出站遥测记录失败", exc_info=True)
+
 
 # 危险的输出模式
 DANGEROUS_PATTERNS = [
@@ -100,17 +126,33 @@ _USER_WANTS_ANALYSIS_RE = re.compile(r"(解析|分析|详细说说|展开讲|怎
 
 
 def _looks_like_analysis_essay(reply: str, *, user_text: str = "") -> bool:
-    """判断回复是否跑偏成「分析工具/论文体」。"""
+    """判断回复是否跑偏成「分析工具/论文体」。
+
+    2026-09-20 深审补漏：`_ANALYSIS_ESSAY_RE` 是**闭集语义词表**（"从X角度看 /
+    综上所述 / 官方设定"…）。模型换一套说法（"社区治理 / 公关层面 / 流量归因 /
+    风险隔离"）就一个都不中 ⇒ 原实现的 `if not keys: return False` 直接放行。
+    生产实测：用户只**粘贴了一段贴吧长文、没有提问**，bot 回了
+    「1. 溯源与确权… 2. 流量归因与风险隔离… 3. 分流与共存方案…」——骨架是
+    教科书式论文体，却因为词表没中而漏网。
+
+    ⇒ 让**结构词（编号分点）独立生效**，不再被语义词表前置短路；同时保留
+    「用户自己要求分析」的豁免（那种长分点回复是用户要的，不该改写）。
+    """
+    reply = reply or ""
     keys = _ANALYSIS_ESSAY_RE.findall(reply)
-    if not keys:
-        return False
     n = len(keys)
+    struct_hits = len(_ESSAY_STRUCT_RE.findall(reply))
     user_wants = bool(_USER_WANTS_ANALYSIS_RE.search(user_text or ""))
     if user_wants:
-        return len(reply) > 700 and (n >= 3 or bool(_ESSAY_STRUCT_RE.search(reply)))
+        return len(reply) > 700 and (n >= 3 or struct_hits >= 1)
+    # 两个以上编号分点 + 长正文 = 论文体骨架（不依赖语义词表是否命中）
+    if struct_hits >= 2 and len(reply) >= 220:
+        return True
+    if not keys:
+        return False
     if n >= 2:
         return True
-    if _ESSAY_STRUCT_RE.search(reply):
+    if struct_hits:
         return True
     if len(reply) > 220:
         return True
@@ -245,6 +287,7 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
     for pattern in DANGEROUS_PATTERNS:
         if pattern.lower() in reply_lower:
             logger.warning("Guardrail: 检测到危险模式 %s", pattern)
+            _record_fallback(ctx, "leak_blocked")
             ctx.reply = "（这条回复被护栏拦截了）"
             await _record_reply_memory(ctx)
             return StageResult.CONTINUE
@@ -253,12 +296,14 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
     for phrase in BANNED_PHRASES:
         if phrase.lower() in reply_lower:
             logger.warning("Guardrail: 检测到机械回复 '%s'", phrase)
-            ctx.reply = "啊这，脑子卡了一下…"
+            _record_fallback(ctx, "mechanical")
+            ctx.reply = random.choice(_MECHANICAL_REWRITES)
             await _record_reply_memory(ctx)
             return StageResult.CONTINUE
     if _BANNED_RE.search(reply_lower):
         logger.warning("Guardrail: 检测到机械回复(作为…AI 变体)")
-        ctx.reply = "啊这，脑子卡了一下…"
+        _record_fallback(ctx, "mechanical")
+        ctx.reply = random.choice(_MECHANICAL_REWRITES)
         await _record_reply_memory(ctx)
         return StageResult.CONTINUE
 
@@ -280,6 +325,7 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
                 short = short.rstrip("。.!！") + "，大概就这样喵。"
             ctx.reply = short
         else:
+            _record_fallback(ctx, "analysis_essay")
             ctx.reply = "（本喵刚又跑偏成分析模式了，打住打住）你刚想说啥来着？接着聊～"
         await _record_reply_memory(ctx)
         return StageResult.CONTINUE
@@ -292,8 +338,8 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
     try:
         if _POLITICAL_RE.search(ctx.reply or ""):
             logger.warning("Guardrail: 回复命中政治敏感词，改写为话题回避")
+            _record_fallback(ctx, "political")
             ctx.reply = "这个话题本喵不碰喵～聊点别的吧！"
-            quality = getattr(ctx.meta.get("core") if isinstance(ctx.meta, dict) else None, "reply_quality", None)
     except Exception:
         pass
 

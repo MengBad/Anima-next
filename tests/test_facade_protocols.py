@@ -25,6 +25,9 @@ class FakeTelemetry:
     def record_guard_fixation(self):
         return None
 
+    def record_fallback(self, kind):
+        return None
+
     def emit(self, event, **kwargs):
         return None
 

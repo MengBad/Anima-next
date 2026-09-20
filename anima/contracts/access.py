@@ -103,6 +103,11 @@ class _TelemetryFacade:
         if rq is not None:
             rq.record_guard_fixation()
 
+    def record_fallback(self, kind: str) -> None:
+        rq = getattr(self._core, "reply_quality", None)
+        if rq is not None:
+            rq.record_fallback(kind)
+
     def emit(self, event: str, **kwargs) -> None:
         audit = getattr(self._core, "audit", None)
         if audit is not None:

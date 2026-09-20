@@ -339,6 +339,12 @@ def _constitution_drive(mood_arousal, mood_valence, relation_depth=0.2, threat=0
     只由 Perception(novelty) 决定。故在 Reflection→Memory 闭环补齐前，接真记忆 ≈ 让门**更保守**
     （fail-closed），不会凭空产生驱动。
 
+    2026-09-18 后段更新：D-13 口径 (a) **已达成** —— 反思沉淀 producer 已接上
+    （``constitution/reflection_loop.py`` + ``Heartbeat._constitution_sediment_carrying``，
+    开关 ``autonomy.constitution_reflection_loop`` 默认关）。但**第二层（数值 trait 通道）仍未闭**：
+    ``reflect()`` 只产文本 lesson ⇒ 上面 ``identity_traits=0`` 的结论**不变**，
+    ``drive_gate`` 仍不可翻转。详见台账 D-13 末节。
+
     Constitution 只产出趋近/回避取向(Drive)，不改任何出站语言，只可能压制主动表达。
     任何一步失败返回 None(fail-closed)。
     """
@@ -917,9 +923,14 @@ class Heartbeat:
                             continue
                         self.core.propose_agenda(
                             int(_d.source_group),
-                            f"你答应过的事：{_d.content[:60]}"
-                            + (f"（约好 {_d.due_hint}）" if _d.due_hint else "")
-                            + "。能做就现在做，不能就老实说还没做成，别装作没这回事。",
+                            # 🔴 2026-09-20：**不得回贴 `due_hint` 原文**。此前是
+                            #   `…{content}（约好 {due_hint}）…别装作没这回事。` ——
+                            #   `due_hint` 是解析器**原样保留**的切片，一句斗嘴
+                            #   「等下，你怎么也抢本喵的自称啊」就这么被搬进主动发言，
+                            #   读起来就是"突然引用一件不存在的事"。措辞也一并软化
+                            #   （训斥式「别装作没这回事」与人格不符）。
+                            f"你之前答应过的事：{_d.content[:60]}。看看现在能不能做了，"
+                            "能就顺手做了，不能就直说还没弄好。",
                             priority=_pf("debt_due", _pro_cfg),
                             expires_at=time.time() + 6 * 3600,
                             source="debt_due",
@@ -1285,6 +1296,16 @@ class Heartbeat:
                 subject.ledger.release(
                     proactive_intent.id, "主动接话未满足出站条件", max_attempts=max_attempts,
                 )
+        # 2026-09-18（D-13 验收 (a)）：真实 producer —— 只在**真的发起过**一次承载
+        # （claim 到了 proactive_intent）时把承载结果沉淀进宪法记忆；开关默认关。
+        if proactive_intent is not None and bool(getattr(
+            getattr(getattr(self.core, "config", None), "autonomy", None),
+            "constitution_reflection_loop", False,
+        )):
+            try:
+                self._constitution_sediment_carrying(group_id, spoke)
+            except Exception:
+                logger.exception("宪法反思沉淀失败（已隔离）")
         self.persist()
 
     # ------------------------------------------------------------------
@@ -1492,6 +1513,43 @@ class Heartbeat:
         if d:
             d["gate_ok"] = _drive_gate_ok(d)
         return d
+
+    def _constitution_sediment_carrying(self, group_id: int, spoke: bool) -> None:
+        """D-13 验收 (a) 的生产 producer：把一次**真实**主动承载的结果沉淀进宪法记忆。
+
+        `ExecutionResult → reflect() → MemoryAuthority.ingest()`（RFC-0107/0109/0108）。
+        此前 ``MemoryAuthority.ingest`` 全库无生产调用者，闭环只活在测试里（台账 D-13）。
+
+        三条纪律：
+        - **不伪造经验**：输入是真实发生的承载结果（``spoke`` 真假），不是现场合成的常量
+          替身 —— 与 B1 从 ``_constitution_drive`` 摘掉替身 Memory 是同一条纪律；
+        - **不落盘**：只写进程内 ``MemoryEngine``，不新建 data/ 文件、不驱动 F5 runtime（D-14）；
+        - **失败隔离**：沉淀失败绝不回滚或影响已经完成的出站。
+
+        ⚠️ 该闭环不产生数值 trait（``reflect()`` 只产文本 lesson）⇒ ``identity_traits`` 仍为 0，
+        不可据此翻转 ``drive_gate``。
+        """
+        _auth = getattr(self.core, "memory_authority", None)
+        if _auth is None:
+            return
+        from anima.constitution.reflection_loop import ReflectionSedimenter
+        _s = getattr(self, "_reflection_sedimenter", None)
+        if _s is None or _s.authority is not _auth:
+            _s = ReflectionSedimenter(_auth)
+            self._reflection_sedimenter = _s
+        _r = _s.sediment(
+            plan_ref=f"heartbeat#{group_id}",
+            succeeded=bool(spoke),
+            outcome=("主动接话出站成功" if spoke else "主动接话未满足出站条件"),
+        )
+        audit = getattr(self.core, "audit", None)
+        if audit:
+            audit.emit(
+                "constitution_reflection_sedimented",
+                group_id=group_id, status=_r["status"], records=_r["records"],
+                identity_traits=_r["identity_traits"], evidence_ref=_r["evidence_ref"],
+            )
+
     def _active_hook_present(self, group_id: int, now: float) -> bool:
         """是否存在值得主动接住的近期群语接话点（短时上下文评分 >= 0.35，2026-08-28 收紧）。"""
         try:

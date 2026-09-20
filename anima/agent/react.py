@@ -12,6 +12,7 @@ import asyncio
 import datetime
 import json
 import logging
+import random
 import re
 from typing import Any
 from anima.llm.usage import llm_scope
@@ -38,6 +39,36 @@ _FRESHNESS_GUIDANCE = (
     "② 材料里没有明确日期的，就写「未标注日期」，不要推断成「今天」「最近」；"
     "③ 材料明显陈旧时直接说明，不要当作最新事实自信断言；"
     "④ 工具没拿到有用信息就老实说没查到，不要用记忆补全成像是查到的样子。"
+)
+
+#: `_empty_content_fallback()` 的三池等义话术（2026-09-19 去模板化）。
+#:
+#: 背景：三池原本各只有**一句**固定措辞，实测 09-18 单是「无工具」那句就在
+#: 06/12/22 三个时段被复用 6 次 —— 用户侧读起来就是复读。改为同池多句随机取。
+#:
+#: 硬约束（与 D-19 一致，改文案时不得破坏，由 test_react_empty_fallback_wording 守护）：
+#: - 场景无关：任何一句都不得绑定具体工具/平台（BV、视频、链接…）；
+#: - 保留口吻：每句都含「本喵」与「喵」，不得退化成机械话术；
+#: - 池间不相交：三池两两无重复，保证分支仍可区分。
+#: - **不得伪装成"没听清"**（2026-09-20 深审新增）：本出口在「上游拒答」
+#:   与「上游卡壳」两种情况下**长得一样**，无法区分。原「无工具」池三句全是
+#:   「你再说一遍 / 你重发一下」——用户读到就以为 bot 聋了，于是原样重发、
+#:   再撞同一堵墙（实测 G5/G7：露骨内容 → 「你再说一遍喵？」→ 用户重发 → 循环）。
+#:   改为「换句话说 / 换个话题」：给出口而**不承诺重听**，也不再索取原样复述。
+_NO_TOOL_FALLBACKS = (
+    "本喵卡壳了喵……你换句话说，或者换个话题都行。",
+    "唔……这句本喵没接住喵，要不换个说法再来？",
+    "本喵刚没想好怎么接喵，你换个话题也行。",
+)
+_TOOL_FAILED_FALLBACKS = (
+    "本喵工具这边没查到准信喵，你换个说法再问一次？",
+    "本喵这边工具有点不灵光，没摸着准信喵……换个说法再问一次？",
+    "工具没帮上本喵的忙喵，你换句话再问一遍试试？",
+)
+_TOOL_OK_FALLBACKS = (
+    "本喵查了一圈但没整理出有用的结论喵，你换个说法、或者把条件说细一点再问我一次？",
+    "本喵翻了一圈没拢出个像样的结论喵，要说细一点、或者换个问法吗？",
+    "查是查了，但本喵没拼出有用的一句话喵……你换个说法再试一次？",
 )
 
 _FRESHNESS_FOOTER = "（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）"
@@ -135,14 +166,29 @@ class ReActLoop:
         后者迟早会漏掉第四个消费方，或像 09-18 那样被一行装饰整体击穿。
         """
         if self.tool_trace and any(not item.get("ok") for item in self.tool_trace):
-            return "本喵工具这边没查到准信喵，你换个说法再问一次？"
+            self._record_fallback("tool_failed")
+            return random.choice(_TOOL_FAILED_FALLBACKS)
         if self.tool_trace:
             # 工具都“成功”但模型仍空回复：仍要出口，避免用户感觉 bot 死机。
             # ⚠️ 措辞必须**场景无关**：这是通用出口，而此前写的是「换个具体视频链接
             # （带 BV）再丢一次」——那是 B 站专属要求，用户问天气/代码时收到这句就荒谬
             # （债 D-19）。场景专属的引导留在各自工具内（如 bilibili.py），不放进兜底。
-            return "本喵查了一圈但没整理出有用的结论喵，你换个说法、或者把条件说细一点再问我一次？"
-        return "本喵刚卡住一下，你再说一遍喵？"
+            self._record_fallback("tool_ok")
+            return random.choice(_TOOL_OK_FALLBACKS)
+        self._record_fallback("no_tool")
+        return random.choice(_NO_TOOL_FALLBACKS)
+
+    def _record_fallback(self, kind: str) -> None:
+        """兜底出站计数（fail-soft，与 `record_tool_spin` 同一套口径）。
+
+        口径见 `ReplyQuality.record_fallback`。遥测绝不能影响回复路径，故一律吞异常 ——
+        这里已经是「上游把自己说空了」的最后出口，再让计数抛异常会把兜底本身也摔掉。
+        """
+        try:
+            if self.quality is not None:
+                self.quality.record_fallback(kind)
+        except Exception:
+            logger.debug("兜底出站遥测记录失败", exc_info=True)
 
     async def _finalize_content(self, messages: list[dict], temperature: float,
                                 max_tokens: int,

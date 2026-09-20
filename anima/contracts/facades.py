@@ -44,9 +44,11 @@ class AgendaProtocol(Protocol):
 
 @runtime_checkable
 class TelemetryProtocol(Protocol):
-    """事件记录（非日志工具）。仅 guard fixation / emit 事件。"""
+    """事件记录（非日志工具）。guard fixation / 兜底出站 / emit 事件。"""
 
     def record_guard_fixation(self) -> None: ...
+
+    def record_fallback(self, kind: str) -> None: ...
 
     def emit(self, event: str, **kwargs) -> None: ...
 

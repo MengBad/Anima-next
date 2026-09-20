@@ -16,6 +16,31 @@ from ._shared import _detect_promise_and_schedule
 
 logger = logging.getLogger("anima.pipeline.stages")
 
+#: 故障降级话术池（熔断 / ReAct 异常 / 空回复 三处出口共用，2026-09-19 去模板化）。
+#: 原为**同一句**在 3 处硬编码 ⇒ 用户侧读到就是复读。改为多句随机取。
+#: ⚠️ 改文案时保持：场景无关、猫娘口吻、不暴露内部机制。
+_DEGRADE_FALLBACKS = (
+    "本喵刚刚脑子卡了一下，等会儿再跟你说嘛…",
+    "唔……本喵这边卡了一下，等下再理你喵。",
+    "本喵刚打了个磕巴，缓一下再说喵…",
+)
+
+
+def _record_fallback(core: Any, kind: str) -> None:
+    """兜底出站计数（fail-soft）。
+
+    口径见 `ReplyQuality.record_fallback`。这里**不复用局部 `quality` 变量**，
+    而是每次现取 —— 三个出口分布在不同的分支/异常路径上，靠局部变量容易
+    在后续重构里被搬出作用域而静默失效；遥测也绝不允许影响回复路径，
+    故一律吞异常。
+    """
+    try:
+        quality = getattr(core, "reply_quality", None)
+        if quality is not None:
+            quality.record_fallback(kind)
+    except Exception:
+        logger.debug("兜底出站遥测记录失败", exc_info=True)
+
 # 所有动态提示都必须留在 cognition_stage 生成的唯一 system 消息中。
 _IDENTITY_LOCK_HEADING = "## 身份锁定（最高优先级）"
 _REALTIME_TOOL_RE = re.compile(
@@ -130,14 +155,21 @@ COLD_RESPONSES = [
 ]
 
 
-def _resolve_bullying_reply(recent_count: int, severity: int = 0) -> Optional[str]:
+def _resolve_bullying_reply(recent_count: int, severity: int = 0, *,
+                            core: Any = None, kind: str = "cold_bullying") -> Optional[str]:
     """霸凌场景下的回复决策（#7 统一：单一判据 recent>=3 或 severity>=3）。
 
     - 连骂 >= 3 次 或 单句重度辱骂（severity>=3）：完全沉默（返回 None，由调用方置 should_reply=False）
     - 否则：从 COLD_RESPONSES 随机选一条简短冷回（不调 LLM，避免长篇辩解）
+
+    🔴 2026-09-20 复检：这是此前**漏埋点**的兜底出口（`COLD_RESPONSES` 是固定话术池、
+    非模型生成正文）⇒ 计入 `fallback_*`（口径见 `ReplyQuality.record_fallback`）。
+    计数放在「完全沉默」分支**之后** —— 沉默本身没有出站，不算兜底出站。
+    `core=None` 时 `_record_fallback` fail-soft 静默（遥测绝不阻塞回复路径）。
     """
     if recent_count >= 3 or severity >= 3:
         return None
+    _record_fallback(core, kind)
     return random.choice(COLD_RESPONSES)
 
 
@@ -463,8 +495,28 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     """调用 LLM 生成回复 —— 通过 ReAct 循环（思考→工具→观察→再思考）。"""
     core = ctx.meta.get("core")
     if core is None or core.llm is None:
+        # I4（2026-09-19）：应回复却无正文的静默出口之一，此前无 journal 留痕。
+        logger.warning("[无出站][trace=%s] core/llm 缺失，跳过生成（应回复却无正文）",
+                       ctx.meta.get("trace", "-"))
         ctx.should_reply = False
         return StageResult.SKIP_REPLY
+
+    # I5（2026-09-19）：真 @ / 引用 bot，但正文、引用正文皆空且无图 → 不空转 ReAct，
+    # 回一句轻量追问。此前这类消息过闸门（mentions_self=True）后 ReAct 无料可答 →
+    # 静默不回（09-18 实测 1 例：@MengKing 空正文）。私聊不走此分支（恒回复）。
+    if ctx.detail_type == "group" and not (ctx.text or "").strip() and not ctx.inbound_images:
+        _has_quote = bool(((ctx.event or {}).get("reply_text") or "").strip())
+        if not _has_quote:
+            try:
+                from anima.llm.group_gate import is_direct_group_call
+                _direct = bool(is_direct_group_call(ctx.event or {}, ctx.text or ""))
+            except Exception:
+                _direct = False
+            if _direct:
+                logger.info("[空正文呼吁][trace=%s] 直接呼叫但正文/引用/图皆空，回轻量追问",
+                            ctx.meta.get("trace", "-"))
+                ctx.reply = "叫本喵干嘛呀喵？"
+                return StageResult.CONTINUE
 
     # 引用回复注入
     quoted = (ctx.event or {}).get("reply_text")
@@ -529,7 +581,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             ctx.reply = None
             ctx.should_reply = False
             return StageResult.SKIP_REPLY
-        _cold = _resolve_bullying_reply(_bully_recent, _bully_sev)
+        _cold = _resolve_bullying_reply(_bully_recent, _bully_sev, core=core)
         if _cold:
             logger.info("[霸凌] 简短冷回 recent=%d sev=%d", _bully_recent, _bully_sev)
             ctx.reply = _cold
@@ -554,7 +606,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                     ctx.reply = None
                     ctx.should_reply = False
                     return StageResult.SKIP_REPLY
-                _cold = _resolve_bullying_reply(0)
+                _cold = _resolve_bullying_reply(0, core=core, kind="cold_avoidance")
                 if _cold:
                     logger.info("[回避] 用户 %s 处于回避期，简短回复", ctx.user_id)
                     ctx.reply = _cold
@@ -682,7 +734,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     # 熔断器
     if getattr(core.llm, "circuit_open_until", 0) > time.time():
         logger.warning("LLM 熔断器已打开，跳过生成，返回安全话术")
-        ctx.reply = "本喵刚刚脑子卡了一下，等会儿再跟你说嘛…"
+        _record_fallback(core, "breaker")
+        ctx.reply = random.choice(_DEGRADE_FALLBACKS)
         return StageResult.CONTINUE
 
     try:
@@ -718,7 +771,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         reply = await react.run(ctx.messages, temperature=_temperature, max_tokens=_max_tokens)
     except Exception:
         logger.exception("ReAct 生成阶段异常，降级为可见回复")
-        ctx.reply = "本喵刚刚脑子卡了一下，等会儿再跟你说嘛…"
+        _record_fallback(core, "react_error")
+        ctx.reply = random.choice(_DEGRADE_FALLBACKS)
         return StageResult.CONTINUE
     finally:
         if context_token is not None:
@@ -771,10 +825,11 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     from anima.agent.react import is_placeholder_reply
     if is_placeholder_reply(reply):
         logger.warning("LLM 返回空或占位兜底")
+        _record_fallback(core, "empty_reply")
         if re.search(r"(直播|天气|搜索|查一下|多少|几点|开了吗)", ctx.text or ""):
             ctx.reply = "本喵这边没查到准信喵，你换个说法或过会儿再问本喵一次？"
         else:
-            ctx.reply = "本喵刚刚脑子卡了一下，等会儿再跟你说嘛…"
+            ctx.reply = random.choice(_DEGRADE_FALLBACKS)
         return StageResult.CONTINUE
 
     # A2: 情绪事件自动触发
