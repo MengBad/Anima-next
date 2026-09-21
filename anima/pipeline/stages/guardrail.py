@@ -29,6 +29,16 @@ _MECHANICAL_REWRITES = (
     "本喵刚想说的词儿跑了……换个话题呗？",
 )
 
+# 破角色「分析体」兜底（2026-09-21）：此前是**独立字符串出口**，措辞里带
+#   「你刚想说啥来着？接着聊～」—— 向用户**索取复述**，而模型其实听懂了。
+#   实测 12:23:18 用户求「帮我找点皮物小说」，被回这句 ⇒ 诉求完全没被接住，
+#   且与 `_MECHANICAL_REWRITES` 去年那次"别伪装没听清"的收紧口径不一致。
+_ANALYSIS_ESSAY_FALLBACKS = (
+    "（本喵刚又跑偏成分析模式了，打住打住）聊点别的呗，你想唠啥喵？",
+    "（差点写成报告了，收收收）本喵还是适合唠嗑，说点轻松的吧喵～",
+    "（刚才那段太正经了，划掉划掉）本喵还是唠点轻松的，换个话头喵。",
+)
+
 def _record_fallback(ctx: "PipelineContext", kind: str) -> None:
     """兜底出站计数（经 M0.1 Facade，fail-soft）。
 
@@ -326,7 +336,7 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             ctx.reply = short
         else:
             _record_fallback(ctx, "analysis_essay")
-            ctx.reply = "（本喵刚又跑偏成分析模式了，打住打住）你刚想说啥来着？接着聊～"
+            ctx.reply = random.choice(_ANALYSIS_ESSAY_FALLBACKS)
         await _record_reply_memory(ctx)
         return StageResult.CONTINUE
 
@@ -371,10 +381,13 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         _data_dir_c1 = getattr(getattr(core, "config", None), "persistence", None)
         _data_dir_c1 = getattr(_data_dir_c1, "data_dir", "data") if _data_dir_c1 else "data"
         _mood_label_c1 = get_mood_system(_data_dir_c1).get_state().label
+        # 2026-09-21：上限抬到「装得下一段解释」，并**取消情绪尾巴**。
+        # 旧口径（annoyed/tired 120 字 + 硬拼「，算了不说了。」）在用户说
+        # 「没看懂，再解释下」时把答案砍半再补一句拒绝语 —— 观感是 bot 不想回答。
         _MOOD_LENGTH_CAP = {
-            "annoyed": 120,
-            "tired": 120,
-            "bored": 80,
+            "annoyed": 220,
+            "tired": 180,
+            "bored": 120,
             "excited": 300,
             "happy": 300,
         }
@@ -382,27 +395,19 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         if _cap and len(ctx.reply) > _cap:
             _orig_len_c1 = len(ctx.reply)
             _truncated = ctx.reply[:_cap]
-            for sep in ("。", "！", "!", "~", "…", "，", ","):
+            for sep in ("。", "！", "!", "？", "?", "~", "…", "，", ","):
                 _last_sep = _truncated.rfind(sep)
                 if _last_sep > _cap * 0.4:
                     _truncated = _truncated[:_last_sep + 1]
                     break
             else:
                 _truncated = _truncated.rstrip("，,。；;、 ") + "…"
-            _MOOD_TAIL = {
-                "annoyed": "算了不说了",
-                "tired": "嗯…不想多说了",
-                "bored": "就这吧",
-            }
-            _tail = _MOOD_TAIL.get(_mood_label_c1)
-            if _tail:
-                # 只在截断留下半截子句时补情绪尾巴；完整句（含问句/省略号）
-                # 不再拼接，且先剥干净尾部逗号——修复「，，嗯…不想多说了」硬拼
-                # （2026-09-06 用户体验测试③）。
-                _body = _truncated.rstrip()
-                if not _body.endswith(("。", "！", "!", "？", "?", "~", "…")):
-                    _body = _body.rstrip("，,、；;。．!！?？~… ")
-                    _truncated = f"{_body}，{_tail}。" if _body else f"{_tail}。"
+            # 截断落在逗号/顿号上时剥掉尾部标点、以省略号收尾：只表达"被截断"，
+            # 不再注入「算了不说了」这类**拒绝语义**（旧 _MOOD_TAIL 已删除）。
+            _body = _truncated.rstrip()
+            if not _body.endswith(("。", "！", "!", "？", "?", "~", "…")):
+                _body = _body.rstrip("，,、；;。．!！?？~… ")
+                _truncated = f"{_body}…" if _body else _truncated
             ctx.reply = _truncated
             logger.info("C1: 情绪[%s]回复长度约束 %d→%d", _mood_label_c1, _orig_len_c1, len(ctx.reply))
     except Exception:

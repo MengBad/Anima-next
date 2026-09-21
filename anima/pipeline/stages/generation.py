@@ -154,6 +154,47 @@ COLD_RESPONSES = [
     "本喵先不回了。",
 ]
 
+# ---------------------------------------------------------------------------
+# A2 情绪事件词表（2026-09-21 收口）
+# ---------------------------------------------------------------------------
+# 「笨 / 菜 / 烦 / 傻 / 滚」是群聊日常字：指向**别人**时同样命中
+# （「笨蛋吴雨萌不读群昵称」是在说人类），于是 valence 只被扣、不被加
+# （praised 词表几乎不出现）⇒ **结构性负漂移** ⇒ mood 长期停在 annoyed
+# ⇒ C1 截断 + 「算了不说了」（用户读作"bot 不想回答"）。
+# 实测 7 天：入站命中 笨 9 / 菜 17 / 傻 13 / 烦 3 / 垃圾 3 = 45 条。
+# 判据收口为：**指向 bot**（被 @ / 回复它，或与 bot 自称在 8 字内共现）才算被骂。
+_BOT_REF = r"(?:本喵|哈基米|猫|喵喵|MengKing|bot|机器人)"
+_PRAISE_KW = ("谢谢", "厉害", "好棒", "太强了", "牛逼", "大佬", "感谢", "可爱", "好乖")
+# 强侮辱：本身就是攻击，不要求指向（「傻逼」「去死」不会用来称呼同事）
+_INSULT_STRONG = ("傻逼", "脑残", "废物", "闭嘴", "恶心", "去死", "滚蛋")
+# 中危弱词：必须与 bot 指代共现（前后 8 字内，且不跨句）。
+# 「菜」「滚」只能待在这里 —— 它们是高频日常字（/娱乐菜单、上汤娃娃菜、从梯田上滚下来）。
+_INSULT_WEAK = ("笨", "菜", "烦", "傻", "垃圾", "滚", "蠢")
+# 高危弱词：被 @ / 回复 bot 时**可以单独成立**。
+# 🔴「菜」「滚」不得进来 —— 7 天入站回测抓到「@MengKing (…) 去给我炒俩菜」被判成被骂。
+_INSULT_WEAK_ADDRESSED = ("笨", "傻", "蠢")
+_INSULT_WEAK_RE = re.compile(
+    r"(?:笨|菜|烦|傻|垃圾|滚|蠢)(?=[^。！？!?\n]{0,8}" + _BOT_REF + r")"
+    r"|" + _BOT_REF + r"[^。！？!?\n]{0,8}(?:笨|菜|烦|傻|垃圾|滚|蠢)"
+)
+
+
+def _detect_insult(text: str, *, addressed_to_bot: bool = False) -> bool:
+    """这条用户消息是否在**骂 bot**（A2 情绪事件的唯一判据）。
+
+    偏向漏报：把闲聊误判成被骂会让情绪长期漂到 annoyed，代价远大于少扣一次分。
+    实测 7 天 3401 条入站：旧裸词表命中 35 条（「/娱乐菜单」「滚下梯田」都在里面），
+    收口后只留真正冲着 bot 来的。
+    """
+    t = (text or "").strip()
+    if not t:
+        return False
+    if any(w in t for w in _INSULT_STRONG):
+        return True
+    if _INSULT_WEAK_RE.search(t):
+        return True
+    return bool(addressed_to_bot) and any(w in t for w in _INSULT_WEAK_ADDRESSED)
+
 
 def _resolve_bullying_reply(recent_count: int, severity: int = 0, *,
                             core: Any = None, kind: str = "cold_bullying") -> Optional[str]:
@@ -839,9 +880,11 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         _data_dir_mood = getattr(_data_dir_mood, "data_dir", "data") if _data_dir_mood else "data"
         _mood_sys_auto = get_mood_system(_data_dir_mood)
         _user_text = (ctx.text or "").lower()
-        if any(kw in _user_text for kw in ("谢谢", "厉害", "好棒", "太强了", "牛逼", "大佬", "感谢", "可爱", "好乖")):
+        _addressed_to_bot = bool(
+            (ctx.event or {}).get("mentions_self") or (ctx.event or {}).get("reply_to_self"))
+        if any(kw in _user_text for kw in _PRAISE_KW):
             _mood_sys_auto.trigger("praised", 0.3)
-        elif any(kw in _user_text for kw in ("笨", "垃圾", "滚", "傻", "菜", "废物", "闭嘴", "恶心", "烦")):
+        elif _detect_insult(ctx.text or "", addressed_to_bot=_addressed_to_bot):
             _mood_sys_auto.trigger("insulted", 0.4)
         elif ctx.detail_type == "group" and len(ctx.text) > 5 and not ctx.event.get("reply_to_self"):
             if random.random() < 0.15:

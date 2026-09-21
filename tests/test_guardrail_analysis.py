@@ -75,7 +75,9 @@ async def test_guardrail_rewrites_analysis_essay():
 
     assert "政治社会学" not in ctx.reply, "分析体未被拦截！"
     assert "实证科学" not in ctx.reply, "分析体未被拦截！"
-    assert "打住" in ctx.reply, "未改写为轻松接话"
+    # 2026-09-21：出口已池化，断言必须落在"池成员"上（写死单句会随 random 变红）
+    from anima.pipeline.stages.guardrail import _ANALYSIS_ESSAY_FALLBACKS
+    assert ctx.reply in _ANALYSIS_ESSAY_FALLBACKS, "未改写为池化的轻松接话"
 
 
 @pytest.mark.asyncio

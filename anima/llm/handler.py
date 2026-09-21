@@ -41,6 +41,41 @@ logger = logging.getLogger("anima.llm.handler")
 # 超出部分丢弃（用户可再要「下一批」）。每轮工具下载的图已由 generation 阶段去重保序传入。
 MAX_GENERATED_IMAGES_PER_REPLY = 4
 
+# ── 社交疲劳 gate 的罐头回复（第 14 个兜底出口，2026-09-21 补守护）────────────
+# 触发：同群 5 分钟内被 @ 超过 `autonomy.fatigue_mention_hard`（默认 8）且发言者非 owner。
+# 池化要求与其他兜底池一致：≥2 变体 / 场景无关 / 人格口吻。
+_TIRED_REPLIES = (
+    "本喵累了喵…先歇会儿…",
+    "呜…本喵的脑袋转不过来了喵…",
+    "你们能不能让本喵喘口气喵…",
+    "本喵要午睡一会儿…别戳了喵…",
+)
+
+# 同群冷却：同一句罐头不得在短窗口内重复出站。
+# 实测（09-21）：21:37:29 与 21:39:23 各发一次「本喵要午睡一会儿…别戳了喵…」。
+_TIRED_COOLDOWN_SEC = 600.0
+
+# 社交疲劳**情绪扣分**的同群去重窗（与上者独立：那个管"别再发罐头"，这个管"别重复扣分"）。
+# 实测（09-21）：`cnt > soft` 之后每条被 @ 的消息都会再 `trigger("overwhelmed")`
+# （valence −0.05 / arousal +0.1），一个 5 分钟窗口内可扣 4–5 次 ⇒ 把 mood 从 tired
+# 象限推进 annoyed（arousal 越过 0.5），于是 C1 把回复砍到 120 字并补「算了不说了」。
+_FATIGUE_MOOD_COOLDOWN_SEC = 300.0
+
+
+def _record_tired_fallback(core: Any) -> None:
+    """疲劳罐头出站计数（fail-soft）。
+
+    口径同 `ReplyQuality.record_fallback` —— 这一条出站**不是模型正常生成的正文**。
+    此前该出口既无计数也无冷却，正是"13 出口 / 12 埋点"口径漏掉的第 14 个。
+    遥测绝不允许影响回复路径，故一律吞异常。
+    """
+    try:
+        quality = getattr(core, "reply_quality", None)
+        if quality is not None:
+            quality.record_fallback("tired")
+    except Exception:
+        logger.debug("疲劳兜底遥测记录失败", exc_info=True)
+
 
 def _onebot_message_sender_id(message: dict | None) -> Any:
     """兼容不同 NapCat/get_msg 返回形状，提取被引用消息发送者 QQ。"""
@@ -710,26 +745,24 @@ class LLMHandler(AnimaCommandsMixin):
                     cnt = self._record_group_mention(group_id)
                     _fat_soft = int(getattr(self.core.config.autonomy, "fatigue_mention_soft", 6) or 6)
                     _fat_hard = int(getattr(self.core.config.autonomy, "fatigue_mention_hard", 8) or 8)
-                    if cnt > _fat_soft:
+                    # `_fatigue_mood_allow` 去重：一个 5 分钟窗口只扣一次情绪分
+                    # （否则每条被 @ 的消息都再扣，把 mood 推进 annoyed 象限）。
+                    if cnt > _fat_soft and self._fatigue_mood_allow(group_id):
                         data_dir = str(self.core.config.persistence.data_dir)
                         get_mood_system(data_dir).trigger("overwhelmed", 0.5)
                         logger.info("社交疲劳触发：群%s 5分钟内被@%d次", group_id, cnt)
                         # 疲劳 gate：发简短回复并跳过完整 pipeline，避免被刷屏时每条都走 LLM
                         # C2：owner/管理员不受罐头硬闸（阈值可配）；软性 overwhelmed 情绪仍生效
                         if cnt > _fat_hard and not self._is_owner(int(user_id)):
-                            import random as _rnd
-                            _tired_replies = [
-                                "本喵累了喵…先歇会儿…",
-                                "呜…本喵的脑袋转不过来了喵…",
-                                "你们能不能让本喵喘口气喵…",
-                                "本喵要午睡一会儿…别戳了喵…",
-                            ]
-                            _tired = _rnd.choice(_tired_replies)
-                            try:
-                                await self.core.gateway.send(
-                                    OutboundMsg("group", int(group_id), _tired))
-                            except Exception:
-                                pass
+                            # 冷却：同群 10 分钟只发一次（否则连刷时同句重复出站）
+                            if self._tired_gate_allow(group_id):
+                                _tired = random.choice(_TIRED_REPLIES)
+                                try:
+                                    await self.core.gateway.send(
+                                        OutboundMsg("group", int(group_id), _tired))
+                                except Exception:
+                                    pass
+                                _record_tired_fallback(self.core)
                             return
                 except Exception:
                     pass
@@ -1409,6 +1442,54 @@ class LLMHandler(AnimaCommandsMixin):
         times = [t for t in times if now - t < 300]  # 5 分钟窗口
         self._mention_times_by_group[_grp] = times
         return len(times)
+
+    def _tired_gate_allow(self, group_id: Any) -> bool:
+        """社交疲劳罐头的**同群冷却**判定；True = 允许本次发送。
+
+        2026-09-21 深审：该出口此前无冷却，同一句话在 21:37:29 与 21:39:23 各发一次
+        （中间群友仍在 @）。冷却期内**不发送**但仍 `return` —— 被刷屏时 owner 的设计
+        就是"不回"，不是退回完整 pipeline 再把每条都喂给 LLM。
+
+        fail-open：任何异常都放行（宁可多发一句，不可把回复路径卡住）。
+        """
+        try:
+            now = time.time()
+            if not hasattr(self, "_last_tired_at"):
+                self._last_tired_at: dict = {}
+            _grp = int(group_id) if group_id else 0
+            last = float(self._last_tired_at.get(_grp, 0.0) or 0.0)
+            if now - last < _TIRED_COOLDOWN_SEC:
+                return False
+            self._last_tired_at[_grp] = now
+            return True
+        except Exception:
+            return True
+
+    def _fatigue_mood_allow(self, group_id: Any) -> bool:
+        """社交疲劳**情绪扣分**的同群去重；True = 允许本次扣分。
+
+        2026-09-21：`cnt > soft` 之后每条被 @ 的消息都会再 `trigger("overwhelmed")`，
+        一个 5 分钟窗口内可扣 4–5 次（valence −0.05 / arousal +0.1）⇒ 把 mood 从
+        tired 象限（arousal<0.5）推进 **annoyed**（arousal>0.5），于是 C1 把回复
+        砍到 120 字再补「算了不说了」。去重后每个窗口只扣一次。
+
+        与 `_tired_gate_allow` 的 600s 冷却**独立**：那个管"别再发同一句罐头"，
+        这个管"别重复扣情绪分"。
+
+        fail-open：任何异常都放行（宁可多扣一次分，不可卡住消息处理路径）。
+        """
+        try:
+            now = time.time()
+            if not hasattr(self, "_fatigue_mood_at"):
+                self._fatigue_mood_at: dict = {}
+            _grp = int(group_id) if group_id else 0
+            last = float(self._fatigue_mood_at.get(_grp, 0.0) or 0.0)
+            if now - last < _FATIGUE_MOOD_COOLDOWN_SEC:
+                return False
+            self._fatigue_mood_at[_grp] = now
+            return True
+        except Exception:
+            return True
 
     async def _fetch_reply_message(self, message_id: Any,
                                   current_group_id: Any = None) -> Optional[dict]:
