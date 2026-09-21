@@ -1905,8 +1905,11 @@ class Heartbeat:
             try:
                 from anima.cognitive.mood import get_mood_system
                 mood = get_mood_system(self.core.config.persistence.data_dir)
-                # 每次心跳触发一次时间影响（内部有衰减逻辑）
-                mood.trigger("mentioned", 0.05)  # 轻微的时间影响
+                # 每次心跳推进情绪时间：只让 30min 衰减**有机会执行**。
+                # 🔴 不可改回 trigger("mentioned", 0.05)：trigger() 每次都会重置
+                # last_updated，30s 一次的心跳会把衰减时钟永久压在 now 附近
+                # ⇒ elapsed 永远 < 1800s ⇒ 衰减从未执行（2026-09-21 实证）。
+                mood.touch_time()
             except Exception:
                 logger.debug("情绪系统更新失败，已隔离")
 

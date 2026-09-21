@@ -28,6 +28,8 @@ class MoodState:
     valence: float = 0.0      # -1 ~ 1 (不悦 ~ 愉快)
     arousal: float = 0.3      # 0 ~ 1 (低迷 ~ 兴奋)
     label: str = "neutral"    # 情绪标签
+    # 语义（Round 6 起固化）= **上次衰减时刻**，唯一写入点是 MoodSystem._apply_decay()。
+    # 触发事件只改 valence / arousal，不再推进它 —— 否则 30 分钟衰减会被事件饿死。
     last_updated: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -123,17 +125,21 @@ class MoodSystem:
         data = self._persist.read_json("mood.json", {})
         if data:
             self._state = MoodState.from_dict(data)
-            self._apply_decay()
+            # 2026-09-21（Round 6）：启动时的**补衰减**必须落盘。
+            # 原实现丢掉了 `_apply_decay()` 的返回值 ⇒ 内存已回归、mood.json 仍是旧值
+            # ⇒ 任何"读快照判断情绪"的观测都会拿到过期数据（本轮诊断正因此受限）。
+            if self._apply_decay():
+                self._save()
 
     def _save(self) -> None:
         self._persist.write_json("mood.json", self._state.to_dict())
 
-    def _apply_decay(self) -> None:
-        """向中性回归。"""
+    def _apply_decay(self) -> bool:
+        """向中性回归。返回**本次是否真的发生了回归**（供调用方决定是否落盘）。"""
         now = time.time()
         elapsed = now - self._state.last_updated
         if elapsed < self.DECAY_INTERVAL:
-            return
+            return False
         # 计算经过了多少个衰减周期
         cycles = int(elapsed / self.DECAY_INTERVAL)
         for _ in range(min(cycles, 10)):  # 最多衰减 10 个周期
@@ -142,6 +148,14 @@ class MoodSystem:
             self._state.arousal = 0.3 + (self._state.arousal - 0.3) * (1 - self.DECAY_RATE)
         self._state.last_updated = now
         self._state.label = _compute_label(self._state.valence, self._state.arousal)
+        # 2026-09-21（Round 6）：衰减此前**完全静默** —— 无法从日志判断它到底跑没跑
+        # （前两轮的饿死 bug 都是因为只能读 mood.json 快照才发现）。补一条流水，
+        # 让"衰减是否发生 / 回归了几个周期"直接可观测。
+        logger.info(
+            "情绪衰减：%d 周期 -> valence=%.3f arousal=%.3f label=%s",
+            min(cycles, 10), self._state.valence, self._state.arousal, self._state.label,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # 触发接口
@@ -207,9 +221,37 @@ class MoodSystem:
         if self._state.arousal > 0.8:
             self._state.arousal = 0.8 + (self._state.arousal - 0.8) * 0.95
 
-        self._state.last_updated = time.time()
+        # 🔴 2026-09-21（Round 6）：**不得**在此重置衰减时钟。
+        # 原实现每次触发都把 last_updated 刷成 now，语义是"事件刷新情绪 ⇒ 衰减重新计时"；
+        # 后果是**任何事件**（哪怕 intensity=0.05）都把 30 分钟衰减窗口清零 ⇒
+        # 活跃群里衰减永不执行。实测：重启后 12:29:44 → 12:58:11 = 1707s < 1800，
+        # 一次都没跑到（这是继"心跳每 30s 刷时钟"之后的**第二重饿死**）。
+        # 现在衰减时钟的语义 = **上次衰减时刻**，唯一写入点是 `_apply_decay()`；
+        # 事件只改 valence / arousal，不碰时钟。
         self._state.label = _compute_label(self._state.valence, self._state.arousal)
+        # 2026-09-21：此前 trigger() 完全没有日志 ⇒「情绪为何长期停在 annoyed」
+        # 不可观测，只能读当前 mood.json 快照。补一条触发流水（含本次 delta）。
+        logger.info(
+            "情绪触发：%s intensity=%.2f dv=%+.3f da=%+.3f -> valence=%.3f arousal=%.3f label=%s",
+            event, intensity, valence_delta, arousal_delta,
+            self._state.valence, self._state.arousal, self._state.label,
+        )
         self._save()
+
+    def touch_time(self) -> None:
+        """心跳时间推进：让 30 分钟衰减**真正有机会执行**。
+
+        与 `trigger()` 的区别：**不注入任何事件**，只推进衰减。
+        （Round 6 之后 `trigger()` 也不再重置衰减时钟，两者对时钟都是安全的。）
+
+        🔴 历史 bug（2026-09-21 定位，既有缺陷）：`autonomy._life_checkpoints()`
+        每心跳 tick（默认 30s）借 `trigger("mentioned", 0.05)` 当"时间影响"，
+        而 `trigger()` 每次都把 `last_updated` 刷成 now ⇒ `_apply_decay()` 的
+        `elapsed >= DECAY_INTERVAL(1800s)` 永不满足 ⇒ **衰减从未执行** ⇒
+        `valence` 只增不减、永久卡死（实测 `now - last_updated = 16s`）。
+        """
+        if self._apply_decay():
+            self._save()
 
     def get_state(self) -> MoodState:
         """获取当前情绪状态（含衰减）。"""
