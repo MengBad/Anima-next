@@ -61,6 +61,7 @@ _KIND_TO_KEY = {
     "political": "fallback_political",
     "cold_bullying": "fallback_cold_bullying",
     "cold_avoidance": "fallback_cold_avoidance",
+    "tired": "fallback_tired",
 }
 
 _ALL_BUCKETS = tuple(_KIND_TO_KEY.values()) + ("fallback_other",)

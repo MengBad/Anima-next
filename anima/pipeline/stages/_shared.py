@@ -139,6 +139,34 @@ _PROMISE_THREAT_RE = re.compile(
 )
 
 
+def _promise_excerpt(reply: str) -> str:
+    """截出 bot 回复里**那句承诺本身**，而不是"议程提醒话术"。
+
+    2026-09-21 深审：`Debt.content` 此前存的是 `intent`（"之前答应了 X 一件事，
+    看看是否需要跟进。当时的回复是：…"），原文只落在 `due_hint` ⇒
+      ① `autonomy` 的主动发言模板 `你之前答应过的事：{content}。看看现在能不能做了`
+         于是变成双重冗余的口水句，用户看不出"到底欠了什么"；
+      ② 债库无法人工复核真假 —— 而假账正是在这里被"洗白"为一条正常议程。
+    content 应当回答"欠了什么"，故截取命中承诺的那一小句。
+    """
+    r = (reply or "").strip()
+    m = _PROMISE_RE.search(r)
+    if m is None:
+        return r[:120]
+    # 回退到本句起点（上一个句末标点之后）
+    start = 0
+    for i in range(m.start() - 1, -1, -1):
+        if r[i] in "。！？!?\n":
+            start = i + 1
+            break
+    end = len(r)
+    for i in range(m.end(), len(r)):
+        if r[i] in "。！？!?\n":
+            end = i + 1
+            break
+    return (r[start:end].strip() or r[:120])[:120]
+
+
 def _detect_promise_and_schedule(ctx: "PipelineContext") -> None:
     """检测回复中的承诺性语句，创建议程以便后续主动跟进。"""
     if not ctx.reply or not ctx.group_id:
@@ -204,7 +232,8 @@ def _detect_promise_and_schedule(ctx: "PipelineContext") -> None:
                 _pcfg2 = getattr(getattr(core, "config", None), "persistence", None)
                 _pdd2 = getattr(_pcfg2, "data_dir", "data") if _pcfg2 else "data"
                 _get_dm2(_pdd2).add(
-                    content=intent,
+                    # content 回答"欠了什么"（承诺句本身）；原文另走 source_text/due_hint
+                    content=_promise_excerpt(ctx.reply),
                     source_group=str(ctx.group_id),
                     source_user=str(ctx.user_id),
                     beneficiary=str(ctx.sender_name or ""),

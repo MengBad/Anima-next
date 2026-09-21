@@ -72,6 +72,15 @@ PROD_FALSE_PROMISES = [
     "碗里可还是空的呢！先说好，粗蛋白低于40%、拿肉粉和高淀粉填充物糊弄的膨化粮本喵连闻都不闻喵。",
     # 循环产物：autonomy 自己给债务议程插的标签「（约好 <due_hint>）」
     "你答应过的事：之前答应了 Rezon 一件事，看看是否需要跟进。（约好 等下，你怎么也抢本喵的自称啊）",
+    # 🔴🔴 2026-09-21 第三轮：前两轮只收了 `本喵会`，`帮 / 来 / 记得` 仍是裸词 ⇒
+    #   "修好"后 23h 内又被**下面这句原文**造出 1 条假债
+    #   （21:35 建账 → 06:00 兑现成一次答非所问的主动追问，占当日自主发言 25%）。
+    #   原文逐字取自 NapCat 出站正文 —— 回测必须扫**真实输入域**，不是记忆库摘要。
+    "而且天天本喵来本喵去的，老实交代，你是不是背着我偷偷进货猫娘成分了！",
+    # 裸 `本喵帮` = 拒绝（"帮不了"），语义与承诺正好相反
+    "少来，本喵帮不了你",
+    # 裸 `本喵记得` = 陈述记忆（带动作词才算承诺）
+    "本喵记得你上次说的那个事",
 ]
 
 
@@ -130,6 +139,27 @@ def test_no_bare_temporal_word_in_lexicon():
     strong = COMMITMENT_RE.pattern.split("|(?:明天")[0]
     for word in ("下次", "明天", "今晚", "到时候", "等下", "稍后", "待会", "回头"):
         assert f"|{word}|" not in strong, f"裸时间词 {word} 混进了第一人称短语段"
+
+
+def test_no_bare_self_reference_verb_in_lexicon():
+    """🔴 同类枚举守卫：`我/本喵 + 承诺动词核` 不得作为**裸词**出现。
+
+    2026-09-21 第三轮事故：前两轮只收了 `会`，`帮 / 来 / 记得` 仍是裸词 ⇒
+    "修好"后 23h 内又被 `本喵来` 造出假债。裸动词核对每个词都有同一种陷阱
+    （名词化 / 否定 / 话题结构 / 陈述记忆）：
+      `会的本事` / `帮不了` / `来…去` / `记得你说过`
+
+    故本条把"动词核必须带动作约束"钉在 pattern 上 —— 将来再加 `本喵X` 类词会红。
+    """
+    strong = COMMITMENT_RE.pattern.split("|(?:明天")[0]
+    for verb in ("本喵帮", "本喵来", "本喵记得", "我来", "我会", "哈基米会"):
+        assert f"|{verb}|" not in strong, (
+            f"裸动词核 {verb} 又混进了第一人称段 —— 它必须走 "
+            f"`(?:我|本喵|哈基米)(?:会|帮|来|记得)(?![不的])(?=…动作)` 构式"
+        )
+    assert r"(?:会|帮|来|记得)(?![不的])" in strong, (
+        "承诺动词核的负向断言 / 动作共现约束不见了"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +373,37 @@ def test_shared_source_passes_not_before_at():
     src = (_ROOT / "anima" / "pipeline" / "stages" / "_shared.py").read_text(encoding="utf-8-sig")
     assert "_PROMISE_FOLLOWUP_DELAY_SEC" in src
     assert "not_before_at=_not_before" in src
+
+
+def test_debt_content_records_what_is_owed(tmp_path):
+    """`Debt.content` 必须回答"欠了什么"，而不是议程提醒话术。
+
+    2026-09-21 深审：此前存 `intent`（"之前答应了 X 一件事，看看是否需要跟进。
+    当时的回复是：…"）⇒ ① `autonomy` 的主动发言模板
+    `你之前答应过的事：{content}。看看现在能不能做了` 会拼出双重冗余的口水句，
+    用户看不出到底欠了什么；② 债库无法人工复核真假（假账洗白的最后一环）。
+    """
+    from anima.cognitive.debt import get_debt_manager
+    from anima.pipeline.stages._shared import _detect_promise_and_schedule
+
+    class _Cfg:
+        persistence = type("P", (), {"data_dir": str(tmp_path)})()
+        debt_tracking = type("D", (), {"enabled": True})()
+
+    class _Core:
+        def __init__(self):
+            self.config = _Cfg()
+
+        def propose_agenda(self, *a, **k):
+            return type("A", (), {"id": "ag"})()
+
+    _detect_promise_and_schedule(_ctx("回头帮你查一下开播时间喵", _Core(), tmp_path))
+
+    pend = get_debt_manager(str(tmp_path)).pending()
+    assert len(pend) == 1, "真承诺应记一条债"
+    content = pend[0].content
+    assert "看看是否需要跟进" not in content, f"债 content 仍是议程话术: {content!r}"
+    assert "帮你查" in content, f"债 content 没回答'欠了什么': {content!r}"
 
 
 # ---------------------------------------------------------------------------
