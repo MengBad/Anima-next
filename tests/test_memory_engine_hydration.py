@@ -4,16 +4,22 @@ from anima.constitution.memory_engine import MemoryEngine
 
 
 class _FakeCM:
-    """注入式 chat_memory 适配(隔离, 不碰全局单例)。"""
+    """注入式 chat_memory 适配(隔离, 不碰全局单例)。
+
+    🔴 条目键必须与 ``chat_memory.get_recent_group_context`` 的**真实返回**一致：
+    只有 ``{"role", "content"}``。2026-09-22 前这里用 ``text``（生产不存在的键），
+    与实物分叉 ⇒ hydrate 在生产恒空而本文件全绿（假绿 6 次开机）。
+    契约守卫见 ``tests/test_memory_hydrate_source_contract.py``。
+    """
     def __init__(self, groups):
         self._groups = groups
     def group_recent_ids(self):
         return set(self._groups)
     def get_recent_group_context(self, gid, limit=12):
         return [
-            {"role": "user", "text": "hello group " + str(gid)},
-            {"role": "user", "text": "second line"},
-            {"role": "user", "text": ""},   # 空文本应跳过
+            {"role": "user", "content": "hello group " + str(gid)},
+            {"role": "user", "content": "second line"},
+            {"role": "user", "content": ""},   # 空文本应跳过
         ]
 
 

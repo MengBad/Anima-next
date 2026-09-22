@@ -67,6 +67,8 @@ class MemoryEngine:
         返回新增 episode 数。
         """
         added = 0
+        gids: list = []
+        entries_seen = 0
         try:
             if cm is None:
                 from anima.memory.chat_memory import get_chat_memory
@@ -76,10 +78,16 @@ class MemoryEngine:
             salience = min(max(min_salience, 0.2), max_salience)
             for gid in gids[:8]:
                 hist = cm.get_recent_group_context(gid, limit=8) or []
+                entries_seen += len(hist)
                 for entry in hist:
                     if collected >= max_episodes:
                         break
-                    text = str(entry.get("text") or "").strip()
+                    # 🔴 生产键是 ``content``：``chat_memory.get_recent_group_context``
+                    # 返回的是 ``{"role", "content"}`` —— **没有 ``text`` 键**。
+                    # 2026-09-22 之前只读 ``text`` ⇒ 逐条 ``continue`` ⇒ 开机水合
+                    # 恒 0 条（生产实测连续 6 次）。``text`` 保留回落：旧适配器与
+                    # 既有测试 fake 仍可用（fail-open，不因旧结构丢数据）。
+                    text = str(entry.get("text") or entry.get("content") or "").strip()
                     if not text:
                         continue
                     _role = entry.get("role", "user")
@@ -132,4 +140,13 @@ class MemoryEngine:
                     collected += 1
         except Exception:  # noqa: BLE001 - 水合失败只隔离, 不影响生命
             logger.exception("memory_engine.hydrate 采样失败, 有界隔离")
+        # 可观测：新增为 0 时此前**完全静默**（调用方只在 added 非 0 时打日志），
+        # 于是「跑了但 0 条」与「任务没跑」在生产日志里不可分，本次事故因此
+        # 潜伏到人工清点才被发现。这条计数让两种情形可直接归因：
+        #   群=0 条目=0 新增=0 ⇒ 数据源空（如开机瞬间，群短时缓冲不落盘）
+        #   群=N 条目>0 新增=0 ⇒ 有候选却采不到 ⇒ 取值键/过滤条件出错
+        logger.info(
+            "宪法记忆水合采样：群=%d 条目=%d 新增=%d",
+            len(gids), entries_seen, added,
+        )
         return added

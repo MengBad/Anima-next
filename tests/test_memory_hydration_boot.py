@@ -5,11 +5,15 @@ from anima.constitution.memory_authority import MemoryAuthority
 
 
 class _FakeCM:
+    """条目键与 ``chat_memory.get_recent_group_context`` 的真实返回一致（role/content）。
+
+    🔴 2026-09-22 前本夹具用 ``text``（生产不存在的键）⇒ 生产水合恒空而本文件全绿。
+    """
     def group_recent_ids(self):
         return ['g1', 'g2']
 
     def get_recent_group_context(self, gid, limit):
-        return [{'role': 'user', 'text': '会话消息 %d' % i} for i in range(30)]
+        return [{'role': 'user', 'content': '会话消息 %d' % i} for i in range(30)]
 
 
 def test_boot_hydrate_bounded_and_readonly():
@@ -40,7 +44,7 @@ def test_periodic_dedupe_no_flood():
             return ['g1']
 
         def get_recent_group_context(self, gid, limit):
-            return [{'role': 'user', 'text': '重复的消息'}]
+            return [{'role': 'user', 'content': '重复的消息'}]
 
     auth = MemoryAuthority()
     first = auth.hydrate_from_chat(cm=_CM(), dedupe=True)
@@ -56,7 +60,7 @@ def test_dedupe_hydrate_attests_provenance():
             return ['g1']
 
         def get_recent_group_context(self, gid, limit):
-            return [{'role': 'user', 'text': '一条可追溯记忆'}]
+            return [{'role': 'user', 'content': '一条可追溯记忆'}]
 
     auth = MemoryAuthority()
     added = auth.hydrate_from_chat(cm=_CM(), dedupe=True)

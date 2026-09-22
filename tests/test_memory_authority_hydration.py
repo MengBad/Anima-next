@@ -9,7 +9,9 @@ class _FakeCM:
     def group_recent_ids(self):
         return set(self._groups)
     def get_recent_group_context(self, gid, limit=12):
-        return [{"role": "user", "text": "hi group " + str(gid)}, {"role": "user", "text": ""}]
+        # 🔴 与 ``chat_memory.get_recent_group_context`` 的真实返回对齐（role/content）。
+        # 2026-09-22 前用 ``text``（生产不存在的键）⇒ 生产水合恒空而本文件全绿。
+        return [{"role": "user", "content": "hi group " + str(gid)}, {"role": "user", "content": ""}]
 
 
 def test_default_no_hydrate_backward_compat():

@@ -36,15 +36,20 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 class _FakeChatMemory:
-    """最小 chat_memory 形状：hydrate() 真正读的两个方法。"""
+    """最小 chat_memory 形状：hydrate() 真正读的两个方法。
+
+    🔴 条目键必须等于 ``chat_memory.get_recent_group_context`` 的真实返回
+    （``{"role", "content"}``）。2026-09-22 前这里用 ``text`` —— 一个生产**不存在**
+    的键 ⇒ hydrate 在生产恒 0 条，而本文件全绿（假绿）。
+    """
 
     def group_recent_ids(self) -> list[int]:
         return [111]
 
     def get_recent_group_context(self, gid: int, limit: int = 8) -> list[dict]:
         return [
-            {"role": "user", "text": "今天天气不错"},
-            {"role": "assistant", "text": "嗯呢，要出去玩吗"},
+            {"role": "user", "content": "今天天气不错"},
+            {"role": "assistant", "content": "嗯呢，要出去玩吗"},
         ]
 
 
