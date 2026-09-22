@@ -197,19 +197,93 @@ HOURLY_ACTIVITY = {
 # 自身状态刷新（P3）：每小时核对群头衔/名片，变更写 self_notes
 # ---------------------------------------------------------------------------
 
-def _build_active_speech_system(time_ctx: str, desire_ctx: str, speaking_rules: str) -> str:
+def _build_active_speech_system(
+    time_ctx: str,
+    desire_ctx: str,
+    speaking_rules: str,
+    self_notes: str = "",
+    mood_note: str = "",
+    world_context: str = "",
+) -> str:
     """人格单源（队列②）：主动发言与被动回复共用 persona_core.yaml 正本。
 
     时间/欲望片段走与被动回复相同的注入位（anima/cognitive/persona_core）；
     出口专属的发言守则经 extra_rules 追加。身份/边界护栏以 yaml 正本
     「身份与边界」为准，此处不再重复（2026-09-12 去重：三重最高优先级
-    指令堆叠会让主动发言更剧本化）。"""
+    指令堆叠会让主动发言更剧本化）。
+
+    2026-09-22：补喂 **内容类** 人格片段 —— `self_notes`（自我笔记，人格
+    漂移主产物）与 `mood_note`（当前情绪）。此前主动发言只传 time/desire，
+    装配器会把 `{self_notes}` / `{world_context}` / `{scar_context}` 替换成
+    空串，于是**人格最外显的场景**（没人问、自己开口）反而看不到自己的笔记
+    与情绪。内容类片段与 09-12 去重的**护栏类**片段（身份锁定/角色守卫）
+    性质不同：前者是"素材"，后者是"最高优先级指令"，不构成"三重堆叠"。
+
+    2026-09-22（续）：再补 `world_context`。5 个占位符里它是**唯一群级语义
+    有效**的一个（`world_model.prompt_fragment()` 与 user 无关）。`relation` /
+    `scar` 需 `user_id`，模板里的「这个人」在**群级**主动发言里指向不明，
+    刻意**不注入**。本路径是**独立 LLM 调用、不进 ContextComposer 预算池**
+    ⇒ 该补充非零和，不挤占其它片段的预算。
+    """
     from anima.cognitive.persona_core import assemble_persona_system
+
+    extra_rules = ""
+    if mood_note and mood_note.strip():
+        extra_rules += mood_note.strip() + "\n\n"
+    extra_rules += speaking_rules
+
     return assemble_persona_system(
-        extra_rules=speaking_rules,
+        extra_rules=extra_rules,
         time_context=f"当前时间：{time_ctx}",
         desire_context=desire_ctx,
+        self_notes=self_notes,
+        world_context=world_context,
     )
+
+
+def _active_speech_persona_fragments(core) -> tuple[str, str, str]:
+    """主动发言用的内容类人格片段：(自我笔记, 当前情绪, 世界观)。
+
+    三个子系统**各自 fail-soft** —— 任一取值失败都返回空串，绝不拖垮主动
+    发言（它跑在 30s 心跳里，不能因某个认知子系统异常而中断）。
+
+    **刻意不含** `relation` / `scar`：二者签名是 `prompt_fragment(user_id)`，
+    属 user 维度。主动发言是**群级**出口（本函数拿不到、也不该猜一个 user_id），
+    模板里的「这个人」会指向不明 ⇒ 注入只会制造歧义。该决策由
+    `tests/test_persona_module_integration.py::test_active_speech_never_injects_user_scoped_fragments`
+    钉死（负向守卫 + 签名守卫）。
+    """
+    self_notes = ""
+    try:
+        from anima.cognitive.learning import get_learning
+        self_notes = get_learning().prompt_fragment() or ""
+    except Exception:
+        logger.debug("主动发言：自我笔记取值失败（已隔离）", exc_info=True)
+
+    _pcfg = getattr(getattr(core, "config", None), "persistence", None)
+    _data_dir = getattr(_pcfg, "data_dir", "data") if _pcfg else "data"
+
+    mood_note = ""
+    try:
+        from anima.cognitive.mood import get_mood_system
+        mood_note = get_mood_system(_data_dir).prompt_fragment() or ""
+    except Exception:
+        logger.debug("主动发言：情绪取值失败（已隔离）", exc_info=True)
+
+    world_ctx = ""
+    try:
+        from anima.cognitive.world_model import get_world_model
+        world_ctx = get_world_model(_data_dir).prompt_fragment() or ""
+    except Exception:
+        logger.debug("主动发言：世界观取值失败（已隔离）", exc_info=True)
+
+    # 运行时可观测：主动发言的 system 内容不落盘 ⇒ 不打日志则"补上没有"不可验证。
+    # 只在真正构建主动发言 prompt 时打（通过门控后，低频），纯只读不产生副作用。
+    logger.info(
+        "主动发言人格片段：self_notes=%d 字，mood=%s，world=%d 字",
+        len(self_notes), "有" if mood_note else "无", len(world_ctx),
+    )
+    return self_notes, mood_note, world_ctx
 
 
 def _desire_event_match(content: str, recent_text: str) -> bool:
@@ -1653,6 +1727,8 @@ class Heartbeat:
         # 构建自主发言 prompt（P0-2：必须与哈基米人格一致，禁止「你是 Anima…AI」）
         time_ctx = time_description()
         desire_ctx = desire.prompt_fragment(group_id)
+        # 2026-09-22：补齐内容类人格片段（自我笔记 + 当前情绪 + 世界观），与被动回复对齐。
+        self_notes_ctx, mood_note_ctx, world_ctx = _active_speech_persona_fragments(self.core)
 
         if intent:
             speaking_rules = """你现在正在执行一项已经通过系统门控的明确表达议程，不是在随机找话题。
@@ -1705,7 +1781,11 @@ class Heartbeat:
                     f"否则输出 [skip]。\n最近人类消息：\n{hooks_text}"
                 )
 
-        system = _build_active_speech_system(time_ctx, desire_ctx, speaking_rules)
+        system = _build_active_speech_system(
+            time_ctx, desire_ctx, speaking_rules,
+            self_notes=self_notes_ctx, mood_note=mood_note_ctx,
+            world_context=world_ctx,
+        )
 
         messages = [{"role": "system", "content": system}]
         # 明确议程是 Owner/日历已经确认的表达目标。近期群聊曾让模型转而接

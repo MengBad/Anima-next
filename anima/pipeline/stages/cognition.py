@@ -136,6 +136,35 @@ def _detect_copycat(ctx: PipelineContext) -> str:
     return ""
 
 
+def _conversation_tone_fragment(ctx: PipelineContext) -> str:
+    """把「语气检测」与「复读/戏弄检测」合成**单条** system 片段。
+
+    2026-09-22：两者同一语义面（都是"对方此刻的状态"），原先各注入一次却
+    **共用 key** `conversation_tone`，而 `pipeline/context.compose_system`
+    **不按 key 去重** ⇒ 同轮会向 system 塞进两段 `## 对方现在的语气`
+    （内容不同、标题重复）。合并后只保留一个注入点。
+
+    两段检测仍**各自隔离**：任一抛错不影响另一段，也不影响流水线。
+    """
+    lines: list[str] = []
+    try:
+        from anima.cognitive.mood import detect_conversation_tone
+        _tone_hint = detect_conversation_tone(ctx.text or "")
+        if _tone_hint:
+            lines.append(_tone_hint)
+    except Exception:
+        logger.debug("语气检测失败", exc_info=True)
+    try:
+        _copycat_hint = _detect_copycat(ctx)
+        if _copycat_hint:
+            lines.append(_copycat_hint)
+    except Exception:
+        logger.debug("复读检测失败", exc_info=True)
+    if not lines:
+        return ""
+    return "## 对方现在的语气\n" + "\n".join(lines)
+
+
 async def cognition_stage(ctx: PipelineContext) -> StageResult:
     """注入时间感知 + 欲望 + 关系 + 自我笔记 + 世界观 + 伤痕到 system prompt。"""
     from anima.cognitive.time_sense import get_time_context
@@ -316,22 +345,12 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.debug("Bot 关系上下文注入失败", exc_info=True)
 
-    # 对话语气检测
-    try:
-        from anima.cognitive.mood import detect_conversation_tone
-        _tone_hint = detect_conversation_tone(ctx.text or "")
-        if _tone_hint:
-            add_system_fragment("conversation_tone", f"## 对方现在的语气\n{_tone_hint}", 70)
-    except Exception:
-        logger.debug("语气检测失败", exc_info=True)
-
-    # 复读/戏弄检测
-    try:
-        _copycat_hint = _detect_copycat(ctx)
-        if _copycat_hint:
-            add_system_fragment("conversation_tone", f"## 对方现在的语气\n{_copycat_hint}", 70)
-    except Exception:
-        logger.debug("复读检测失败", exc_info=True)
+    # 对话语气 + 复读/戏弄检测（合并为**单条**注入）
+    # 2026-09-22：两者原先各注入一次却共用 key `conversation_tone`，而
+    # compose_system 不按 key 去重 ⇒ 同轮可能出现两段「## 对方现在的语气」。
+    _tone_fragment = _conversation_tone_fragment(ctx)
+    if _tone_fragment:
+        add_system_fragment("conversation_tone", _tone_fragment, 70)
 
     # 对话深度提示
     try:
