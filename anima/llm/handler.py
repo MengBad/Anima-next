@@ -394,7 +394,7 @@ class LLMHandler(AnimaCommandsMixin):
                                 "「明天早上7点提醒我喂猫」就行啦～")
                     return None
             else:
-                from anima.llm.group_gate import is_direct_group_call
+                # 同 `_handle_inner`：不得局部 import（会编译期遮蔽模块级 L22）。
                 if not (is_owner or is_direct_group_call(event, text)):
                     return None
             return await self._request_executor().handle(
@@ -860,11 +860,17 @@ class LLMHandler(AnimaCommandsMixin):
         await self._observe_crossgroup(text, user_id, group_id, detail_type, sender_name)
 
         # 未 @ bot 的群消息同样进入仅内存、短 TTL 的群上下文；不写个人档案和向量库。
+        # `addressed_to_bot` 用回复闸门的同一信号（`group_gate.is_direct_group_call`，
+        # 即 @bot / 引用 bot / 正文喊「哈基米」），记录"这句是否直接对 bot 说"。
+        # 用途：群缓冲里会同时存在「别人问 bot、且尚未被回复」的消息，与本轮要回的
+        # 那条**同形**（都 role=user、都像在问 bot、中间没有 assistant 隔断），模型
+        # 无法分辨 ⇒ 2026-09-21「引用锚正确、正文却在答上一条」的事故。注入侧据此标注。
         if detail_type == "group" and group_id is not None:
             try:
                 from anima.memory.chat_memory import get_chat_memory
                 get_chat_memory().observe_group_message(
                     int(group_id), int(user_id), sender_name, text, event.get("message_id"),
+                    addressed_to_bot=is_direct_group_call(event, text),
                 )
             except Exception:
                 logger.exception("群短时上下文记录失败（已隔离）")
@@ -1008,7 +1014,11 @@ class LLMHandler(AnimaCommandsMixin):
         at_trigger = True
         if detail_type == "group":
             try:
-                from anima.llm.group_gate import is_direct_group_call
+                # 🔴 不得在此局部 import `is_direct_group_call`：函数体内任一绑定都会让
+                # Python 在编译期把它判为**整函数的局部名**，遮蔽模块级 L22 的导入，
+                # 从而使更早的 `_handle_inner` 群上下文写入点（L873）抛 UnboundLocalError
+                # （2026-09-22 P0 回归）。模块级导入即正解，守卫见
+                # tests/test_no_local_import_shadowing.py。
                 at_trigger = bool(is_direct_group_call(event, ctx.text))
             except Exception:
                 at_trigger = False
