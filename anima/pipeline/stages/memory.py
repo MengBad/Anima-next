@@ -157,8 +157,13 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
     )
     if ctx.detail_type == "group" and ctx.group_id is not None:
         # 群短时缓冲只用于当前群近期可见消息；与个人档案去重后共同构成上下文。
+        # annotate=True（本处**唯一**开启的消费者）：群缓冲是群级共享的，同群不同用户
+        # 并发 @bot 时，缓冲里会留下「别人问 bot、其后没有任何 assistant 回复」的 user turn。
+        # `exclude_message_id` 只排掉"自己这条"，于是它就成了一个**没有标记、与本轮同形**
+        # 的待答提问 ⇒ 模型被诱导去答别人那条（2026-09-21 事故）。标注后模型能分辨"该答哪条"。
         group_history = memory.get_recent_group_context(
             ctx.group_id, limit=12, exclude_message_id=ctx.event.get("message_id"),
+            annotate=True,
         )
         seen = {(m.get("role"), m.get("content")) for m in group_history}
         history = [*group_history, *[m for m in history if (m.get("role"), m.get("content")) not in seen]]

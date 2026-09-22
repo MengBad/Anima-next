@@ -4,8 +4,17 @@ import re
 
 # OneBot/CQ 传输格式正则：匹配所有已知 CQ 类型（含未闭合的尾部 `]?`）。
 # 用于出站清理、记忆落盘清洗等场景，确保所有模块使用同一份定义。
+#
+# ⚠️ 枚举纪律（2026-09-21 教训）：类型清单必须**按实际会入站的段枚举**，
+# 漏一个就会把 CQ 码原样漏进 LLM 上下文与向量记忆。本次补的是 `reply` ——
+# 「答非所问」事故里，带引用回复的消息 raw_message 含 `[CQ:reply,id=…]`，
+# 而旧表独缺该类型 ⇒ 残留进 ctx.text（audit text_length=3 vs ReAct text_len=28，
+# 差的 25 字就是它）。同时补齐 `json/xml/forward/node/file/markdown` ——
+# `channels/onebot11.py` 的 rich_blocks 证明这些段确实会入站。
+# 1 处定义、4 处消费（`_shared._clean_transport_text`、`chat_memory` 两处、`autonomy`）。
 CQ_TRANSPORT_RE = re.compile(
-    r"\[CQ:(?:image|face|bface|sface|record|video|poke|share|music|location|at)[^\]]*\]?",
+    r"\[CQ:(?:image|face|bface|sface|record|video|poke|share|music|location|at"
+    r"|reply|json|xml|forward|node|file|markdown)[^\]]*\]?",
     re.I,
 )
 

@@ -24,6 +24,15 @@ logger = logging.getLogger("anima.memory.chat_memory")
 _POLLUTION_TOKENS = ("antigravity", "我是 antigravity", "antigravity ai")
 from anima.constants import CQ_TRANSPORT_RE as _CQ_TRANSPORT_RE
 
+# 「归属标注」前缀（仅 `get_recent_group_context(annotate=True)` 使用）。
+# 背景：群缓冲是**群级共享**的，同群不同用户并发 @bot 时，缓冲里会同时存在
+# 「别人问 bot、其后没有任何 assistant 回复」的 user turn，与本轮要回的那条
+# 在 messages 里**同形**（都 role=user、都像在问 bot、中间没有 assistant 隔断）。
+# `exclude_message_id` 只排掉"自己这条" ⇒ 剩下的他人待答提问成了无标记歧义源，
+# 模型会被诱导去答别人那条（2026-09-21 生产事故：引用锚正确、正文答错对象）。
+_BYSTAND_PENDING_PREFIX = "[旁听·他人提问·非本轮] "
+_BYSTAND_PREFIX = "[旁听] "
+
 
 def _is_polluted(entry: dict) -> bool:
     """判断一条 bot 记忆是否为身份污染条目。"""
@@ -315,25 +324,33 @@ class ChatMemory:
         return messages
 
     def observe_group_message(self, group_id: int, user_id: int, sender_name: str,
-                              content: str, message_id: object = None) -> None:
+                              content: str, message_id: object = None,
+                              *, addressed_to_bot: bool = False) -> None:
         """记录所有入站群消息：短时群上下文 + 持久化个人桶。
 
         持久化写入确保即使消息被回复闸门跳过，对话上下文也不会丢失。
+
+        `addressed_to_bot`：这条消息是否**直接叫到 bot**（@ / 引用 / 正文喊「哈基米」），
+        由调用方用 `group_gate.is_direct_group_call`（回复闸门的同一信号）判定。
+        只在短时群缓冲上落 `to_bot` 标记 —— 个人桶是 (群,用户) 隔离的，没有归属歧义。
         """
         self._purge_group_recent(group_id)
         text = (content or "").strip()
         if not text:
             return
+        # 剥离 CQ 码等传输层载荷，与 memory_stage 的 _clean_transport_text 一致。
+        # 群缓冲此前存的是**未清洗的 raw** ⇒ 带引用回复的消息会把 `[CQ:reply,id=…]`
+        # 带进 LLM 上下文（削弱可辨识度）。两个落点（缓冲 + 个人桶）现在同源。
+        clean_text = _CQ_TRANSPORT_RE.sub("", text).strip() or "[用户发送了图片]"
         # 1) 短时群上下文（内存，15min TTL）
         self._group_recent[int(group_id)].append({
             "role": "user",
-            "content": f"[{sender_name}({user_id})]: {text[:2000]}",
+            "content": f"[{sender_name}({user_id})]: {clean_text[:2000]}",
             "message_id": str(message_id) if message_id is not None else None,
+            "to_bot": bool(addressed_to_bot),
             "time": time.time(),
         })
         # 2) 持久化个人桶 —— 保证被闸门跳过的消息仍保留在对话记忆中
-        # 剥离 CQ 码等传输层载荷，与 memory_stage 的 _clean_transport_text 一致
-        clean_text = _CQ_TRANSPORT_RE.sub("", text).strip() or "[用户发送了图片]"
         self.add("group", int(group_id), "user", sender_name, clean_text[:2000],
                  user_id=int(user_id))
         if self._on_group_message:
@@ -352,14 +369,52 @@ class ChatMemory:
         })
 
     def get_recent_group_context(self, group_id: int, limit: int = 12,
-                                 exclude_message_id: object = None) -> list[dict]:
-        """返回按时间正序的短时群上下文，可排除本轮正在处理的消息。"""
+                                 exclude_message_id: object = None,
+                                 *, annotate: bool = False) -> list[dict]:
+        """返回按时间正序的短时群上下文，可排除本轮正在处理的消息。
+
+        `annotate=True`（**opt-in**）给「非本轮」条目加归属前缀，用于修复群上下文
+        跨用户污染：
+          - 直接对 bot 说、且其后**没有**任何 assistant 回复 ⇒ `[旁听·他人提问·非本轮]`
+            （别人的、还没被答的提问，正是模型误答的对象）
+          - 其余群友发言                                       ⇒ `[旁听]`
+          - 已有 assistant 回复的旧提问**不打标**（那是真实发生过的对话史）
+        只改 `content`，**`role` 仍是 user/assistant** —— 网关只认三种 role，
+        多轮交替结构也不能破。
+
+        🔴 `annotate` 默认 False 是硬约束：本函数有 5 个消费者
+        （`pipeline/stages/memory.py`、`core/autonomy.py` 两处、
+        `constitution/memory_engine.py`、`get_group_context`），只有第一个需要标注。
+        """
         self._purge_group_recent(group_id)
         excluded = str(exclude_message_id) if exclude_message_id is not None else None
         rows = [m for m in self._group_recent.get(int(group_id), ())
                 if not excluded or m.get("message_id") != excluded]
-        return [{"role": m["role"], "content": m["content"]}
-                for m in rows[-max(0, limit):]]
+        rows = rows[-max(0, limit):]
+        if not annotate:
+            return [{"role": m["role"], "content": m["content"]} for m in rows]
+        annotated: list[dict] = []
+        pending = 0
+        for i, m in enumerate(rows):
+            content = m["content"]
+            if m["role"] == "user":
+                if m.get("to_bot"):
+                    if not any(r["role"] == "assistant" for r in rows[i + 1:]):
+                        content = _BYSTAND_PENDING_PREFIX + content
+                        pending += 1
+                else:
+                    content = _BYSTAND_PREFIX + content
+            annotated.append({"role": m["role"], "content": content})
+        if pending:
+            # 只在命中「他人待答」（= 本次事故的条件）时留痕：这是本修复唯一的运行时
+            # 证据面（群缓冲不落盘），同时也是观察"并发 @bot 窗口"是否被踩到的探针。
+            # 纯闲聊旁听属常态，不打日志以免淹没 INFO 面。
+            logger.info(
+                "群上下文归属标注：%d 条「他人待答」已标为非本轮（群 %s，共 %d 条）"
+                "—— 该群本回合存在并发 @bot 窗口",
+                pending, group_id, len(rows),
+            )
+        return annotated
 
     def group_recent_ids(self) -> set[int]:
         """返回仍有有效短时上下文的群，用于自主心跳选群。"""
