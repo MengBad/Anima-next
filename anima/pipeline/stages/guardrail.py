@@ -29,14 +29,19 @@ _MECHANICAL_REWRITES = (
     "本喵刚想说的词儿跑了……换个话题呗？",
 )
 
-# 破角色「分析体」兜底（2026-09-21）：此前是**独立字符串出口**，措辞里带
-#   「你刚想说啥来着？接着聊～」—— 向用户**索取复述**，而模型其实听懂了。
-#   实测 12:23:18 用户求「帮我找点皮物小说」，被回这句 ⇒ 诉求完全没被接住，
-#   且与 `_MECHANICAL_REWRITES` 去年那次"别伪装没听清"的收紧口径不一致。
+# 破角色「分析体」兜底（2026-09-21 建立；2026-09-23 去 meta 括号）。
+#   * 09-21：此前是**独立字符串出口**，措辞里带「你刚想说啥来着？接着聊～」——
+#     向用户**索取复述**，而模型其实听懂了。实测 12:23:18 用户求「帮我找点皮物小说」，
+#     被回这句 ⇒ 诉求完全没被接住，与 `_MECHANICAL_REWRITES` 去年那次"别伪装没听清"
+#     的收紧口径不一致。
+#   * 09-23：三条全部以 meta 括号开头（「（差点写成报告了，收收收）…」）——
+#     护栏改写**在向用户解释护栏**（"我跑偏了 / 划掉划掉"）。人不会在群聊里说这句话；
+#     与 09-21 删 `_MOOD_TAIL` 属同一类修法（**兜底不该自带元叙述**）。
+#     生产实测 24h 改写 5 次 ⇒ 就有 5 条出站带着这层解说。
 _ANALYSIS_ESSAY_FALLBACKS = (
-    "（本喵刚又跑偏成分析模式了，打住打住）聊点别的呗，你想唠啥喵？",
-    "（差点写成报告了，收收收）本喵还是适合唠嗑，说点轻松的吧喵～",
-    "（刚才那段太正经了，划掉划掉）本喵还是唠点轻松的，换个话头喵。",
+    "害，本喵想聊点别的了，你想唠啥喵～",
+    "本喵还是适合唠嗑，说点轻松的吧喵～",
+    "换个话头吧，本喵想听点轻松的喵。",
 )
 
 def _record_fallback(ctx: "PipelineContext", kind: str) -> None:
@@ -134,6 +139,122 @@ _ESSAY_STRUCT_RE = re.compile(
 )
 _USER_WANTS_ANALYSIS_RE = re.compile(r"(解析|分析|详细说说|展开讲|怎么评价|考据)")
 
+#: 「单语义词 + 长文」路径的**强标记**（2026-09-23 新增）。
+#: 语义词表里两类词的噪声不同：「从X角度看 / 数据分析 / 官方设定」在 ACG 与日常
+#: 闲聊里都是常见说法（生产实测把它们连同 250 字正文一起判成论文体），而下面这些
+#: 词几乎只出现在真正的分析文里 ⇒ 只有它们才够格**单独**触发。
+_ANALYSIS_ESSAY_STRONG_RE = re.compile(
+    r"(综上所述|主流解析|逻辑推导|结构化解剖|语义聚类|严谨的逻辑|实证科学"
+    r"|统计学信度|分类学评估|政治社会学|传播学)"
+)
+
+# ── 「结构 + 抽象密度」评分（2026-09-23 第二轮，取代闭集词表做主力）────────────
+# 背景：同日上午那版把单语义词降级、改用 `_ANALYSIS_ESSAY_STRONG_RE` 强词表 —— 那
+# **又是一个闭集语义词表**。用 3 天 356 条生产真实出站原文回测：
+#   * 判据命中 **0** 条，长尾（>=120 字）9 条全漏，其中 3 条是教科书级剖析体；
+#   * 生产实际在用的词（底层逻辑 / 本质是 / 核心诉求 / 认知水平 / 因果支配 /
+#     集合论 / 收束点）在强词表里**一个都不含** —— 与 09-20 已修掉的毛病同类。
+# ⇒ 换成**结构信号**（定义式句式）+ **抽象名词** + **书面连接词**打分；词表退为加权项，
+#   不再是唯一闸门。这才能覆盖模型换说法的情形。
+#
+# 3 天真实数据上的分离度（含阈值定标依据）：
+#   命中 4 条 = 6.5 / 8.5 / 15.0 / 18.5；>=100 字**未命中**样本的上界仅 **3.5**
+#   ⇒ 阈值 6.0 两侧 margin 3.0，可干净切开。
+# 🔴 长度门槛（>=100 字）**不可省**：91 字的「集合论」条与 87 字的「游戏王特召」条
+#   分数达 9.0 / 6.5，但两者都有正当的对话目的且更短 ⇒ 靠长度门槛排除，避免误杀。
+#   （"长"本身**不等于**"非人"：游戏王规则问答 159 字、安慰长文 230 字分数都只有 0.0，
+#    绝不能改成按长度一刀切。）
+_ESSAY_DEFINITION_RE = re.compile(
+    r"(?:不是[^，。！？；]{1,16}[，,]\s*(?:而是|就是))"
+    r"|(?:并非[^，。！？；]{1,14}[，,]\s*(?:而是|而在于|是在于))"
+    r"|(?:本质(?:上)?(?:是|在于|不过是|就是))"
+    r"|(?:根本上(?:说|讲|是|在于))"
+    r"|(?:说到底(?:是|就是|不过是))"
+    r"|(?:的核心(?:诉求|逻辑|分歧|目标|矛盾|问题|机制|原因|本质))"
+    r"|(?:注定只是)"
+    r"|(?:本身就(?:是|意味着))"
+)
+_ESSAY_ABSTRACT_RE = re.compile(
+    r"本质|逻辑|维度|认知水平|认知|容错率|容错|期望值|诉求|分歧|闭环|收束|"
+    r"支配|叙事|阈值|结构性|不确定性|社会化|归因|范畴|子集|全集|集合论|"
+    r"因果关系|因果|机制|博弈|范式|语境|前提|变量"
+)
+#: 只收**书面连接结构**，不收「而 / 其 / 则」这类单字（它们在正常中文里到处都是，
+#: 会把分数推到噪声区）。
+_ESSAY_CONNECTIVE_RE = re.compile(
+    r"对于.{0,10}而言|确实体现|客观上|主观上|在.{0,8}(?:层面|维度|意义上)|"
+    r"从.{0,10}(?:角度|视角|层面|逻辑)(?:来|上)|"
+    r"换言之|进一步(?:说|讲)|反之|由此可见"
+)
+
+#: 评分路径的阈值与长度门槛（定标依据见上方注释）。
+_ESSAY_SCORE_MIN = 6.0
+_ESSAY_SCORE_MIN_LEN = 100
+
+
+def _essay_score(reply: str) -> float:
+    """「结构 + 抽象密度」评分（越高越像破角色分析文）。
+
+    权重：定义式句式 2.0 / 抽象名词 1.5 / 书面连接词 0.5 —— 定义式句式最稀有的，
+    因此权重最高；抽象名词次之；连接词最易得，只作微调。
+    """
+    reply = reply or ""
+    return (
+        len(_ESSAY_DEFINITION_RE.findall(reply)) * 2.0
+        + len(_ESSAY_ABSTRACT_RE.findall(reply)) * 1.5
+        + len(_ESSAY_CONNECTIVE_RE.findall(reply)) * 0.5
+    )
+
+
+def _analysis_essay_rule(reply: str, *, user_text: str = "") -> str | None:
+    """判定是否为「破角色分析体」，命中则返回**规则名**（放行返回 None）。
+
+    规则名用于改写点的日志/统计（2026-09-23 补观测）：此前只剩一行 WARNING、
+    不留原文，事后既无法回溯「它本来想说什么」，也无法按规则统计收敛情况。
+
+    规则（按短路顺序）：
+      user_wants_long  —— 用户自己要求分析，且回复 >700 字并达到强信号门槛
+      struct>=2&long   —— ≥2 个编号分点 + ≥220 字（论文体骨架，不依赖语义词表）
+      keys>=2          —— ≥2 个语义词
+      struct>=1        —— 1 个语义词 + 编号分点
+      single_key_strong—— 1 个语义词 + >220 字 + **强标记**（口语不会出现的词）
+      essay_score      —— ≥100 字 + 「结构 + 抽象密度」评分 ≥6.0（**不依赖词表**）
+
+    2026-09-23（第二轮）：新增 `essay_score` 作为**纯增量**路径 —— 旧路径一条未改，
+    只在 `if not keys: return None` 这条短路**之前**插入一次早退，专门捞上面几条
+    词表路径的漏网（模型的表述一旦离开词表，旧实现直接放行）。
+    """
+    reply = reply or ""
+    keys = _ANALYSIS_ESSAY_RE.findall(reply)
+    n = len(keys)
+    struct_hits = len(_ESSAY_STRUCT_RE.findall(reply))
+    user_wants = bool(_USER_WANTS_ANALYSIS_RE.search(user_text or ""))
+    if user_wants:
+        if len(reply) > 700 and (n >= 3 or struct_hits >= 1):
+            return "user_wants_long"
+        return None
+    # 两个以上编号分点 + 长正文 = 论文体骨架（不依赖语义词表是否命中）
+    if struct_hits >= 2 and len(reply) >= 220:
+        return "struct>=2&long"
+    # 2026-09-23：**不依赖词表**的结构评分路径。必须放在 `if not keys` 之前，
+    # 否则「词表一个都没中」的长分析文会被那条短路直接放行（这正是生产实测
+    # 命中 0 条的原因）。纯增量：旧路径顺序与语义完全不变。
+    if len(reply) >= _ESSAY_SCORE_MIN_LEN and _essay_score(reply) >= _ESSAY_SCORE_MIN:
+        return "essay_score"
+    if not keys:
+        return None
+    if n >= 2:
+        return "keys>=2"
+    if struct_hits:
+        return "struct>=1"
+    # 2026-09-23：**单语义词不再单独构成论文体**。旧口径 `len(reply) > 220` 即整段
+    # 报废，而词表含口语常见词 ⇒ 生产实测把「守望先锋英雄数值讨论（入站 112 字）」
+    # 与 250+ 字的正常接话整段替换成罐头话术（用户观感＝「答到一半不答了」）。
+    # 现在单信号路径须命中**强标记**（见 _ANALYSIS_ESSAY_STRONG_RE）。
+    if len(reply) > 220 and _ANALYSIS_ESSAY_STRONG_RE.search(reply):
+        return "single_key_strong"
+    return None
+
 
 def _looks_like_analysis_essay(reply: str, *, user_text: str = "") -> bool:
     """判断回复是否跑偏成「分析工具/论文体」。
@@ -147,26 +268,16 @@ def _looks_like_analysis_essay(reply: str, *, user_text: str = "") -> bool:
 
     ⇒ 让**结构词（编号分点）独立生效**，不再被语义词表前置短路；同时保留
     「用户自己要求分析」的豁免（那种长分点回复是用户要的，不该改写）。
+
+    2026-09-23 反向补漏：闭集词表除了**漏检**，还会**误检**——单语义词 +
+    长正文曾经足以整段报废一条正常回复。判据现在是「多信号或强标记」，
+    见 `_analysis_essay_rule`（本函数是其布尔包装，返回值类型保持 bool）。
+
+    2026-09-23（第二轮）**再补漏**：上面那版"强标记"仍是闭集词表，用 3 天 356 条
+    生产真实出站回测 → 命中 0 条、长尾 9 条全漏。故新增 `essay_score` 结构评分
+    路径（不依赖词表），详见模块内 `_ESSAY_*` 常量处的定标依据。
     """
-    reply = reply or ""
-    keys = _ANALYSIS_ESSAY_RE.findall(reply)
-    n = len(keys)
-    struct_hits = len(_ESSAY_STRUCT_RE.findall(reply))
-    user_wants = bool(_USER_WANTS_ANALYSIS_RE.search(user_text or ""))
-    if user_wants:
-        return len(reply) > 700 and (n >= 3 or struct_hits >= 1)
-    # 两个以上编号分点 + 长正文 = 论文体骨架（不依赖语义词表是否命中）
-    if struct_hits >= 2 and len(reply) >= 220:
-        return True
-    if not keys:
-        return False
-    if n >= 2:
-        return True
-    if struct_hits:
-        return True
-    if len(reply) > 220:
-        return True
-    return False
+    return _analysis_essay_rule(reply, user_text=user_text) is not None
 
 
 # 政治敏感词表（高精度专名级；2026-09-11 owner 指示：此类门槛只拦政治内容，
@@ -325,8 +436,16 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         return StageResult.CONTINUE
 
     # 破角色「分析体」兜底
-    if _looks_like_analysis_essay(ctx.reply, user_text=ctx.text or ""):
-        logger.warning("Guardrail: 检测到破角色分析体，改写为轻松接话")
+    _essay_rule = _analysis_essay_rule(ctx.reply, user_text=ctx.text or "")
+    if _essay_rule:
+        # 2026-09-23：改写是**破坏性**的（整段替换），必须留下「命中哪条规则 +
+        # 原文多长 + 原文开头」——否则事后既回溯不了「它本来想说什么」，
+        # 也判断不了某条规则是过严还是有效（这正是上次没发现误杀的原因）。
+        _essay_orig = ctx.reply or ""
+        logger.warning(
+            "Guardrail: 检测到破角色分析体，改写为轻松接话（规则=%s 原文=%d字 摘要=%s）",
+            _essay_rule, len(_essay_orig), _essay_orig[:120],
+        )
         if _USER_WANTS_ANALYSIS_RE.search(ctx.text or ""):
             short = ctx.reply.strip()
             if len(short) > 280:
