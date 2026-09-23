@@ -41,15 +41,16 @@ from pathlib import Path
 import pytest
 
 from anima.agent import react as react_mod
-from anima.agent.react import ReActLoop
+from anima.agent.react import ReActLoop, _FRESHNESS_FOOTER
 from anima.tools import LEVEL_USER, Tool, ToolRegistry
 
 ROOT = Path(__file__).resolve().parent.parent
 
 #: 缺陷出口的真实形态（占位串 + 时效脚注直接相接，`_FRESHNESS_FOOTER` 无前导换行）
-DECORATED_PLACEHOLDER = (
-    "（思考中...）（以上来自联网检索；来源未标注具体日期，时效以抓取时间 2026-09-18 为准）"
-)
+#: 2026-09-23：脚注文案已改（去报告体），此处**从实时模板派生**，避免夹具与文案漂移
+#: 后夹具变成「历史形态」而断言假绿。
+FOOTER_SAMPLE = _FRESHNESS_FOOTER.format(date="2026-09-18")
+DECORATED_PLACEHOLDER = f"（思考中...）{FOOTER_SAMPLE}"
 PLACEHOLDER = "（思考中...）"
 LEGACY_PLACEHOLDER = "（想了一下不知道说什么...）"
 
@@ -132,9 +133,9 @@ def test_freshness_footer_does_not_decorate_placeholder():
 
     out = react._apply_freshness_footer(PLACEHOLDER)
 
-    assert "以上来自联网检索" not in out, f"占位串被脚注装饰了: {out!r}"
+    assert FOOTER_SAMPLE not in out, f"占位串被脚注装饰了: {out!r}"
     out2 = react._apply_freshness_footer(LEGACY_PLACEHOLDER)
-    assert "以上来自联网检索" not in out2
+    assert FOOTER_SAMPLE not in out2
 
 
 # --------------------------------------------------------------------------- 4
@@ -150,7 +151,7 @@ def test_is_placeholder_reply_handles_decoration():
     assert pred("") is True                             # 空 = 无内容
     assert pred("   ") is True
     assert pred("今天晴，18℃") is False
-    assert pred("（以上来自联网检索；来源未标注具体日期，时效以抓取时间 2026-09-18 为准）") is False
+    assert pred(FOOTER_SAMPLE) is False
 
 
 # --------------------------------------------------------------------------- 5

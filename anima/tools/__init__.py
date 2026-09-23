@@ -242,6 +242,10 @@ def _run_in_thread(coro_factory: "Callable[[], Any]") -> "Any":
     sandbox tier 与 execution 审计会被静默降级为 USER，与 legacy 语义分叉。
     故此处 ``copy_context()`` 后用 ``ctx.run(loop.run_until_complete, ...)``：
     Task 创建发生在 ctx 内，协程全程看到与主线程逐字节一致的调用上下文。
+
+    🔴 **本函数会阻塞调用线程**（``t.join()``）。它只允许在**工作线程**里被调用；
+    禁止从事件循环线程直接调用（会把 loop 卡住整段工具耗时，2026-09-23 事故）。
+    受治理路由的调用点已改为 ``await asyncio.to_thread(handle, ...)``。
     """
     ctx = contextvars.copy_context()
     box: dict[str, Any] = {}
@@ -809,6 +813,11 @@ class ToolRegistry:
         委托顺序严格满足 F8.6 Security 门：principal authorization（pilot allowlist）
         已由 ``call_capability`` 在调用本方法**之前**完成（R1）；此处只做 capability
         级治理（contract/provider/selection/audit），不重新判定 who-can-invoke。
+
+        🔴 2026-09-23：``gateway.handle`` 虽为 sync，但**必须经 ``asyncio.to_thread``
+        离线程调用** —— 其执行链末端是 ``_run_in_thread`` 的 ``t.join()``，
+        直接在 loop 线程上调用会让事件循环停转整段工具耗时（详见下方注释与
+        ``tests/test_governed_route_event_loop.py``）。
         """
         from anima.runtime.capability_resolver import CapabilityNeed
 
@@ -817,7 +826,23 @@ class ToolRegistry:
         request_id = self._next_governed_request_id()
         execution_key = (request_id, cap_id, 0)
         try:
-            presult = self.capability_gateway.handle(need, execution_key)
+            # 🔴 2026-09-23：**必须离线程**。`handle` 是 sync 契约（F5.4b I2/I3 冻结），
+            # 内部的 provider executor 经 `_run_in_thread`（本模块上方）用 `t.join()`
+            # 等实际执行 —— 直接在 loop 线程上调用 = **事件循环被整段阻塞**，
+            # 时长等于工具调用全程（联网检索卡在 TCP connect 时可达数十秒，
+            # 期间所有并发会话一起停转）。
+            #
+            # 生产证据（faulthandler 全线程栈，2026-09-21 09:21:15 `Timeout (0:01:15)!`）：
+            #   桥接线程  anima/tools/__init__.py:253 in _worker（嵌套 loop）
+            #   网络线程  web.py in _fetch_page → socket.create_connection（阻塞）
+            #   24h 内 `事件循环延迟` 告警 8 条、峰值 23.099s，与 search_web 窗口重合。
+            #
+            # `asyncio.to_thread` 会**复制当前 context** 再在执行器线程里跑 ⇒
+            # `_CALL_CONTEXT`（permission_level / group_id）逐字节保留：R3 context
+            # fidelity 与 legacy 路径一致。`handle` 本体一个字未改，仍是 sync。
+            presult = await asyncio.to_thread(
+                self.capability_gateway.handle, need, execution_key
+            )
         except Exception:  # noqa: BLE001 - fail-open：治理异常不阻断业务
             logger.exception("受治理 capability 路由异常，回退安全失败 caller=%s", caller)
             return _SAFE_TOOL_FAILURE

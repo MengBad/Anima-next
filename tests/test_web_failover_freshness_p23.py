@@ -146,9 +146,9 @@ async def test_freshness_guidance_injected_after_web_tool():
     # 第二次结构化调用的消息里应带上时效约束
     second = llm.calls[1][1]
     assert any(_FRESHNESS_GUIDANCE == (m or "") for m in second)
-    # 回答无日期 → 追加时效脚注
+    # 回答无日期 → 追加时效脚注（断言模板本体，不写死措辞）
     assert out.startswith("结论是甲。")
-    assert "时效" in out
+    assert _FRESHNESS_FOOTER.split("{date}")[0] in out
 
 
 async def test_freshness_guidance_injected_only_once():
@@ -214,11 +214,32 @@ async def test_footer_added_on_max_round_finalize_path():
     out = await loop.run([{"role": "user", "content": "q"}])
     assert loop._hit_max_rounds is True
     assert "整理后的结论" in out
-    assert "时效" in out
+    # 断言「脚注确已追加」用模板本体（不写死措辞，避免改文案即改测试）
+    head = _FRESHNESS_FOOTER.split("{date}")[0]
+    assert head and head in out, f"触顶收尾路径未追加时效脚注: {out!r}"
 
 
 def test_footer_text_mentions_fetch_time():
     assert "{date}" in _FRESHNESS_FOOTER
+
+
+def test_footer_is_conversational_not_report_style():
+    """脚注必须是**人话**（2026-09-23）：群里读到的不该是审计口径。
+
+    改前是「（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）」
+    —— 逐字是披露文书，进群即出戏。三项披露（来自网上 / 对方没写日期 / 参考日期）
+    必须**全部保留**，只是换成口语。
+    """
+    from datetime import date
+
+    stamp = date.today().isoformat()
+    rendered = _FRESHNESS_FOOTER.format(date=stamp)
+
+    for bad in ("以上来自", "来源未标注", "以抓取时间", "为准", "检索", "；"):
+        assert bad not in rendered, f"脚注仍是报告体：{bad!r} in {rendered!r}"
+    assert "喵" in rendered, f"脚注丢失人格口吻: {rendered!r}"
+    assert stamp in rendered, f"脚注必须给出参考日期: {rendered!r}"
+    assert "网" in rendered, f"脚注必须披露来自网上: {rendered!r}"
 
 
 # ---------------------------------------------------------------------------
