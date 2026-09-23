@@ -52,6 +52,9 @@ _KIND_TO_KEY = {
     "no_tool": "fallback_no_tool",
     "tool_failed": "fallback_tool_failed",
     "tool_ok": "fallback_tool_ok",
+    # 2026-09-22：真实病因桶 —— 「上游 HTTP 200 + 空补全」穷尽候选后仍空。
+    # 此前这一情形被 `tool_trace` 分流洗成 `fallback_no_tool`（归因错位）。
+    "upstream_empty": "fallback_upstream_empty",
     "breaker": "fallback_breaker",
     "react_error": "fallback_react_error",
     "empty_reply": "fallback_empty_reply",
@@ -185,6 +188,53 @@ def test_react_empty_fallback_records_and_keeps_wording(rq, trace, pool, key):
     assert rep["fallback_total"] == 20
 
 
+def test_react_attributes_upstream_empty_to_its_own_bucket(rq):
+    """真实病因归因（2026-09-22）：本轮发生过「上游 200-空」⇒ 记 `upstream_empty`。
+
+    此前三池按 `tool_trace` 分流，与真实病因（上游静默返空）**无关** ⇒ 归因错位：
+    14:39 实测就是「工具没调过 ⇒ 记成 `fallback_no_tool`」，故障被洗成人格怪癖。
+    这里刻意让 `tool_trace` 非空（工具成功过），断言它**不再**抢归因。
+    """
+    a = _react([{"ok": True, "name": "x_search"}], rq)
+    a.llm = SimpleNamespace(empty_completion_count=7)
+    a._llm_empty_baseline = 6  # 本轮 +1 ⇒ 上游空
+    for _ in range(10):
+        assert a._empty_content_fallback() in _NO_TOOL_FALLBACKS
+    rep = rq.report()
+    assert rep["fallback_upstream_empty"] == 10
+    assert rep["fallback_tool_ok"] == 0, "真实病因优先，不得再落 tool_trace 桶"
+    assert rep["fallback_total"] == 10, "一条出站只进一个桶（口径不能翻倍）"
+
+
+def test_react_without_baseline_keeps_tool_trace_routing(rq):
+    """`__new__` 造的对象没有 run() 基线 ⇒ 退回 tool_trace 分流（不误报上游空）。
+
+    判据是「计数**增量**」，不是「计数存在」—— 一个从不 run() 的对象若只看计数，
+    会把历史累计值当成"本轮发生了降级"。
+    """
+    a = _react([], rq)
+    a.llm = SimpleNamespace(empty_completion_count=5)
+    assert a._empty_content_fallback() in _NO_TOOL_FALLBACKS
+    rep = rq.report()
+    assert rep["fallback_no_tool"] == 1
+    assert rep["fallback_upstream_empty"] == 0
+
+
+def test_react_upstream_empty_beats_tool_failed_pool(rq):
+    """上游空 + 工具失败同时成立时，话术走**通用池**而不是工具池。
+
+    理由：工具池的引导是「换个更具体的说法再来」，而上游静默返空与用户措辞无关 ⇒
+    那句引导会变成甩锅（这正是 09-22 的观感缺陷）。
+    """
+    a = _react([{"ok": False, "name": "x_search"}], rq)
+    a.llm = SimpleNamespace(empty_completion_count=3)
+    a._llm_empty_baseline = 2
+    for _ in range(10):
+        assert a._empty_content_fallback() in _NO_TOOL_FALLBACKS
+    assert rq.report()["fallback_upstream_empty"] == 10
+    assert rq.report()["fallback_tool_failed"] == 0
+
+
 def test_react_telemetry_is_fail_soft_when_quality_is_none():
     """遥测绝不能把兜底本身摔掉：quality=None 时仍要正常出话。"""
     a = _react([], None)
@@ -301,7 +351,10 @@ def test_source_records_at_every_exit():
     gen = (_ROOT / "anima" / "pipeline" / "stages" / "generation.py").read_text(encoding="utf-8-sig")
     gr = (_ROOT / "anima" / "pipeline" / "stages" / "guardrail.py").read_text(encoding="utf-8-sig")
 
-    assert react.count("self._record_fallback(") == 3, "react 三处出口都应计数"
+    assert react.count("self._record_fallback(") == 4, (
+        "react 四处出口都应计数：tool_failed / tool_ok / no_tool / upstream_empty"
+        "（2026-09-22 新增真实病因桶）"
+    )
     assert gen.count("_record_fallback(core, ") == 4, (
         "generation 四处埋点：3 处降级 + `_resolve_bullying_reply` 内的 COLD_RESPONSES 冷回"
         "（该处用 `kind` 参数区分「霸凌冷回 / 回避期冷回」两个出口）"

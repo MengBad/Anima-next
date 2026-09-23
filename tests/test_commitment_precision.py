@@ -426,12 +426,20 @@ def test_no_tool_pool_stops_asking_for_verbatim_repeat():
 
 
 def test_no_tool_pool_offers_an_exit():
-    """撤掉"再说一遍"不等于变成纯情绪句：仍须给出可行动出口。"""
+    """撤掉"再说一遍"不等于变成纯情绪句 —— 但那个出口也不能是"换个话题"（2026-09-22）。
+
+    该池是「上游静默返空」的通用出口（三候选模型全 200-空 ⇒ failover 穷尽），
+    病因与用户说了什么**无关**。所以正确形态是：**自认是本喵这边的岔子**，而不是把
+    用户的话题 / 说法当成问题让人重来 —— 那是甩锅，用户读到就是「bot 嫌我聊的话题」。
+    """
     from anima.agent.react import _NO_TOOL_FALLBACKS
 
     for text in _NO_TOOL_FALLBACKS:
-        assert any(w in text for w in ("换", "再", "重")), f"缺可行动引导: {text!r}"
+        assert any(w in text for w in ("本喵这边", "本喵刚", "本喵这")), \
+            f"缺自认责任: {text!r}"
         assert "本喵" in text and "喵" in text, f"丢了人格口吻: {text!r}"
+        hits = [w for w in ("换个话题", "换个说法", "换句话", "换个问法") if w in text]
+        assert not hits, f"仍在甩锅话题 {hits}: {text!r}"
 
 
 def test_react_source_no_longer_hardcodes_repeat_wording():

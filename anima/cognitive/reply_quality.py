@@ -58,6 +58,10 @@ def _empty() -> dict[str, int]:
         "fallback_no_tool": 0,        # react：无工具痕迹却没生成出正文
         "fallback_tool_failed": 0,    # react：有工具失败痕迹且没生成出正文
         "fallback_tool_ok": 0,        # react：工具都成功但模型仍空回复
+        # react：**真实病因**桶 —— 本轮发生过「上游 HTTP 200 + 空补全」且穷尽候选后仍空。
+        # 2026-09-22：此前这一情形被 `tool_trace` 分流洗成 `fallback_no_tool`，
+        # 于是"上游静默降级"被读成"模型自己无话可说"，故障不可观测（归因错位）。
+        "fallback_upstream_empty": 0,
         "fallback_breaker": 0,        # generation：LLM 熔断器打开
         "fallback_react_error": 0,    # generation：ReAct 抛异常
         "fallback_empty_reply": 0,    # generation：LLM 返回空/占位串
@@ -179,6 +183,7 @@ class ReplyQuality:
             "no_tool": "fallback_no_tool",
             "tool_failed": "fallback_tool_failed",
             "tool_ok": "fallback_tool_ok",
+            "upstream_empty": "fallback_upstream_empty",
             "breaker": "fallback_breaker",
             "react_error": "fallback_react_error",
             "empty_reply": "fallback_empty_reply",
@@ -252,7 +257,8 @@ class ReplyQuality:
         return (
             f"回复质量日报 {report['date']}：回复 {report['total_replies']}，"
             f"不可用 {report['unavailable_replies']}，应回却空 {report.get('empty_should_reply', 0)}，"
-            f"兜底出站 {report.get('fallback_total', 0)}，"
+            f"兜底出站 {report.get('fallback_total', 0)}"
+            f"（其中上游静默返空 {report.get('fallback_upstream_empty', 0)}），"
             f"超长 {report['overlong_replies']}，"
             f"标签泄漏 {report['label_leaks']}，身份泄漏 {report['identity_leaks']}，"
             f"复读 {report['repeated_replies']}；工具失败 {report['tool_failures']}/{report['tool_calls']}，"

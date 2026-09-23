@@ -55,10 +55,17 @@ _FRESHNESS_GUIDANCE = (
 #:   「你再说一遍 / 你重发一下」——用户读到就以为 bot 聋了，于是原样重发、
 #:   再撞同一堵墙（实测 G5/G7：露骨内容 → 「你再说一遍喵？」→ 用户重发 → 循环）。
 #:   改为「换句话说 / 换个话题」：给出口而**不承诺重听**，也不再索取原样复述。
+#: - **不得甩锅话题**（2026-09-22 深审新增，仅约束「无工具」池）：09-20 那次的
+#:   「换个话题」同样是个错误修法 —— 实测 09-22 14:39，三个候选模型对同一请求
+#:   **全部返回 HTTP 200 + 空 content**（网关侧静默返空），穷尽 failover 后落本池，
+#:   出站「本喵刚没想好怎么接喵，你换个话题也行。」用户读到的是「bot 嫌我聊的话题」。
+#:   病因与用户说了什么**无关** ⇒ 无工具池改为**自认是本喵这边的岔子**：既不评价
+#:   话题、也不索取复述。「工具」两池不受此约束 —— 那里工具确实没成，请用户把条件
+#:   说得更具体是真话，不是甩锅。
 _NO_TOOL_FALLBACKS = (
-    "本喵卡壳了喵……你换句话说，或者换个话题都行。",
-    "唔……这句本喵没接住喵，要不换个说法再来？",
-    "本喵刚没想好怎么接喵，你换个话题也行。",
+    "本喵这边刚卡了一下喵，这条没接住，不赖你。",
+    "唔……本喵这边出了点小岔子喵，刚才那句没生成出来。",
+    "本喵这边刚打了个嗝喵，这条没答上来，不是不想理你。",
 )
 _TOOL_FAILED_FALLBACKS = (
     "本喵工具这边没查到准信喵，你换个说法再问一次？",
@@ -71,7 +78,14 @@ _TOOL_OK_FALLBACKS = (
     "查是查了，但本喵没拼出有用的一句话喵……你换个说法再试一次？",
 )
 
-_FRESHNESS_FOOTER = "（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）"
+#: 时效脚注（P2-3）。2026-09-23 改文案：原句是
+#: 「（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）」——
+#: 三项披露（来自网上 / 对方没写日期 / 参考日期）都在，但**逐字是审计口径**：
+#: 分号、「来源未标注」、「以…为准」在群聊里一读就出戏，与 09-21 删 `_MOOD_TAIL`、
+#: 09-23 去 meta 括号是同一类「机器痕迹」。改为口语转述，**披露内容一项不减**。
+#: 硬约束（由 `tests/test_web_failover_freshness_p23.py` 守护）：
+#: 必须含 `{date}`、必须含「喵」、必须含「网」、不得出现上述报告体词。
+_FRESHNESS_FOOTER = "（刚在网上翻的喵，那边没写日期，就当是 {date} 看到的吧）"
 
 #: 回答里出现的「日期感」token：有其一就不追加时效脚注（说明它已经标注了时间口径）。
 _DATE_TOKEN_RE = re.compile(
@@ -151,6 +165,27 @@ class ReActLoop:
         stamp = datetime.date.today().isoformat()
         return content + _FRESHNESS_FOOTER.format(date=stamp)
 
+    def _llm_empty_count(self) -> int | None:
+        """llm 侧「HTTP 200 + 空补全」的一手计数（进程内累计，只增不减）。"""
+        counter = getattr(getattr(self, "llm", None), "empty_completion_count", None)
+        return counter if isinstance(counter, int) else None
+
+    def _upstream_went_empty(self) -> bool:
+        """本轮是否发生过「上游 200-空 ⇒ 逐候选 failover 穷尽后仍空」。
+
+        🔴 依据是 llm 一手计数的**增量**，不是话术、也不是 `tool_trace` —— 后者与真实
+        病因无关。2026-09-22 定案的归因错位就在这里：14:39 三个候选模型全 200-空，
+        而 `tool_trace` 为空 ⇒ 这一条出站被洗成 `fallback_no_tool`「模型自己无话可说」。
+
+        基线在 `run()` 开头取；`ReActLoop.__new__` 造出来的对象没有基线 ⇒ 返回 False，
+        行为退回 `tool_trace` 分流（既有单测走的正是这条路）。
+        """
+        baseline = getattr(self, "_llm_empty_baseline", None)
+        current = self._llm_empty_count()
+        if baseline is None or current is None:
+            return False
+        return current > baseline
+
     def _empty_content_fallback(self) -> str:
         """上游把自己说空了 —— （content 空 **且** 纯对话重试也空）时的**唯一**出口。
 
@@ -164,7 +199,14 @@ class ReActLoop:
 
         所以封堵必须落在**源头**（这里），而不是给三个消费方各补一份判定 ——
         后者迟早会漏掉第四个消费方，或像 09-18 那样被一行装饰整体击穿。
+
+        分支顺序 = **真实病因优先**（2026-09-22）：上游静默返空时一律走通用池，
+        不让 `tool_trace` 决定话术 —— 否则会给出「换个更具体的说法再来」这种
+        与病因无关的引导，用户读到就是被甩锅。
         """
+        if self._upstream_went_empty():
+            self._record_fallback("upstream_empty")
+            return random.choice(_NO_TOOL_FALLBACKS)
         if self.tool_trace and any(not item.get("ok") for item in self.tool_trace):
             self._record_fallback("tool_failed")
             return random.choice(_TOOL_FAILED_FALLBACKS)
@@ -234,6 +276,8 @@ class ReActLoop:
         self.tool_trace = []  # 每条回复重新采集
         self._freshness_tools_used = set()
         self._freshness_guidance_sent = False
+        # 本轮「上游 200-空」计数基线：兜底出口据此判定真实病因（2026-09-22）。
+        self._llm_empty_baseline = self._llm_empty_count()
         tool_schemas = self.tools.get_schemas(
             self.permission_level, sort_by_priority=self.priority_sort,
         ) if self.tools else []
