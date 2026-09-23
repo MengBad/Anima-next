@@ -10,7 +10,9 @@
 """
 
 from __future__ import annotations
+import array
 import asyncio
+import base64
 import hashlib
 import json
 import logging
@@ -44,6 +46,22 @@ class Embedder:
 
     _MAX_CACHE_ENTRIES = 8000  # LRU 上限，超限淘汰最旧 20%
 
+    #: 缓存落盘格式（2026-09-23 起为 v2）。
+    #:   v1 = ``{hash: [float, ...]}``  —— 裸 float 数组
+    #:   v2 = ``{hash: base64(float32 bytes)}``
+    #:
+    #: 🔴 为什么必须换格式：生产实测 60.6MB／2788 条 × 1024 维，`json.dumps`
+    #: 单次 **1.48–1.52s**；而 CPython 的 json **C 加速编码器全程不释放 GIL**
+    #: （C 里没有 eval-loop 边界 ⇒ 收不到 gil_drop_request）⇒ 把它丢进
+    #: `asyncio.to_thread` **救不了**事件循环（实测：`to_thread(json.dumps)` 期间
+    #: loop 推进 **0** 次 / 1.293s；同样时长换成 `time.sleep` 则推进 37 次）。
+    #: 唯一有效的手段是**把要序列化的字节数压下来**：
+    #:   v2 体积 15.3MB（3.8x↓）⇒ `json.dumps` 0.055s（**23x↓**）。
+    #: 另外 float32 也正是向量库实际检索的精度（sqlite-vec `float[1024]`），
+    #: 故相对检索语义没有额外损失（往返 |1-cos| ≈ 6e-16）。
+    #: 读路径同时兼容 v1（见 `_decode_vec`），保证升级不丢已有缓存。
+    _CACHE_FORMAT = 2
+
     def __init__(
         self,
         endpoint: str,
@@ -58,18 +76,74 @@ class Embedder:
         self.model = model
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.cache_enabled = cache
-        self._cache: dict[str, list[float]] = {}
+        self._cache: dict[str, list[float]] = {}      # 真源：hash → 向量（检索用）
+        self._cache_b64: dict[str, str] = {}          # 落盘镜像：hash → base64(float32)
         self._cache_path = Path(data_dir) / "embedding_cache.json"
         self._session: Optional[aiohttp.ClientSession] = None
+        # 落盘合并用（2026-09-23，详见 `_save_cache`）
+        self._cache_version = 0     # 插入计数：每次缓存未命中 +1
+        self._saved_version = 0     # 已成功落盘的版本号
+        self._save_lock: Optional[asyncio.Lock] = None   # 懒建（构造时可能无 loop）
+        self._save_loop: Optional[asyncio.AbstractEventLoop] = None
         if self.cache_enabled:
             self._load_cache()
+
+    # ------------------------------------------------------------------
+    # v2 缓存编解码（float32 打包 + base64）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _encode_vec(vec: list[float]) -> str:
+        """向量 → base64(float32 bytes)。1024 维 ⇒ 5464 字符（裸 float 约 20K）。"""
+        return base64.b64encode(array.array("f", vec).tobytes()).decode("ascii")
+
+    @staticmethod
+    def _decode_vec(raw: Any) -> Optional[list[float]]:
+        """v2（str）或 v1（list）→ list[float]；无法解析返回 None。"""
+        if isinstance(raw, str):
+            try:
+                buf = base64.b64decode(raw, validate=True)
+                arr = array.array("f")
+                arr.frombytes(buf)
+                return list(arr)
+            except Exception:
+                return None
+        if isinstance(raw, list):
+            return raw  # v1 向后兼容
+        return None
 
     def _load_cache(self) -> None:
         if self._cache_path.exists():
             try:
-                self._cache = json.loads(self._cache_path.read_text("utf-8"))
+                payload = json.loads(self._cache_path.read_text("utf-8"))
+                cache: dict[str, list[float]] = {}
+                dropped = 0
+                legacy = 0
+                for key, raw in (payload or {}).items():
+                    if isinstance(raw, list):
+                        legacy += 1
+                    vec = self._decode_vec(raw)
+                    if vec is None:
+                        dropped += 1
+                        continue
+                    cache[key] = vec
+                self._cache = cache
+                if dropped:
+                    logger.warning("embedding 缓存丢弃 %d 条不可解析条目", dropped)
+                if legacy:
+                    logger.info(
+                        "embedding 缓存 v1→v%d 迁移：%d 条裸 float 条目将按 base64 重写",
+                        self._CACHE_FORMAT, legacy,
+                    )
             except Exception:
+                logger.exception("embedding 缓存加载失败，按空缓存启动")
                 self._cache = {}
+            # 建好落盘镜像；v1 条目在此升级为 v2（首次落盘即完成迁移）。
+            try:
+                self._cache_b64 = {k: self._encode_vec(v) for k, v in self._cache.items()}
+            except Exception:
+                logger.exception("embedding 缓存镜像构建失败（将按需惰性编码）")
+                self._cache_b64 = {}
         # 启动时截断到上限（淘汰最旧 20%）
         self._evict_if_over_limit()
 
@@ -82,15 +156,84 @@ class Embedder:
         keys = list(self._cache.keys())[:evict_count]
         for k in keys:
             del self._cache[k]
+            self._cache_b64.pop(k, None)
         logger.info("embedding 缓存淘汰 %d 条（上限 %d）", evict_count, limit)
 
-    def _save_cache(self) -> None:
+    def _write_cache_file(self, snapshot: dict[str, str]) -> bool:
+        """纯 CPU/IO：把**快照**落盘。成功返回 True。
+
+        🔴 本方法**可在工作线程执行** ⇒ 不得触碰 `self._cache`：worker 遍历
+        字典的同时 loop 线程可能正在插入新键，会撞
+        `RuntimeError: dictionary changed size during iteration`。
+        快照由调用方（`_save_cache`，在 loop 线程上）拍好后再传进来。
+
+        🔴 也**不得在此做编解码**：`array`/`base64` 同样是 C 且不放 GIL，
+        2788 条 × 32µs ≈ 90ms 会原样搬进 worker 并冻结 loop。镜像在插入时
+        就编好（`_cache_b64`），这里只剩 `json.dumps` 一个动作。
+        """
         try:
-            self._evict_if_over_limit()
             self._cache_path.parent.mkdir(parents=True, exist_ok=True)
-            self._cache_path.write_text(json.dumps(self._cache, ensure_ascii=False), "utf-8")
+            self._cache_path.write_text(json.dumps(snapshot, ensure_ascii=False), "utf-8")
+            return True
         except Exception:
             logger.exception("embedding 缓存保存失败")
+            return False
+
+    async def _save_cache(self) -> None:
+        """整文件重写 —— **必须 await**（2026-09-23 由同步改为协程）。
+
+        缺陷（生产实测）：`embedding_cache.json` = 60.6MB／2788 条 × 1024 维，
+        `json.dumps` 单次 1.48–1.52s。原实现由 `embed()` 在**事件循环线程上同步**
+        调用本方法 ⇒ 每次缓存未命中都把整个 loop 冻住约 1.5s，期间所有并发
+        会话一起停转（观察面：`事件循环延迟` 的 2–3.4s 族）。且 LRU 上限
+        8000 条 ⇒ 满额约 174MB ⇒ `dumps` 外推约 4.3s，属会恶化的缺陷。
+
+        现机制（三层，缺一不可）：
+        1. **格式 v2**：落盘镜像 `_cache_b64` 在插入时编好 ⇒ 序列化对象从
+           「2788 × 1024 个 float」变成「2788 个短字符串」，字节数 3.8x↓
+           ⇒ `json.dumps` 23x↓。这一步才是关键：C 编码器不放 GIL，
+           光靠 `to_thread` 只是换了个线程独占 GIL（实测 loop 仍推进 0 次）。
+        2. **离线程**：`json.dumps` + `write_text` 交 `asyncio.to_thread`。
+        3. **同批合并**：`_cache_version` 记录插入次数，同批并发未命中只落盘
+           1–2 次，而不是 N 次。
+        loop 线程只做 `_evict_if_over_limit()` ＋ 快照（实测 31µs）。
+
+        缓存只是加速层 ⇒ 任何失败都**不得冒泡**：`embed()` 的重试 `try` 会把
+        异常误判成「Embedding 请求失败」并白跑一次 HTTP。
+        """
+        try:
+            loop = asyncio.get_running_loop()
+            if self._save_lock is None or self._save_loop is not loop:
+                # asyncio.Lock 绑定首次使用的 loop，跨 loop 复用会 RuntimeError；
+                # Embedder 又可能在无运行 loop 时构造（工厂/测试），故懒建 + 重建。
+                self._save_lock = asyncio.Lock()
+                self._save_loop = loop
+            async with self._save_lock:
+                version = self._cache_version
+                if version == self._saved_version:
+                    return  # 已被同批的前一次落盘覆盖
+                self._evict_if_over_limit()
+                snapshot = self._build_mirror()
+                if await asyncio.to_thread(self._write_cache_file, snapshot):
+                    self._saved_version = version
+        except Exception:
+            logger.exception("embedding 缓存保存失败（已隔离）")
+
+    def _build_mirror(self) -> dict[str, str]:
+        """构造落盘快照（loop 线程，O(n) 单趟）。
+
+        镜像缺失的条目当场补编（自愈：真源被外部直接写过也不会落盘残缺），
+        并返回**新 dict** ⇒ worker 线程拿到的是与 `self._cache` 脱钩的对象，
+        不会与 loop 线程的插入互相干扰。
+        """
+        mirror: dict[str, str] = {}
+        for key, vec in self._cache.items():
+            packed = self._cache_b64.get(key)
+            if packed is None:
+                packed = self._encode_vec(vec)
+                self._cache_b64[key] = packed
+            mirror[key] = packed
+        return mirror
 
     @staticmethod
     def _hash(text: str) -> str:
@@ -128,7 +271,11 @@ class Embedder:
                     vec = data["data"][0]["embedding"]
                     if self.cache_enabled:
                         self._cache[key] = vec
-                        self._save_cache()
+                        # 落盘镜像当场编好（32µs/条）——把编解码从「整文件落盘时」
+                        # 挪到「单条插入时」，见 _write_cache_file 的说明。
+                        self._cache_b64[key] = self._encode_vec(vec)
+                        self._cache_version += 1
+                        await self._save_cache()
                     return vec
             except Exception as ex:
                 last_err = ex
