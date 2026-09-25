@@ -14,6 +14,7 @@ import json
 import logging
 import random
 import re
+import time
 from typing import Any
 from anima.llm.usage import llm_scope
 from anima.pipeline.context import ContextComposer
@@ -78,6 +79,38 @@ _TOOL_OK_FALLBACKS = (
     "查是查了，但本喵没拼出有用的一句话喵……你换个说法再试一次？",
 )
 
+#: 「上游根本没给出任何东西」的一手计数（llm 侧进程内累计，只增不减）。
+#:
+#: 🔴 三个都要看，**不能只看第一个**（2026-09-23 定案）。三者的触发路径互不重叠：
+#:   * ``outbound_empty_completion_count`` —— HTTP 200 但补全为空（网关静默降级）；
+#:   * ``outbound_failure_count`` —— 候选穷尽后仍失败（连接被重置 / 5xx / 超时等传输故障）；
+#:   * ``outbound_circuit_open_count`` —— 熔断器打开的次数。
+#: 熔断打开后 ``llm/__init__.py`` 的 ``_post`` **早退**，连 200-空的计数都不增 ⇒
+#: 只看 200-空 一项时，14:55 那种纯传输故障会被 ``tool_trace`` 洗成
+#: ``fallback_no_tool``（"模型自己无话可说"）—— 审计据此读结论就会读错。
+#:
+#: 🔴 三个都**只统计出站正文调用**（`llm_scope(..., outbound=True)`），不是进程级全量
+#: 计数（2026-09-24 定案）。旁路与出站共用同一个 llm 实例，用全量计数时旁路的故障
+#: 会推高增量 ⇒ 归因桶翻成 ``upstream_empty`` 并白等一次预算（09-24 生产实证：
+#: 17:04 两轮旁路穷尽恰好落在闸门 STOP 之后）。取名与 `health()` 导出键一致。
+_LLM_FAULT_COUNTERS = (
+    "outbound_empty_completion_count",
+    "outbound_failure_count",
+    "outbound_circuit_open_count",
+)
+
+#: 上游静默时「等一会儿再要一次」的默认预算（秒）；0 = 关闭（一键回滚点）。
+#: 只在「本来就要出罐头话术」的路径上付出这段延迟，且只等一次。
+#: 由 ``react.upstream_patience_sec`` 覆盖。
+#:
+#: 🔴 2026-09-25 按实测把默认值从 6.0 抬到 20.0 —— **6.0 被数据否掉了**：
+#: 48h 内 4 次真实样本（18:37 / 22:21 / 23:25 / 00:03）**全部等满 6s 后重试仍空**，
+#: 而静默实际持续 **8–20s**（23:25 那次直到 30s 熔断）。低于静默下限的预算
+#: **结构上不可能成功**，那 6s 是纯延迟、零收益。现在取观测窗上沿（20s），
+#: 代价仍有界：只在「本来就要出罐头话术」的路上、只等一次、且 ``0`` 可关。
+#: ⚠️ 这是**按数据外推**的选择（尚无 20s 救回的成功样本），首个真实样本会给出答案。
+_DEFAULT_UPSTREAM_PATIENCE_SEC = 20.0
+
 #: 时效脚注（P2-3）。2026-09-23 改文案：原句是
 #: 「（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）」——
 #: 三项披露（来自网上 / 对方没写日期 / 参考日期）都在，但**逐字是审计口径**：
@@ -124,7 +157,8 @@ class ReActLoop:
                  permission_level: int = 2, quality=None,
                  tool_result_token_budget: int = 1800,
                  priority_sort: bool = True,
-                 freshness_footer: bool = True):
+                 freshness_footer: bool = True,
+                 upstream_patience_sec: float = _DEFAULT_UPSTREAM_PATIENCE_SEC):
         self.llm = llm
         self.tools = tools
         self.max_rounds = max_rounds
@@ -136,6 +170,8 @@ class ReActLoop:
         self.priority_sort = bool(priority_sort)
         # P2-3：时效兜底脚注（只对用过时效工具、且回答里毫无日期痕迹的情况生效）
         self.freshness_footer = bool(freshness_footer)
+        # 上游静默时的挽救预算（秒）。0 = 关（改回「立刻出罐头话术」）。
+        self.upstream_patience_sec = max(0.0, float(upstream_patience_sec))
         self._context_composer = ContextComposer(
             tool_result_token_budget=tool_result_token_budget,
         )
@@ -165,26 +201,57 @@ class ReActLoop:
         stamp = datetime.date.today().isoformat()
         return content + _FRESHNESS_FOOTER.format(date=stamp)
 
-    def _llm_empty_count(self) -> int | None:
-        """llm 侧「HTTP 200 + 空补全」的一手计数（进程内累计，只增不减）。"""
-        counter = getattr(getattr(self, "llm", None), "empty_completion_count", None)
-        return counter if isinstance(counter, int) else None
+    def _llm_fault_counts(self) -> tuple[int, int, int] | None:
+        """上游故障三项一手计数快照；**任一项读不到即返回 None**（fail-closed）。
+
+        三项都是 llm 侧的**出站镜像计数**（只统计 `llm_scope(..., outbound=True)`
+        的调用），不是进程级全量计数 —— 详见 `_LLM_FAULT_COUNTERS` 的说明。
+
+        宁可退回旧的 `tool_trace` 分流，也不在没有确凿计数时宣称"上游故障" ——
+        误报会把基础设施抖动说成模型的问题、也会把模型的问题说成抖动，两头都误导审计。
+        """
+        llm = getattr(self, "llm", None)
+        if llm is None:
+            return None
+        values: list[int] = []
+        for name in _LLM_FAULT_COUNTERS:
+            value = getattr(llm, name, None)
+            if not isinstance(value, int):
+                return None
+            values.append(value)
+        return (values[0], values[1], values[2])
 
     def _upstream_went_empty(self) -> bool:
-        """本轮是否发生过「上游 200-空 ⇒ 逐候选 failover 穷尽后仍空」。
+        """本轮是否发生过「HTTP 200 + 空补全」（网关静默降级）。"""
+        baseline = getattr(self, "_llm_fault_baseline", None)
+        current = self._llm_fault_counts()
+        if baseline is None or current is None:
+            return False
+        return current[0] > baseline[0]
+
+    def _upstream_went_silent(self) -> bool:
+        """本轮上游是否**根本没给出任何东西** —— 200-空 / 传输故障 / 熔断，三者取并。
 
         🔴 依据是 llm 一手计数的**增量**，不是话术、也不是 `tool_trace` —— 后者与真实
         病因无关。2026-09-22 定案的归因错位就在这里：14:39 三个候选模型全 200-空，
         而 `tool_trace` 为空 ⇒ 这一条出站被洗成 `fallback_no_tool`「模型自己无话可说」。
 
+        2026-09-23 补齐第二种病因：熔断打开时 `_post` 早退、连 200-空的计数都不增，
+        14:55 那次的纯传输故障因此**同样**被洗成 `fallback_no_tool`。
+
         基线在 `run()` 开头取；`ReActLoop.__new__` 造出来的对象没有基线 ⇒ 返回 False，
         行为退回 `tool_trace` 分流（既有单测走的正是这条路）。
+
+        🔴 2026-09-24 收窄：判据只认**出站**调用贡献的增量。此前读进程级全量计数，
+        旁路调用（跨群提取／表情判定／反刍…）会推高同一批计数 ⇒ 与「本 turn 正文为空」
+        同窗时，归因桶被翻成 `upstream_empty`（本该 `no_tool`）并白等一次预算。
+        用户可见影响小，**失真的是遥测** —— 而分桶的意义就是让审计读得对。
         """
-        baseline = getattr(self, "_llm_empty_baseline", None)
-        current = self._llm_empty_count()
+        baseline = getattr(self, "_llm_fault_baseline", None)
+        current = self._llm_fault_counts()
         if baseline is None or current is None:
             return False
-        return current > baseline
+        return any(now > base for base, now in zip(baseline, current))
 
     def _empty_content_fallback(self) -> str:
         """上游把自己说空了 —— （content 空 **且** 纯对话重试也空）时的**唯一**出口。
@@ -200,12 +267,18 @@ class ReActLoop:
         所以封堵必须落在**源头**（这里），而不是给三个消费方各补一份判定 ——
         后者迟早会漏掉第四个消费方，或像 09-18 那样被一行装饰整体击穿。
 
-        分支顺序 = **真实病因优先**（2026-09-22）：上游静默返空时一律走通用池，
+        分支顺序 = **真实病因优先**（2026-09-22）：上游静默时一律走通用池，
         不让 `tool_trace` 决定话术 —— 否则会给出「换个更具体的说法再来」这种
         与病因无关的引导，用户读到就是被甩锅。
+
+        桶按病因**分开**（2026-09-23）：200-空 记 `upstream_empty`，
+        传输故障/熔断 记 `upstream_error`。两者话术相同（对用户都是"本喵这边的岔子"），
+        但审计必须分得清 —— 混成一桶等于没修归因。
         """
-        if self._upstream_went_empty():
-            self._record_fallback("upstream_empty")
+        if self._upstream_went_silent():
+            self._record_fallback(
+                "upstream_empty" if self._upstream_went_empty() else "upstream_error"
+            )
             return random.choice(_NO_TOOL_FALLBACKS)
         if self.tool_trace and any(not item.get("ok") for item in self.tool_trace):
             self._record_fallback("tool_failed")
@@ -249,7 +322,7 @@ class ReActLoop:
             if isinstance(c, str) and c.strip():
                 return c.strip()
         try:
-            with llm_scope("chat", "chat"):
+            with llm_scope("chat", "chat", outbound=True):
                 c = await self.llm.chat(
                     messages, temperature=temperature, max_tokens=max_tokens
                 )
@@ -259,6 +332,62 @@ class ReActLoop:
         if isinstance(c, str) and c.strip():
             return c.strip()
         return ""
+
+    def _patience_wait(self) -> float | None:
+        """上游静默时「等一会儿再要一次」**值得**等多久；None = 不值得等，直接出兜底。
+
+        三种情形（判据全部取自 llm 一手状态，不猜）：
+          * 熔断未打开 —— 按预算等一次（09-25 实测静默持续 8–20s，故预算取 20s）；
+          * 熔断已打开且剩余 ≤ 预算 —— 等到它**自然关闭**再试，这才是等的意义；
+          * 熔断剩余 > 预算 —— 等不到头，白等 ⇒ 返回 None，立刻出罐头话术。
+        """
+        budget = float(getattr(self, "upstream_patience_sec", 0.0) or 0.0)
+        if budget <= 0:
+            return None
+        until = getattr(getattr(self, "llm", None), "circuit_open_until", 0) or 0
+        try:
+            remaining = float(until) - time.time()
+        except (TypeError, ValueError):
+            remaining = 0.0
+        if remaining <= 0:
+            return budget
+        if remaining > budget:
+            return None
+        return remaining
+
+    async def _salvage_before_fallback(self, msgs: list[dict], temperature: float,
+                                       max_tokens: int) -> str:
+        """出口前的最后一次挽救：上游静默时等一会儿再要一次正文。
+
+        只在**本来就要出罐头话术**的路径上调用，所以这段延迟的期望成本极低；
+        且只等一次、不做重试风暴（上游持续静默时早点给用户一个交代更好）。
+        失败一律返回空串，绝不抛 —— 这里已经是最后一道出口。
+        """
+        if not self._upstream_went_silent():
+            return ""
+        wait = self._patience_wait()
+        if wait is None:
+            return ""
+        logger.warning("上游静默（%s），%.1fs 后再要一次最终回复",
+                       "200-空" if self._upstream_went_empty() else "传输故障/熔断", wait)
+        try:
+            await asyncio.sleep(wait)
+            return await self._finalize_content(msgs, temperature, max_tokens)
+        except Exception:  # noqa: BLE001
+            logger.warning("上游静默后的挽救重试异常，直接出兜底", exc_info=True)
+            return ""
+
+    async def _finalize_or_fallback(self, msgs: list[dict], temperature: float,
+                                    max_tokens: int) -> str:
+        """两处出口（早退 / 触顶收尾）共用的收口：先挽救，仍空才出罐头话术。
+
+        单一入口是刻意的 —— 分散在两处早晚会各自漂移（这正是 09-22 归因错位的成因）。
+        """
+        salvaged = await self._salvage_before_fallback(msgs, temperature, max_tokens)
+        if not is_placeholder_reply(salvaged):
+            logger.warning("上游静默后的挽救重试成功，出站 %d 字", len(salvaged))
+            return self._apply_freshness_footer(salvaged)
+        return self._empty_content_fallback()
 
     async def run(self, messages: list[dict],
                   temperature: float = 0.8,
@@ -276,8 +405,8 @@ class ReActLoop:
         self.tool_trace = []  # 每条回复重新采集
         self._freshness_tools_used = set()
         self._freshness_guidance_sent = False
-        # 本轮「上游 200-空」计数基线：兜底出口据此判定真实病因（2026-09-22）。
-        self._llm_empty_baseline = self._llm_empty_count()
+        # 本轮上游故障计数基线：兜底出口据此判定真实病因（2026-09-22，09-23 补齐传输/熔断）。
+        self._llm_fault_baseline = self._llm_fault_counts()
         tool_schemas = self.tools.get_schemas(
             self.permission_level, sort_by_priority=self.priority_sort,
         ) if self.tools else []
@@ -286,7 +415,7 @@ class ReActLoop:
 
         for round_idx in range(self.max_rounds):
             # 询问 LLM（带已过滤的工具 schema）
-            with llm_scope("chat", "react"):
+            with llm_scope("chat", "react", outbound=True):
                 response = await self.llm.chat_structured(
                     current_msgs, tool_schemas,
                     temperature=temperature, max_tokens=max_tokens
@@ -315,7 +444,9 @@ class ReActLoop:
                         )
                     else:
                         logger.warning("ReAct 最终回复为空（上游全空），改用兜底出口")
-                    return self._empty_content_fallback()
+                    return await self._finalize_or_fallback(
+                        messages, temperature, max_tokens
+                    )
                 return self._apply_freshness_footer(content)
 
             # 反工具死循环：工具调用签名与上一轮完全相同（同一查询重复搜）
@@ -428,7 +559,7 @@ class ReActLoop:
                 ),
             })
 
-        with llm_scope("chat", "react_finalize"):
+        with llm_scope("chat", "react_finalize", outbound=True):
             final = await self.llm.chat_structured(
                 current_msgs, [],  # 不再给工具
                 temperature=temperature, max_tokens=max_tokens
@@ -441,4 +572,4 @@ class ReActLoop:
         if not is_placeholder_reply(content):
             return self._apply_freshness_footer(content)
         # 上游全空 → 与「早退路径」共用同一个兜底出口（单一口径，避免两处各自漂移）
-        return self._empty_content_fallback()
+        return await self._finalize_or_fallback(current_msgs, temperature, max_tokens)

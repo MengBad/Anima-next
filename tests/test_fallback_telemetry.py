@@ -55,6 +55,10 @@ _KIND_TO_KEY = {
     # 2026-09-22：真实病因桶 —— 「上游 HTTP 200 + 空补全」穷尽候选后仍空。
     # 此前这一情形被 `tool_trace` 分流洗成 `fallback_no_tool`（归因错位）。
     "upstream_empty": "fallback_upstream_empty",
+    # 2026-09-23：上游静默的**第二种**病因 —— 传输故障（候选穷尽后仍失败）或熔断。
+    # 熔断时 `_post` 早退、连 `empty_completion_count` 都不增 ⇒ 只看 200-空会把
+    # 纯传输故障洗成 `fallback_no_tool`（"模型自己无话可说"）。分桶才读得出病因。
+    "upstream_error": "fallback_upstream_error",
     "breaker": "fallback_breaker",
     "react_error": "fallback_react_error",
     "empty_reply": "fallback_empty_reply",
@@ -196,8 +200,9 @@ def test_react_attributes_upstream_empty_to_its_own_bucket(rq):
     这里刻意让 `tool_trace` 非空（工具成功过），断言它**不再**抢归因。
     """
     a = _react([{"ok": True, "name": "x_search"}], rq)
-    a.llm = SimpleNamespace(empty_completion_count=7)
-    a._llm_empty_baseline = 6  # 本轮 +1 ⇒ 上游空
+    a.llm = SimpleNamespace(outbound_empty_completion_count=7,
+                            outbound_failure_count=0, outbound_circuit_open_count=0)
+    a._llm_fault_baseline = (6, 0, 0)  # 本轮 200-空 +1 ⇒ 上游空
     for _ in range(10):
         assert a._empty_content_fallback() in _NO_TOOL_FALLBACKS
     rep = rq.report()
@@ -213,7 +218,8 @@ def test_react_without_baseline_keeps_tool_trace_routing(rq):
     会把历史累计值当成"本轮发生了降级"。
     """
     a = _react([], rq)
-    a.llm = SimpleNamespace(empty_completion_count=5)
+    a.llm = SimpleNamespace(outbound_empty_completion_count=5,
+                            outbound_failure_count=0, outbound_circuit_open_count=0)
     assert a._empty_content_fallback() in _NO_TOOL_FALLBACKS
     rep = rq.report()
     assert rep["fallback_no_tool"] == 1
@@ -227,8 +233,9 @@ def test_react_upstream_empty_beats_tool_failed_pool(rq):
     那句引导会变成甩锅（这正是 09-22 的观感缺陷）。
     """
     a = _react([{"ok": False, "name": "x_search"}], rq)
-    a.llm = SimpleNamespace(empty_completion_count=3)
-    a._llm_empty_baseline = 2
+    a.llm = SimpleNamespace(outbound_empty_completion_count=3,
+                            outbound_failure_count=0, outbound_circuit_open_count=0)
+    a._llm_fault_baseline = (2, 0, 0)
     for _ in range(10):
         assert a._empty_content_fallback() in _NO_TOOL_FALLBACKS
     assert rq.report()["fallback_upstream_empty"] == 10

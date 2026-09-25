@@ -92,6 +92,14 @@ class LLMClient:
         self.empty_completion_count = 0
         self.last_empty_completion_at = 0.0
         self.last_empty_completion_model = ""
+        # 「出站正文调用」专用镜像计数 —— **归因判据面**（`react._LLM_FAULT_COUNTERS`）。
+        # 上面那三个是全量计数（含旁路），这三个只统计 `llm_scope(..., outbound=True)`
+        # 的调用。旁路（跨群提取／表情判定／反刍…）与出站共用本实例，若不区分，
+        # 一次旁路的 200-空就会被判成「本 turn 上游静默」⇒ 归因桶翻错 + 白等一次预算
+        # （09-24 生产实证：17:04 两轮旁路穷尽恰好落在闸门 STOP 之后）。
+        self.outbound_empty_completion_count = 0
+        self.outbound_failure_count = 0
+        self.outbound_circuit_open_count = 0
         # 本次候选模型是否以「200-空」告终（`_post` 据此放行 failover）。
         self._empty_completion = False
 
@@ -640,10 +648,14 @@ class LLMClient:
                 break
 
         self.failure_count += 1
+        if current_call_info().outbound:
+            self.outbound_failure_count += 1
         self.consecutive_failures += 1
         if self.consecutive_failures >= self.circuit_failure_threshold:
             self.circuit_open_until = time.time() + self.circuit_cooldown_sec
             self.circuit_open_count += 1
+            if current_call_info().outbound:
+                self.outbound_circuit_open_count += 1
             logger.error("LLM 连续失败 %d 次，熔断 %.0fs", self.consecutive_failures, self.circuit_cooldown_sec)
         else:
             logger.error("LLM 请求失败：%s", self.last_error)
@@ -715,6 +727,8 @@ class LLMClient:
                             # `_post` 换下一个候选模型——成本上界 = +1 次调用/候选。
                             self._empty_completion = True
                             self.empty_completion_count += 1
+                            if current_call_info().outbound:
+                                self.outbound_empty_completion_count += 1
                             self.last_empty_completion_at = time.time()
                             self.last_empty_completion_model = str(payload.get("model") or "")
                             self._set_error("empty_completion")
@@ -794,6 +808,10 @@ class LLMClient:
             "fallback_models": list(self.fallback_models),
             "failover_count": self.failover_count,
             "empty_completion_count": self.empty_completion_count,
+            # 出站镜像计数（归因判据面）：与上面三项同源，但**只含** outbound 调用。
+            "outbound_empty_completion_count": self.outbound_empty_completion_count,
+            "outbound_failure_count": self.outbound_failure_count,
+            "outbound_circuit_open_count": self.outbound_circuit_open_count,
             "last_empty_completion_at": self.last_empty_completion_at or None,
             "last_empty_completion_model": self.last_empty_completion_model,
             "last_failover_at": self.last_failover_at or None,

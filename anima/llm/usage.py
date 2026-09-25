@@ -27,6 +27,14 @@ class LLMCallInfo:
     module: str = "chat"
     operation: str = "chat"
     trace_id: str = ""
+    #: 是否为「出站正文调用」。
+    #:
+    #: 归因判据（`react._LLM_FAULT_COUNTERS`）**只认**这类调用的故障计数。旁路
+    #: （跨群提取／表情判定／反刍／模拟生活…）与出站正文共用同一个 llm 实例，
+    #: 若不区分，一次旁路的 200-空 就会把「本 turn 上游是否静默」判成 True ⇒
+    #: 归因桶被翻成 `upstream_empty`（本该 `no_tool`）并顺带触发挽救、白等一次预算。
+    #: 默认 False 是刻意的：**没声明就不算**（旁路大多没有 scope，默认值即安全值）。
+    outbound: bool = False
 
 
 _CALL_INFO: contextvars.ContextVar[LLMCallInfo] = contextvars.ContextVar(
@@ -35,10 +43,17 @@ _CALL_INFO: contextvars.ContextVar[LLMCallInfo] = contextvars.ContextVar(
 
 
 @contextmanager
-def llm_scope(module: str, operation: str = "chat", trace_id: str | None = None) -> Iterator[str]:
-    """将当前协程中的 LLM 调用归属到一个可读模块。"""
+def llm_scope(module: str, operation: str = "chat", trace_id: str | None = None,
+              outbound: bool = False) -> Iterator[str]:
+    """将当前协程中的 LLM 调用归属到一个可读模块。
+
+    ``outbound=True`` 额外声明「这是要发给用户的正文生成」—— 见 `LLMCallInfo.outbound`。
+    """
     trace = trace_id or uuid.uuid4().hex[:16]
-    token = _CALL_INFO.set(LLMCallInfo(module=module or "chat", operation=operation, trace_id=trace))
+    token = _CALL_INFO.set(LLMCallInfo(
+        module=module or "chat", operation=operation, trace_id=trace,
+        outbound=bool(outbound),
+    ))
     try:
         yield trace
     finally:

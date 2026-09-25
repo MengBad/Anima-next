@@ -716,9 +716,18 @@ class ReactConfig(BaseModel):
     ``freshness_footer``（P2-3）：用过联网/时效类工具、但最终回答里完全没有日期
     痕迹时，追加一句时效声明（只披露，不改写答案）。true 为默认；关掉即回到
     「答完就发」的旧行为。
+
+    ``upstream_patience_sec``（2026-09-23）：上游**根本没给出任何东西**（200-空 /
+    传输故障 / 熔断）时，出口前最多等这么久再要一次正文，仍空才出罐头话术。
+    只在这条出站本来就要变成罐头话术时付出延迟，且只等一次。**0 = 关闭**（一键
+    回滚到「立刻出罐头话术」）。熔断剩余超过该预算时**不等待**（等不到头）。
+
+    默认值 20.0（2026-09-25 由 6.0 抬上来）：6.0 被 48h 实测否掉 —— 4/4 次样本
+    等满 6s 后重试仍空，而静默实际持续 8–20s。低于静默下限的预算结构上不可能成功。
     """
     memory_first: bool = True
     freshness_footer: bool = True
+    upstream_patience_sec: float = Field(default=20.0, ge=0.0, le=30.0)
 
 
 class ContextConfig(BaseModel):
