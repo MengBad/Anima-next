@@ -118,6 +118,14 @@ class LLMHandler(AnimaCommandsMixin):
         # 同一会话的模型回合必须串行：连续文本/图片/引用在收束窗口之外到达时，
         # 后一回合也要等前一回合完成记忆写入，不能并行抢写上下文。
         self._turn_locks: dict[tuple[str, int | None, int], asyncio.Lock] = {}
+        # 🔴 P2 同群跨用户互斥（2026-09-25）。上面 `_turn_locks` 的 key **含 user_id**
+        # （其契约见 tests/test_conversation_assembler.py），所以同群两个不同用户
+        # 各自 @bot 时会**并发**进 `_handle_inner`；而 `_group_recent` 是**群级共享**、
+        # 回复要到 guardrail 段才写回群缓冲 ⇒ 后一回合组帧时，上下文里会多出一条
+        # 「别人问 bot、且尚未被回复」的同形 user turn ⇒ 模型答上一条（答非所问）。
+        # 09-21 的注入侧标注只是**缓解**（让模型别被结构骗到），这里补**根因**：
+        # 按群取锁，同群回合串行。私聊与不同群不受影响。
+        self._group_turn_locks: dict[int, asyncio.Lock] = {}
         # 同会话回复在途时, 后续直接@消息先吸收合并, 待上一回复发完再统一回复,
         # 避免「连续@→机器人连发」的刷屏/重复/上下文割裂。
         self._reply_inflight: set[tuple] = set()
@@ -433,6 +441,24 @@ class LLMHandler(AnimaCommandsMixin):
             locks[key] = lock
         return lock
 
+    def _group_turn_lock(self, group_id: Any) -> asyncio.Lock:
+        """返回**只按群**隔离的回合锁（P2，2026-09-25）。
+
+        与 `_turn_lock` 的区别：`_turn_lock` 的 key 含 user_id（那是它自己的契约，
+        见 `test_handler_turn_lock_serializes_only_same_session`，**不要动**）；
+        本方法刻意**不含 user_id** —— 同群任何两个用户的回合都必须串行，否则群级
+        共享的 `_group_recent` 会在两个并发回合之间被跨用户污染。
+        """
+        locks = getattr(self, "_group_turn_locks", None)
+        if locks is None:
+            locks = self._group_turn_locks = {}
+        key = int(group_id)
+        lock = locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            locks[key] = lock
+        return lock
+
     async def _handle_command(self, event: dict, text: str, user_id: int,
                               group_id: Optional[int], detail_type: str) -> bool:
         """处理 owner 命令。返回 True 表示已消费该消息。
@@ -550,6 +576,13 @@ class LLMHandler(AnimaCommandsMixin):
             # 只删除 1/4，降低竞态窗口内删除活跃锁的概率
             for k in unlocked[:len(unlocked) // 4]:
                 locks.pop(k, None)
+        # 群回合锁同理（P2）。群的个数天然远小于 5000，这里只为防「被拉进大量群」
+        # 或测试反复造群导致无界增长；同样只删**未持有**的。
+        glocks = getattr(self, "_group_turn_locks", None)
+        if glocks and len(glocks) > 5000:
+            gunlocked = [k for k, lock in glocks.items() if not lock.locked()]
+            for k in gunlocked[:len(gunlocked) // 4]:
+                glocks.pop(k, None)
 
     # ------------------------------------------------------------------
     # A1 睡眠模式：凌晨被 @ 时迷糊回一句（不调工具 / 不跑 ReAct）
@@ -660,8 +693,26 @@ class LLMHandler(AnimaCommandsMixin):
                 logger.info("[合并] 会话回复在途, 吸收后续@ (key=%s, n=%d)", key, _n)
                 return
             self._reply_inflight.add(key)
+        # 🔴 P2（2026-09-25）：同群回合必须串行。上面那只 `_reply_inflight` 的 key
+        # 含 user_id，只能挡住**同一用户**的连发；同群**不同用户**会直接并发进
+        # `_handle_inner`，而 `_group_recent` 群级共享、回复要到 guardrail 才写回
+        # ⇒ 后一回合组帧时会看到「别人问 bot、尚未被回复」的同形 user turn，
+        # 模型被结构诱导答上一条。锁**按群**取，私聊与不同群不互相拖累。
+        # ⚠️ 必须放在 `try` 内、`finally` 之前：`_drain_coalesced` 会再进 `handle()`，
+        # 若群锁此时仍被持有就会自锁死（asyncio.Lock 不可重入）。
+        _group_lock = None
+        if detail_type == "group" and group_id:
+            _group_lock = self._group_turn_lock(group_id)
         try:
-            await self._handle_inner(event)
+            if _group_lock is None:
+                await self._handle_inner(event)
+            else:
+                if _group_lock.locked():
+                    # 运行期证据面：没有它，就只能「等下一次答非所问」才知道有没有被踩到。
+                    logger.info("[同群串行] 群%s 上一回合在途，本回合排队等待（user=%s）",
+                                group_id, user_id)
+                async with _group_lock:
+                    await self._handle_inner(event)
         finally:
             if key is not None:
                 self._reply_inflight.discard(key)

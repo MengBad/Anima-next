@@ -88,7 +88,10 @@ permissions:
   group_policies:
     "0":                      # ← 群号占位；漂移检查做通配归约
       autonomy: true
-      familiar_min: 0.95
+      familiar_min: 0.85      # 2026-09-25 owner 决策：0.95 → 0.85。
+                              # 0.95 比代码自身的 CLOSE 阈值（cognition.py:202 用 0.85）还严
+                              # ⇒ 三位 stage=CLOSE 的好友被当成生人（7 天 380 次 unfamiliar 跳过）。
+                              # 0.85 = 只放行 CLOSE 级；再放宽到 0.70/0.50 是 owner 一键事。
       reply_mode: "familiar"
 
 # ---------------------------------------------------------------------------
