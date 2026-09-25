@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
+from anima.constants import event_text
 from anima.core.gateway import OutboundMsg
 from anima.pipeline import Pipeline, PipelineContext
 # 群消息门控逻辑已拆分到 group_gate.py，此处重导出保持向后兼容
@@ -843,7 +844,12 @@ class LLMHandler(AnimaCommandsMixin):
             if assembled is None:
                 return
             event = assembled
-            text = str(event.get("raw_message") or event.get("message") or "")
+            # 🔴 取正文只走 `constants.event_text`（2026-09-25）：此前这里是
+            # `raw_message or message`，而 `raw_message` **恒缺**（onebot11 只设
+            # `message`）、`message` 是 CQ 原文 ⇒ 卡片/引用类私聊被
+            # `CQ_TRANSPORT_RE` 整段剥空 ⇒ `memory_stage` 判空 `SKIP_REPLY`：
+            # **无日志、无计数、无出站**（静默丢弃，生产实证 09-24 14:18:17）。
+            text = event_text(event)
 
         # B1: 群聊防抖——同一用户 2s 内连续消息合并为一个语义回合
         _group_debouncer = getattr(self, "_group_debouncer", None)
@@ -852,7 +858,9 @@ class LLMHandler(AnimaCommandsMixin):
             if assembled is None:
                 return  # 已被合并，不单独处理
             event = assembled
-            text = str(event.get("raw_message") or event.get("message") or "")
+            # 🔴 同上，且这条**覆盖**了 `:697` 群路径取的 `event["text"]` ⇒ 群里被
+            # @ 的卡片/引用消息（json/forward/video/markdown/face/file）同样静默丢弃。
+            text = event_text(event)
 
         # G1：跨群氛围观察 + 事实抽取（前置到回复闸门之前，对所有入站消息生效，
         # 这样"未 @bot 的群消息"也能学到氛围/事实）。氛围用本地启发式（零成本），

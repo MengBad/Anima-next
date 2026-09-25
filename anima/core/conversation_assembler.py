@@ -13,6 +13,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 
+# 「事件正文」唯一口径。🔴 别在这里另写 `raw_message or message` 的 `or` 链：
+# `raw_message` 恒缺（onebot11 只设 `message`）、`message` 是 CQ 原文 ⇒ 卡片/引用类
+# 消息会被 CQ 清洗整段剥空（2026-09-25 定案）。
+from anima.constants import event_text
+
 
 @dataclass
 class _PendingConversation:
@@ -78,11 +83,17 @@ class ConversationAssembler:
         # 「@ 了别人」而静默吞掉（实测：@在前+补句在后 → mention_only/idle 零回复）。
         merged["mentions_self"] = any(bool(e.get("mentions_self")) for e in events)
         merged["reply_to_self"] = any(bool(e.get("reply_to_self")) for e in events)
-        texts = [str(item.get("raw_message") or item.get("message") or "").strip()
-                 for item in events]
-        text = "\n".join(item for item in texts if item)[:6000]
-        merged["raw_message"] = text
-        merged["message"] = text
+        # 兼容字段：`raw_message` / `message` **保持传输原文语义**（CQ 原文），
+        # 只是不再被当成正文消费（历史消费点见 `constants.event_text` 注释）。
+        raw = "\n".join(t for t in (
+            str(item.get("raw_message") or item.get("message") or "").strip()
+            for item in events) if t)[:6000]
+        merged["raw_message"] = raw
+        merged["message"] = raw
+        # 对话正文（唯一消费口径）。🔴 必须**显式写**：`merged` 由最后一条深拷贝而来，
+        # 不写就只剩最后一条的正文 —— 拼接回合会「看得见补句、看不见前提」。
+        merged["text"] = "\n".join(t for t in (
+            event_text(item).strip() for item in events) if t)[:6000]
         merged["assembled_message_ids"] = [
             item.get("message_id") for item in events if item.get("message_id") is not None
         ]
@@ -161,8 +172,12 @@ class GroupDebouncer:
         self._lock = asyncio.Lock()
 
     def _is_command(self, event: dict[str, Any]) -> bool:
-        """判断是否为指令消息（不进入防抖）。"""
-        text = str(event.get("raw_message") or event.get("message") or "")
+        """判断是否为指令消息（不进入防抖）。
+
+        🔴 走 `event_text`：此前读 CQ 原文，`[CQ:at,qq=bot] !anima …` 的前缀是 CQ 码
+        ⇒ `startswith("!anima")` 永不命中，等于「@ 了 bot 的指令被当普通消息防抖」。
+        """
+        text = event_text(event)
         return text.strip().startswith("!anima")
 
     def _compute_delay(self, pending: _PendingConversation) -> float:
@@ -173,7 +188,7 @@ class GroupDebouncer:
         if self.adaptive and pending.events:
             # 获取最后一条消息的文本长度
             last_event = pending.events[-1]
-            text = str(last_event.get("raw_message") or last_event.get("message") or "")
+            text = event_text(last_event)
             text_len = len(text.strip())
 
             if text_len <= self.short_msg_threshold:
@@ -250,11 +265,16 @@ class GroupDebouncer:
         # 「@ 了别人」而静默吞掉（实测：@在前+补句在后 → mention_only/idle 零回复）。
         merged["mentions_self"] = any(bool(e.get("mentions_self")) for e in events)
         merged["reply_to_self"] = any(bool(e.get("reply_to_self")) for e in events)
-        texts = [str(item.get("raw_message") or item.get("message") or "").strip()
-                 for item in events]
-        text = "\n".join(item for item in texts if item)[:6000]
-        merged["raw_message"] = text
-        merged["message"] = text
+        # 兼容字段：`raw_message` / `message` **保持传输原文语义**（CQ 原文）。
+        raw = "\n".join(t for t in (
+            str(item.get("raw_message") or item.get("message") or "").strip()
+            for item in events) if t)[:6000]
+        merged["raw_message"] = raw
+        merged["message"] = raw
+        # 对话正文（唯一消费口径，见 `constants.event_text`）。与私聊合并器同源 ——
+        # 两个 `_merge` 各写一份是历史包袱，改动必须成对，否则两条路径悄悄分叉。
+        merged["text"] = "\n".join(t for t in (
+            event_text(item).strip() for item in events) if t)[:6000]
         merged["assembled_message_ids"] = [
             item.get("message_id") for item in events if item.get("message_id") is not None
         ]

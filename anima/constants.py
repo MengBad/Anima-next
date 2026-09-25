@@ -11,12 +11,36 @@ import re
 # 而旧表独缺该类型 ⇒ 残留进 ctx.text（audit text_length=3 vs ReAct text_len=28，
 # 差的 25 字就是它）。同时补齐 `json/xml/forward/node/file/markdown` ——
 # `channels/onebot11.py` 的 rich_blocks 证明这些段确实会入站。
-# 1 处定义、4 处消费（`_shared._clean_transport_text`、`chat_memory` 两处、`autonomy`）。
+# 1 处定义、5 处消费（`_shared._clean_transport_text`、`chat_memory` 两处、`autonomy`、
+# `event_text`）。
 CQ_TRANSPORT_RE = re.compile(
     r"\[CQ:(?:image|face|bface|sface|record|video|poke|share|music|location|at"
     r"|reply|json|xml|forward|node|file|markdown)[^\]]*\]?",
     re.I,
 )
+
+
+# ---------------------------------------------------------------------------
+# 「事件正文」唯一口径
+# ---------------------------------------------------------------------------
+# 背景（2026-09-25 出入站审核定案）：一个入站事件里有两个文本字段，**含义不同**：
+#   * `event["text"]`         —— 渠道层拼好的**正文**（text 段拼接 + 富媒体摘要，
+#                                `channels/onebot11.py:361/:392`），**不含 CQ 码**。
+#   * `event["message"]`      —— `raw_message` 的**传输原文**（`:336` 只设 message、
+#                                **从不设 `raw_message`**）⇒ 含 `[CQ:json,…]` 之类。
+# 全仓库其它消费点（prefilter/attachment 阶段回写、`pilot/message_adapter`、
+# `group_gate` 的 I6 注释）都按「`event["text"]` 是正文」这一假设写的。
+# 🔴 而 `llm/handler.py` 的私聊合并 / 群防抖两条路径此前取
+#    `raw_message or message` ⇒ **必落到 CQ 原文**（`raw_message` 恒缺）⇒
+#    卡片/引用类消息被 `CQ_TRANSPORT_RE` 整段剥空 ⇒ `memory.py` 判空 `SKIP_REPLY`
+#    （静默丢弃：无日志/无计数/无出站，09-24 14:18:17 私聊实证），同一个变量还把
+#    CQ 码写进了 stickers/关系/情节等持久记忆（1,056 处残留）。
+# ⇒ **凡取正文一律走本函数**，别在别处再写第二份 `or` 链。
+def event_text(event: "dict | None") -> str:
+    """取事件的**对话正文**：`text` 优先，缺失时才回落传输原文。"""
+    if not event:
+        return ""
+    return str(event.get("text") or event.get("raw_message") or event.get("message") or "")
 
 # ---------------------------------------------------------------------------
 # 承诺（commitment）判别 —— **唯一口径**，勿在别处再写第二份

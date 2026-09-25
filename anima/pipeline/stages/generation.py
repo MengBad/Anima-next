@@ -261,6 +261,22 @@ def _freshness_footer_enabled(core) -> bool:
     return bool(getattr(cfg, "freshness_footer", True))
 
 
+def _upstream_patience_sec(core) -> float:
+    """上游静默时的挽救预算：``react.upstream_patience_sec``（默认 20.0，0 = 关闭）。
+
+    取不到配置时用**代码默认**而不是 0 —— 生产 config.yaml 里没有这个键是常态
+    （安全开关同样走代码默认）。要关掉请显式写 0。
+    """
+    from anima.agent.react import _DEFAULT_UPSTREAM_PATIENCE_SEC
+
+    cfg = getattr(getattr(core, "config", None), "react", None)
+    try:
+        return max(0.0, float(getattr(cfg, "upstream_patience_sec",
+                                   _DEFAULT_UPSTREAM_PATIENCE_SEC)))
+    except (TypeError, ValueError):
+        return _DEFAULT_UPSTREAM_PATIENCE_SEC
+
+
 def _inject_user_boundary_note(ctx: PipelineContext) -> bool:
     """ANM-002：把『用户输入边界』注记写入唯一 system 消息（幂等，已存在则跳过）。
 
@@ -534,6 +550,17 @@ def _has_provider_identity_leak(reply: str) -> bool:
 
 async def generation_stage(ctx: PipelineContext) -> StageResult:
     """调用 LLM 生成回复 —— 通过 ReAct 循环（思考→工具→观察→再思考）。"""
+    # 🔴 已决定不回复 ⇒ 不再向上游发请求（2026-09-25）。
+    # `memory_stage` 在「正文为空且无图」时返回 `SKIP_REPLY`，但 pipeline 对
+    # `SKIP_REPLY` **只置 `should_reply=False`、不 break**（`pipeline/__init__.py:96-98`），
+    # 于是后续 stage 照跑；而此前本 stage 不看该标记 ⇒ **白烧一次 ReAct**。生产实证：
+    # 私聊卡片消息走到这里打的是 `ReAct: … text_len=0`（正文在更上游就被判空）。
+    # 判据放在最前面：既省一次上游调用，也避免无正文时误触发工具调用。
+    if not ctx.should_reply:
+        logger.info("[无出站][trace=%s] 已决定不回复（should_reply=False），跳过生成",
+                    ctx.meta.get("trace", "-"))
+        return StageResult.SKIP_REPLY
+
     core = ctx.meta.get("core")
     if core is None or core.llm is None:
         # I4（2026-09-19）：应回复却无正文的静默出口之一，此前无 journal 留痕。
@@ -686,6 +713,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         priority_sort=_memory_first_enabled(core),
         # P2-3：时效兜底脚注（react.freshness_footer）
         freshness_footer=_freshness_footer_enabled(core),
+        # 2026-09-23：上游静默时的挽救预算（react.upstream_patience_sec，0 = 关）
+        upstream_patience_sec=_upstream_patience_sec(core),
     )
 
     logger.info("ReAct: model=%s text_len=%d mem=%d desire=%d tools=%d",
