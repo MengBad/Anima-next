@@ -211,6 +211,56 @@ def _user_wants_substantive(user_text: str) -> bool:
     t = user_text or ""
     return bool(_USER_WANTS_ANALYSIS_RE.search(t) or _USER_WANTS_HOWTO_RE.search(t))
 
+
+#: 「用户**确实在问东西**」（2026-10-04）—— 比 how-to 关键词宽得多。
+#:
+#: 背景：`guardrail_essay_samples.jsonl` 7 条生产样本**条条是误杀**。根因是
+#: 「保留内容」只对 `essay_score` 与 `_user_wants_substantive` 生效，而后者只认
+#: 「解析/如何/教我/攻略」这类 **how-to 关键词** ⇒ **日常提问根本不说这些词**
+#: ⇒ 实质回答几乎必然被整段销毁。生产原句：
+#:   「有带胸口的纸质材料的嘛」「前列腺液都有哪些成分」
+#:   「通宵后感觉心慌心悸…怎么办」「（粘贴三国杀技能规则）」
+#: ⇒ 这些才是"用户要答案"的真实形态。
+#:
+#: 🔴 判别刻意**只认用户在问**，不认「bot 跑偏得长」——
+#: 用户只发「哈哈哈哈」而 bot 跑去分析这个人，仍属破角色，**必须继续销毁**
+#: （`test_break_role_runaway_still_replaced` 钉住）。
+_QUESTION_MARK_RE = re.compile(r"[?？]")
+_QUESTION_WORD_RE = re.compile(
+    r"什么|哪些|哪种|哪个|怎么|怎样|如何|为什么|为啥|咋|多少|几个|哪|"
+    r"能否|能不能|是不是|有没有|要不要|可不可以|怎么办|怎么回事|多久"
+)
+#: 句末疑问语气词。刻意**不含「吧」**（「那行吧」「好吧」在闲聊里太常见，收进来等于
+#: 给所有口语回复开后门 —— 与 `_USER_WANTS_HOWTO_RE` 刻意不收「怎么/什么」同理）。
+_QUESTION_PARTICLE_RE = re.compile(r"(?:吗|嘛)[？?]?$")
+#: 陈述式提问的下限：把规则/报错/需求**整段贴过来**问「这是什么意思」，既没有问号也
+#: 没有疑问词（生产样本 ⑦ 就是这种）。短于此 ⇒ 视为寒暄/情绪表达。
+_SUBSTANTIVE_INPUT_MIN = 10
+#: 疑问词路径的长度下限。
+#:
+#: 🔴 这条**不是**调参，是从既有判据 `test_guardrail_rewrites_analysis_essay` 学的：
+#: 用户只打「怎么说」（3 字）而 bot 输出一篇「政治社会学 / 实证科学」的长分析体
+#: ——**「用户极短 + bot 极长」正是破角色跑偏的典型特征**。而实质提问天然有长度
+#: （生产四条误杀原句分别是 11 / 10 / 36 / 47 字）。
+#: ⇒ 低于此长度的疑问词**不足以**判为"在问东西"，仍走销毁分支。
+_QUESTION_MIN_LEN = 4
+
+
+def _user_asked_question(user_text: str) -> bool:
+    """用户本轮是否**确实在问东西 / 递了实质需求**（而不是寒暄、感叹、玩梗）。
+
+    用于护栏 essay 路径的处置判别：**问了就保留内容**，别把答案整段换成罐头话。
+    """
+    t = (user_text or "").strip()
+    if not t:
+        return False
+    if len(t) >= _QUESTION_MIN_LEN and (
+        _QUESTION_MARK_RE.search(t) or _QUESTION_WORD_RE.search(t)
+        or _QUESTION_PARTICLE_RE.search(t)
+    ):
+        return True
+    return len(t) >= _SUBSTANTIVE_INPUT_MIN
+
 #: 「单语义词 + 长文」路径的**强标记**（2026-09-23 新增）。
 #: 语义词表里两类词的噪声不同：「从X角度看 / 数据分析 / 官方设定」在 ACG 与日常
 #: 闲聊里都是常见说法（生产实测把它们连同 250 字正文一起判成论文体），而下面这些
@@ -518,7 +568,8 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             "Guardrail: 检测到破角色分析体，改写为轻松接话（规则=%s 原文=%d字 摘要=%s）",
             _essay_rule, len(_essay_orig), _essay_orig[:120],
         )
-        if _essay_rule == "essay_score" or _user_wants_substantive(ctx.text or ""):
+        if (_essay_rule == "essay_score" or _user_wants_substantive(ctx.text or "")
+                or _user_asked_question(ctx.text or "")):
             # 保留内容：只截断、不整段替换。
             # 🔴 2026-09-27：`essay_score` 走这里（原本是整段罐头替换）。
             # 依据 D5 首批生产样本：真阳性「三国杀机制分析」205 字 score **6.5**，
@@ -527,6 +578,12 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             # 数值启发式，**在结构上与正常闲聊不可分离**，调阈值必然二选一。
             # 因此不动阈值、不动规则名，只把「代价」从「整段答非所问」降为
             # 「稍长一点」——真阳性仍被识别、仍落样本，可继续攒数据再定标。
+            # 🔴 2026-10-04：条件再扩到「用户确实在问东西」
+            # （`_user_asked_question`）—— 7 条生产样本里 4 条的用户原句
+            # （纸质胸牌 / 前列腺液成分 / 通宵心慌 / 贴规则）**都不含 how-to 关键词**
+            # ⇒ 此前必然被整段销毁，其中一条把**急救步骤**换成了客套话。
+            # 判据、规则名、样本落盘**一律不动**；真·破角色跑偏（用户只发「哈哈哈哈」）
+            # 仍走下面的销毁分支。
             short = ctx.reply.strip()
             if len(short) > 280:
                 short = short[:280].rstrip("，,。；;、 ") + "…"
