@@ -11,6 +11,29 @@ if TYPE_CHECKING:
     from anima.core.anima_core import AnimaCore
 
 
+#: 固定在每份快照里的阶段键（2026-10-05）——`[阶段耗时]` 会打的全部阶段。
+#: 显式列出而非从数据推导：这样**没跑过回合时字段也在**（count=0），
+#: 读的人才分得清"没数据"与"字段缺失"。
+_STAGE_KEYS = (
+    "total",
+    "entry_to_pipeline",
+    "pre_react",
+    "prefilter_stage",
+    "attachment_text_stage",
+    "bullying_stage",
+    "permission_stage",
+    "memory_stage",
+    "cognition_stage",
+    "generation_stage",
+    "guardrail_stage",
+)
+
+
+def _empty_latency() -> dict[str, Any]:
+    """无样本时的零值占位（字段形状与真实分位一致）。"""
+    return {"count": 0, "p50": 0.0, "p99": 0.0, "avg": 0.0, "max": 0.0}
+
+
 class HealthHistory:
     """保留最近约 48 小时的健康样本，供诊断和 WebUI 趋势使用。"""
 
@@ -107,7 +130,33 @@ class HealthHistory:
             "llm_circuit_open": bool(float(llm.get("circuit_open_until") or 0) > now),
             "llm_failover_count": int(llm.get("failover_count", 0) or 0),
             "llm_degradation_count": int(llm.get("degradation_count", 0) or 0),
+            # ── 阶段耗时分位（2026-10-05 新增）─────────────────────────
+            # 数据源：`[阶段耗时]` 已有的日志 → `MetricsCollector.histogram`
+            # → `observability.latency_snapshot()`。**只加字段，不改任何既有字段**
+            # （WebUI 在读它们），也不新增周期任务（复用 `record()` 既有调用点）。
+            "stage_latency_ms": self._stage_latency(),
         }
+
+    def _stage_latency(self) -> dict[str, Any]:
+        """各阶段耗时分位；无样本的阶段补零值占位。"""
+        try:
+            from anima.pipeline.stages.observability import (
+                STAGE_LATENCY_METRIC, latency_snapshot,
+            )
+        except Exception:  # noqa: BLE001 — 观测不可用时不得影响健康采样
+            return {}
+        try:
+            data = latency_snapshot()
+        except Exception:  # noqa: BLE001
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        # 🔴 无样本的阶段**仍给零值占位**（"有字段但 count=0" ≠ "字段缺失"）——
+        # 后者会让排查误判成"功能没实现"。
+        for stage in _STAGE_KEYS:
+            data.setdefault(stage, _empty_latency())
+        data["_metric"] = STAGE_LATENCY_METRIC
+        return data
 
     def record(self, *, force: bool = False) -> dict[str, Any] | None:
         now = time.time()

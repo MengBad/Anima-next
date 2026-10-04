@@ -117,7 +117,16 @@ class Pipeline:
             finally:
                 _stage_ms[getattr(stage, "__name__", f"stage{i}")] = round(
                     (time.monotonic() - _t_stage) * 1000, 1)
+        _total_ms = (time.monotonic() - _t_pipe) * 1000
         logger.info("[阶段耗时] total=%.0fms %s",
-                    (time.monotonic() - _t_pipe) * 1000,
+                    _total_ms,
                     " ".join(f"{k}={v}" for k, v in _stage_ms.items()))
+        # ── 阶段耗时进可观测（2026-10-05）───────────────────────────
+        # 复用既有 `MetricsCollector` + `HealthHistory` 周期落盘 ⇒ 不新增 timer/文件。
+        # 观测失败**绝不能**影响回复路径（observe_turn 内部已 fail-soft，这里再兜一层）。
+        try:
+            from anima.pipeline.stages.observability import observe_turn
+            observe_turn({"total": _total_ms, **_stage_ms})
+        except Exception:  # noqa: BLE001
+            logger.debug("阶段耗时观测失败，已忽略", exc_info=True)
         return ctx
