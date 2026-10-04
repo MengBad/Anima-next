@@ -123,6 +123,11 @@ class _FakeCore:
     "为什么啊",
     "能不能发我看看",
     "哪个更好点？",
+    # 🔴 2026-10-05 生产漏网实证：用户问图片里是谁，bot 答 2322 字（内容正确），
+    # 却被整段换成「本喵还是适合唠嗑，说点轻松的吧喵～」。
+    # 它栽在两处：① 疑问词表有「哪」没「谁」；② 只有 9 字，差 1 字够不到 10 字兜底。
+    "这张图里三个人是谁",
+    "这张照片里穿红衣服的是谁",
 ])
 def test_question_is_detected(text):
     assert _user_asked_question(text) is True, f"未识别为问句: {text}"
@@ -139,9 +144,14 @@ def test_question_is_detected(text):
     # 「用户极短 + bot 极长」正是跑偏的特征 ⇒ 极短的疑问词**不足以**判为在问东西。
     "怎么说",
     "怎么讲",
+    # 🔴 2026-10-05：补「谁」**刻意不动**长度阈值。若把 `_SUBSTANTIVE_INPUT_MIN`
+    # 从 10 降到 9 来捞那句 9 字问句，这类 11 字闲聊就会被误判成提问 ⇒ 给破角色开门。
+    "今天真的好累啊感觉要猝死",        # 11 字闲聊，无疑问词 ⇒ 不得判为提问
+    "我今天被领导骂了一顿好烦",        # 12 字 ⇒ 同上
+    "这个游戏我还真的挺喜欢的",        # 12 字 ⇒ 同上
 ])
 def test_chatter_is_not_a_question(text):
-    """🔴 反向对照：纯 chatter / 极短开口**不得**被当成问句 —— 否则等于给破角色开门。"""
+    """🔴 反向对照：纯 chatter / 极短开口 / 长闲聊**不得**被当成问句 —— 否则等于给破角色开门。"""
     assert _user_asked_question(text) is False, f"过度识别为问句: {text}"
 
 
@@ -207,3 +217,29 @@ async def test_still_detected_and_sampled(tmp_path):
     assert rows[0]["rule"], "样本必须带规则名"
     assert rows[0]["reply"] == reply, "样本必须是完整原文"
     assert rows[0]["rewritten_to"] == ctx.reply
+
+
+# ── 5. 生产漏网回归：图片识别长答（2026-10-05）──────────────────────
+
+@pytest.mark.asyncio
+async def test_image_id_long_answer_is_kept(tmp_path):
+    """🔴 生产实证回归：用户问「这张图里三个人是谁」。
+
+    2026-10-04 21:16 线上真实发生：bot 答了 2322 字（东方Project 角色分析，
+    **内容是对的**），却被整段替换成「本喵还是适合唠嗑，说点轻松的吧喵～」。
+    用户看到的就是"问正经问题却被敷衍"。
+
+    漏网根因：原句 9 字、无标点 ⇒ 问号/疑问词都不匹配（表里有「哪」没「谁」），
+    又差 1 字够不到 10 字的陈述式兜底。
+    """
+    core = _FakeCore(tmp_path)
+    # 生产同构：识别图片 ⇒ 分点介绍每个角色，篇幅长
+    reply = _long_numbered(
+        "这张图里的三个人", "东风谷早苗", "宇佐见莲子",
+    )
+    ctx = _ctx(text="这张图里三个人是谁", reply=reply, meta={"core": core})
+    await guardrail_stage(ctx)
+
+    assert ctx.reply not in _ANALYSIS_ESSAY_FALLBACKS, \
+        "🔴 识别图片的长答又被整段换成罐头话（2026-10-04 生产实证）"
+    assert "东风谷早苗" in ctx.reply, "🔴 识别结果被丢掉"
