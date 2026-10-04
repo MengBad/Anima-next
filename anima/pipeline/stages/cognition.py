@@ -1,6 +1,7 @@
 """阶段 3: 认知上下文组装。"""
 
 from __future__ import annotations
+import asyncio
 import logging
 import re
 import time
@@ -163,6 +164,78 @@ def _conversation_tone_fragment(ctx: PipelineContext) -> str:
     if not lines:
         return ""
     return "## 对方现在的语气\n" + "\n".join(lines)
+
+
+def _sylann_values(ctx) -> dict:
+    return {
+        "message_length": min(len(ctx.text) / 500.0, 1.0),
+        "has_group_context": 1.0 if ctx.group_id is not None else 0.0,
+        "desire_count": min(float(ctx.meta.get("desire_count", 0)) / 10.0, 1.0),
+    }
+
+
+def _apply_sylann_hint(sylann, ctx) -> None:
+    """把 sylann 的表达建议写进 ``ctx.meta``（供本阶段后续两处消费）。"""
+    try:
+        hint = sylann.expression_hint()
+    except Exception:
+        logger.exception("Sylann 表达建议读取失败，已隔离")
+        return
+    if hasattr(sylann, "record_expression_hint"):
+        try:
+            sylann.record_expression_hint(bool(hint))
+        except Exception:
+            logger.debug("Sylann 表达建议计数失败", exc_info=True)
+    if hint:
+        ctx.meta["sylann_expression_hint"] = hint
+
+
+async def _observe_sylann(sylann, ctx) -> None:
+    """向 sylann 提交本轮观察，**默认不占用关键路径**（2026-10-04）。
+
+    🔴 为什么要改：这段原来是本阶段**唯一**的 await（`cognition.py` 自身零 LLM 调用），
+    它经 `sylann_adapter.observe` → `engine.submit()` 发出**一次 LLM 请求**
+    （`_OBSERVE_TIMEOUT_SEC=15`）。实测该阶段恒定占 **4–9 秒**，占端到端 p50 的
+    25–48%，而它产出的一切只用于一个语气片段（`sylann_expression`，priority 40）
+    与一个 quirk 布尔 —— **消费者都在本阶段内**，不进 generation。
+
+    做法（stale-while-revalidate）：
+    - ``hurt=True`` ⇒ **同步等待**。保护语义最需要它的正是这类消息，不能滞后一轮。
+    - 其余 ⇒ 立刻用 ``expression_hint()`` 的现成值注入，刷新丢到后台。
+      这**不是新引入的近似** —— ``expression_hint()`` 读的就是 ``self._last``，
+      首次为 ``None`` 时返回空串，滞后本就是它既有的契约。
+    - 首次无 ``_last`` ⇒ 不写 ``sylann_expression_hint``，与改前逐字节相同。
+
+    已知代价：非 hurt 回合的语气提示**滞后一轮** ⇒ 第一条被伤害的消息若自身非 hurt
+    分类，回合可能偏硬一档，下一轮起收敛。属人格权衡，由 owner 裁定。
+    """
+    if sylann is None:
+        return
+    hurt = _detect_hurtful(ctx.text)
+    kwargs = {
+        "hurt": hurt,
+        "message_id": str(ctx.event.get("message_id", "")) or None,
+        "values": _sylann_values(ctx),
+    }
+    if hurt:
+        try:
+            await sylann.observe(ctx.group_id, ctx.user_id, ctx.text, **kwargs)
+            _apply_sylann_hint(sylann, ctx)
+        except Exception:
+            logger.exception("Sylann 观测失败，已隔离")
+        return
+
+    # 快路径：先用现成 hint（零成本），刷新异步进行。
+    _apply_sylann_hint(sylann, ctx)
+    try:
+        task = asyncio.create_task(
+            sylann.observe(ctx.group_id, ctx.user_id, ctx.text, **kwargs),
+            name="sylann_observe",
+        )
+    except Exception:
+        logger.debug("Sylann 后台观察提交失败，已隔离", exc_info=True)
+        return
+    task.add_done_callback(_bg_task_done)
 
 
 async def cognition_stage(ctx: PipelineContext) -> StageResult:
@@ -514,25 +587,7 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
 
     # G1：跨群氛围 + 用户跨群记忆
     sylann = getattr(core, "sylann", None)
-    if sylann is not None:
-        try:
-            await sylann.observe(
-                ctx.group_id, ctx.user_id, ctx.text,
-                hurt=_detect_hurtful(ctx.text),
-                message_id=str(ctx.event.get("message_id", "")) or None,
-                values={
-                    "message_length": min(len(ctx.text) / 500.0, 1.0),
-                    "has_group_context": 1.0 if ctx.group_id is not None else 0.0,
-                    "desire_count": min(float(ctx.meta.get("desire_count", 0)) / 10.0, 1.0),
-                },
-            )
-            hint = sylann.expression_hint()
-            if hasattr(sylann, "record_expression_hint"):
-                sylann.record_expression_hint(bool(hint))
-            if hint:
-                ctx.meta["sylann_expression_hint"] = hint
-        except Exception:
-            logger.exception("Sylann 观测失败，已隔离")
+    await _observe_sylann(sylann, ctx)
     cg_cfg = getattr(core, "config", None)
     cg_cfg = getattr(cg_cfg, "crossgroup", None) if cg_cfg else None
     if cg_cfg and getattr(cg_cfg, "enabled", True) and ctx.detail_type == "group":
