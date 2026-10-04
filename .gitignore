@@ -76,6 +76,10 @@ _vps_step0.py
 _step0_*.txt
 _deploy_out.txt
 _r6_backup_arch_*/
+# 2026-10-04：部署前的源码快照目录一律不入库（此前只挡了 _r6_backup_arch_*/，
+# _r6_backup_quote_*/ 与 _r7_backup_*/ 曾出现在 untracked 列表里 —— 它们是
+# **热部署的产物**（旧版本源码副本），不是源码。误提交会让 git 里出现两份同名模块。
+_r*_backup_*/
 R6_*_ACCEPTANCE_REPORT.md
 _vps_accept*.py
 _vps_verify.py

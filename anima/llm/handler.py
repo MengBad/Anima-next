@@ -3,6 +3,7 @@
 from __future__ import annotations
 import asyncio
 import base64
+import contextlib
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from anima.constants import event_text
+from anima.constants import CQ_TRANSPORT_RE, event_text
 from anima.core.gateway import OutboundMsg
 from anima.pipeline import Pipeline, PipelineContext
 # 群消息门控逻辑已拆分到 group_gate.py，此处重导出保持向后兼容
@@ -88,6 +89,99 @@ def _onebot_message_sender_id(message: dict | None) -> Any:
         or message.get("sender_id")
         or (sender.get("user_id") if isinstance(sender, dict) else None)
     )
+
+
+def _reply_sender_of(replied: Optional[dict]) -> tuple[Any, str]:
+    """从 `get_msg` 结果取出「被引用者」的 QQ 与显示名 → `(None, "")` 表示未知。
+
+    形状容错：`_call_action`（`channels/onebot11.py:1239-1242`）已把
+    `{"status":..,"data":..}` 剥到 data 层，故 `sender`/`user_id` 通常在**顶层**
+    （生产佐证：`_fetch_reply_images` 读顶层 `msg["message"]` 且真拉到过图）；
+    个别实现未剥，故再兜一层 `data`。
+
+    昵称**复用** `sender_display_name`（群名片优先，2026-09-20 深审），
+    不新写第二份取昵称逻辑。绝不抛出。
+    """
+    if not isinstance(replied, dict):
+        return None, ""
+    node = replied
+    if _onebot_message_sender_id(node) is None:
+        inner = replied.get("data")
+        if isinstance(inner, dict):
+            node = inner
+    sid = _onebot_message_sender_id(node)
+    if sid is None:
+        return None, ""
+    sender = node.get("sender")
+    return sid, sender_display_name(sender if isinstance(sender, dict) else None, sid)
+
+
+def _record_reply_attribution(event: dict, replied: Optional[dict]) -> None:
+    """把「被引用者是谁」落进 `event`（供组帧写归属）。绝不抛出。
+
+    🔴 修复前（2026-09-28 诊断）：`_onebot_message_sender_id(replied)` 的返回值
+    **只**参与 `reply_to_self` 布尔，从不落成「谁说的」⇒ 组帧只能写出
+    「（你引用的上一条消息内容是：X）」——只有内容、没有来源 ⇒ 模型把被引内容
+    一律归给**引用者**。实况：诹访子引用 bot 自己发的图说「你看你烧的」，
+    bot 咬定「自己发这种怪图还倒打一耙！」。
+
+    只落 id/name/is_unknown 三个键；`get_msg` 失败时只标 `reply_is_unknown=True`。
+    """
+    try:
+        sid, name = _reply_sender_of(replied)
+        if sid is None:
+            event["reply_is_unknown"] = True
+            return
+        event["reply_sender_id"] = str(sid)
+        event["reply_sender_name"] = str(name or "")
+        event["reply_is_unknown"] = False
+    except Exception:
+        logger.debug("引用归属落字段失败（已隔离）", exc_info=True)
+
+
+def _merge_reply_images(event: dict, extra: Optional[list]) -> int:
+    """把被引用消息里的图并入 `event["images"]`，返回本次新增数。绝不抛出。
+
+    - 只给**因引用而新增**的图打 `from_reply=True`：`_observe_stickers` 据此跳过
+      —— 引用别人的图 ≠ 自己发了这张表情（09-28 实况：bot 自己发的图被记成
+      引用者的表情收进库）。
+    - 落 `reply_image_count`：正文为空时组帧仍要能说清「你引用的是一张图」。
+    - 末尾打 `[引用归属]`：出站正文不入 journal ⇒ 归属效果只能靠自埋点观测。
+      这里也是**唯一**三个事实（self/来源/图数）同时已知的位置。
+    保留既有按 `file` 去重语义。
+    """
+    try:
+        base = event.get("images")
+        if not isinstance(base, list):
+            base = []
+        added = 0
+        seen = {i.get("file") for i in base if isinstance(i, dict)}
+        for im in (extra or []):
+            if not isinstance(im, dict):
+                continue
+            if im.get("file") and im["file"] in seen:
+                continue
+            im["from_reply"] = True
+            base.append(im)
+            seen.add(im.get("file"))
+            added += 1
+        if added:
+            event["images"] = base
+        try:
+            prev = int(event.get("reply_image_count") or 0)
+        except (TypeError, ValueError):
+            prev = 0
+        event["reply_image_count"] = prev + added
+        logger.info("[引用归属] self=%s from=%s(%s) imgs=%d text_len=%d",
+                    bool(event.get("reply_to_self")),
+                    event.get("reply_sender_name") or "-",
+                    event.get("reply_sender_id") or "-",
+                    event["reply_image_count"],
+                    len(str(event.get("reply_text") or "")))
+        return added
+    except Exception:
+        logger.debug("引用图归属合并失败（已隔离）", exc_info=True)
+        return 0
 
 _TEXT_ATTACHMENT_SUFFIXES = {".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".py", ".log"}
 _DOCUMENT_ATTACHMENT_SUFFIXES = {".pdf", ".docx", ".xlsx"}
@@ -242,6 +336,16 @@ class LLMHandler(AnimaCommandsMixin):
         perms = getattr(self.core.config, "permissions", None)
         owners = getattr(perms, "owners", None) or ()
         return user_id in owners
+
+    async def _agent_control_notice(self, owner_id: int, text: str) -> None:
+        """Agent **控制面**回执：一律走私聊，群里不留痕（09-28 人视角审计 P0-1）。
+
+        这类回执含任务 ID、`!anima` 命令语法、草稿/审批流程 —— 属内部机制。发到群聊
+        会让全体成员看见（群 727631526，09-26 19:16–19:17 生产实证），因此统一走
+        owner 私聊。**注意与产物交付区分**：`agent/owner_agent.py:_deliver_media`
+        会把生图等**结果本身**发回发起会话，那是用户要的东西，不在此列。
+        """
+        await self.core.gateway.send(OutboundMsg("private", int(owner_id), text))
 
     def _ignore_store(self):
         """懒加载忽略名单存储（data/ignore_list.json）。"""
@@ -483,6 +587,13 @@ class LLMHandler(AnimaCommandsMixin):
             return
         if not text or text.startswith("!"):
             return
+        # 🔴 2026-09-26：`text` 可能来自 `event_text()` 的兜底（`text` 段为空 ⇒ 回落
+        # `raw_message`/`message` 传输原文）。纯图消息因此带着 `[CQ:image,…url=…&fileid=…]`
+        # 长 blob 下来，两个实际危害：① 污染氛围滚动缓冲的启发式统计；
+        # ② blob 长度必然 ≥ `min_fact_text_len` ⇒ **白白烧一次 LLM 事实抽取**。
+        # 这里只清洗下游两个消费点，**不动上面的空值/命令闸语义**（speaker 追踪、
+        # owner 忽略指令仍按原文判定）。
+        body = CQ_TRANSPORT_RE.sub("", str(text or "")).strip()
         # owner 忽略名单：记录最近群发言者；识别 owner 的“别理那两人”并持久化。
         if detail_type == "group" and group_id is not None:
             try:
@@ -501,14 +612,14 @@ class LLMHandler(AnimaCommandsMixin):
         # 氛围观察（仅群聊，纯启发式，不调 LLM）
         if detail_type == "group" and group_id is not None:
             try:
-                cgm.observe_message(str(group_id), text)
+                cgm.observe_message(str(group_id), body)
             except Exception:
                 logger.exception("跨群氛围观察异常")
 
         # 事实抽取（后台异步，不阻塞回复；失败静默）
-        if self.core.llm is not None and len(text) >= cfg.min_fact_text_len:
+        if self.core.llm is not None and len(body) >= cfg.min_fact_text_len:
             asyncio.create_task(
-                self._extract_and_store(user_id, sender_name, group_id, text, cfg)
+                self._extract_and_store(user_id, sender_name, group_id, body, cfg)
             )
 
     async def _extract_and_store(self, user_id: int, name: str,
@@ -666,6 +777,10 @@ class LLMHandler(AnimaCommandsMixin):
 
     async def handle(self, event: dict) -> None:
         """入站消息入口：同会话回复在途时合并后续直接@消息, 单控回复节奏。"""
+        # D4 埋点（2026-09-27）：记回合起点（单调钟，仅进程内可比），
+        # 供 `_handle_inner` 在 pipeline 之前算出「入站 → 流水线」的耗时
+        # （含防抖等待 / 引用消息拉取 / 闸门 / 同群串行排队）。纯观测。
+        event["_t_entry"] = time.monotonic()
         if not hasattr(self, "_reply_inflight"):
             self._reply_inflight = set()
             self._coalesced = {}
@@ -693,26 +808,21 @@ class LLMHandler(AnimaCommandsMixin):
                 logger.info("[合并] 会话回复在途, 吸收后续@ (key=%s, n=%d)", key, _n)
                 return
             self._reply_inflight.add(key)
-        # 🔴 P2（2026-09-25）：同群回合必须串行。上面那只 `_reply_inflight` 的 key
-        # 含 user_id，只能挡住**同一用户**的连发；同群**不同用户**会直接并发进
-        # `_handle_inner`，而 `_group_recent` 群级共享、回复要到 guardrail 才写回
-        # ⇒ 后一回合组帧时会看到「别人问 bot、尚未被回复」的同形 user turn，
-        # 模型被结构诱导答上一条。锁**按群**取，私聊与不同群不互相拖累。
-        # ⚠️ 必须放在 `try` 内、`finally` 之前：`_drain_coalesced` 会再进 `handle()`，
-        # 若群锁此时仍被持有就会自锁死（asyncio.Lock 不可重入）。
-        _group_lock = None
-        if detail_type == "group" and group_id:
-            _group_lock = self._group_turn_lock(group_id)
+        # 🔴 P2（2026-09-25）：同群回合必须串行。`_reply_inflight` 的 key 含 user_id，
+        # 只能挡住**同一用户**的连发；同群**不同用户**若并发进 `_handle_inner`，而
+        # `_group_recent` 群级共享、回复要到 guardrail 才写回 ⇒ 后一回合组帧时会看到
+        # 「别人问 bot、尚未被回复」的同形 user turn，模型被结构诱导答上一条。
+        #
+        # 🔴 C（2026-10-03）：群锁**不再**在此处包住整个 `_handle_inner` —— 前置工作
+        # （群防抖等待 2s / 引用拉取 / 跨群观察 / owner 命令路由）与群级共享上下文无关，
+        # 却让每条群消息白占群锁。锁改在 `_handle_inner` 内、**群短时缓冲写入之前**取得，
+        # 恰好覆盖「缓冲写入 → 组帧读（memory_stage）→ 出站写回（guardrail）」，
+        # 使同群不同用户的回合不并发、P2 不变量不变。
+        # ⚠️ 仍必须在 `finally` 之前释放：`_drain_coalesced` 会再进 `handle()`，若群锁
+        # 此时仍被持有就会自锁死（asyncio.Lock 不可重入）—— 现由 `_handle_inner` 内的
+        # `async with` 保证在其返回前释放。
         try:
-            if _group_lock is None:
-                await self._handle_inner(event)
-            else:
-                if _group_lock.locked():
-                    # 运行期证据面：没有它，就只能「等下一次答非所问」才知道有没有被踩到。
-                    logger.info("[同群串行] 群%s 上一回合在途，本回合排队等待（user=%s）",
-                                group_id, user_id)
-                async with _group_lock:
-                    await self._handle_inner(event)
+            await self._handle_inner(event)
         finally:
             if key is not None:
                 self._reply_inflight.discard(key)
@@ -768,10 +878,14 @@ class LLMHandler(AnimaCommandsMixin):
         if detail_type == "group" and event.get("reply_message_id"):
             replied_message = await self._fetch_reply_message(
                 event["reply_message_id"], current_group_id=event.get("group_id"))
+            # 2026-09-28：被引用者身份**落字段**（此前只用来算 reply_to_self 布尔，
+            # 组帧因此写不出「谁发的」⇒ 模型把被引内容一律归给引用者）。
+            _record_reply_attribution(event, replied_message)
             if not event.get("reply_to_self"):
                 qq_cfg = getattr(getattr(self.core, "config", None), "qq", None)
                 self_id = event.get("self_id") or raw.get("self_id") or getattr(qq_cfg, "self_id", None)
-                reply_sender = _onebot_message_sender_id(replied_message)
+                # 与归属字段**同源**（单一提取原语），避免两份取号逻辑分叉。
+                reply_sender = event.get("reply_sender_id")
                 if self_id is not None and reply_sender is not None:
                     event["reply_to_self"] = str(reply_sender) == str(self_id)
             # 引用回复正文：reply 段若只带 id 未内联正文，用已拉到的消息提取纯文本，
@@ -862,31 +976,22 @@ class LLMHandler(AnimaCommandsMixin):
         from anima.agent.intent import is_agent_task
         if (self._is_owner(int(user_id)) and is_agent_task(text, 4)
                 and getattr(self.core, "agent", None) is not None):
-            # 群里用「引用原消息」而不是裸 @：@ 会渲染成群昵称，容易看起来
-            # 像 bot 在乱发无关内容；引用能明确指向触发的那句话。
-            # 引用 / @ 用结构化消息段，避免 [CQ:reply,...] 被当纯文本渲染。
-            _msg_id = event.get("message_id")
+            # 审计 B2 / B0-asym：主人多步任务只建草稿 + 审批，群聊与私聊同策略；
+            # 09-26：把请求所在会话记进任务 —— 产物（生图等）交付回这里。
+            # 🔴 09-28 人视角审计 P0-1：草稿回执**只走私聊 owner，群里零回执**。
+            # 此前群聊分支把任务 ID 与「!anima agent approve …」语法直接发回群
+            # （09-26 19:16–19:17 生产实证，全体群成员可见）。判据＝**群里其他人
+            # 能不能据这一条推断出它不是人**。消息仍被消费（不再落回对话管线）。
             target_id = int(group_id) if detail_type == "group" else int(user_id)
-            if detail_type == "group":
-                # 审计 B2：群聊主人任务只建草稿 + 审批，避免打扰群；私聊则直接执行。
-                task = self.core.agent.store.create(text, int(user_id))
-                segments: list[dict] = []
-                if _msg_id:
-                    segments.append({"type": "reply", "data": {"id": str(_msg_id)}})
-                else:
-                    segments.append({"type": "at", "data": {"qq": str(user_id)}})
-                segments.append({"type": "text", "data": {
-                    "text": f"已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。"}})
-                await self.core.gateway.send(OutboundMsg(detail_type, target_id, segments))
-            else:
-                # 审计 B0-asym：私聊与群聊收敛为同一策略——只建草稿、需
-                # 「!anima agent approve <id>」才执行。严禁无确认 auto_run
-                # 高危工具（agent_exec/agent_browser/run_python 等）。
-                task = self.core.agent.store.create(text, int(user_id))
-                await self.core.gateway.send(OutboundMsg(
-                    "private", int(user_id),
-                    f"已创建 Agent 草稿 {task.id}，回复「!anima agent approve {task.id}」后执行。",
-                ))
+            task = self.core.agent.store.create(
+                text, int(user_id),
+                session={"detail_type": detail_type, "target_id": target_id},
+            )
+            await self._agent_control_notice(
+                int(user_id),
+                f"已创建 Agent 草稿 {task.id}，"
+                f"回复「!anima agent approve {task.id}」后执行。",
+            )
             return
 
         # 私聊连续消息收束为一个语义回合，避免逐条抢答破坏语境。
@@ -918,335 +1023,406 @@ class LLMHandler(AnimaCommandsMixin):
         # 事实抽取用 asyncio.create_task 后台跑，绝不拖慢回复。
         await self._observe_crossgroup(text, user_id, group_id, detail_type, sender_name)
 
-        # 未 @ bot 的群消息同样进入仅内存、短 TTL 的群上下文；不写个人档案和向量库。
-        # `addressed_to_bot` 用回复闸门的同一信号（`group_gate.is_direct_group_call`，
-        # 即 @bot / 引用 bot / 正文喊「哈基米」），记录"这句是否直接对 bot 说"。
-        # 用途：群缓冲里会同时存在「别人问 bot、且尚未被回复」的消息，与本轮要回的
-        # 那条**同形**（都 role=user、都像在问 bot、中间没有 assistant 隔断），模型
-        # 无法分辨 ⇒ 2026-09-21「引用锚正确、正文却在答上一条」的事故。注入侧据此标注。
-        if detail_type == "group" and group_id is not None:
+        # 🔴 C（2026-10-03）：**群回合关键段在此取锁**。群缓冲的**写入**必须与紧随其后
+        # 的组帧**读取**（memory_stage）及出站**写回**（guardrail）处在同一把群锁内，
+        # 否则同群不同用户的回合会并发读到「别人问 bot、尚未被回答」的同形 user turn
+        # （2026-09-21 答非所问事故）。锁**只**覆盖到本函数结束；前置工作（群防抖等待/
+        # 引用拉取/跨群观察/owner 命令路由）已在其外并发执行，不再白占群锁。
+        _group_lock = (self._group_turn_lock(group_id)
+                       if (detail_type == "group" and group_id) else None)
+        if _group_lock is not None and _group_lock.locked():
+            # 运行期证据面：没有它，就只能「等下一次答非所问」才知道有没有被踩到。
+            logger.info("[同群串行] 群%s 上一回合在途，本回合排队等待（user=%s）",
+                        group_id, user_id)
+        async with (_group_lock if _group_lock is not None else contextlib.nullcontext()):
+            # 未 @ bot 的群消息同样进入仅内存、短 TTL 的群上下文；不写个人档案和向量库。
+            # `addressed_to_bot` 用回复闸门的同一信号（`group_gate.is_direct_group_call`，
+            # 即 @bot / 引用 bot / 正文喊「哈基米」），记录"这句是否直接对 bot 说"。
+            # 用途：群缓冲里会同时存在「别人问 bot、且尚未被回复」的消息，与本轮要回的
+            # 那条**同形**（都 role=user、都像在问 bot、中间没有 assistant 隔断），模型
+            # 无法分辨 ⇒ 2026-09-21「引用锚正确、正文却在答上一条」的事故。注入侧据此标注。
+            if detail_type == "group" and group_id is not None:
+                try:
+                    from anima.memory.chat_memory import get_chat_memory
+                    # 引用来源随消息一并落进群短时缓冲（P1，2026-09-28）：否则下一轮
+                    # 回看历史时，「X 引用别人的话」与「X 自己说的话」同形 ⇒ bot 事后
+                    # 仍坚持「就是他说的」，无法自我纠正。
+                    _quote_from = ""
+                    if event.get("reply_message_id"):
+                        _quote_from = ("哈基米" if event.get("reply_to_self")
+                                       else str(event.get("reply_sender_name") or "").strip())
+                    get_chat_memory().observe_group_message(
+                        int(group_id), int(user_id), sender_name, text, event.get("message_id"),
+                        addressed_to_bot=is_direct_group_call(event, text),
+                        quote_from=_quote_from or None,
+                    )
+                except Exception:
+                    logger.exception("群短时上下文记录失败（已隔离）")
+
+            # 引用回复取图：用户「引用图片 + @bot」时，NapCat 的 reply 段只带被引用
+            # 消息 id 而不内联原图；这里主动 get_msg 拉回原消息，提取其中的 image 段
+            # 合并进 event["images"]，让 bot 能真正「理解图片」（及表情收集）。仅在含
+            # reply_message_id 时触发，不影响普通消息延迟。
+            if event.get("reply_message_id"):
+                try:
+                    extra = await self._fetch_reply_images(
+                        event["reply_message_id"], message=replied_message,
+                        current_group_id=event.get("group_id"),
+                    )
+                    # 合并 + 打 `from_reply` 标记 + 计数 + `[引用归属]` 埋点，见 `_merge_reply_images`。
+                    # 只加标记、不改动图本身 ⇒ vision（`inbound_images=event["images"]`）不受影响。
+                    _merge_reply_images(event, extra)
+                except Exception:
+                    logger.exception("引用回复取图失败（忽略，不阻塞回复）")
+
+            # 表情包自收集：从群消息 image 段后台收集（不阻塞回复，类似 G1 模式）。
+            # 用 try/except 包裹：收集链路任何异常都绝不拖垮主消息处理（否则 bot 不回复）。
             try:
-                from anima.memory.chat_memory import get_chat_memory
-                get_chat_memory().observe_group_message(
-                    int(group_id), int(user_id), sender_name, text, event.get("message_id"),
-                    addressed_to_bot=is_direct_group_call(event, text),
-                )
+                await self._observe_stickers(event, text, user_id, group_id, detail_type)
             except Exception:
-                logger.exception("群短时上下文记录失败（已隔离）")
+                logger.exception("表情收集前置观察异常（已隔离，不阻塞回复）")
 
-        # 引用回复取图：用户「引用图片 + @bot」时，NapCat 的 reply 段只带被引用
-        # 消息 id 而不内联原图；这里主动 get_msg 拉回原消息，提取其中的 image 段
-        # 合并进 event["images"]，让 bot 能真正「理解图片」（及表情收集）。仅在含
-        # reply_message_id 时触发，不影响普通消息延迟。
-        if event.get("reply_message_id"):
+            # AstrBot 插件事件分发（如果插件消费了消息，不走 LLM）
+            if self.core.config.compat.astrbot_enabled:
+                try:
+                    from anima.compat import dispatch_compat
+                    plugin_result = await dispatch_compat(self.core, event)
+                    if plugin_result is not None:
+                        logger.info("AstrBot 插件消费了消息 result_len=%d", len(str(plugin_result)))
+                        return
+                except Exception:
+                    logger.exception("AstrBot 插件分发异常")
+
+            # 睡眠/免打扰/群策略/忽略名单/回复闸门/被动冷却/附件与语音合并
+            # → pipeline 前置 stage（队列④第二刀，见 anima/pipeline/stages/prefilter.py）
+
+            # 拟真输入状态：私聊时发送“正在输入...”让对方看到 bot 在打字
             try:
-                extra = await self._fetch_reply_images(
-                    event["reply_message_id"], message=replied_message,
-                    current_group_id=event.get("group_id"),
-                )
-                if extra:
-                    base = event.get("images") or []
-                    seen = {i.get("file") for i in base}
-                    for im in extra:
-                        if im.get("file") and im["file"] in seen:
-                            continue
-                        base.append(im)
-                        seen.add(im.get("file"))
-                    event["images"] = base
+                _channel = getattr(getattr(self.core, "gateway", None), "channel", None)
+                if _channel and hasattr(_channel, "set_typing_status"):
+                    qq_cfg = getattr(getattr(self.core, "config", None), "qq", None)
+                    _typing_enabled = getattr(qq_cfg, "typing_indicator", True) if qq_cfg else True
+                    if _typing_enabled and detail_type == "private":
+                        await _channel.set_typing_status(int(user_id), True)
             except Exception:
-                logger.exception("引用回复取图失败（忽略，不阻塞回复）")
+                pass
 
-        # 表情包自收集：从群消息 image 段后台收集（不阻塞回复，类似 G1 模式）。
-        # 用 try/except 包裹：收集链路任何异常都绝不拖垮主消息处理（否则 bot 不回复）。
-        try:
-            await self._observe_stickers(event, text, user_id, group_id, detail_type)
-        except Exception:
-            logger.exception("表情收集前置观察异常（已隔离，不阻塞回复）")
+            # M0.1 Commit 3c-1a (D1)：ctx.core 无条件注入。
+            # flag ANIMA_CORE_FACADE_ENABLED 语义翻转（见 access.facade_enabled）：
+            #   现控制「legacy meta["core"] 表面」是否保留，不再控制 ctx.core 是否存在。
+            #   - true（默认）：保留 legacy 表面 + Facade（ctx.core 永远注入）。
+            #   - false：仅移除 legacy 表面，Facade 仍在 → 迁移探针（Phase C：旧路径归零即达标）。
+            # ctx.core 永远存在，Stage 侧单路径、无需 fallback；flag 关闭后若仍有 Stage 走
+            # meta["core"] 即报错，暴露未迁移点。
+            from anima.contracts.access import DeprecatedCoreAccess, facade_enabled
 
-        # AstrBot 插件事件分发（如果插件消费了消息，不走 LLM）
-        if self.core.config.compat.astrbot_enabled:
-            try:
-                from anima.compat import dispatch_compat
-                plugin_result = await dispatch_compat(self.core, event)
-                if plugin_result is not None:
-                    logger.info("AstrBot 插件消费了消息 result_len=%d", len(str(plugin_result)))
-                    return
-            except Exception:
-                logger.exception("AstrBot 插件分发异常")
+            _legacy_surface = facade_enabled()  # 旧 flag 名保留；现语义 = legacy 表面开关
+            _meta = {
+                "group_presence": event.get("group_presence", ""),
+                "trace": trace,
+                "_handler": self,  # 前置 stage 需要 handler 态（唤醒窗/冷却/忽略名单）
+            }
+            if _legacy_surface:
+                _meta["core"] = self.core
 
-        # 睡眠/免打扰/群策略/忽略名单/回复闸门/被动冷却/附件与语音合并
-        # → pipeline 前置 stage（队列④第二刀，见 anima/pipeline/stages/prefilter.py）
+            # 构建 pipeline 上下文
+            ctx = PipelineContext(
+                event=event,
+                text=text,
+                user_id=user_id,
+                group_id=group_id,
+                detail_type=detail_type,
+                sender_name=sender_name,
+                mentioned_uids=event.get("at_uids", []),
+                inbound_images=event.get("images") or [],
+                meta=_meta,
+            )
+            # ctx.core 永远存在（Facade 表面）；Stage 迁移到 ctx.core.<facade>() 在 3c 进行。
+            ctx.core = DeprecatedCoreAccess(self.core)
 
-        # 拟真输入状态：私聊时发送“正在输入...”让对方看到 bot 在打字
-        try:
-            _channel = getattr(getattr(self.core, "gateway", None), "channel", None)
-            if _channel and hasattr(_channel, "set_typing_status"):
-                qq_cfg = getattr(getattr(self.core, "config", None), "qq", None)
-                _typing_enabled = getattr(qq_cfg, "typing_indicator", True) if qq_cfg else True
-                if _typing_enabled and detail_type == "private":
-                    await _channel.set_typing_status(int(user_id), True)
-        except Exception:
-            pass
+            # 霸凌检测 → bullying_stage（队列④第二刀，见 anima/pipeline/stages/prefilter.py）
 
-        # M0.1 Commit 3c-1a (D1)：ctx.core 无条件注入。
-        # flag ANIMA_CORE_FACADE_ENABLED 语义翻转（见 access.facade_enabled）：
-        #   现控制「legacy meta["core"] 表面」是否保留，不再控制 ctx.core 是否存在。
-        #   - true（默认）：保留 legacy 表面 + Facade（ctx.core 永远注入）。
-        #   - false：仅移除 legacy 表面，Facade 仍在 → 迁移探针（Phase C：旧路径归零即达标）。
-        # ctx.core 永远存在，Stage 侧单路径、无需 fallback；flag 关闭后若仍有 Stage 走
-        # meta["core"] 即报错，暴露未迁移点。
-        from anima.contracts.access import DeprecatedCoreAccess, facade_enabled
+            # D4 埋点（2026-09-27）：入站 → 流水线之间的耗时（防抖/引用拉取/闸门/排队）。
+            # 与 pipeline 的 `[阶段耗时] total` 相减即得 ReAct 之前那段的构成。
+            _t_entry = event.get("_t_entry")
+            if isinstance(_t_entry, (int, float)):
+                logger.info("[阶段耗时][trace=%s] entry_to_pipeline=%.0fms",
+                            trace, (time.monotonic() - _t_entry) * 1000)
 
-        _legacy_surface = facade_enabled()  # 旧 flag 名保留；现语义 = legacy 表面开关
-        _meta = {
-            "group_presence": event.get("group_presence", ""),
-            "trace": trace,
-            "_handler": self,  # 前置 stage 需要 handler 态（唤醒窗/冷却/忽略名单）
-        }
-        if _legacy_surface:
-            _meta["core"] = self.core
+            # 执行流水线。收束窗口外连续到达的私聊仍可能有多个 handle 协程，
+            # 必须在此串行化，确保后一回合读取到前一回合已写入的用户/助手记忆。
+            # 记录生成起点时刻：防抖/闸门耗时不算「生成窗口」，用户在窗口内补的
+            # 消息已被防抖合并；之后到达的才是需要新鲜度重估的。
+            _turn_start_ts = time.time()
+            async with self._turn_lock(detail_type, group_id, user_id):
+                ctx = await self.pipeline.run(ctx)
 
-        # 构建 pipeline 上下文
-        ctx = PipelineContext(
-            event=event,
-            text=text,
-            user_id=user_id,
-            group_id=group_id,
-            detail_type=detail_type,
-            sender_name=sender_name,
-            mentioned_uids=event.get("at_uids", []),
-            inbound_images=event.get("images") or [],
-            meta=_meta,
-        )
-        # ctx.core 永远存在（Facade 表面）；Stage 迁移到 ctx.core.<facade>() 在 3c 进行。
-        ctx.core = DeprecatedCoreAccess(self.core)
-
-        # 霸凌检测 → bullying_stage（队列④第二刀，见 anima/pipeline/stages/prefilter.py）
-
-        # 执行流水线。收束窗口外连续到达的私聊仍可能有多个 handle 协程，
-        # 必须在此串行化，确保后一回合读取到前一回合已写入的用户/助手记忆。
-        # 记录生成起点时刻：防抖/闸门耗时不算「生成窗口」，用户在窗口内补的
-        # 消息已被防抖合并；之后到达的才是需要新鲜度重估的。
-        _turn_start_ts = time.time()
-        async with self._turn_lock(detail_type, group_id, user_id):
-            ctx = await self.pipeline.run(ctx)
-
-        # 发送回复
-        if not ctx.should_reply or not ctx.reply:
-            if ctx.should_reply:
-                # I4（2026-09-19）：应回复却无正文 —— 此前只写 audit/quality（均不进
-                # journal），线上出现「ReAct 跑完却无出站」时事后不可归因。补一条
-                # warning，让每个静默出口都能按 trace 定位（纯可观测，零行为变更）。
-                logger.warning(
-                    "[无出站][trace=%s] 应回复但正文为空：stop_reason=%s text_len=%d reply_len=%d",
-                    trace, ctx.stop_reason or "-", len(ctx.text or ""), len(ctx.reply or ""),
-                )
-                llm = getattr(self.core, "llm", None)
-                health = llm.health() if llm and hasattr(llm, "health") else {}
-                if audit:
-                    audit.emit("reply_unavailable", trace=trace,
-                               reason=health.get("last_error", "empty_reply"),
-                               last_status=health.get("last_status"))
-                quality = getattr(self.core, "reply_quality", None)
-                if quality:
-                    try:
-                        quality.record_unavailable()
-                        # L0：应回复却无可用正文（静默/空串），与 unavailable 同步计数
-                        quality.record_empty_should_reply()
-                    except Exception:
-                        logger.exception("空回复遥测记录失败")
-            return
-
-        target_id = group_id if detail_type == "group" else user_id
-
-        # 记录该用户已回复（供被动回复冷却判定）。
-        if detail_type == "group":
-            try:
-                self._mark_passive_replied(group_id, user_id)
-            except Exception:
-                logger.debug("mark passive replied failed", exc_info=True)
-
-        # 出站消息段：@ 触发者 + 文本 + （可选）表情图 + （可选）生图，
-        # 抽成纯函数以便单测（逻辑见 _build_reply_segments）。
-        # 仅当对方真正「点到」了 bot（@ / 回复 / 点名）时才回 @；
-        # 被动熟人接话 / 主动插话不 @，避免热群连续 @ 同一个人刷屏。
-        at_trigger = True
-        if detail_type == "group":
-            try:
-                # 🔴 不得在此局部 import `is_direct_group_call`：函数体内任一绑定都会让
-                # Python 在编译期把它判为**整函数的局部名**，遮蔽模块级 L22 的导入，
-                # 从而使更早的 `_handle_inner` 群上下文写入点（L873）抛 UnboundLocalError
-                # （2026-09-22 P0 回归）。模块级导入即正解，守卫见
-                # tests/test_no_local_import_shadowing.py。
-                at_trigger = bool(is_direct_group_call(event, ctx.text))
-            except Exception:
-                at_trigger = False
-        segments = _build_reply_segments(
-            ctx, detail_type, user_id, group_id, self.core,
-            sticker_auto_last=self._sticker_auto_last,
-            at_trigger=at_trigger,
-            message_id=event.get("message_id"),
-        )
-        # §17：安全版反馈自然回话——识别到反馈且开启时，仅私聊+已有主回复文本才在
-        # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关，开关读自
-        # config.conversation.natural_feedback_ack（实例属性 feedback_ack_enabled 供测试覆盖）。
-        _ack_cfg = getattr(getattr(self.core, "config", None), "conversation", None)
-        _ack_on = bool(getattr(_ack_cfg, "natural_feedback_ack", False))
-        _ack_on = _ack_on or bool(getattr(self, "feedback_ack_enabled", False))
-        segments = _maybe_append_feedback_ack(
-            segments, detail_type=detail_type, fb=_fb_detected, enabled=_ack_on,
-        )
-
-        # 新鲜度重估：LLM 生成可能耗时数秒到数十秒，期间用户可能已改主意。
-        # 首段发出前扫一遍生成窗口内同一用户的入站消息，命中撤销信号则整条
-        # 让路——不占用群友注意力，也不回答已被取消的问题。仅群聊（渠道的
-        # 入站缓冲按群组织）；渠道缺失（如内存桩测试）时静默跳过。
-        # 必须在 quality.record_reply 之前：被弃答的回复不能计入回复统计。
-        _channel = getattr(self.core.gateway, "channel", None)
-        if (detail_type == "group" and _channel is not None
-                and hasattr(_channel, "inbounds_since")):
-            try:
-                _stale = _inbound_matches(
-                    _channel.inbounds_since(group_id, _turn_start_ts),
-                    user_id, is_cancel_signal,
-                )
-            except Exception:
-                logger.exception("新鲜度检查失败（忽略，按正常发送）")
-                _stale = False
-            if _stale:
-                logger.info("[新鲜度][trace=%s] 生成期间用户撤销，丢弃在途回复", trace)
-                quality = getattr(self.core, "reply_quality", None)
-                if quality:
-                    try:
-                        quality.record_gate_skip("stale_dropped")
-                    except Exception:
-                        logger.debug("stale_dropped 遥测记录失败", exc_info=True)
-                _audit = getattr(self.core, "audit", None)
-                if _audit:
-                    try:
-                        _audit.emit("reply_stale_dropped", trace=trace,
-                                    group_id=int(group_id) if group_id else None,
-                                    user_id=int(user_id) if user_id else None)
-                    except Exception:
-                        pass
+            # 发送回复
+            if not ctx.should_reply or not ctx.reply:
+                if ctx.should_reply:
+                    # I4（2026-09-19）：应回复却无正文 —— 此前只写 audit/quality（均不进
+                    # journal），线上出现「ReAct 跑完却无出站」时事后不可归因。补一条
+                    # warning，让每个静默出口都能按 trace 定位（纯可观测，零行为变更）。
+                    logger.warning(
+                        "[无出站][trace=%s] 应回复但正文为空：stop_reason=%s text_len=%d reply_len=%d",
+                        trace, ctx.stop_reason or "-", len(ctx.text or ""), len(ctx.reply or ""),
+                    )
+                    llm = getattr(self.core, "llm", None)
+                    health = llm.health() if llm and hasattr(llm, "health") else {}
+                    if audit:
+                        audit.emit("reply_unavailable", trace=trace,
+                                   reason=health.get("last_error", "empty_reply"),
+                                   last_status=health.get("last_status"))
+                    quality = getattr(self.core, "reply_quality", None)
+                    if quality:
+                        try:
+                            quality.record_unavailable()
+                            # L0：应回复却无可用正文（静默/空串），与 unavailable 同步计数
+                            quality.record_empty_should_reply()
+                        except Exception:
+                            logger.exception("空回复遥测记录失败")
                 return
 
-        quality = getattr(self.core, "reply_quality", None)
-        if quality:
-            try:
-                quality.record_reply(
-                    ctx.reply, detail_type=detail_type, target_id=target_id,
-                    tool_trace=ctx.meta.get("tool_trace"),
-                )
-            except Exception:
-                logger.exception("回复质量统计失败")
+            target_id = group_id if detail_type == "group" else user_id
 
-        # 拟人分段发送（A1/A2）：文本按标点智能分段 + 情绪/关系调制延迟
-        messages = _split_reply_messages_with_split(
-            segments, self.core, user_id, detail_type,
-        )
-        if not messages:
-            return
+            # 记录该用户已回复（供被动回复冷却判定）。
+            if detail_type == "group":
+                try:
+                    self._mark_passive_replied(group_id, user_id)
+                except Exception:
+                    logger.debug("mark passive replied failed", exc_info=True)
 
-        sent_ids = []
-        last_send_ts = time.time()
-        context_aware = getattr(
-            getattr(self.core.config, "reply_split", None), "context_aware_interrupt", True
-        )
-        _bullying_send = bool(ctx.meta.get("bullying_detected", False))
-        for idx, (msg_segs, delay) in enumerate(messages):
-            # 霸凌保护（任务3）：冲突中只发第一段、截断到 30 字、不发送后续分段
-            if _bullying_send:
-                if idx > 0:
-                    logger.info("[霸凌] 抑制后续分段 trace=%s", trace)
-                    break
-                msg_segs = _truncate_first_text_segment(msg_segs, 30)
-            # 分段语境感知（P1 + 会话连续性）：发出后续段前看一眼上一段后的插话——
-            # 撤销 → 静默停止；纠正 → 停止并让位给纠正后的新回复；调侃 → 自嘲收尾。
-            if idx > 0 and context_aware:
-                _intr = _classify_send_interrupt(
-                    getattr(self.core.gateway, "channel", None), group_id, last_send_ts,
-                    user_id=user_id,
+            # 出站消息段：@ 触发者 + 文本 + （可选）表情图 + （可选）生图，
+            # 抽成纯函数以便单测（逻辑见 _build_reply_segments）。
+            # 仅当对方真正「点到」了 bot（@ / 回复 / 点名）时才回 @；
+            # 被动熟人接话 / 主动插话不 @，避免热群连续 @ 同一个人刷屏。
+            at_trigger = True
+            if detail_type == "group":
+                try:
+                    # 🔴 不得在此局部 import `is_direct_group_call`：函数体内任一绑定都会让
+                    # Python 在编译期把它判为**整函数的局部名**，遮蔽模块级 L22 的导入，
+                    # 从而使更早的 `_handle_inner` 群上下文写入点（L873）抛 UnboundLocalError
+                    # （2026-09-22 P0 回归）。模块级导入即正解，守卫见
+                    # tests/test_no_local_import_shadowing.py。
+                    at_trigger = bool(is_direct_group_call(event, ctx.text))
+                except Exception:
+                    at_trigger = False
+            segments = _build_reply_segments(
+                ctx, detail_type, user_id, group_id, self.core,
+                sticker_auto_last=self._sticker_auto_last,
+                at_trigger=at_trigger,
+                message_id=event.get("message_id"),
+            )
+            # §17：安全版反馈自然回话——识别到反馈且开启时，仅私聊+已有主回复文本才在
+            # 末尾追加一句轻量确认（不额外发消息、不改主回复内容）。默认关，开关读自
+            # config.conversation.natural_feedback_ack（实例属性 feedback_ack_enabled 供测试覆盖）。
+            _ack_cfg = getattr(getattr(self.core, "config", None), "conversation", None)
+            _ack_on = bool(getattr(_ack_cfg, "natural_feedback_ack", False))
+            _ack_on = _ack_on or bool(getattr(self, "feedback_ack_enabled", False))
+            segments = _maybe_append_feedback_ack(
+                segments, detail_type=detail_type, fb=_fb_detected, enabled=_ack_on,
+            )
+
+            # 新鲜度重估：LLM 生成可能耗时数秒到数十秒，期间用户可能已改主意。
+            # 首段发出前扫一遍生成窗口内同一用户的入站消息，命中撤销信号则整条
+            # 让路——不占用群友注意力，也不回答已被取消的问题。仅群聊（渠道的
+            # 入站缓冲按群组织）；渠道缺失（如内存桩测试）时静默跳过。
+            # 必须在 quality.record_reply 之前：被弃答的回复不能计入回复统计。
+            _channel = getattr(self.core.gateway, "channel", None)
+            if (detail_type == "group" and _channel is not None
+                    and hasattr(_channel, "inbounds_since")):
+                try:
+                    _stale = _inbound_matches(
+                        _channel.inbounds_since(group_id, _turn_start_ts),
+                        user_id, is_cancel_signal,
+                    )
+                except Exception:
+                    logger.exception("新鲜度检查失败（忽略，按正常发送）")
+                    _stale = False
+                if _stale:
+                    logger.info("[新鲜度][trace=%s] 生成期间用户撤销，丢弃在途回复", trace)
+                    quality = getattr(self.core, "reply_quality", None)
+                    if quality:
+                        try:
+                            quality.record_gate_skip("stale_dropped")
+                        except Exception:
+                            logger.debug("stale_dropped 遥测记录失败", exc_info=True)
+                    _audit = getattr(self.core, "audit", None)
+                    if _audit:
+                        try:
+                            _audit.emit("reply_stale_dropped", trace=trace,
+                                        group_id=int(group_id) if group_id else None,
+                                        user_id=int(user_id) if user_id else None)
+                        except Exception:
+                            pass
+                    return
+
+            quality = getattr(self.core, "reply_quality", None)
+            if quality:
+                try:
+                    quality.record_reply(
+                        ctx.reply, detail_type=detail_type, target_id=target_id,
+                        tool_trace=ctx.meta.get("tool_trace"),
+                    )
+                except Exception:
+                    logger.exception("回复质量统计失败")
+
+            # 拟人分段发送（A1/A2）：文本按标点智能分段 + 情绪/关系调制延迟
+            messages = _split_reply_messages_with_split(
+                segments, self.core, user_id, detail_type,
+            )
+            if not messages:
+                return
+
+            sent_ids = []
+            # 本轮**确实发出**的图片文件（含表情包与生图）：只有 mid 非空才计入。
+            # 由 `_note_sent_stickers` 按「是否命中表情库索引」筛出表情包并留痕。
+            sent_image_files: list[str] = []
+            last_send_ts = time.time()
+            context_aware = getattr(
+                getattr(self.core.config, "reply_split", None), "context_aware_interrupt", True
+            )
+            _bullying_send = bool(ctx.meta.get("bullying_detected", False))
+            for idx, (msg_segs, delay) in enumerate(messages):
+                # 霸凌保护（任务3）：冲突中只发第一段、截断到 30 字、不发送后续分段
+                if _bullying_send:
+                    if idx > 0:
+                        logger.info("[霸凌] 抑制后续分段 trace=%s", trace)
+                        break
+                    msg_segs = _truncate_first_text_segment(msg_segs, 30)
+                # 分段语境感知（P1 + 会话连续性）：发出后续段前看一眼上一段后的插话——
+                # 撤销 → 静默停止；纠正 → 停止并让位给纠正后的新回复；调侃 → 自嘲收尾。
+                if idx > 0 and context_aware:
+                    _intr = _classify_send_interrupt(
+                        getattr(self.core.gateway, "channel", None), group_id, last_send_ts,
+                        user_id=user_id,
+                    )
+                    if _intr == "cancel":
+                        logger.info(
+                            "[分段中断] 用户在段%d后撤销，停止后续发送 trace=%s", idx, trace
+                        )
+                        break
+                    if _intr == "correction":
+                        logger.info(
+                            "[分段中断] 用户在段%d后纠正，停止后续发送等新回复 trace=%s", idx, trace
+                        )
+                        break
+                    if _intr == "teasing":
+                        logger.info(
+                            "[分段中断] 用户在段%d后插话调侃，停止后续发送 trace=%s", idx, trace
+                        )
+                        try:
+                            await self.core.gateway.send(
+                                OutboundMsg(detail_type, target_id, "（被你抓包了…本喵闭嘴喵）")
+                            )
+                        except Exception:
+                            logger.exception("分段中断自嘲回应发送失败")
+                        break
+                if delay > 0:
+                    await asyncio.sleep(delay)
+                mid = await self.core.gateway.send(
+                    OutboundMsg(detail_type, target_id, msg_segs)
                 )
-                if _intr == "cancel":
-                    logger.info(
-                        "[分段中断] 用户在段%d后撤销，停止后续发送 trace=%s", idx, trace
-                    )
-                    break
-                if _intr == "correction":
-                    logger.info(
-                        "[分段中断] 用户在段%d后纠正，停止后续发送等新回复 trace=%s", idx, trace
-                    )
-                    break
-                if _intr == "teasing":
-                    logger.info(
-                        "[分段中断] 用户在段%d后插话调侃，停止后续发送 trace=%s", idx, trace
-                    )
+                sent_ids.append(mid)
+                last_send_ts = time.time()
+                if mid is not None:
+                    for _seg in msg_segs:
+                        if _seg.get("type") == "image":
+                            _f = (_seg.get("data") or {}).get("file")
+                            if _f:
+                                sent_image_files.append(str(_f))
+                if mid is None:
+                    logger.warning("[出站失败][trace=%s] part=%d text_len=%d | segs=%s",
+                                   trace, idx, len(ctx.reply or ""), [s.get("type") for s in msg_segs])
+                else:
+                    logger.info("[出站成功][trace=%s] part=%d msg_id=%s segs=%s",
+                                trace, idx, mid, [s.get("type") for s in msg_segs])
+            if all(m is None for m in sent_ids):
+                logger.warning("[出站全失败][trace=%s]", trace)
+            else:
+                # 被动回复效果采集（B1：只采集，不改行为）。群里成功开口后挂一个
+                # 「等待被接话」的窗口：窗口内群里再有消息 ⇒ engaged，否则 ignored。
+                # 🔴 数据来源是 memory 层的群消息回调（`autonomy.count_message`），
+                # 它在回复闸门**之前** ⇒ 被拦下的消息同样算「群里有人说话」。
+                # 私聊没有这回事；全段发送失败（走上面的分支）也不算开口。
+                if detail_type == "group" and group_id:
                     try:
-                        await self.core.gateway.send(
-                            OutboundMsg(detail_type, target_id, "（被你抓包了…本喵闭嘴喵）")
+                        from anima.cognitive.reply_learning import get_reply_learning
+                        get_reply_learning(str(self.core.config.persistence.data_dir)).mark_reply(
+                            int(group_id),
+                            trigger="at" if at_trigger else "other",
+                            message_id=str(sent_ids[0] or ""),
                         )
                     except Exception:
-                        logger.exception("分段中断自嘲回应发送失败")
-                    break
-            if delay > 0:
-                await asyncio.sleep(delay)
-            mid = await self.core.gateway.send(
-                OutboundMsg(detail_type, target_id, msg_segs)
-            )
-            sent_ids.append(mid)
-            last_send_ts = time.time()
-            if mid is None:
-                logger.warning("[出站失败][trace=%s] part=%d text_len=%d | segs=%s",
-                               trace, idx, len(ctx.reply or ""), [s.get("type") for s in msg_segs])
-            else:
-                logger.info("[出站成功][trace=%s] part=%d msg_id=%s segs=%s",
-                            trace, idx, mid, [s.get("type") for s in msg_segs])
-        if all(m is None for m in sent_ids):
-            logger.warning("[出站全失败][trace=%s]", trace)
-        else:
-            episodes = getattr(self.core, "episodes", None)
-            if episodes is not None:
+                        logger.debug("被动回复效果采集失败（已隔离）", exc_info=True)
+                # 自身出站媒体留痕（只记录事实、不改行为）：表情包以 image 段单独成条发出，
+                # 而 `observe_group_bot_reply` 只收文本 ⇒ 此前表情包对自己完全不可见，
+                # 用户追问「你刚发的那张」时它会失忆。此处按**是否命中表情库索引**筛出
+                # 表情包（生图不算）并写入自己的上下文。
+                _note_sent_stickers(self.core, ctx, detail_type, sent_image_files,
+                                    group_id=group_id, user_id=user_id,
+                                    target_id=target_id)
+                episodes = getattr(self.core, "episodes", None)
+                if episodes is not None:
+                    try:
+                        agenda_factory = None
+                        if (
+                            hasattr(self.core, "propose_agenda")
+                            and detail_type == "group"
+                            and group_id
+                        ):
+                            agenda_factory = self.core.propose_agenda
+                        if ctx.meta.get("promise_agenda_created"):
+                            logger.debug("承诺跟进议程已由生成阶段创建，跳过 episodes 二次建档")
+                        else:
+                            episodes.observe(
+                                detail_type, group_id, user_id, "assistant", ctx.reply,
+                                agenda_factory=agenda_factory,
+                            )
+                    except Exception:
+                        logger.exception("回复情节记忆写入失败")
+
+            sylann = getattr(self.core, "sylann", None)
+            if sylann is not None and hasattr(sylann, "record_response"):
                 try:
-                    agenda_factory = None
-                    if (
-                        hasattr(self.core, "propose_agenda")
-                        and detail_type == "group"
-                        and group_id
-                    ):
-                        agenda_factory = self.core.propose_agenda
-                    if ctx.meta.get("promise_agenda_created"):
-                        logger.debug("承诺跟进议程已由生成阶段创建，跳过 episodes 二次建档")
-                    else:
-                        episodes.observe(
-                            detail_type, group_id, user_id, "assistant", ctx.reply,
-                            agenda_factory=agenda_factory,
-                        )
+                    sylann.record_response(
+                        success=any(mid is not None for mid in sent_ids),
+                        response_chars=len(ctx.reply or ""),
+                    )
                 except Exception:
-                    logger.exception("回复情节记忆写入失败")
+                    logger.exception("Sylann 出站反馈记录失败")
 
-        sylann = getattr(self.core, "sylann", None)
-        if sylann is not None and hasattr(sylann, "record_response"):
-            try:
-                sylann.record_response(
-                    success=any(mid is not None for mid in sent_ids),
-                    response_chars=len(ctx.reply or ""),
+            # 视觉理解：pipeline 已把用户条目写入记忆，后台生成图片描述并补写，
+            # 让后续轮次能忆起「用户发过一张什么图」。绝不阻塞回复。
+            if (event.get("images")
+                    and self.core.config.vision.enabled
+                    and self.core.config.vision.store_desc_to_memory):
+                asyncio.create_task(
+                    self._vision_describe(event["images"], user_id, group_id, detail_type)
                 )
-            except Exception:
-                logger.exception("Sylann 出站反馈记录失败")
-
-        # 视觉理解：pipeline 已把用户条目写入记忆，后台生成图片描述并补写，
-        # 让后续轮次能忆起「用户发过一张什么图」。绝不阻塞回复。
-        if (event.get("images")
-                and self.core.config.vision.enabled
-                and self.core.config.vision.store_desc_to_memory):
-            asyncio.create_task(
-                self._vision_describe(event["images"], user_id, group_id, detail_type)
-            )
 
     # ------------------------------------------------------------------
     # 表情包自收集（后台，不阻塞回复）
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _clean_sticker_ctx(*chunks: str) -> str:
+        """组装表情打标上下文：**先剥传输层 CQ 载荷**，再去空、换行拼接。
+
+        🔴 2026-09-26 修复：`stickers.ctx_text` 是**持久化并会进 LLM 的**（`stickers.py`
+        重打标 `_label_one`、`vision.py` 打标 prompt），绝不许留 CQ 码。此前的
+        `ctx_text = text or ""` 直接吃入参 —— 而入参来自 `event_text()` 的兜底
+        （`text` 段为空时回落 `raw_message`/`message` 传输原文），纯图消息因此把
+        `[CQ:image,file=…,url=…&fileid=…]` 整段写进了库（生产实证 14 条，含长 blob）。
+        这里与 `chat_memory._clean_transport_entry` / `pipeline.memory` 同源，共用
+        `constants.CQ_TRANSPORT_RE`（1 处定义，勿在别处再写第二份）。
+        """
+        out: list[str] = []
+        for c in chunks:
+            s = CQ_TRANSPORT_RE.sub("", str(c or "")).strip()
+            if s:
+                out.append(s)
+        return "\n".join(out)
 
     async def _observe_stickers(self, event: dict, text: str, user_id: Any,
                                 group_id: Any, detail_type: str) -> None:
@@ -1264,7 +1440,15 @@ class LLMHandler(AnimaCommandsMixin):
             return
         if detail_type != "group":
             return
-        images = event.get("images")
+        # 🔴 引用图不得入库：`from_reply` 的图是**别人（或 bot 自己）**发的，
+        # 记成「本用户发的表情」既污染归属、也会把生成图混进表情库
+        # （09-28 实况：bot 自己发的图被记成引用者的表情）。
+        # 只在本函数内过滤、**不改动 event** —— `event["images"]` 是
+        # `ctx.inbound_images`（`_handle_inner` 里 `inbound_images=event.get("images")`）
+        # 的唯一来源，动它就等于砍 vision 与沙箱。
+        _raw_images = event.get("images")
+        images = [i for i in (_raw_images or [])
+                  if isinstance(i, dict) and not i.get("from_reply")]
         if not images:
             return
         group_rule = f"group:{group_id}"
@@ -1289,7 +1473,9 @@ class LLMHandler(AnimaCommandsMixin):
         self._sticker_last[group_key] = now
 
         # 构造打标上下文：当前文本 + 该群最近消息（增强标签质量）
-        ctx_text = text or ""
+        # 🔴 必须过 `_clean_sticker_ctx`：`text` 可能是 `event_text()` 兜底出来的
+        # 传输原文（含 CQ），而 ctx_text 会持久化并进 LLM。
+        ctx_text = self._clean_sticker_ctx(text)
         try:
             # P1-2 修复：配置无 memory.memory_dir 字段；应复用全局 chat_memory 单例，
             # 而非新建一个指向不存在路径的 ChatMemory。且 get_group_context 返回
@@ -1298,7 +1484,7 @@ class LLMHandler(AnimaCommandsMixin):
             recent = get_chat_memory().get_group_context(group_id, recent_rounds=3)
             parts = [r.get("content", "") for r in recent if r.get("content")]
             if parts:
-                ctx_text = "\n".join(parts[-3:]) + ("\n" + text if text else "")
+                ctx_text = self._clean_sticker_ctx(*parts[-3:], text)
         except Exception:
             logger.exception("表情收集上下文获取失败（忽略，不阻塞收集）")
 
@@ -1731,6 +1917,57 @@ def _extract_emotion_tag(text):
     if not emo or len(emo) > 12:
         return None, text
     return emo, s[:start] + s[end + 2:]
+
+def _sent_sticker_note(paths: list, data_dir: str) -> str:
+    """把**成功发出**的图片路径转成「自己发过表情包」的留痕文本；无本库表情返回 ''。
+
+    生图与表情包都走 image 段，唯一可靠区分 = 路径是否命中本库索引
+    （见 `StickerManager.describe_paths`）——**不依赖 subType**：
+    `sticker.small_emoji_channel=False` 时表情段同样不带 subType。
+    """
+    if not paths or not data_dir:
+        return ""
+    try:
+        from anima.cognitive.stickers import get_sticker_manager
+        descs = get_sticker_manager(str(data_dir)).describe_paths(list(paths))
+    except Exception:
+        logger.debug("表情包描述解析失败（已隔离）", exc_info=True)
+        return ""
+    uniq = list(dict.fromkeys(d for d in (descs or []) if d))
+    if not uniq:
+        # 本轮图片全不是本库表情（生图/其他图）⇒ 不留痕
+        return ""
+    if len(uniq) == 1:
+        return f"（发了一张表情包：{uniq[0]}）"
+    return "（发了 %d 张表情包：%s）" % (len(uniq), "；".join(uniq))
+
+
+def _note_sent_stickers(core, ctx, detail_type: str, sent_image_files: list,
+                        *, group_id=None, user_id=None, target_id=None) -> str:
+    """给自己留痕「这一轮实际发出了哪些表情包」；返回写入的文本（无则 ''）。
+
+    只记录事实、不改行为；任何失败内部隔离 —— 留痕绝不能反过来搞挂出站。
+    """
+    persist = getattr(getattr(core, "config", None), "persistence", None)
+    data_dir = str(getattr(persist, "data_dir", "") or "")
+    note = _sent_sticker_note(list(sent_image_files or []), data_dir)
+    if not note:
+        return ""
+    try:
+        from anima.memory.chat_memory import get_chat_memory
+        chat_id = None
+        try:
+            chat_id = (getattr(ctx, "meta", None) or {}).get("chat_id")
+        except Exception:
+            chat_id = None
+        if chat_id is None:
+            chat_id = group_id if detail_type == "group" else (target_id or user_id)
+        get_chat_memory().observe_bot_media(
+            detail_type, chat_id, note, group_id=group_id, user_id=user_id)
+    except Exception:
+        logger.debug("自身表情包留痕失败（已隔离）", exc_info=True)
+    return note
+
 
 def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                           sticker_auto_last: dict | None = None,

@@ -103,6 +103,11 @@ class UsageEvent:
     status: str
     estimated: bool = False
     error: str = ""
+    #: 上游「思考」token（OpenAI 形态 `usage.completion_tokens_details.reasoning_tokens`、
+    #: Gemini 形态 `usageMetadata.thoughtsTokenCount`）。2026-10-04 起落库 —— 此前
+    #: `output_tokens` 把思考与正文混在一起，**无法归因「这次为什么慢」**（实测 49–2129 波动）。
+    #: 缺字段即 0（「没有」≠「有」），存量行由迁移补 0。
+    reasoning_tokens: int = 0
 
 
 class UsageLedger:
@@ -148,12 +153,27 @@ class UsageLedger:
                     retries INTEGER NOT NULL DEFAULT 0,
                     status TEXT NOT NULL,
                     estimated INTEGER NOT NULL DEFAULT 0,
-                    error TEXT NOT NULL DEFAULT ''
+                    error TEXT NOT NULL DEFAULT '',
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_events(created_at)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_model ON llm_usage_events(actual_model)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_module ON llm_usage_events(module)")
+            self._migrate_columns(conn)
+
+    @staticmethod
+    def _migrate_columns(conn: sqlite3.Connection) -> None:
+        """给**存量**库补列。
+
+        🔴 `CREATE TABLE IF NOT EXISTS` 对已存在的表**完全不做改动** ⇒ 生产那个已有数万行的
+        `llm_usage.sqlite3` 永远拿不到新列。必须显式 `ALTER TABLE`。
+        幂等：先查 `PRAGMA table_info`，服务重启 / 多进程反复打开都安全。
+        """
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(llm_usage_events)")}
+        if "reasoning_tokens" not in cols:
+            conn.execute("ALTER TABLE llm_usage_events "
+                         "ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0")
 
     def record(self, event: UsageEvent) -> None:
         with self._db() as conn:
@@ -161,14 +181,14 @@ class UsageLedger:
                 INSERT INTO llm_usage_events
                 (created_at, trace_id, module, operation, provider, requested_model,
                  actual_model, input_tokens, output_tokens, cached_tokens, total_tokens,
-                 latency_ms, retries, status, estimated, error)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 latency_ms, retries, status, estimated, error, reasoning_tokens)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 event.created_at, event.trace_id, event.module, event.operation,
                 event.provider, event.requested_model, event.actual_model,
                 event.input_tokens, event.output_tokens, event.cached_tokens,
                 event.total_tokens, event.latency_ms, event.retries, event.status,
-                int(event.estimated), event.error[:240],
+                int(event.estimated), event.error[:240], int(event.reasoning_tokens),
             ))
 
     async def arecord(self, event: UsageEvent) -> None:

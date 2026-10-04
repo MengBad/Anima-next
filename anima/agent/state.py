@@ -108,13 +108,18 @@ class AgentTaskStore:
         self.persistence.write_json("agent_tasks.json", rows)
 
     def create(self, request: str, creator: int,
-               steps: list[Step] | None = None) -> AgentTask:
+               steps: list[Step] | None = None,
+               *, session: dict | None = None) -> AgentTask:
         # 去重：5 分钟内同一创建者、同一请求文本且仍处于 planning 的任务
         # 直接复用（QQ 消息重发/连点会触发重复入站，避免刷出多个草稿）。
         now = time.time()
         for t in self.items.values():
             if (t.creator == int(creator) and t.request == request[:2000]
                     and t.status == "planning" and now - t.created_at < 300):
+                # 09-26：复用旧草稿时补齐会话信息（老草稿可能没有），交付才不会退回私聊。
+                if session and not t.context.get("session"):
+                    t.context["session"] = dict(session)
+                    self._save()
                 return t
         task = AgentTask(
             id=uuid.uuid4().hex[:10],
@@ -122,6 +127,9 @@ class AgentTaskStore:
             creator=int(creator),
             steps=steps or [],
             status="planning" if steps else "planning",
+            # 09-26：记录「请求来自哪个会话」，交付产物（生图）时发回这里，
+            # 而不是无脑发私聊。持久化在 agent_tasks.json 的 context 里。
+            context={"session": dict(session)} if session else {},
         )
         self.items[task.id] = task
         self._save()

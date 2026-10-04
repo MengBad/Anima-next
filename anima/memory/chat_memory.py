@@ -15,7 +15,7 @@ import re
 import time
 from collections import OrderedDict, defaultdict, deque
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Any, Optional, Callable
 
 logger = logging.getLogger("anima.memory.chat_memory")
 
@@ -325,7 +325,8 @@ class ChatMemory:
 
     def observe_group_message(self, group_id: int, user_id: int, sender_name: str,
                               content: str, message_id: object = None,
-                              *, addressed_to_bot: bool = False) -> None:
+                              *, addressed_to_bot: bool = False,
+                              quote_from: Optional[str] = None) -> None:
         """记录所有入站群消息：短时群上下文 + 持久化个人桶。
 
         持久化写入确保即使消息被回复闸门跳过，对话上下文也不会丢失。
@@ -333,6 +334,13 @@ class ChatMemory:
         `addressed_to_bot`：这条消息是否**直接叫到 bot**（@ / 引用 / 正文喊「哈基米」），
         由调用方用 `group_gate.is_direct_group_call`（回复闸门的同一信号）判定。
         只在短时群缓冲上落 `to_bot` 标记 —— 个人桶是 (群,用户) 隔离的，没有归属歧义。
+
+        `quote_from`（2026-09-28）：本条是**引用回复**时，被引用者的称呼
+        （引用 bot 自己时为「哈基米」）。有值时在群缓冲正文前加 `[引用 X]` ——
+        否则下一轮回看历史时，「X 引用别人的话」与「X 自己说的话」**同形**，
+        bot 事后仍会坚持「就是他说的」，无法自我纠正。
+        🔴 只落**短时缓冲**、不进 (群,用户) 持久桶：持久桶是「用户原话」的长期记录，
+        不宜被引注改写（也避免历史条目永久变长）。
         """
         self._purge_group_recent(group_id)
         text = (content or "").strip()
@@ -342,10 +350,12 @@ class ChatMemory:
         # 群缓冲此前存的是**未清洗的 raw** ⇒ 带引用回复的消息会把 `[CQ:reply,id=…]`
         # 带进 LLM 上下文（削弱可辨识度）。两个落点（缓冲 + 个人桶）现在同源。
         clean_text = _CQ_TRANSPORT_RE.sub("", text).strip() or "[用户发送了图片]"
+        _qf = str(quote_from or "").strip()
+        _buf_text = f"[引用 {_qf}] {clean_text[:2000]}" if _qf else clean_text[:2000]
         # 1) 短时群上下文（内存，15min TTL）
         self._group_recent[int(group_id)].append({
             "role": "user",
-            "content": f"[{sender_name}({user_id})]: {clean_text[:2000]}",
+            "content": f"[{sender_name}({user_id})]: {_buf_text}",
             "message_id": str(message_id) if message_id is not None else None,
             "to_bot": bool(addressed_to_bot),
             "time": time.time(),
@@ -367,6 +377,38 @@ class ChatMemory:
             "message_id": None,
             "time": time.time(),
         })
+
+    def observe_bot_media(self, detail_type: str, chat_id: Any, note: str,
+                          *, group_id: Any = None, user_id: Any = None) -> None:
+        """记录自己**实际发出**的媒体（当前：表情包），让后续回合「知道自己发过什么」。
+
+        与 `observe_group_bot_reply` 平行（同一行格式），但补上它缺的两条通道：
+          - 群聊：写进群短时缓冲 —— 这是模型每轮 `group_history` 的来源；
+          - 群聊/私聊：都写进 (chat,user) 持久桶 —— 这是 `get_context` 的来源。
+        背景：表情包以 image 段单独成条发出，`observe_group_bot_reply` 只收文本
+        ⇒ 此前表情包对自己完全不可见（用户追问「你刚发的那张」时会失忆）。
+
+        纯留痕、不改任何行为；空 note 直接忽略。
+        """
+        text = (note or "").strip()
+        if not text:
+            return
+        text = text[:2000]
+        if detail_type == "group" and group_id is not None:
+            self._purge_group_recent(group_id)
+            self._group_recent[int(group_id)].append({
+                "role": "assistant",
+                "content": f"[哈基米]: {text}",
+                "message_id": None,
+                # 🔴 纯媒体行：`get_recent_group_context(annotate=True)` 据此**不**把它
+                # 当作「已答」。否则「文本为空 + 被动附带一张表情」的回合会在群缓冲里
+                # 多出一条 assistant 行，把别人尚未被答的提问误判成"已被回答"，
+                # 反而削弱 09-21 那次的防跨用户污染标注。
+                "media_only": True,
+                "time": time.time(),
+            })
+        if chat_id is not None:
+            self.add(detail_type, chat_id, "bot", "Anima", text, user_id=user_id)
 
     def get_recent_group_context(self, group_id: int, limit: int = 12,
                                  exclude_message_id: object = None,
@@ -399,7 +441,11 @@ class ChatMemory:
             content = m["content"]
             if m["role"] == "user":
                 if m.get("to_bot"):
-                    if not any(r["role"] == "assistant" for r in rows[i + 1:]):
+                    # 纯媒体行（`media_only`，如「发了一张表情包」）**不算「已答」**：
+                    # 一张表情并不构成对那条提问的回答，若算作已答会把他人待答的
+                    # 提问误判成对话史，削弱本标注（09-21 跨用户污染事故的修复）。
+                    if not any(r["role"] == "assistant" and not r.get("media_only")
+                               for r in rows[i + 1:]):
                         content = _BYSTAND_PENDING_PREFIX + content
                         pending += 1
                 else:

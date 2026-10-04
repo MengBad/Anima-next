@@ -595,6 +595,29 @@ fields:
       default: 4
       required: false
 
+  reply_learning:
+    # 被动回复效果自学习（B1：只采集，不接闸门）
+    enabled:
+      type: bool
+      default: true
+      required: false
+    window_sec:
+      type: int
+      default: 300
+      required: false
+    records_max:
+      type: int
+      default: 200
+      required: false
+    inject_top_k:
+      type: int
+      default: 3
+      required: false
+    min_samples:
+      type: int
+      default: 5
+      required: false
+
   capabilities:
     # 内生能力自生长
     enabled:

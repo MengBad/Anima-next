@@ -2,16 +2,23 @@
 
 支持私聊和群聊两种模式：
 - 私聊：按用户聚合，1.5s 窗口，8s 上限
-- 群聊：按 (群, 用户) 聚合，2s 窗口，6s 上限，自适应防抖
+- 群聊：按 (群, 用户) 聚合，1s 窗口，6s 上限，自适应防抖
+
+🔴 群窗口（2026-10-03 调参）：2.0s → **1.0s**。只读取证 72h/1454 条群消息 + 离线复现
+  GroupDebouncer：窗口 2.0s→1.0s 回合数仅 +4%（多出的回合大多仍被闸门 skip），却让
+  每条群消息少等 1.0s（短句 3.0s→1.5s）。原窗口相对收益（合并率 11.2%）**过度配置**。
 """
 
 from __future__ import annotations
 
 import asyncio
 import copy
+import logging
 import time
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # 「事件正文」唯一口径。🔴 别在这里另写 `raw_message or message` 的 `or` 链：
 # `raw_message` 恒缺（onebot11 只设 `message`）、`message` 是 CQ 原文 ⇒ 卡片/引用类
@@ -25,6 +32,30 @@ class _PendingConversation:
     first_at: float = field(default_factory=time.monotonic)
     ready: asyncio.Event = field(default_factory=asyncio.Event)
     timer: asyncio.Task[None] | None = None
+
+
+def _carry_reply_attribution(merged: dict[str, Any], events: list[dict[str, Any]]) -> None:
+    """把**引用相关字段**显式搬进合并结果。绝不抛出。
+
+    🔴 为什么必须显式搬（2026-09-29 复核发现）：
+    `_merge` 由 `deepcopy(events[-1])` 起步 + **白名单并集**，而 `reply_sender_*` /
+    `reply_text` 是 handler 在**单条 event 上**落的（`_record_reply_attribution`），
+    且落点在合并器**之前**（`handler._handle_inner`：落字段 → `ingest`）⇒ 群友
+    「先引用、再补一句」时归属只挂在第一条上，合并后全丢。
+    实测后果：引用**别人**的回合，组帧归属退化成空串（比旧文案还少一句）。
+
+    语义与 `reply_message_id = reply_ids[-1]` 对齐：取**最后一条带引用的 event**，
+    保证「被引 id」与「被引来源 / 被引正文」同源，不出现串台。
+    """
+    ref = None
+    for item in events:
+        if item.get("reply_message_id"):
+            ref = item
+    if ref is None:
+        return
+    for key in ("reply_text", "reply_sender_id", "reply_sender_name", "reply_is_unknown"):
+        if ref.get(key) not in (None, ""):
+            merged[key] = ref[key]
 
 
 class ConversationAssembler:
@@ -130,6 +161,7 @@ class ConversationAssembler:
         reply_ids = [item.get("reply_message_id") for item in events if item.get("reply_message_id")]
         if reply_ids:
             merged["reply_message_id"] = reply_ids[-1]
+        _carry_reply_attribution(merged, events)
         merged["assembled_count"] = len(events)
         return merged
 
@@ -148,7 +180,7 @@ class ConversationAssembler:
 # ---------------------------------------------------------------------------
 
 class GroupDebouncer:
-    """群聊消息防抖：同一用户 2s 内连续消息合并为一个语义回合。
+    """群聊消息防抖：同一用户 1s 内连续消息合并为一个语义回合。
 
     与私聊 ConversationAssembler 类似，但：
     - key 为 (group_id, user_id)
@@ -159,7 +191,7 @@ class GroupDebouncer:
 
     def __init__(
         self,
-        wait_sec: float = 2.0,
+        wait_sec: float = 1.0,
         max_wait_sec: float = 6.0,
         adaptive: bool = True,
         short_msg_threshold: int = 10,
@@ -226,6 +258,11 @@ class GroupDebouncer:
         await pending.ready.wait()
         async with self._lock:
             current = self._pending.pop(key, pending)
+        # 可观测性（2026-10-03）：此前合并完全不打日志 ⇒ 合并率只能靠离线模拟猜。
+        # 单条消息不记，避免刷屏；≥2 条才留痕（供 `[防抖]` 计数比对窗口调参效果）。
+        if len(current.events) > 1:
+            logger.info("[防抖] 合并 %d 条群消息 (群=%s 用户=%s)",
+                        len(current.events), key[0], key[1])
         return self._merge(current.events)
 
     def remove_recalled(self, group_id: int, user_id: int, message_id: Any) -> None:
@@ -296,6 +333,7 @@ class GroupDebouncer:
         reply_ids = [item.get("reply_message_id") for item in events if item.get("reply_message_id")]
         if reply_ids:
             merged["reply_message_id"] = reply_ids[-1]
+        _carry_reply_attribution(merged, events)
         merged["assembled_count"] = len(events)
         return merged
 

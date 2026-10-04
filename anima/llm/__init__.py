@@ -15,6 +15,64 @@ from .usage import UsageEvent, UsageLedger, current_call_info, estimate_tokens
 
 logger = logging.getLogger("anima.llm")
 
+#: 熔断器桶名 —— **出站正文**（要发给用户的回复生成）。
+_CIRCUIT_OUTBOUND = "outbound"
+#: 熔断器桶名 —— **后台/旁路**（跨群提取、矛盾检测、表情打标、反刍…）。
+_CIRCUIT_BACKGROUND = "background"
+
+#: 按模块下发的 ``reasoning_effort`` 默认值（2026-10-02）。
+#:
+#: 只收**实测有收益**的模块。生产实测（带 tools 的抽取任务，每档 3 次取中位）：
+#:   gemini-3.6-flash：不传 → reasoning 505 / 4.1s / completion 532
+#:                     minimal → reasoning 无 / **2.0s** / completion **33**
+#:   gemini-3-flash：  不传 → reasoning 235 / 2.0s / completion 287
+#:                     minimal → reasoning 无 / **1.6s** / completion **33**
+#: 而主模型 gemini-3.8-flash-high 在带 tools 场景下 minimal **未见收益**
+#: （reasoning 168 vs 173，延迟反而更慢），与 10-01 纯文本实验结论冲突 ⇒
+#: **不列入**，主链路行为保持逐字节不变。
+_DEFAULT_REASONING_EFFORT: dict[str, str] = {
+    "sticker_label": "minimal",
+    "vision": "minimal",
+}
+
+
+def outbound_circuit_open_until(llm: Any) -> float:
+    """取「出站正文」熔断桶的截止时间戳；对未知替身**容错回退**到旧字段。
+
+    `circuit_open_until` property 跟随调用 scope。守卫／等待预算这类代码位于
+    outbound scope **之外**，直接读它会拿到 background 桶（＝漏判），所以统一走本函数。
+    测试里的极简桩件没有新 API，此处按旧字段兜底，避免为了加个读取口就得改一堆替身。
+    """
+    fn = getattr(llm, "circuit_open_until_of", None)
+    if callable(fn):
+        try:
+            return float(fn(_CIRCUIT_OUTBOUND) or 0.0)
+        except Exception:  # noqa: BLE001 - 替身实现千奇百怪，读不到即当「未熔断」
+            pass
+    try:
+        return float(getattr(llm, "circuit_open_until", 0) or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def outbound_consecutive_failures(llm: Any) -> int:
+    """取「出站正文」熔断桶的**连续整链失败次数**；未知替身回退 0（fail-open 到「可等待」）。
+
+    与 `outbound_circuit_open_until` 同因：`consecutive_failures` property 跟随调用
+    scope，`react._patience_wait` 落在 outbound scope 之外 ⇒ 直接读会拿到 background
+    桶的次数。计数粒度是**整链失败事件**（`_post` 候选循环穷尽后 `+= 1`），不是候选数。
+    """
+    fn = getattr(llm, "consecutive_failures_of", None)
+    if callable(fn):
+        try:
+            return int(fn(_CIRCUIT_OUTBOUND) or 0)
+        except Exception:  # noqa: BLE001 - 替身实现千奇百怪，读不到即当 0
+            pass
+    try:
+        return int(getattr(llm, "consecutive_failures", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
 
 class LLMClient:
     """轻量 OpenAI 兼容 LLM 客户端，支持 Chat Completions API。"""
@@ -34,6 +92,7 @@ class LLMClient:
         module_models: dict[str, str] | None = None,
         usage_ledger: UsageLedger | None = None,
         image_fallback_models: list[str] | None = None,
+        module_reasoning_effort: dict[str, str] | None = None,
     ):
         self.base_endpoint = endpoint.rstrip("/")
         self.endpoint = self.base_endpoint + "/chat/completions"
@@ -42,6 +101,11 @@ class LLMClient:
         self.model = model
         self.provider = provider or "default"
         self.module_models = dict(module_models or {})
+        # None ⇒ 用默认表；传空 dict ⇒ 整体关闭（回滚/灰度用）。
+        self.module_reasoning_effort = (
+            dict(_DEFAULT_REASONING_EFFORT) if module_reasoning_effort is None
+            else {str(k): str(v) for k, v in module_reasoning_effort.items() if str(v).strip()}
+        )
         self.usage_ledger = usage_ledger
         # 上游地址不可达时，不能让 QQ 消息在 TCP 建连阶段一直占满总超时。
         # 正常已连接的长回复仍可使用完整的 total 时限。
@@ -78,6 +142,12 @@ class LLMClient:
         self.last_degradation_reason = ""
         self.last_payload_bytes = 0
         self.last_effective_payload_bytes = 0
+        # 熔断器**分桶**状态（2026-10-02）：见 `_circuit_bucket()`。
+        # 必须在下面三个 property 赋值之前建好——它们只是本字典的视图。
+        self._circuits: dict[str, dict[str, float | int]] = {
+            _CIRCUIT_OUTBOUND: {"failures": 0, "open_until": 0.0, "open_count": 0},
+            _CIRCUIT_BACKGROUND: {"failures": 0, "open_until": 0.0, "open_count": 0},
+        }
         self.consecutive_failures = 0
         self.circuit_open_until = 0.0
         self.circuit_open_count = 0
@@ -103,6 +173,102 @@ class LLMClient:
         # 本次候选模型是否以「200-空」告终（`_post` 据此放行 failover）。
         self._empty_completion = False
 
+    # ---------------------------------------------------------------- 熔断器分桶
+
+    def _circuit_bucket(self) -> str:
+        """返回当前调用所属的熔断器桶名。
+
+        2026-10-02 分桶的由来：熔断器原本挂在 **LLM 单例** 上，出站正文与后台旁路
+        共用一个 ⇒ 10-01 22:48:25 一次 `chat` 熔断，让 crossgroup×6 / contradiction×2
+        / danger×2 / sylann / vision / sticker_label 共 **11 条调用在 25s 内全部
+        circuit_open**；用户侧则是 2 次「返回安全话术」。
+
+        改成按「是否出站」分两桶后，任一方的抖动不再掐断另一方：上游整体故障时，
+        另一方也会各自累计到自己的阈值再熔断，不会陪葬。
+        """
+        try:
+            return _CIRCUIT_OUTBOUND if current_call_info().outbound else _CIRCUIT_BACKGROUND
+        except Exception:  # pragma: no cover - contextvar 取不到时退到背景桶
+            return _CIRCUIT_BACKGROUND
+
+    def _circuit_state(self) -> dict[str, float | int]:
+        """当前桶的状态字典（不存在则按桶名建一个）。
+
+        惰性建桶是**必需的**：部分测试/装配路径用 ``object.__new__(LLMClient)``
+        绕过 ``__init__``（如 ``test_scan_p2h_llm_failover``），此时 ``_circuits``
+        尚未建立，直接读会 AttributeError。
+        """
+        circuits = getattr(self, "_circuits", None)
+        if not isinstance(circuits, dict):
+            circuits = {}
+            self._circuits = circuits
+        return circuits.setdefault(
+            self._circuit_bucket(), {"failures": 0, "open_until": 0.0, "open_count": 0}
+        )
+
+    @property
+    def consecutive_failures(self) -> int:
+        """**当前桶**的连续失败数（不是全实例计数）。"""
+        return int(self._circuit_state().get("failures", 0))
+
+    @consecutive_failures.setter
+    def consecutive_failures(self, value: int) -> None:
+        self._circuit_state()["failures"] = int(value)
+
+    @property
+    def circuit_open_until(self) -> float:
+        """**当前桶**的熔断截止时间戳。
+
+        仍是普通可读属性（``react.py`` 据此判断"等不等得起"），但语义变为
+        「当前调用上下文所属桶」——出站代码读到出站桶，后台代码读到后台桶。
+        """
+        return float(self._circuit_state().get("open_until", 0.0))
+
+    @circuit_open_until.setter
+    def circuit_open_until(self, value: float) -> None:
+        self._circuit_state()["open_until"] = float(value or 0.0)
+
+    @property
+    def circuit_open_count(self) -> int:
+        """**当前桶**的累计熔断次数。"""
+        return int(self._circuit_state().get("open_count", 0))
+
+    @circuit_open_count.setter
+    def circuit_open_count(self, value: int) -> None:
+        self._circuit_state()["open_count"] = int(value)
+
+    def circuit_open_until_of(self, bucket: str) -> float:
+        """按**桶名**读熔断截止时间戳，**不受当前调用 scope 影响**。
+
+        上面三个 property 是「当前 scope 所属桶」的视图 —— 这对 `_post` 内部判定正好，
+        但调用点一旦落在 scope **之外**（`pipeline/stages/generation.py` 的守卫、
+        `react._patience_wait` 的等待预算、`health()` 的消费方），就会**静默读到
+        background 桶**，把「出站已熔断」看成「没熔断」。凡需要明确视角的地方走本方法。
+        """
+        circuits = getattr(self, "_circuits", None)
+        if not isinstance(circuits, dict):
+            return 0.0
+        state = circuits.get(bucket) or {}
+        try:
+            return float(state.get("open_until", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    def consecutive_failures_of(self, bucket: str) -> int:
+        """按**桶名**读连续失败次数，**不受当前调用 scope 影响**（与 `circuit_open_until_of` 同源）。
+
+        计数按「整链失败事件」计（`_post` 候选穷尽后自增），故 `>= 2` 表示上游已
+        **连续两次**整链失败 —— 见 `react._patience_wait` 的判据。
+        """
+        circuits = getattr(self, "_circuits", None)
+        if not isinstance(circuits, dict):
+            return 0
+        state = circuits.get(bucket) or {}
+        try:
+            return int(state.get("failures", 0) or 0)
+        except (TypeError, ValueError):
+            return 0
+
     def set_usage_ledger(self, ledger: UsageLedger | None) -> None:
         self.usage_ledger = ledger
 
@@ -114,6 +280,34 @@ class LLMClient:
             return explicit
         info = current_call_info()
         return self.module_models.get(module or info.module) or self.model
+
+    def reasoning_effort_for(self, module: str | None = None) -> str | None:
+        """按模块取 ``reasoning_effort``；未配置的模块返回 None（即不下发）。"""
+        info = current_call_info()
+        return self.module_reasoning_effort.get(module or info.module) or None
+
+    def set_reasoning_efforts(self, routes: dict[str, str] | None) -> None:
+        """整体替换按模块的 ``reasoning_effort`` 路由表（传空 dict 即全关）。"""
+        self.module_reasoning_effort = {
+            str(k): str(v) for k, v in (routes or {}).items() if str(v).strip()
+        }
+
+    def _apply_reasoning_effort(self, payload: dict[str, Any]) -> None:
+        """把 ``reasoning_effort`` 写进 payload —— **只写顶层**。
+
+        顶层之外一律无效（2026-10-01 实测）：嵌套 ``reasoning={"effort": ...}``
+        与 ``thinking={"type": "disabled"}`` 都会**静默失效**（不报错、不生效）。
+
+        只对 ``gemini`` 系模型下发：该参数按自建 CPA 网关的 gemini 模型实测标定，
+        对不认识的模型硬发可能直接 400。判据取 **payload 里即将发出的那个 model**
+        （已过 `model_for` 模块路由），不是构造参数。
+        """
+        effort = self.reasoning_effort_for()
+        if not effort:
+            return
+        if "gemini" not in str(payload.get("model") or "").lower():
+            return
+        payload["reasoning_effort"] = effort
 
     async def start(self) -> None:
         if self._session is None:
@@ -388,6 +582,7 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        self._apply_reasoning_effort(payload)
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -425,6 +620,7 @@ class LLMClient:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        self._apply_reasoning_effort(payload)
 
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -663,6 +859,38 @@ class LLMClient:
         return None
 
     @staticmethod
+    def _reasoning_from_response(data: dict[str, Any] | None) -> int:
+        """取上游的「思考」token 数（2026-10-04）。
+
+        🔴 **刻意独立于 `_usage_from_response`**：后者的 5-tuple 返回值被既有测试**严格等值**
+        断言（`tests/test_llm_usage.py`），改元数会连带打破它 —— 与其改签名，不如加一个
+        纯读取口（同一个「不动既有调用签名」原则的又一例）。
+
+        两种上游形态：
+        - OpenAI 兼容（自建 CPA 实测）：`usage.completion_tokens_details.reasoning_tokens`
+        - Gemini 原生：`usageMetadata.thoughtsTokenCount`
+
+        缺字段一律 0（「没有」≠「有」）。
+        实测波动极大（49–2129），是归因「这次为什么慢」的关键分母。
+        """
+        if not isinstance(data, dict):
+            return 0
+        usage = data.get("usage") or data.get("usage_metadata") or data.get("usageMetadata") or {}
+        if not isinstance(usage, dict):
+            return 0
+        details = usage.get("completion_tokens_details")
+        if isinstance(details, dict):
+            for key in ("reasoning_tokens", "reasoningTokens"):
+                value = details.get(key)
+                if isinstance(value, (int, float)):
+                    return max(0, int(value))
+        for key in ("reasoning_tokens", "thoughtsTokenCount"):
+            value = usage.get(key)
+            if isinstance(value, (int, float)):
+                return max(0, int(value))
+        return 0
+
+    @staticmethod
     def _usage_from_response(data: dict[str, Any] | None) -> tuple[int, int, int, int, bool]:
         if not isinstance(data, dict):
             return 0, 0, 0, 0, True
@@ -700,6 +928,7 @@ class LLMClient:
             latency_ms=round((time.perf_counter() - started) * 1000, 2),
             retries=max(0, self.retry_count - retry_start), status=status,
             estimated=estimated, error=self.last_error if status != "ok" else "",
+            reasoning_tokens=self._reasoning_from_response(data),
         )
         try:
             await self.usage_ledger.arecord(event)
@@ -774,10 +1003,32 @@ class LLMClient:
 
     def health(self) -> dict[str, Any]:
         now = time.time()
-        circuit_open = self.circuit_open_until > now
+        # 顶层三项是**跨桶汇总**（2026-10-02）。原因：health() 的消费方
+        # `core/health_history.py:107`、`webui/server.py:1062` 都在 scope **外**调用，
+        # 若顶层沿用「当前 scope 所属桶」的 property 视图，就会在无 scope 时固定读到
+        # background 桶 ⇒ **出站熔断被静默漏报**（监控/告警看不到用户可感的那一半）。
+        # 分桶明细另见 `circuits`；需要「只看出站」的代码走 `circuit_open_until_of()`。
+        raw = getattr(self, "_circuits", None)
+        if not isinstance(raw, dict):
+            raw = {}
+        circuits = {
+            name: {
+                "failures": int(state.get("failures", 0)),
+                "open_until": float(state.get("open_until", 0.0)) or None,
+                "open": float(state.get("open_until", 0.0)) > now,
+                "open_count": int(state.get("open_count", 0)),
+            }
+            for name, state in raw.items()
+        }
+        any_open_until = max(
+            (float(s.get("open_until", 0.0)) for s in raw.values()), default=0.0
+        )
+        any_failures = max((int(s.get("failures", 0)) for s in raw.values()), default=0)
+        total_open_count = sum(int(s.get("open_count", 0)) for s in raw.values())
+        circuit_open = any_open_until > now
         if circuit_open:
             current_state = "circuit_open"
-        elif self.last_error and self.consecutive_failures > 0:
+        elif self.last_error and any_failures > 0:
             current_state = "degraded"
         elif self.last_success_at:
             current_state = "healthy"
@@ -802,9 +1053,13 @@ class LLMClient:
             "last_degradation_reason": self.last_degradation_reason,
             "last_payload_bytes": self.last_payload_bytes,
             "last_effective_payload_bytes": self.last_effective_payload_bytes,
-            "consecutive_failures": self.consecutive_failures,
-            "circuit_open_until": self.circuit_open_until or None,
-            "circuit_open_count": self.circuit_open_count,
+            "consecutive_failures": any_failures,
+            "circuit_open_until": any_open_until or None,
+            "circuit_open_count": total_open_count,
+            # 分桶明细（2026-10-02）：outbound / background 各自独立熔断。
+            "circuits": circuits,
+            # 跨桶汇总：任一桶熔断即为真，供 WebUI 一眼看到「上游正在熔断」。
+            "circuit_open_until_any": any_open_until or None,
             "fallback_models": list(self.fallback_models),
             "failover_count": self.failover_count,
             "empty_completion_count": self.empty_completion_count,

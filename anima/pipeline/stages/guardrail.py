@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 import asyncio
+import json
 import logging
 import random
 import re
 import time
 from collections import deque
+from pathlib import Path
 
 from anima.pipeline import StageResult, PipelineContext
 from ._shared import (
@@ -58,6 +60,50 @@ def _record_fallback(ctx: "PipelineContext", kind: str) -> None:
         ctx.core.telemetry().record_fallback(kind)
     except Exception:
         logger.debug("兜底出站遥测记录失败", exc_info=True)
+
+
+#: D5 埋点（2026-09-27）：被护栏**整段改写**的分析体原文样本落盘文件。
+#: 为什么要落盘：改写是破坏性的，而 journal 里那条 warning 的「摘要」只有 120 字，
+#: 且正文含换行会溢行、journal 还会滚动 —— 事后**无法用完整原文回测判据**，
+#: 于是「某条规则是过严还是有效」永远只能靠印象争论（`struct>=2&long` 已 3 例误杀）。
+#: 只写命中样本（低频）、只落本地 data_dir（用户数据不进 journal）。
+_ESSAY_SAMPLE_FILE = "guardrail_essay_samples.jsonl"
+_ESSAY_SAMPLE_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _sample_guardrail_essay(ctx: "PipelineContext", rule: str, reply: str,
+                            rewritten_to: str | None = None) -> None:
+    """把被改写掉的**完整原文**追加落盘，供事后按规则回测（纯观测，fail-soft）。
+
+    任何异常都吞掉：样本是诊断资料，绝不能影响回复路径。取不到 data_dir 时
+    宁可不写，也不猜一个相对路径（否则会落到 cwd 的意外位置）。
+    """
+    try:
+        core = ctx.meta.get("core") or getattr(ctx, "core", None)
+        pcfg = getattr(getattr(core, "config", None), "persistence", None)
+        data_dir = getattr(pcfg, "data_dir", None) if pcfg else None
+        if not data_dir:
+            logger.debug("guardrail essay 样本落盘：未取到 data_dir，跳过")
+            return
+        path = Path(data_dir) / _ESSAY_SAMPLE_FILE
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.exists() and path.stat().st_size > _ESSAY_SAMPLE_MAX_BYTES:
+            path.replace(path.with_name(path.name + ".1"))
+        record = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "rule": rule,
+            "detail_type": ctx.detail_type,
+            "group_id": ctx.group_id,
+            "user_id": ctx.user_id,
+            "user_text": ctx.text or "",
+            "reply": reply or "",
+            "reply_len": len(reply or ""),
+            "rewritten_to": rewritten_to,
+        }
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        logger.debug("guardrail essay 样本落盘失败", exc_info=True)
 
 
 # 危险的输出模式
@@ -138,6 +184,32 @@ _ESSAY_STRUCT_RE = re.compile(
     r"(第一[、，. ]|第二[、，. ]|一是|二是|1[.、) ]|2[.、) ]|\n\d+[.、) ]|\*\*「)"
 )
 _USER_WANTS_ANALYSIS_RE = re.compile(r"(解析|分析|详细说说|展开讲|怎么评价|考据)")
+
+#: 「用户要的是**做法/答案**」意图（2026-09-27 新增，D5 首批生产样本驱动）。
+#:
+#: 背景：`essay_samples.jsonl` 首批 2 条生产样本里，「**如何成为杰米高手**」被
+#: `struct>=2&long`（≥2 编号分点 + ≥220 字）判成论文体，590 字攻略被**整段替换**
+#: 成「本喵还是适合唠嗑…」⇒ 用户明确在要攻略，拿到的是答非所问。
+#: 旧豁免只认「解析/分析/详细说说/展开讲/怎么评价/考据」，**认不出 how-to 意图**。
+#:
+#: 刻意**不含**「怎么 / 什么 / 为什么 / 吗」这类泛疑问 —— 日常寒暄也带，会过度豁免。
+#: 只认「方法 / 教程 / 攻略」语义：`如何` 独立成立；`怎么` 必须**紧接做法动词**。
+_USER_WANTS_HOWTO_RE = re.compile(
+    r"如何"
+    r"|怎么(?:样)?(?:才能|才|可以|该)?"
+    r"(?:变|成|打|玩|做|用|练|上|过|赢|提升|提高|快速|入门|速成|上手|应对|处理|解决|通关|配|选|搭)"
+    r"|教我|教一下|攻略|教程|指南|入门|速成|打法|思路|配装|出装|阵容|连招|连段"
+)
+
+
+def _user_wants_substantive(user_text: str) -> bool:
+    """用户是否**明确**要一段实质回答（要解析 / 要做法）。
+
+    这是护栏的「被要求的结构化回答不该被改写」豁免 —— 只有**用户自己**的文本
+    才能触发，与「bot 自发跑偏成分析体」是两回事。
+    """
+    t = user_text or ""
+    return bool(_USER_WANTS_ANALYSIS_RE.search(t) or _USER_WANTS_HOWTO_RE.search(t))
 
 #: 「单语义词 + 长文」路径的**强标记**（2026-09-23 新增）。
 #: 语义词表里两类词的噪声不同：「从X角度看 / 数据分析 / 官方设定」在 ACG 与日常
@@ -228,7 +300,7 @@ def _analysis_essay_rule(reply: str, *, user_text: str = "") -> str | None:
     keys = _ANALYSIS_ESSAY_RE.findall(reply)
     n = len(keys)
     struct_hits = len(_ESSAY_STRUCT_RE.findall(reply))
-    user_wants = bool(_USER_WANTS_ANALYSIS_RE.search(user_text or ""))
+    user_wants = _user_wants_substantive(user_text)
     if user_wants:
         if len(reply) > 700 and (n >= 3 or struct_hits >= 1):
             return "user_wants_long"
@@ -446,7 +518,15 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             "Guardrail: 检测到破角色分析体，改写为轻松接话（规则=%s 原文=%d字 摘要=%s）",
             _essay_rule, len(_essay_orig), _essay_orig[:120],
         )
-        if _USER_WANTS_ANALYSIS_RE.search(ctx.text or ""):
+        if _essay_rule == "essay_score" or _user_wants_substantive(ctx.text or ""):
+            # 保留内容：只截断、不整段替换。
+            # 🔴 2026-09-27：`essay_score` 走这里（原本是整段罐头替换）。
+            # 依据 D5 首批生产样本：真阳性「三国杀机制分析」205 字 score **6.5**，
+            # 假阳性「斯旺闲聊」180 字 score 也**正好 6.5**，且两者
+            # (定义式 2.0 / 抽象词 4.5 / 连接词 0.0) **逐项相同** ⇒ 该路径是纯
+            # 数值启发式，**在结构上与正常闲聊不可分离**，调阈值必然二选一。
+            # 因此不动阈值、不动规则名，只把「代价」从「整段答非所问」降为
+            # 「稍长一点」——真阳性仍被识别、仍落样本，可继续攒数据再定标。
             short = ctx.reply.strip()
             if len(short) > 280:
                 short = short[:280].rstrip("，,。；;、 ") + "…"
@@ -456,6 +536,8 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         else:
             _record_fallback(ctx, "analysis_essay")
             ctx.reply = random.choice(_ANALYSIS_ESSAY_FALLBACKS)
+        # D5 埋点：完整原文 + 改写结果一并落盘（回测判据用；fail-soft）。
+        _sample_guardrail_essay(ctx, _essay_rule, _essay_orig, ctx.reply)
         await _record_reply_memory(ctx)
         return StageResult.CONTINUE
 
@@ -567,7 +649,7 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         pass
 
     # 长度限制
-    hard_limit = 900 if _USER_WANTS_ANALYSIS_RE.search(ctx.text or "") else 420
+    hard_limit = 900 if _user_wants_substantive(ctx.text or "") else 420
     if len(ctx.reply) > hard_limit:
         ctx.reply = ctx.reply[:hard_limit].rstrip("，,。；;、 ") + "…"
         logger.info("Guardrail: 超长回复截断至 %d 字", hard_limit)

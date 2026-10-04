@@ -22,6 +22,17 @@ from anima.core.gateway import OutboundMsg
 logger = logging.getLogger(__name__)
 
 
+# 🔴 2026-09-28 人视角审计 P0-1：**控制面命令的回执不进群**。
+# `!anima agent …` 的回执携带任务 ID、`!anima` 命令语法与草稿/审批两步流，属内部
+# 机制。生产实证（群 727631526，09-26 19:16–19:17）整群成员都看到了
+# 「已创建 Agent 草稿 2157269a7b，回复「!anima agent approve 2157269a7b」后执行。」
+# 与「已启动 Agent 任务 2157269a7b」。
+# 判据：**群里其他人能不能从这一条推断出它不是人** —— 能，就是 P0。
+# 群聊发起 ⇒ 回执只走私聊 owner，群里零出站；私聊发起 ⇒ 行为不变。
+# 扩展方式：把其它控制面命令的方法名加进本集合（例如 `_cmd_task_approve`）。
+_PRIVATE_ONLY_ROUTES = frozenset({"_cmd_agent"})
+
+
 def _parse_beijing_reminder_time(value: str) -> float:
     """只接受无歧义的北京时间 ISO 分钟格式，避免自然语言日期误触发。"""
     parsed = datetime.strptime(value.strip(), "%Y-%m-%dT%H:%M")
@@ -259,7 +270,11 @@ class AnimaCommandsMixin:
             reply = f"{at_prefix}" + self.core.agent.status_text()
         elif sub:
             # 主人专属：把整句作为 Agent 请求直接提交执行
-            task = await self.core.agent.submit(sub, int(user_id), auto_run=True)
+            # 09-26：记录会话，产物（生图等）交付回这里。
+            task = await self.core.agent.submit(
+                sub, int(user_id), auto_run=True,
+                session={"detail_type": detail_type, "target_id": target_id},
+            )
             reply = f"{at_prefix}已创建 Agent 任务 {task.id}，开始执行（进度将推送）。"
         else:
             reply = (f"{at_prefix}用法：!anima agent <请求> | "
@@ -1242,6 +1257,11 @@ async def dispatch_anima_command(handler, event: dict, text: str, user_id: int,
         reply = await getattr(handler, method_name)(ctx)
         if not reply:
             return False
+        if detail_type == "group" and method_name in _PRIVATE_ONLY_ROUTES:
+            # 控制面回执不进群（见 `_PRIVATE_ONLY_ROUTES` 注释）。
+            await handler.core.gateway.send(
+                OutboundMsg("private", int(user_id), reply))
+            return True
         await handler.core.gateway.send(OutboundMsg(detail_type, ctx.target_id, reply))
         return True
     return False

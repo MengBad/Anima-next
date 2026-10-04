@@ -27,12 +27,14 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from pathlib import Path
 from typing import Any, Callable, Optional
 
 from anima.agent.audit import AgentAuditor
 from anima.agent.guardrails import ResourceBudget, ResourceExceeded
 from anima.agent.planner import TaskPlanner
 from anima.agent.state import AgentTask, Step
+from anima.llm.usage import llm_scope
 from anima.tools import LEVEL_OWNER, tool_result_ok
 
 logger = logging.getLogger("anima.agent.executor")
@@ -50,6 +52,13 @@ class AgentExecutor:
     MAX_PARALLEL = 4
     VERIFY_TIMEOUT = 60
     VERIFY_OUTPUT_CHARS = 1200
+    # 09-26：产出「受控媒体」（图片）的工具。这些工具把产物路径写进 task-local
+    # call context（`generated_image_paths`），而 Agent 路径**不经过**对话 pipeline
+    # 的出站段构造 ⇒ 必须由本执行器显式回收，否则产物变孤儿文件。
+    MEDIA_TOOLS = frozenset({"generate_image", "edit_image"})
+    # context 中记录「本任务调用过哪些工具」与「已回收的媒体路径」的键。
+    CTX_TOOLS_USED = "media_tools_used"
+    CTX_MEDIA_PATHS = "generated_image_paths"
 
     def __init__(self, core, store, planner: TaskPlanner | None = None,
                  auditor: AgentAuditor | None = None,
@@ -68,6 +77,93 @@ class AgentExecutor:
         self._cancel: dict[str, bool] = {}
         self._fail_streak = 0
         self._pause_until = 0.0
+
+    # ------------------------------------------------------------------
+    # P0（09-26）：规划器 LLM 惰性绑定
+    # ------------------------------------------------------------------
+
+    def _bind_planner_llm(self) -> None:
+        """在**执行时**把 ``core.llm`` 注入 planner（幂等）。
+
+        生产装配顺序是 `anima_core.py` 先构造 ``OwnerAgent``（其 ``__init__`` 里
+        构造本执行器），**之后**才给 ``core.llm`` 赋值。于是构造期的
+        ``getattr(core, "llm", None)`` 必然拿到 ``None``，并且**全仓没有任何回填**
+        ⇒ ``planner.llm`` 永久为 None ⇒ ``planner._decompose`` 的 LLM 分支变成
+        死代码，所有 Agent 计划退化为关键词拼接（09-26 生产首跑实证：规划仅耗时
+        50 ms，且三步与 ``_fallback`` 输出逐字相同）。
+
+        单测之所以全绿，是因为测试直接 ``TaskPlanner(llm)`` 注入 —— 夹具构造方式
+        与生产装配方式不同（假绿）。这里改为惰性解析后，两条路径都对。
+        """
+        planner = self.planner
+        if planner is None or getattr(planner, "llm", None) is not None:
+            return
+        llm = getattr(self.core, "llm", None)
+        if llm is not None:
+            planner.llm = llm
+
+    # ------------------------------------------------------------------
+    # P0（09-26）：受控媒体回收与交付自检
+    # ------------------------------------------------------------------
+
+    def _record_tools(self, task: AgentTask, names: list[Any]) -> None:
+        """记录本任务真正调用过的工具名（供媒体交付自检使用）。"""
+        if not names:
+            return
+        used = task.context.get(self.CTX_TOOLS_USED)
+        if not isinstance(used, list):
+            used = []
+            task.context[self.CTX_TOOLS_USED] = used
+        seen = {str(x) for x in used}
+        for n in names:
+            s = str(n or "")
+            if s and s not in seen:
+                seen.add(s)
+                used.append(s)
+
+    def _harvest_media(self, task: AgentTask, ctx: Any) -> None:
+        """把本步工具产出的媒体路径从 call context 收回到任务上下文（去重保序）。
+
+        工具契约（``tools/builtin/owner.py``）：生图/改图把绝对路径 append 进
+        ``get_call_context()["generated_image_paths"]``，交给出站层发送。但该 key 的
+        读者**只有** ``pipeline/stages/generation.py`` 与
+        ``llm/handler.py:build_reply_segments`` —— 都在**正常对话管线**上；Agent
+        路径零读者，且 ``set_call_context`` 的作用域一旦 reset，路径就永久丢失。
+        """
+        if not isinstance(ctx, dict):
+            return
+        got = ctx.get(self.CTX_MEDIA_PATHS)
+        if not isinstance(got, list) or not got:
+            return
+        bucket = task.context.get(self.CTX_MEDIA_PATHS)
+        if not isinstance(bucket, list):
+            bucket = []
+            task.context[self.CTX_MEDIA_PATHS] = bucket
+        seen = {str(x) for x in bucket}
+        for p in got:
+            s = str(p or "")
+            if s and s not in seen:
+                seen.add(s)
+                bucket.append(s)
+
+    def media_tools_used(self, task: AgentTask) -> set[str]:
+        """本任务调用过的、属于「媒体产出」类的工具名集合。"""
+        used = {str(x) for x in (task.context.get(self.CTX_TOOLS_USED) or [])}
+        return used & self.MEDIA_TOOLS
+
+    def live_media_paths(self, task: AgentTask) -> list[str]:
+        """已回收且**当前仍在磁盘上**的媒体路径（失效路径不算交付）。"""
+        out: list[str] = []
+        for p in (task.context.get(self.CTX_MEDIA_PATHS) or []):
+            s = str(p or "")
+            if not s:
+                continue
+            try:
+                if Path(s).is_file():
+                    out.append(s)
+            except OSError:
+                continue
+        return out
 
     # ------------------------------------------------------------------
     # 紧急停止
@@ -105,6 +201,10 @@ class AgentExecutor:
             msg = "Agent 能力已熔断暂停（连续失败过多），请 10 分钟后再试。"
             await self._notify(task, msg)
             return msg
+
+        # 09-26 P0：规划/重规划都依赖 planner.llm，而它在生产装配顺序下必为 None
+        # ⇒ 每次执行前惰性绑定（幂等，绑定后不再解析）。
+        self._bind_planner_llm()
 
         # 尚未规划则先规划
         if not task.steps:
@@ -222,7 +322,22 @@ class AgentExecutor:
 
         task.context["result_parts"] = result_parts
 
-        if not failed and task.status == "executing":
+        # 09-26 F4：媒体交付自检 —— 「工具说成功」≠「用户收到图」。
+        # 生产事故：`generate_image` 返回 ok=True（19 字「图片已生成，将作为本次回复
+        # 的图片发送。」）、887 KB 图已落盘，但 Agent 路径无人回收路径 ⇒ 任务仍被判
+        # `completed`，最后一步文本还谎称「已为你生成一张…照片」。
+        # fail-closed：调用过媒体工具却拿不出**任一**可用文件 ⇒ 不得判完成。
+        media_used = sorted(self.media_tools_used(task))
+        if (not failed and task.status == "executing" and media_used
+                and not self.live_media_paths(task)):
+            failed = True
+            task.status = "failed"
+            task.error = (f"媒体交付失败：调用过 {'/'.join(media_used)} "
+                          "但未产出任何可用文件，不判定为完成")
+            if self.auditor:
+                self.auditor.emit("agent_media_delivery_missing", task_id=task.id,
+                                  media_tools=media_used)
+        elif not failed and task.status == "executing":
             task.status = "completed"
             task.error = ""
         self.store.save(task)
@@ -273,11 +388,14 @@ class AgentExecutor:
             "PASS 或 FAIL，后跟一句理由。"
         )
         try:
-            raw = await asyncio.wait_for(
-                llm.chat([{"role": "user", "content": prompt}],
-                         temperature=0.0, max_tokens=120),
-                timeout=self.VERIFY_TIMEOUT,
-            )
+            # 归因（2026-10-03）：本方法在 outbound scope 之外，若不打标就会落到默认
+            # `chat/chat`、trace_id=unscoped，把 Agent 步骤验收的失败算进用户可见的回复链。
+            with llm_scope("agent", "verify"):
+                raw = await asyncio.wait_for(
+                    llm.chat([{"role": "user", "content": prompt}],
+                             temperature=0.0, max_tokens=120),
+                    timeout=self.VERIFY_TIMEOUT,
+                )
         except Exception as e:  # noqa: BLE001 - 验收器故障不阻塞主流程
             if self.auditor:
                 self.auditor.emit("agent_verify_inconclusive", task_id=task.id,
@@ -401,13 +519,7 @@ class AgentExecutor:
         for attempt in range(1, self.MAX_TOOL_RETRIES + 1):
             step.attempts += 1
             try:
-                if step.tool_name:
-                    budget.consume_network_request()
-                    result = await self.core.tools.call(
-                        step.tool_name, step.tool_args or {}, LEVEL_OWNER
-                    )
-                else:
-                    result = await self._react_for_step(step, task)
+                result = await self._run_step_body(step, task, budget)
                 budget.consume_output(len(str(result or "")) / 1024.0)
                 if tool_result_ok(result):
                     return result
@@ -423,6 +535,39 @@ class AgentExecutor:
         step.error = last_err or "unknown"
         raise StepFailed(last_err)
 
+    async def _run_step_body(self, step: Step, task: AgentTask,
+                             budget: ResourceBudget) -> str:
+        """单步的实际执行体：注入主人调用上下文 + 回收受控媒体。
+
+        09-26 重构：原先只有 ReAct 分支自带 call-context 注入，显式 ``tool_name``
+        分支（``core.tools.call``）**没有任何上下文**——若某步显式调用生图工具，
+        路径会落进一个无人读、随即被丢弃的匿名 context。现在两个分支共用同一段
+        注入/回收逻辑，异常交回 ``_run_step`` 做重试。
+        """
+        tools = getattr(self.core, "tools", None)
+        ctx_token = None
+        if (tools is not None and hasattr(tools, "get_call_context")
+                and hasattr(tools, "set_call_context")):
+            # 主人分层沙箱：把权限等级注入调用上下文（防御式兼容测试桩）
+            ctx_token = tools.set_call_context(
+                **{**tools.get_call_context(), "permission_level": LEVEL_OWNER})
+        try:
+            if step.tool_name:
+                self._record_tools(task, [step.tool_name])
+                budget.consume_network_request()
+                return await self.core.tools.call(
+                    step.tool_name, step.tool_args or {}, LEVEL_OWNER
+                )
+            return await self._react_for_step(step, task)
+        finally:
+            # 🔴 必须在使用方 reset 之前回收媒体路径——reset 之后 context 变更即丢。
+            if tools is not None and hasattr(tools, "get_call_context"):
+                try:
+                    self._harvest_media(task, tools.get_call_context())
+                except Exception:
+                    logger.exception("回收 Agent 受控媒体失败（已隔离）")
+            if ctx_token is not None and hasattr(tools, "reset_call_context"):
+                tools.reset_call_context(ctx_token)
 
     async def _react_for_step(self, step: Step, task: AgentTask) -> str:
         from anima.agent.react import ReActLoop
@@ -438,13 +583,15 @@ class AgentExecutor:
             )},
             {"role": "user", "content": f"任务背景：{task.request}\n当前步骤：{step.description}"},
         ]
-        # 主人分层沙箱：把权限等级注入调用上下文（防御式兼容测试桩）
-        ctx_token = None
-        if hasattr(tools, "get_call_context") and hasattr(tools, "set_call_context"):
-            ctx = tools.get_call_context()
-            ctx_token = tools.set_call_context(**{**ctx, "permission_level": LEVEL_OWNER})
         try:
             return await loop.run(messages, temperature=0.3, max_tokens=600)
         finally:
-            if ctx_token is not None and hasattr(tools, "reset_call_context"):
-                tools.reset_call_context(ctx_token)
+            # 09-26：ReAct 真正调用过的工具名要记进任务上下文，供媒体交付自检（F4）
+            # 判定「到底有没有走生图这条路」。`tool_trace` 在 run() 开头重置，异常
+            # 路径下也能读到已发生的部分轨迹。
+            try:
+                self._record_tools(task, [
+                    t.get("name") for t in (getattr(loop, "tool_trace", None) or [])
+                ])
+            except Exception:
+                logger.exception("记录 Agent 工具轨迹失败（已隔离）")

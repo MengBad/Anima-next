@@ -75,6 +75,9 @@ def _empty() -> dict[str, int]:
         "fallback_political": 0,      # guardrail：政治敏感话题回避
         "fallback_cold_bullying": 0,  # generation：被霸凌时的简短冷回（COLD_RESPONSES）
         "fallback_cold_avoidance": 0, # generation：回避期（scar）的极短冷回
+                                      # 🔴 2026-09-28 起生产**恒 0**：回避期改为
+                                      # 真静默（无出站 ⇒ 不算兜底出站）。桶保留
+                                      # 供 `_resolve_bullying_reply(kind=...)` 回退。
         "fallback_tired": 0,          # handler：社交疲劳 gate 的罐头回复（第 14 出口）
         "fallback_other": 0,          # 不在白名单的 kind（防拼错导致键无界增长）
     }

@@ -42,6 +42,12 @@ class LLMConfig(BaseModel):
     active_provider: str = "default"
     # module -> model；空字符串表示继承默认模型。调用点显式传 model 时优先级更高。
     module_models: dict[str, str] = Field(default_factory=dict)
+    # module -> reasoning_effort（2026-10-03）。**只写顶层**参数，嵌套写法静默无效。
+    #   None（缺省） ⇒ 用代码默认表（`llm._DEFAULT_REASONING_EFFORT`：sticker_label/vision=minimal）
+    #   {}           ⇒ 一键**全关**（不下发任何 reasoning_effort）
+    #   非空 dict    ⇒ 整体替换默认表（**不是**叠加）
+    # 只对 gemini 系下发（`_SUPPORTED_REASONING_EFFORT_PREFIXES`）；其余模型硬发可能 400。
+    module_reasoning_effort: Optional[dict[str, str]] = None
     # model -> {input: price_per_million, output: price_per_million}
     model_prices: dict[str, dict[str, float]] = Field(default_factory=dict)
 
@@ -259,6 +265,24 @@ class ToolLearningConfig(BaseModel):
     summarize_interval: int = 10      # 同工具成功记录每累计 N 条做一次规律归纳
     records_max: int = 200            # records 环形上限，防无界增长
     inject_top_k: int = 4             # 注入 system 的使用心得条数
+
+
+class ReplyLearningConfig(BaseModel):
+    """被动回复效果自学习（B1：只采集，不改行为）。
+
+    记录「开口之后群里有没有人接」，归纳成经验事实注入 system。
+
+    🔴 刻意**不接闸门**（`group_gate` 仍读静态 `familiarity`）—— 先跑一周拿真数字，
+    再决定 `familiar_min` 要不要动态化。没有数字就调阈值 = 拍脑袋。
+
+    `enabled=False` 只关**注入与归纳**（两个影响 system/花钱的点）；采集与统计是
+    纯本地计数，始终运行，便于事后回看。
+    """
+    enabled: bool = True              # 注入 + 归纳总开关（采集恒开）
+    window_sec: int = 300             # 开口后多久内有人接话算 engaged
+    records_max: int = 200            # 每群心得环形上限
+    inject_top_k: int = 3             # 注入 system 的心得条数
+    min_samples: int = 5              # 少于这么多开口样本不归纳
 
 
 class CapabilityConfig(BaseModel):
@@ -553,7 +577,7 @@ class ReplySplitConfig(BaseModel):
 class DebounceConfig(BaseModel):
     """群聊消息防抖（参考 astrbot_plugin_continuous_message）。"""
     group_enabled: bool = True
-    group_wait_sec: float = 2.0
+    group_wait_sec: float = 1.0       # 2026-10-03：2.0→1.0（实测回合数仅 +4%，却省 1s/条）
     group_max_wait_sec: float = 6.0
     adaptive: bool = True
     short_msg_threshold: int = 10     # 短句阈值（字）
@@ -724,10 +748,24 @@ class ReactConfig(BaseModel):
 
     默认值 20.0（2026-09-25 由 6.0 抬上来）：6.0 被 48h 实测否掉 —— 4/4 次样本
     等满 6s 后重试仍空，而静默实际持续 8–20s。低于静默下限的预算结构上不可能成功。
+    ⚠️ 2026-10-03：出站桶已**连续两次整链失败**时**不再等待**（窗口性故障，白等）——
+    见 `react._patience_wait`。本键只影响「单次失败」那一路。
+
+    ``tool_timeout_sec``（2026-10-03）：单次工具调用的墙钟上限。旧值是硬编码 120s，
+    放过了 102s 的 `x_search`（整回合被拖死、同群用户排队 2 分钟）。默认收紧到 45s
+    （覆盖 browser `goto` 30s + `click` 15s 的内部串行最坏）。
+
+    ``turn_deadline_sec``（2026-10-03）：**整回合** ReAct 墙钟预算。单次工具上限
+    只挡「**一个**工具卡死」，挡不住「**多轮**工具 + 多次 LLM 往返」的累计 —— 实测
+    `x_search` 回合 102s，期间同群串行锁被持住、其它用户排队白等。超预算即
+    「带**已得工具结果**收口作答」。**默认 0 = 关闭**（不改变既有行为）；生产
+    config 无该键走代码默认，要启用请显式配置（如 90）。
     """
     memory_first: bool = True
     freshness_footer: bool = True
     upstream_patience_sec: float = Field(default=20.0, ge=0.0, le=30.0)
+    tool_timeout_sec: float = Field(default=45.0, ge=1.0, le=600.0)
+    turn_deadline_sec: float = Field(default=0.0, ge=0.0, le=600.0)
 
 
 class ContextConfig(BaseModel):
@@ -993,6 +1031,7 @@ class AnimaConfig(BaseModel):
     compat: CompatConfig = Field(default_factory=CompatConfig)
     crossgroup: CrossGroupConfig = Field(default_factory=CrossGroupConfig)
     tool_learning: ToolLearningConfig = Field(default_factory=ToolLearningConfig)
+    reply_learning: ReplyLearningConfig = Field(default_factory=ReplyLearningConfig)
     capabilities: CapabilityConfig = Field(default_factory=CapabilityConfig)
     # RFC-0001 Capability Layer 治理开关（与上一行 capabilities 语义无关，勿混用）
     capability_layer: CapabilityLayerConfig = Field(default_factory=CapabilityLayerConfig)

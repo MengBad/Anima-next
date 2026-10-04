@@ -373,6 +373,8 @@ def start(config_path, once, identity_attestation):
             circuit_cooldown_sec=float(provider_cfg.get("circuit_cooldown_sec", cfg.llm.circuit_cooldown_sec)),
             provider=cfg.llm.active_provider,
             module_models=cfg.llm.module_models,
+            # 2026-10-03：reasoning_effort 的配置入口（None = 用代码默认表；{} = 全关）
+            module_reasoning_effort=getattr(cfg.llm, "module_reasoning_effort", None),
             usage_ledger=UsageLedger(cfg.persistence.data_dir),
             image_fallback_models=list(getattr(cfg.image_generation, "fallback_models", []) or []),
         )
@@ -431,6 +433,25 @@ def start(config_path, once, identity_attestation):
             plugins_dir = Path("plugins")
             n = load_plugins(plugins_dir, core)
             click.echo(f"AstrBot 兼容插件: 已加载 {n} 个")
+
+        # 被动回复效果自学习（B1：只采集，不改行为）。🔴 单例在此定型 —— 配置只在
+        # 这次构造时生效；之后所有调用点统一 `get_reply_learning(data_dir)`。
+        # （注：`get_tool_learning` 没有这一步，其 records_max/inject_top_k 实际
+        # 一直取类默认值 —— 新模块不跟随这个缺陷。）
+        try:
+            from anima.cognitive.reply_learning import get_reply_learning
+            _rl_cfg = getattr(cfg, "reply_learning", None)
+            get_reply_learning(
+                str(cfg.persistence.data_dir),
+                window_sec=int(getattr(_rl_cfg, "window_sec", 300) or 300),
+                records_max=int(getattr(_rl_cfg, "records_max", 200) or 200),
+                inject_top_k=int(getattr(_rl_cfg, "inject_top_k", 3) or 3),
+                min_samples=int(getattr(_rl_cfg, "min_samples", 5) or 5),
+            )
+        except Exception:
+            logging.getLogger("anima.cli").exception(
+                "被动回复学习初始化失败，继续启动"
+            )
 
         # 启动自主心跳
         if cfg.autonomy.enabled:

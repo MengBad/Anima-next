@@ -188,7 +188,10 @@ async def test_circuit_open_counter_splits_by_outbound_flag(monkeypatch):
 
     with llm_scope("chat", "react_finalize", outbound=True):
         await client._post({"model": "m", "messages": []}, {})
-    assert client.circuit_open_count == 1
+        # 2026-10-02 熔断器分桶后，`circuit_open_count` 是「当前 scope 所属桶」的
+        # 视图 ⇒ 必须在出站 scope **内**读，退出后读到的是 background 桶（恒 0）。
+        # 出站镜像计数 `outbound_circuit_open_count` 仍是全局的，可在外面读。
+        assert client.circuit_open_count == 1
     assert client.outbound_circuit_open_count == 1
 
 

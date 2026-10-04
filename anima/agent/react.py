@@ -16,6 +16,7 @@ import random
 import re
 import time
 from typing import Any
+from anima.llm import outbound_circuit_open_until, outbound_consecutive_failures  # 等待预算需**出站**视角（2026-10-02/03）
 from anima.llm.usage import llm_scope
 from anima.pipeline.context import ContextComposer
 from anima.tools import tool_result_ok
@@ -111,6 +112,25 @@ _LLM_FAULT_COUNTERS = (
 #: ⚠️ 这是**按数据外推**的选择（尚无 20s 救回的成功样本），首个真实样本会给出答案。
 _DEFAULT_UPSTREAM_PATIENCE_SEC = 20.0
 
+#: 单次工具调用的墙钟上限（秒）；由 ``react.tool_timeout_sec`` 覆盖。
+#:
+#: 🔴 2026-10-03：旧值是**硬编码 120.0**，10-02 实测 `x_search` 单次耗 **102 秒**
+#: 仍未触发 ⇒ 整回合被一个工具拖死，同群两条消息排队 125s/121s 后各用 49ms
+#: 判 idle（用户白等 2 分钟、零回复）。收紧到 45s：覆盖内部**串行**最坏
+#: （agent_tools browser `goto` 30s ＋ `click` 15s），同时砍掉 100s 级的极端。
+_DEFAULT_TOOL_TIMEOUT_SEC = 45.0
+
+#: 整回合 ReAct 墙钟预算（秒）；0 = 关闭（**默认**，不改变既有行为）。
+#: 由 ``react.turn_deadline_sec`` 覆盖。
+#:
+#: 🔴 2026-10-03：单次工具上限（`tool_timeout_sec`）只挡住「**一个**工具卡死」，
+#: 挡不住「**多轮**工具 + 多次 LLM 往返」的**累计**。实测 `x_search` 回合单次耗
+#: 102s，期间**同群串行锁被持住**（`handler._group_turn_lock`）⇒ 同群其它用户排队、
+#: 白等 2 分钟且零回复。给整回合一个硬上界后，超预算即「带已得工具结果收口作答」，
+#: 单回合持锁时间不再无界。
+#: 默认 0 = 关，与 `upstream_patience_sec` 同一策略：要启用请显式配置。
+_DEFAULT_TURN_DEADLINE_SEC = 0.0
+
 #: 时效脚注（P2-3）。2026-09-23 改文案：原句是
 #: 「（以上来自联网检索；来源未标注具体日期，时效以抓取时间 {date} 为准）」——
 #: 三项披露（来自网上 / 对方没写日期 / 参考日期）都在，但**逐字是审计口径**：
@@ -158,7 +178,9 @@ class ReActLoop:
                  tool_result_token_budget: int = 1800,
                  priority_sort: bool = True,
                  freshness_footer: bool = True,
-                 upstream_patience_sec: float = _DEFAULT_UPSTREAM_PATIENCE_SEC):
+                 upstream_patience_sec: float = _DEFAULT_UPSTREAM_PATIENCE_SEC,
+                 tool_timeout_sec: float = _DEFAULT_TOOL_TIMEOUT_SEC,
+                 turn_deadline_sec: float = _DEFAULT_TURN_DEADLINE_SEC):
         self.llm = llm
         self.tools = tools
         self.max_rounds = max_rounds
@@ -172,6 +194,12 @@ class ReActLoop:
         self.freshness_footer = bool(freshness_footer)
         # 上游静默时的挽救预算（秒）。0 = 关（改回「立刻出罐头话术」）。
         self.upstream_patience_sec = max(0.0, float(upstream_patience_sec))
+        # 单次工具调用的墙钟上限（秒）。见 `_DEFAULT_TOOL_TIMEOUT_SEC`。
+        self.tool_timeout_sec = max(1.0, float(tool_timeout_sec))
+        # 整回合墙钟预算（秒）。0 = 关闭。见 `_DEFAULT_TURN_DEADLINE_SEC`。
+        self.turn_deadline_sec = max(0.0, float(turn_deadline_sec))
+        self._turn_start: float | None = None
+        self._hit_turn_deadline = False
         self._context_composer = ContextComposer(
             tool_result_token_budget=tool_result_token_budget,
         )
@@ -333,18 +361,45 @@ class ReActLoop:
             return c.strip()
         return ""
 
+    def _turn_deadline_exceeded(self) -> bool:
+        """整回合墙钟预算是否已用尽。0/未开跑 ⇒ False（fail-safe 到「不干预」）。
+
+        判据只看单调钟，不猜；``_turn_start`` 由 ``run()`` 每次重置，
+        所以实例可复用而不会把上一回合的耗时算进来。
+        """
+        deadline = float(getattr(self, "turn_deadline_sec", 0.0) or 0.0)
+        if deadline <= 0.0:
+            return False
+        start = getattr(self, "_turn_start", None)
+        if start is None:
+            return False
+        return (time.monotonic() - start) >= deadline
+
     def _patience_wait(self) -> float | None:
         """上游静默时「等一会儿再要一次」**值得**等多久；None = 不值得等，直接出兜底。
 
-        三种情形（判据全部取自 llm 一手状态，不猜）：
+        四种情形（判据全部取自 llm 一手状态，不猜）：
+          * **出站已连续两次整链失败** —— 窗口性故障，等不到头 ⇒ 返回 None（2026-10-03）；
           * 熔断未打开 —— 按预算等一次（09-25 实测静默持续 8–20s，故预算取 20s）；
           * 熔断已打开且剩余 ≤ 预算 —— 等到它**自然关闭**再试，这才是等的意义；
           * 熔断剩余 > 预算 —— 等不到头，白等 ⇒ 返回 None，立刻出罐头话术。
+
+        🔴 2026-10-03 新增第一条：20s 预算的原假设是「瞬时抖动、等一会儿能救回」，
+        但簇 A 实测推翻了它 —— 02:00:53 与 02:00:56 两次整链失败后仍等满 20s，
+        第三次照样全空，**用户白等 20 秒后照样收兜底**。连续两次整链失败是
+        「上游正处于故障窗」的强信号，此时等待零收益。只有**单次**失败保留等待。
         """
         budget = float(getattr(self, "upstream_patience_sec", 0.0) or 0.0)
         if budget <= 0:
             return None
-        until = getattr(getattr(self, "llm", None), "circuit_open_until", 0) or 0
+        # 出站桶已连续失败 ≥2 次 ⇒ 窗口性故障，别再白等（判据必须看出站桶，
+        # 本方法在 outbound scope 外，直接读 property 会拿到 background 桶）。
+        if outbound_consecutive_failures(getattr(self, "llm", None)) >= 2:
+            return None
+        # 等待预算服务的是**出站正文** ⇒ 必须看出站桶。分桶后属性视图跟随调用 scope，
+        # 而本方法在 outbound scope 之外被调用，直接读属性会把 background 桶的冷却
+        # 误当作出站的剩余时间（2026-10-02）。
+        until = outbound_circuit_open_until(getattr(self, "llm", None))
         try:
             remaining = float(until) - time.time()
         except (TypeError, ValueError):
@@ -405,6 +460,9 @@ class ReActLoop:
         self.tool_trace = []  # 每条回复重新采集
         self._freshness_tools_used = set()
         self._freshness_guidance_sent = False
+        # 整回合墙钟预算计时起点（见 `_turn_deadline_exceeded`）；每回合重置。
+        self._turn_start = time.monotonic()
+        self._hit_turn_deadline = False
         # 本轮上游故障计数基线：兜底出口据此判定真实病因（2026-09-22，09-23 补齐传输/熔断）。
         self._llm_fault_baseline = self._llm_fault_counts()
         tool_schemas = self.tools.get_schemas(
@@ -414,6 +472,14 @@ class ReActLoop:
         prev_sig = None  # 反工具死循环：记录上一轮工具调用签名
 
         for round_idx in range(self.max_rounds):
+            # 整回合墙钟预算：超预算则不再发起新一轮（含 LLM 与工具），带已得结果收口。
+            if self._turn_deadline_exceeded():
+                logger.warning(
+                    "ReAct 整回合超时（>%.0fs，已完成 %d 轮），带已得工具结果收口",
+                    self.turn_deadline_sec, round_idx,
+                )
+                self._hit_turn_deadline = True
+                break
             # 询问 LLM（带已过滤的工具 schema）
             with llm_scope("chat", "react", outbound=True):
                 response = await self.llm.chat_structured(
@@ -482,6 +548,13 @@ class ReActLoop:
 
             # 执行每个工具，添加结果
             for i, tc in enumerate(tool_calls):
+                # 同一轮内的多个工具：超预算后不再执行剩余工具（尽早收敛）。
+                if self._turn_deadline_exceeded():
+                    logger.warning(
+                        "ReAct 整回合超时，跳过本轮剩余 %d 个工具", len(tool_calls) - i,
+                    )
+                    self._hit_turn_deadline = True
+                    break
                 func = tc.get("function", {})
                 name = func.get("name", "unknown")
                 args_str = func.get("arguments", "{}")
@@ -497,11 +570,13 @@ class ReActLoop:
                 try:
                     result = await asyncio.wait_for(
                         self.tools.call(name, args, self.permission_level),
-                        timeout=120.0,
+                        timeout=self.tool_timeout_sec,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("工具调用超时(120s) name=%s", name)
-                    result = "工具执行超时（超过 120 秒），本次未获得结果"
+                    logger.warning("工具调用超时(%.0fs) name=%s", self.tool_timeout_sec, name)
+                    result = (
+                        f"工具执行超时（超过 {self.tool_timeout_sec:.0f} 秒），本次未获得结果"
+                    )
                 # 工具参数和结果可能含用户正文、URL、文件路径；journal 只保留
                 # 名称、成败和长度，排障走受控 audit/任务记录而非聊天日志。
                 ok = _tool_result_ok(result)
@@ -537,15 +612,22 @@ class ReActLoop:
                     "content": _FRESHNESS_GUIDANCE,
                 })
 
-        # 达到最大轮次（或被反死循环守卫 break）→ 最后问一次，无工具
+        # 达到最大轮次 / 反死循环 / 整回合超时 → 最后问一次，无工具
         if not self._hit_tool_spin:
-            self._hit_max_rounds = True
-            try:
-                if self.quality is not None:
-                    self.quality.record_react_max_rounds()
-            except Exception:
-                logger.exception("ReAct 触顶遥测记录失败")
-        logger.info("ReAct 达到最大轮次 %d, 强制最终回复", self.max_rounds)
+            if self._hit_turn_deadline:
+                # 超时收口**不**记为触顶 —— 两者语义不同（触顶=轮次用尽；超时=时间用尽）。
+                logger.warning(
+                    "ReAct 整回合超时收口（%.0fs），基于已得工具结果作答",
+                    self.turn_deadline_sec,
+                )
+            else:
+                self._hit_max_rounds = True
+                try:
+                    if self.quality is not None:
+                        self.quality.record_react_max_rounds()
+                except Exception:
+                    logger.exception("ReAct 触顶遥测记录失败")
+                logger.info("ReAct 达到最大轮次 %d, 强制最终回复", self.max_rounds)
         # 若工具已执行过，把事实约束写进最后一轮，减少空兜底/瞎编。
         if self.tool_trace:
             current_msgs.append({

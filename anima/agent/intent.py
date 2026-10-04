@@ -30,6 +30,40 @@ _FILE_OP_RE = re.compile(
 )
 _MULTI_STEP_RE = re.compile(r"(然后|接着|并且|之后|顺便|再来)")
 
+# 09-26：生图/改图请求不该被劫持进 Agent 草稿审批两步流。
+# 事故实证（群 727631526，owner）：「给我生成一张2007年中国某地区的图片…」被
+# `给我` + `.{0,18}` + `生成` 命中 ⇒ 建成 Agent 草稿、要 approve、计划跑偏成
+# 「写入工作区文件/验证/汇总」、图生成成功却无交付通道 ⇒ 用户什么都没收到。
+# 判据性质与 `_FILE_OP_RE` 的 C3 豁免相同：**纯结构**的词汇共现拦不住「同形不同
+# 意」——「生成一张图」与「跑一个工程任务」在这里完全同形。
+# 但正常对话管线本就能调用 `generate_image`/`edit_image` 并把产物作为 image 段发出
+# （14 天 213 条 image 段出站）⇒ 放它回到正常管线才是正确出口。
+# 两个例外仍走 Agent：① 含多步连接词的复合任务；② 同句还有代码/文件/工程诉求
+# （图只是产物之一）。
+_IMAGE_NOUN_RE = re.compile(
+    r"图片|图像|照片|相片|插画|绘画|漫画|头像|壁纸|海报|表情包|一张图|幅图|张图|原图",
+    re.IGNORECASE,
+)
+_IMAGE_VERB_RE = re.compile(
+    r"生成|画一|画个|画张|绘制|渲染|做一|做张|出一|出张|来一|来张|改图|修图|换脸|P图|ps图",
+    re.IGNORECASE,
+)
+_IMAGE_EXEMPT_BLOCK_RE = re.compile(
+    r"脚本|代码|python|程序|爬|抓取|批量|文件夹|目录|部署|安装|运行|执行|数据库|接口|api",
+    re.IGNORECASE,
+)
+
+
+def _is_pure_image_request(text: str) -> bool:
+    """是否是一条「只要一张图」的请求（据此豁免 Agent 劫持）。"""
+    if not (_IMAGE_NOUN_RE.search(text) and _IMAGE_VERB_RE.search(text)):
+        return False
+    if _MULTI_STEP_RE.search(text):          # 复合任务（图只是其中一步）
+        return False
+    if _IMAGE_EXEMPT_BLOCK_RE.search(text):  # 同句还有代码/文件/工程诉求
+        return False
+    return True
+
 
 def is_agent_task(text: str, permission_level: int) -> bool:
     """仅当权限等级达到主人且文本命中任务触发正则时，才进入 Agent 路径。"""
@@ -44,5 +78,8 @@ def is_agent_task(text: str, permission_level: int) -> bool:
     # C3（第四轮体验测试）：单步文件写/读请求用 write_file/read_file 工具即可，
     # 不应劫持进 Agent 草稿审批两步流；含多步连接词的复合任务仍走 Agent。
     if _FILE_OP_RE.search(t) and not _MULTI_STEP_RE.search(t):
+        return False
+    # 09-26：纯生图/改图请求交还正常对话管线（那里有完整的图片交付通道）。
+    if _is_pure_image_request(t):
         return False
     return True

@@ -29,6 +29,8 @@ import os
 import time
 from typing import Any, Callable, Optional
 
+from anima.llm.usage import scoped_llm
+
 logger = logging.getLogger("anima.crossgroup.compression")
 
 STATE_FILE = "compression_state.json"
@@ -371,8 +373,14 @@ class CompressionEngine:
         stats["evicted"] = enforce_cap(merged, max_facts)
         return merged, stats
 
+    @scoped_llm("crossgroup", "facts_compact")
     async def _llm_summary(self, llm: Any, cluster: list) -> Optional[str]:
-        """LLM 摘要（仅大用户触发）。任何失败都静默回退为代表句。"""
+        """LLM 摘要（仅大用户触发）。任何失败都静默回退为代表句。
+
+        归因（2026-10-03）：用 `scoped_llm` 在**方法边界**打标，而不是给 `llm.chat`
+        加 `module=` 参数 —— 后者会改掉调用签名，逼着测试/集成里的假客户端跟着改
+        （`scoped_llm` 的 docstring 已明确要避免这一点）。
+        """
         try:
             joined = "\n".join(f"- {f.content}（置信:{getattr(f, 'confidence', 1.0)}）"
                                for f in cluster)

@@ -16,6 +16,8 @@ import asyncio
 import json
 import logging
 import time
+
+from anima.llm.usage import llm_scope
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
@@ -105,15 +107,19 @@ async def run_daily_consolidation(core, now: float | None = None) -> dict:
         src = "\n".join(f"- {c}" for _, e in batch
                         if (c := str(e.get("content", "")).strip()))
         try:
-            gist = await asyncio.wait_for(
-                llm.chat(
-                    [{"role": "system",
-                      "content": ("你是记忆整理员。把下面的对话片段浓缩成一句"
-                                  "第三人称的长期要点（≤60字，只保留会随时间仍有意义的"
-                                  "事实/偏好/事件，忽略寒暄与玩梗），直接输出要点本身。")},
-                     {"role": "user", "content": src}],
-                    temperature=0.3, max_tokens=120),
-                timeout=30)
+            # 归因（2026-10-03）：本函数不在 llm_scope 内，不打标就会落到默认
+            # `chat/chat`、trace_id=unscoped —— 每日沉淀明明跑在 00:00 的批量里，
+            # 却把失败记到用户可见的回复链上（高估错误率）。
+            with llm_scope("memory", "consolidate"):
+                gist = await asyncio.wait_for(
+                    llm.chat(
+                        [{"role": "system",
+                          "content": ("你是记忆整理员。把下面的对话片段浓缩成一句"
+                                      "第三人称的长期要点（≤60字，只保留会随时间仍有意义的"
+                                      "事实/偏好/事件，忽略寒暄与玩梗），直接输出要点本身。")},
+                         {"role": "user", "content": src}],
+                        temperature=0.3, max_tokens=120),
+                    timeout=30)
             gist = gist.strip().strip('"')
         except Exception:
             stats["skipped_llm"] += 1

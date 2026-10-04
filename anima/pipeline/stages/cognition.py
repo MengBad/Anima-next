@@ -703,6 +703,22 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         except Exception:
             logger.exception("工具心得注入失败")
 
+    # P0-b 本喵开口之后（被动回复效果）。🔴 只报观察到的事实，片段内置 fail-closed
+    # 过滤：命中「我应该/需要/克制/策略/人设」这类分析腔的笔记整条不注入
+    # （与 cognitive/learning.py 的「绝不写社交策略分析」禁令同向）。
+    rl_cfg = getattr(getattr(core, "config", None), "reply_learning", None)
+    if (rl_cfg is None or getattr(rl_cfg, "enabled", True)) \
+            and getattr(ctx, "detail_type", "") == "group" \
+            and getattr(ctx, "group_id", None):
+        try:
+            from anima.cognitive.reply_learning import get_reply_learning
+            frag = get_reply_learning(core.config.persistence.data_dir).fragment(
+                int(ctx.group_id))
+            if frag:
+                add_system_fragment("reply_learning", frag, 27)
+        except Exception:
+            logger.exception("开口效果片段注入失败")
+
     # P1 个人能力片段
     cap_cfg = getattr(core, "config", None)
     cap_cfg = getattr(cap_cfg, "capabilities", None) if cap_cfg else None

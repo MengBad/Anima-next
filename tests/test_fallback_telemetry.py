@@ -364,7 +364,8 @@ def test_source_records_at_every_exit():
     )
     assert gen.count("_record_fallback(core, ") == 4, (
         "generation 四处埋点：3 处降级 + `_resolve_bullying_reply` 内的 COLD_RESPONSES 冷回"
-        "（该处用 `kind` 参数区分「霸凌冷回 / 回避期冷回」两个出口）"
+        "（该处用 `kind` 参数区分「霸凌冷回 / 回避期冷回」；其中 `cold_avoidance` 桶"
+        "自 2026-09-28 起生产恒 0 —— 回避期已改为真静默，无出站）"
     )
     assert gr.count("_record_fallback(ctx, ") == 5, "guardrail 五处出口都应计数"
 

@@ -326,7 +326,7 @@ class TestConfig:
         from anima.core.config import load_config
         cfg = load_config()
         assert cfg.debounce.group_enabled is True
-        assert cfg.debounce.group_wait_sec == 2.0
+        assert cfg.debounce.group_wait_sec == 1.0
 
     def test_soul_config(self):
         """soul 配置。"""

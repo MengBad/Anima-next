@@ -7,9 +7,13 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 from anima.agent.state import AgentTask, Step
+from anima.llm.usage import scoped_llm
+
+logger = logging.getLogger("anima.agent.planner")
 
 _SYSTEM_PROMPT = (
     "你是 Anima 的任务规划器。把用户的工程/检索请求分解为 2-6 个有序步骤，"
@@ -87,19 +91,28 @@ class TaskPlanner:
         return steps
 
     async def _decompose_replan(self, **kw) -> list[dict]:
-        if self.llm is not None:
-            try:
-                raw = await self._call_llm_replan(**kw)
-                parsed = self._parse_llm(raw)
-                if parsed:
-                    return parsed
-                if _is_empty_array(raw):
-                    # LLM 明确表示「没有可行替代」→ 如实失败，不要用兜底话术硬凑
-                    return []
-            except Exception:
-                pass
+        if self.llm is None:
+            # 09-26：`planner.llm` 曾因构造期捕获而在生产恒为 None，且**全程无日志**
+            # ⇒ 「模型没给出方案」与「根本没调模型」无法区分。此分支必须留痕。
+            logger.info("重规划器未绑定 LLM（planner.llm=None），改用确定性兜底方案")
+            return self._fallback_replan(**kw)
+        raw = ""
+        try:
+            raw = await self._call_llm_replan(**kw)
+            parsed = self._parse_llm(raw)
+            if parsed:
+                logger.info("LLM 重规划产出 %d 步", len(parsed))
+                return parsed
+            if _is_empty_array(raw):
+                # LLM 明确表示「没有可行替代」→ 如实失败，不要用兜底话术硬凑
+                logger.info("LLM 重规划明确返回空数组（无可替代方案），按失败处理")
+                return []
+        except Exception:
+            logger.warning("LLM 重规划调用异常，回退确定性兜底方案", exc_info=True)
+        logger.warning("LLM 重规划输出不可用（%r），回退确定性兜底方案", (raw or "")[:200])
         return self._fallback_replan(**kw)
 
+    @scoped_llm("agent", "replan")
     async def _call_llm_replan(self, *, request: str, done: list[str],
                                failed_step_desc: str, error: str,
                                remaining: list[str], reason: str) -> str:
@@ -134,17 +147,24 @@ class TaskPlanner:
         return out
 
     async def _decompose(self, request: str) -> list[dict]:
-        parsed: list[dict] = []
-        if self.llm is not None:
-            try:
-                raw = await self._call_llm(request)
-                parsed = self._parse_llm(raw)
-            except Exception:
-                parsed = []
-        if parsed:
-            return parsed
+        if self.llm is None:
+            # 09-26 修复：这里曾静默走兜底（`if self.llm is not None` 恒假），
+            # 生产所有 Agent 计划都退化成 `_fallback` 关键词拼接，且日志零痕迹。
+            logger.warning("规划器未绑定 LLM（planner.llm=None），改用确定性兜底计划")
+            return [{"description": d} for d in self._fallback(request)]
+        raw = ""
+        try:
+            raw = await self._call_llm(request)
+            parsed = self._parse_llm(raw)
+            if parsed:
+                logger.info("LLM 规划产出 %d 步", len(parsed))
+                return parsed
+        except Exception:
+            logger.warning("LLM 规划调用异常，回退确定性兜底计划", exc_info=True)
+        logger.warning("LLM 规划输出不可用（%r），回退确定性兜底计划", (raw or "")[:200])
         return [{"description": d} for d in self._fallback(request)]
 
+    @scoped_llm("agent", "plan")
     async def _call_llm(self, request: str) -> str:
         messages = [
             {"role": "system", "content": _SYSTEM_PROMPT},

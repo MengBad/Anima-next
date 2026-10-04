@@ -65,6 +65,7 @@ class RuminationEngine:
         self._compact_count = 0
         # 各子任务独立频率控制（避免每 900s 全量执行）
         self._tool_summary_last = 0.0
+        self._reply_summary_last = 0.0
         self._maintain_health_last = 0.0
         self._sticker_label_last = 0.0
         self._persist = PersistenceProvider(data_dir)
@@ -173,6 +174,20 @@ class RuminationEngine:
                     self._tool_summary_last = now
             except Exception:
                 logger.exception("工具规律总结调度失败")
+
+        # P0-b：被动回复效果归纳（B1：只采集/归纳，不改开口行为；同样节流 1800s）
+        _rl_cfg = getattr(getattr(self.core, "config", None), "reply_learning", None)
+        if getattr(_rl_cfg, "enabled", True) and now - self._reply_summary_last >= _SUBTASK_INTERVAL:
+            try:
+                from anima.cognitive.reply_learning import get_reply_learning
+                rl = get_reply_learning(self.core.config.persistence.data_dir)
+                due_groups = rl.summarize_due_groups()
+                if due_groups:
+                    for gid in due_groups:
+                        await rl.summarize(self.core.llm, gid)
+                    self._reply_summary_last = now
+            except Exception:
+                logger.exception("被动回复效果归纳调度失败")
 
         # P1：能力系统
         try:

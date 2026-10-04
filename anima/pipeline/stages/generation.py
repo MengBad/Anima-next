@@ -10,6 +10,7 @@ from typing import Optional
 
 from anima.pipeline import StageResult, PipelineContext
 from anima.pipeline.context import ContextComposer
+from anima.llm import outbound_circuit_open_until  # 熔断守卫需**出站**视角（2026-10-02）
 from anima.core.reply_splitter import filter_inner_monologue  # P0：内心独白过滤
 from anima.media import fetch_prepared_images, to_data_uri, build_multimodal_user_content
 from ._shared import _detect_promise_and_schedule
@@ -61,20 +62,54 @@ _IMAGE_MANIP_RE = re.compile(
     r"flip|mirror|rotate|resize|crop|filter|blur|sharpen|edit|photoshop)",
     re.I,
 )
+# 语义级改图关键词（2026-10-01）：需要**理解画面内容**才能完成的修改
+# （加/换元素、换主体、换背景、改画风…）。这类需求 run_python 做不到，必须走 edit_image。
+# 与上面宽匹配的 _IMAGE_MANIP_RE 并存：**语义优先**（见 _image_guidance_kind）。
+# 设计约束：只收「动词短语」，不收孤立名词/风格词 —— 否则「这个背景真好看」
+# 「这是二次元图吗」会被误判成改图请求，反而诱导模型乱改图。
+_IMAGE_SEMANTIC_RE = re.compile(
+    r"("
+    r"加入|加进|加到|放进|放入|放到|塞进|塞入|合成[进到]|合到|"
+    r"加[上入进到]?(?:一|两|三|几|数)?"
+    r"(?:只|条|张|朵|颗|片|头|匹|辆|栋|座|棵|道|面|块|个(?!字|词|标|水印|行))|"
+    r"放[上一入进到]?(?:一|两|三|几|数)?"
+    r"(?:只|条|张|朵|颗|片|头|匹|辆|个(?!字|词|标|水印|行))|"
+    r"[Pp](?:[上去进到]去?|(?:一|两|三|几|数)?(?:只|条|张|个|朵|颗|片|头|匹|辆))|"
+    r"改[成变]|换[成掉]|变[成]|替换[成为]|"
+    r"(?:改|换|调)(?:一下|一个|个|成|掉|为)?(?:人物|主体|背景|表情|服装|发型|穿着|姿势|风格|画风)|"
+    r"风格迁移|"
+    r"(?:改成|变成|换成|整成|弄成).{0,8}(?:风|画|样子)"
+    r")",
+    re.I,
+)
 _IMAGE_MANIP_GUIDANCE = (
-    "用户要求对图片进行处理（翻转/旋转/缩放/滤镜等），你已有 run_python 工具可用，"
-    "沙箱内已注入 _input_image（PIL Image 对象，无图时为 None）、_input_image_b64（原始 base64）、"
-    "_input_is_animated（是否为动画 GIF/动态图）、_input_frames（全部帧列表）。"
+    "用户要求对图片进行【像素/几何级处理】（翻转/旋转/缩放/裁剪/滤镜/加文字/调色/贴图等），"
+    "用 run_python 完成：沙箱内已注入 _input_image（PIL Image 对象，无图时为 None）、"
+    "_input_image_b64（原始 base64）、_input_is_animated（是否为动画 GIF/动态图）、"
+    "_input_frames（全部帧列表）。"
     "若是动画 GIF，必须用 _edit_each_frame(lambda im: im.<操作>) 处理每一帧，"
     "再 _save_output(frames, 'out.gif') 保存，否则会丢动画变成静图；"
     "普通单图可用 _input_image 直接操作。必须先检查 _input_image is not None。不要拒绝，直接调用工具处理。"
+    "注意：若用户实际要的是【语义级修改】（加/换元素、换主体、改人物表情服装、换背景、改画风），"
+    "那是 run_python 做不到的，应当改用 edit_image —— 它调用真实图像模型理解画面内容。"
+)
+_IMAGE_SEMANTIC_GUIDANCE = (
+    "用户要求对图片做【语义级修改】——需要理解画面内容才能完成的改动"
+    "（加/换元素、换主体、改人物表情/服装/发型、换背景、改画风风格、风格迁移等）。"
+    "**这类修改必须调用 edit_image 工具**（真实图像模型）："
+    "prompt 写清楚要改成什么样子；image 参数可省略（缺省会自动取本次消息附带的图片）。"
+    "不要用 run_python —— 它只能做像素/几何变换，无法理解画面内容做语义级修改。"
+    "若本次消息既没附图、也没引用到任何图（没有原图），如实告诉用户需要先给一张图，不要凭空生成。"
 )
 _IMAGE_PRESENT_GUIDANCE = (
-    "用户消息附带了图片。若需对图片做任何操作，调用 run_python 工具——"
-    "沙箱内已注入 _input_image（PIL Image 对象）、_input_image_b64（原始 base64）、"
-    "_input_is_animated、_input_frames。"
-    "动画 GIF 必须用 _edit_each_frame(lambda im: ...) 处理每一帧后 _save_output(frames, 'out.gif')，"
-    "否则会丢失动画。沙箱无网络，禁止用 urllib/requests 下载任何 URL；图片数据已在 _input_image 中，直接用。"
+    "用户消息附带了图片，你可以基于它回答问题。"
+    "若用户明确要求改动这张图，按类型分流："
+    "① 语义级修改（加/换元素、换主体、改人物表情服装、换背景、改画风）→ 用 edit_image（真实图像模型）；"
+    "② 像素/几何处理（翻转/旋转/缩放/裁剪/加文字/调色/滤镜）→ 用 run_python"
+    "（沙箱内已注入 _input_image / _input_image_b64 / _input_is_animated / _input_frames；"
+    "动画 GIF 用 _edit_each_frame 处理每帧后 _save_output(frames, 'out.gif') 保留动画）。"
+    "**只有用户明确要求改动时才动工具，不要主动改图。**"
+    "沙箱无网络，禁止用 urllib/requests 下载任何 URL；图片数据已在 _input_image 中，直接用。"
 )
 _REALTIME_TOOL_GUIDANCE = (
     "若当前问题涉及实时状态、天气、搜索、链接、单位换算、最新新闻、具体事实或"
@@ -214,6 +249,28 @@ def _resolve_bullying_reply(recent_count: int, severity: int = 0, *,
     return random.choice(COLD_RESPONSES)
 
 
+def _image_guidance_kind(text: str, has_image: bool) -> str | None:
+    """图片操作引导三态分流（2026-10-01）。
+
+    返回 ``"semantic" | "manip" | "present" | None``：
+
+    - ``semantic``：语义级改图（需理解画面内容）→ 注入 edit_image 引导
+    - ``manip``   ：像素/几何级处理 → 注入 run_python 引导
+    - ``present`` ：有图但无操作意图 → 仅告知「有图」，不诱导改图
+    - ``None``    ：无图，无需任何引导
+
+    抽成纯函数以便直接契约测试（不依赖 core / ctx 构造）。
+    """
+    if not has_image:
+        return None
+    body = text or ""
+    if _IMAGE_SEMANTIC_RE.search(body):
+        return "semantic"
+    if _IMAGE_MANIP_RE.search(body):
+        return "manip"
+    return "present"
+
+
 def _inject_runtime_tool_guidance(ctx: PipelineContext, guidance: str) -> bool:
     """把本轮工具提示插入唯一 system，且保持身份锁定仍在末尾。"""
     if not guidance:
@@ -275,6 +332,37 @@ def _upstream_patience_sec(core) -> float:
                                    _DEFAULT_UPSTREAM_PATIENCE_SEC)))
     except (TypeError, ValueError):
         return _DEFAULT_UPSTREAM_PATIENCE_SEC
+
+
+def _tool_timeout_sec(core) -> float:
+    """单次工具调用的墙钟上限：``react.tool_timeout_sec``（默认 45.0）。
+
+    与 ``_upstream_patience_sec`` 同一策略：取不到配置时用**代码默认**（生产
+    config.yaml 无 react 段是常态），绝不用 0 —— 0 会让每个工具调用立刻超时。
+    """
+    from anima.agent.react import _DEFAULT_TOOL_TIMEOUT_SEC
+
+    cfg = getattr(getattr(core, "config", None), "react", None)
+    try:
+        return max(1.0, float(getattr(cfg, "tool_timeout_sec", _DEFAULT_TOOL_TIMEOUT_SEC)))
+    except (TypeError, ValueError):
+        return _DEFAULT_TOOL_TIMEOUT_SEC
+
+
+def _turn_deadline_sec(core) -> float:
+    """整回合 ReAct 墙钟预算：``react.turn_deadline_sec``（默认 0.0 = 关闭）。
+
+    与 ``_upstream_patience_sec`` 同一策略：取不到配置时用**代码默认**（= 0，
+    即不干预）。这是**行为开关**：生产未显式配置时不改变既有行为。
+    """
+    from anima.agent.react import _DEFAULT_TURN_DEADLINE_SEC
+
+    cfg = getattr(getattr(core, "config", None), "react", None)
+    try:
+        return max(0.0, float(getattr(cfg, "turn_deadline_sec",
+                                   _DEFAULT_TURN_DEADLINE_SEC)))
+    except (TypeError, ValueError):
+        return _DEFAULT_TURN_DEADLINE_SEC
 
 
 def _inject_user_boundary_note(ctx: PipelineContext) -> bool:
@@ -548,6 +636,68 @@ def _has_provider_identity_leak(reply: str) -> bool:
     return bool(_PROVIDER_IDENTITY_LEAK_RE.search(reply or ""))
 
 
+# ---------------------------------------------------------------------------
+# 引用归属（2026-09-28）
+# ---------------------------------------------------------------------------
+
+def _compose_quote_hint(event: Any, text: Any) -> str:
+    """构造引用归属提示。返回 `''` 表示无引用。**绝不抛出。**
+
+    🔴 为什么要有它：旧文案 `（你引用的上一条消息内容是：X）` 只给**内容**、
+    不给**来源**，且「你引用的」还把归属默认绑给**引用者** ⇒ 模型唯一的解释是
+    「这是引用者发的」。实况（2026-09-28 20:47）：诹访子引用 **bot 自己发的图**
+    说「你看你烧的」，bot 咬定「自己发这种怪图加 100 心情还倒打一耙！」。
+
+    分支与文案（刻意短，避免挤历史 token 预算）：
+      - 有正文 + 引用自己 → `（你引用的是你自己发的内容：X）`
+      - 有正文 + 引用别人 → `（你引用的是诹访子发的内容：X）`
+      - 有正文 + 来源未知 → **退回旧文案**（保证任何未落新字段的路径字节不变）
+      - 无正文 + 有引用图 → `（你引用了一张你自己发的图）` / `（…诹访子发的图）`
+      - 无正文无图但确有引用 → `（你引用了你自己/诹访子发的一条消息）`；
+        拉取失败则 `（本条是引用回复；被引用内容没拿到）`
+      - 无引用 → `''`
+
+    去重语义保留：正文里已含被引内容时不再注入（与修复前一致）。
+    """
+    try:
+        ev = event if isinstance(event, dict) else {}
+        quoted = ev.get("reply_text")
+        quoted = str(quoted).strip() if quoted is not None else ""
+        try:
+            n_img = int(ev.get("reply_image_count") or 0)
+        except (TypeError, ValueError):
+            n_img = 0
+        has_id = bool(ev.get("reply_message_id"))
+        if not quoted and not n_img and not has_id:
+            return ""
+
+        is_self = bool(ev.get("reply_to_self"))
+        name = str(ev.get("reply_sender_name") or "").strip()
+        who = "你自己" if is_self else name          # '' ⇒ 来源未知
+
+        if quoted:
+            if quoted in str(text or ""):
+                return ""                            # 既有去重语义
+            if who:
+                return f"（你引用的是{who}发的内容：{quoted}） "
+            return f"（你引用的上一条消息内容是：{quoted}） "   # 旧文案，字节不变
+
+        if n_img > 0:
+            if who:
+                return f"（你引用了一张{who}发的图） "
+            return "（你引用了一张图） "
+
+        # 有 reply id 但既无正文也无图：别假装没引用
+        if who:
+            return f"（你引用了{who}发的一条消息） "
+        if ev.get("reply_is_unknown"):
+            return "（本条是引用回复；被引用内容没拿到） "
+        return ""
+    except Exception:
+        logger.debug("引用归属文案构造失败（已隔离）", exc_info=True)
+        return ""
+
+
 async def generation_stage(ctx: PipelineContext) -> StageResult:
     """调用 LLM 生成回复 —— 通过 ReAct 循环（思考→工具→观察→再思考）。"""
     # 🔴 已决定不回复 ⇒ 不再向上游发请求（2026-09-25）。
@@ -573,8 +723,10 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     # 回一句轻量追问。此前这类消息过闸门（mentions_self=True）后 ReAct 无料可答 →
     # 静默不回（09-18 实测 1 例：@MengKing 空正文）。私聊不走此分支（恒回复）。
     if ctx.detail_type == "group" and not (ctx.text or "").strip() and not ctx.inbound_images:
-        _has_quote = bool(((ctx.event or {}).get("reply_text") or "").strip())
-        if not _has_quote:
+        # 复用归属文案作唯一判据：**纯图引用**（`reply_image_count>0`）与
+        # 「拿了引用 id 但内容没拉到」同样算「有引用」⇒ 不再误判成"什么都没说"
+        # 而回「叫本喵干嘛呀喵？」。
+        if not _compose_quote_hint(ctx.event or {}, ctx.text or ""):
             try:
                 from anima.llm.group_gate import is_direct_group_call
                 _direct = bool(is_direct_group_call(ctx.event or {}, ctx.text or ""))
@@ -586,14 +738,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                 ctx.reply = "叫本喵干嘛呀喵？"
                 return StageResult.CONTINUE
 
-    # 引用回复注入
-    quoted = (ctx.event or {}).get("reply_text")
-    if quoted:
-        quoted = quoted.strip()
-    if quoted and quoted not in (ctx.text or ""):
-        quoted_hint = f"（你引用的上一条消息内容是：{quoted}） "
-    else:
-        quoted_hint = ""
+    # 引用回复注入：写明**被引用者是谁**（修复前只有内容、没有来源）。
+    quoted_hint = _compose_quote_hint(ctx.event or {}, ctx.text or "")
     if ctx.detail_type == "group":
         user_line = f"[群聊消息] {ctx.sender_name}({ctx.user_id}): {quoted_hint}{ctx.text}".rstrip()
     else:
@@ -655,30 +801,29 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             ctx.reply = _cold
             return StageResult.CONTINUE
     else:
-        # 伤痕回避：被伤过两次的用户，24h 内只简短回复（不主动长聊、不辩解）
+        # 伤痕回避：被伤过两次的用户，24h 内**一律静默**（不出声、不冷脸、不辩解）。
+        # 🔴 2026-09-28 契约变更（用户指令：「bot 遇到那种情况可以不回复」）：
+        #   此前分两支 —— 对方示意结束才静默，未示意结束则补一句 `COLD_RESPONSES`
+        #   冷回。生产实证（09-25→09-28 全量原始日志）该冷回**不判当前消息是否
+        #   友好**：同一回避期用户发的长文创作者内容、抖音分享、新人提问全吃同一
+        #   句冷脸（「……你开心就好。」「本喵不想说话了。」「算了，不说了。」），
+        #   被群友读作「闹脾气」；且 `[霸凌] 主人豁免 user=1562290139` ⇒ owner
+        #   在群里看不到该现象（幸存者偏差）。
+        #   ⇒ 收敛为统一静默。**刻意不再加第二判据**（"判断当前消息友不友好"会
+        #   让行为不可预测，也与"被伤过就先退一步"的设定相悖）。
+        # `SKIP_REPLY` 下游闭合（改前逐一核实）：`pipeline/__init__.py:105-107`
+        #   只置 `should_reply=False`、不 break；`handler.py:1060-1083` 遂**直接
+        #   return** —— 无出站、无兜底话术、不计入 `unavailable`。与霸凌完全沉默
+        #   （上面 `_bully_recent >= 3 or _bully_sev >= 3` 分支）同一手法。
         try:
             from anima.cognitive.scar import get_scar_system
             _persist = getattr(getattr(core, "config", None), "persistence", None)
             _dd = getattr(_persist, "data_dir", "data") if _persist else "data"
-            _avoiding = get_scar_system(_dd).is_avoiding(int(ctx.user_id))
-            if _avoiding:
-                # 对方示意结束（转私聊 / 别说了 / 不聊了 / 晚安…）→ 彻底沉默，不再补冷话收尾。
-                # 只有明确示意结束才静默；未示意结束的回避期仍极短冷回（保留原防长篇辩解意图）。
-                try:
-                    from anima.llm.group_gate import is_conversation_end_signal
-                    _ending = bool(is_conversation_end_signal(ctx.text or ""))
-                except Exception:
-                    _ending = False
-                if _ending:
-                    logger.info("[回避] 用户 %s 示意结束，彻底沉默不补刀", ctx.user_id)
-                    ctx.reply = None
-                    ctx.should_reply = False
-                    return StageResult.SKIP_REPLY
-                _cold = _resolve_bullying_reply(0, core=core, kind="cold_avoidance")
-                if _cold:
-                    logger.info("[回避] 用户 %s 处于回避期，简短回复", ctx.user_id)
-                    ctx.reply = _cold
-                    return StageResult.CONTINUE
+            if get_scar_system(_dd).is_avoiding(int(ctx.user_id)):
+                logger.info("[回避] 用户 %s 处于回避期，静默不回复", ctx.user_id)
+                ctx.reply = None
+                ctx.should_reply = False
+                return StageResult.SKIP_REPLY
         except Exception:
             logger.debug("scar 回避检查失败", exc_info=True)
 
@@ -715,7 +860,18 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         freshness_footer=_freshness_footer_enabled(core),
         # 2026-09-23：上游静默时的挽救预算（react.upstream_patience_sec，0 = 关）
         upstream_patience_sec=_upstream_patience_sec(core),
+        # 2026-10-03：单次工具调用墙钟上限（react.tool_timeout_sec，默认 45s）
+        tool_timeout_sec=_tool_timeout_sec(core),
+        # 2026-10-03：整回合墙钟预算（react.turn_deadline_sec，默认 0 = 关）
+        turn_deadline_sec=_turn_deadline_sec(core),
     )
+
+    # D4 埋点（2026-09-27）：pipeline 起点 → ReAct 之间的耗时（permission/memory/
+    # cognition 三阶段 + 本阶段进 ReAct 前的组装）。与 handler 的
+    # `entry_to_pipeline` 相加即得「入站 → ReAct」的绝大部分（纯观测）。
+    _t_pipe = ctx.meta.get("_pipe_t0")
+    if isinstance(_t_pipe, (int, float)):
+        logger.info("[阶段耗时] pre_react=%.0fms", (time.monotonic() - _t_pipe) * 1000)
 
     logger.info("ReAct: model=%s text_len=%d mem=%d desire=%d tools=%d",
                  core.llm.model, len(ctx.text or ""),
@@ -745,16 +901,24 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     ):
         _inject_runtime_tool_guidance(ctx, _X_IMAGE_GUIDANCE)
 
-    # 图片操作引导（宽松：有图 + 有工具即注入引导，确保 LLM 知道沙箱有图可用）
-    _has_image_manip_request = (
-        available_tools
-        and ctx.inbound_images
-        and _IMAGE_MANIP_RE.search(ctx.text or "")
+    # 图片操作引导：按「语义级 / 像素级 / 仅告知」三态分流（2026-10-01）
+    # 修复前只区分「宽泛关键词->run_python 引导」与「其余->有图告知」，两段文案都不提
+    # edit_image => 语义级改图（如「把一只浣熊加入到图片里面」）被指向像素工具
+    # （生产实证：edit_image 7 天 0 调用）。additive：_IMAGE_MANIP_RE 保持宽匹配不变。
+    _image_kind = _image_guidance_kind(
+        ctx.text or "", bool(available_tools and ctx.inbound_images)
     )
-    if _has_image_manip_request:
+    if _image_kind == "semantic":
+        logger.info("[图像引导] trace=%s kind=semantic text=%r",
+                    ctx.meta.get("trace", "-"), (ctx.text or "")[:60])
+        _inject_runtime_tool_guidance(ctx, _IMAGE_SEMANTIC_GUIDANCE)
+    elif _image_kind == "manip":
+        logger.info("[图像引导] trace=%s kind=manip text=%r",
+                    ctx.meta.get("trace", "-"), (ctx.text or "")[:60])
         _inject_runtime_tool_guidance(ctx, _IMAGE_MANIP_GUIDANCE)
-    elif available_tools and ctx.inbound_images:
-        # 有图但未匹配操作关键词 → 仍告知 LLM 沙箱有图可用，禁止网络下载
+    elif _image_kind == "present":
+        logger.info("[图像引导] trace=%s kind=present text=%r",
+                    ctx.meta.get("trace", "-"), (ctx.text or "")[:60])
         _inject_runtime_tool_guidance(ctx, _IMAGE_PRESENT_GUIDANCE)
 
     # 上下文预算
@@ -801,8 +965,10 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             input_images_b64=_input_images_b64 or None,
             permission_level=ctx.meta.get("permission_level", 2),
         )
-    # 熔断器
-    if getattr(core.llm, "circuit_open_until", 0) > time.time():
+    # 熔断器（**出站**视角）。2026-10-02 熔断分桶后，`circuit_open_until` 属性跟随
+    # 当前调用 scope；本守卫在 react 的 outbound scope **之外** ⇒ 直接读属性只会拿到
+    # background 桶（＝出站已熔断却照样进生成）。故显式走 outbound 桶。
+    if outbound_circuit_open_until(core.llm) > time.time():
         logger.warning("LLM 熔断器已打开，跳过生成，返回安全话术")
         _record_fallback(core, "breaker")
         ctx.reply = random.choice(_DEGRADE_FALLBACKS)

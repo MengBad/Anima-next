@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 import logging
+import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable, Optional
@@ -86,7 +87,15 @@ class Pipeline:
         交给 handler 空回复分支既有的诚实遥测（reply_unavailable 审计 +
         reply_quality 计数）——不伪造成功，也不再无迹可寻。
         """
+        # D4 埋点（2026-09-27）：把「入站 → 出站」中 ReAct **之前**的耗时拆到各阶段。
+        # 纯观测：只记录阶段名与毫秒数，不改阶段顺序 / 短路语义 / 返回值。
+        # `_pipe_t0` 供 generation 在 ReAct 锚点处计算「pipeline 起点 → ReAct」。
+        _t_pipe = time.monotonic()
+        ctx.meta["_pipe_t0"] = _t_pipe
+        _stage_ms: dict[str, float] = {}
+        ctx.meta["_stage_ms"] = _stage_ms
         for i, stage in enumerate(self.stages):
+            _t_stage = time.monotonic()
             try:
                 result = await stage(ctx)
                 if result == StageResult.STOP:
@@ -105,4 +114,10 @@ class Pipeline:
                     ctx.meta["generation_failed"] = True
                     break
                 logger.exception("Pipeline 阶段 %d(%s) 异常，跳过", i, stage.__name__)
+            finally:
+                _stage_ms[getattr(stage, "__name__", f"stage{i}")] = round(
+                    (time.monotonic() - _t_stage) * 1000, 1)
+        logger.info("[阶段耗时] total=%.0fms %s",
+                    (time.monotonic() - _t_pipe) * 1000,
+                    " ".join(f"{k}={v}" for k, v in _stage_ms.items()))
         return ctx

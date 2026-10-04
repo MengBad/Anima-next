@@ -40,6 +40,15 @@ llm:
   module_models: {}
   providers: {}
   active_provider: "default"
+  # 模块级 reasoning 档位（2026-10-02 新增）：键是模块名，值是 minimal/low/medium/high。
+  # 🔴 只对 **gemini 系** 模型下发 —— 该参数是拿 gemini 网关实测标定的，对不认识的模型
+  #    硬发可能 400（把一次可选优化变成一次故障），所以代码里先判 family 再发。
+  # 🔴 写在这里的值会**覆盖**代码内默认表；留空（或删掉本键）即只用代码默认。
+  #    代码默认（`anima/llm/__init__.py::_DEFAULT_REASONING_EFFORT`）已给
+  #    `sticker_label` / `vision` 配 minimal。
+  # 示例：module_reasoning_effort:
+  #         selfcode: low
+  #         crossgroup: minimal
 
 vector:
   enabled: true
@@ -114,6 +123,13 @@ tool_learning:                             # P0：工具调用自学习
   summarize_interval: 10                  # 同工具成功记录每累计 N 条归纳一次规律
   records_max: 200                        # records 环形上限
   inject_top_k: 4                         # 注入 system 的使用心得条数
+
+reply_learning:                            # P0-b：被动回复效果自学习（B1：只采集，不接闸门）
+  enabled: true                           # 注入 + 归纳开关（采集与统计恒开）
+  window_sec: 300                         # 开口后多久内有人接话算「被接住」
+  records_max: 200                        # 每群心得环形上限
+  inject_top_k: 3                         # 注入 system 的心得条数
+  min_samples: 5                          # 少于这么多开口样本不归纳
 
 capabilities:                              # P1：个人能力自生长系统
   enabled: true                           # 总开关
@@ -206,7 +222,7 @@ reply_split:                                 # 拟人分段发送 + 拟真打字
 
 debounce:                                    # 群聊消息防抖（合并连续输入）
   group_enabled: true
-  group_wait_sec: 2.0                        # 等待后续消息的窗口
+  group_wait_sec: 1.0                        # 等待后续消息的窗口（2026-10-03：2.0→1.0）
   group_max_wait_sec: 6.0                    # 最大等待时间
   adaptive: true                             # 按消息长度自适应等待
   short_msg_threshold: 10                    # 短句阈值（字）
@@ -279,7 +295,16 @@ react:
   # 罐头话术时付出延迟，且只等一次；熔断剩余超过该预算时不等待。0 = 关闭（回滚点）。
   # 20.0（2026-09-25 由 6.0 抬上来）：实测 4/4 次「等 6s 再试」仍空，而静默实际
   # 持续 8–20s ⇒ 6.0 结构上不可能成功，是纯延迟；取观测窗上沿 20s。
+  # 2026-10-03：出站桶已**连续两次整链失败**时不再等待（窗口性故障，白等）。
   upstream_patience_sec: 20.0
+  # 单次工具调用的墙钟上限（秒）。旧值是硬编码 120s，放过了 102s 的 x_search
+  # （整回合被拖死、同群用户排队 2 分钟）。默认 45s，覆盖 browser goto 30s +
+  # click 15s 的内部串行最坏。
+  tool_timeout_sec: 45.0
+  # 整回合 ReAct 墙钟预算（秒）。单次工具上限只挡「一个工具卡死」，挡不住
+  # 「多轮工具 + 多次 LLM 往返」的累计；超预算则带已得工具结果收口作答，
+  # 给单回合持锁时间一个硬上界。默认 0 = 关闭（不改变既有行为）；要启用显式配 90。
+  turn_deadline_sec: 0.0
 
 memory:
   # 长期记忆（事件→知识→行为模式；anima/memory/long_term.py）

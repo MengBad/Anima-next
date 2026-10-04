@@ -1338,6 +1338,64 @@ class StickerManager:
         path = self._asset_file(sticker_hash, item)
         return path if path.is_file() else None
 
+    # ------------------------------------------------------------------
+    # 反查：已发出的文件路径 → 中文描述（供「自己知道自己发了什么表情包」留痕）
+    # ------------------------------------------------------------------
+
+    def describe_paths(self, paths: Any) -> list[str]:
+        """把**本库表情包**的文件路径翻译成简短中文描述；非本库路径被跳过。
+
+        认库方式 = 文件名 stem 命中 `stickers.json` 索引（sha1）——这是**正向识别**，
+        不依赖出站段里的 `subType`：`sticker.small_emoji_channel=False` 时表情段同样是
+        不带 subType 的普通 image 段，按 subType 判会把表情误当生图。
+
+        描述 = `emotion` **且必须命中 `EMOTION_TAXONOMY` 受控词表**，否则「未标注」。
+        🔴 **刻意不用 labels / category**：它们是打标 LLM 从群聊上下文生成的**自由文本**
+        （生产实测存在「寻找炮友」这类粗俗标签），一旦写进 bot 自己的上下文，
+        就等于新开一条「未审用户文案 → prompt」通道 —— 表情身份用情绪域已足够。
+        保持入参顺序、逐项 fail-soft；索引不可读时返回空列表（**绝不抛**）。
+        """
+        if not paths:
+            return []
+        try:
+            items = [str(p) for p in paths if p]
+        except TypeError:
+            return []
+        if not items:
+            return []
+        try:
+            meta = self._read_meta()
+        except Exception:
+            logger.debug("表情索引不可读，路径反查跳过", exc_info=True)
+            return []
+        if not isinstance(meta, dict):
+            return []
+        out: list[str] = []
+        for p in items:
+            try:
+                item = meta.get(Path(p).stem)
+            except Exception:
+                item = None
+            if not isinstance(item, dict):
+                continue          # 非本库文件（生图等）⇒ 不算表情包
+            out.append(self._describe_item(item))
+        return out
+
+    def describe_path(self, path: Any) -> Optional[str]:
+        """单路径版本；非本库表情返回 None。"""
+        got = self.describe_paths([path])
+        return got[0] if got else None
+
+    def _describe_item(self, item: dict) -> str:
+        """一条索引记录 → 简短中文描述（**只在受控词表内取值**）。绝不抛。"""
+        try:
+            emo = self._emotion_of(item)
+            if emo in EMOTION_TAXONOMY:
+                return emo
+        except Exception:
+            logger.debug("表情情绪解析失败", exc_info=True)
+        return "未标注"
+
     # ---------------- /meme 运行时控制（复刻 stealer 指令集）----------------
     _RUNTIME_FILE = "sticker_runtime.json"
 

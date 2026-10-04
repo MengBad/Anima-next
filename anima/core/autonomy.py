@@ -567,6 +567,7 @@ class Heartbeat:
         # 持久化
         self._persist = PersistenceProvider(data_dir)
         self._path = "heartbeat.json"
+        self._data_dir = data_dir
         self.restore()
 
         # 反刍引擎
@@ -816,6 +817,8 @@ class Heartbeat:
                 return 0.5
 
         self._expire_active_feedback(time.time())
+        # 被动回复效果：与主动发言同一心跳节拍结算窗口（B1 只采集，不改行为）。
+        self._expire_reply_feedback()
         try:
             self.core.health_history.record()
         except Exception:
@@ -1911,8 +1914,30 @@ class Heartbeat:
     def count_message(self, group_id: int) -> None:
         """每收到一条群消息调用：累加计数并记录最近发言时间（供沉默门控）。"""
         self._record_active_engagement(int(group_id), time.time())
+        self._observe_reply_feedback(int(group_id))
         self._group_total_msgs[group_id] = self._group_total_msgs.get(group_id, 0) + 1
         self._group_last_msg[group_id] = time.time()
+
+    def _observe_reply_feedback(self, group_id: int, now: float | None = None) -> None:
+        """被动回复的「被接话」观察点。
+
+        与 `_record_active_engagement` 共用同一个触发源（memory 层的群消息回调，
+        天然在回复闸门**之前**），但落在**独立的池子**（`reply_learning.json`）——
+        主动发言与被动回复的开口效果必须分开统计，否则归因又会糊在一起。
+        """
+        try:
+            from anima.cognitive.reply_learning import get_reply_learning
+            get_reply_learning(str(self._data_dir)).observe(int(group_id), now=now)
+        except Exception:
+            logger.debug("被动回复效果观察失败（已隔离）", exc_info=True)
+
+    def _expire_reply_feedback(self) -> None:
+        """心跳驱动的窗口结算：窗口过了仍无人接话 ⇒ ignored。"""
+        try:
+            from anima.cognitive.reply_learning import get_reply_learning
+            get_reply_learning(str(self._data_dir)).expire()
+        except Exception:
+            logger.debug("被动回复效果过期结算失败（已隔离）", exc_info=True)
 
     def _feedback_stats(self, group_id: int) -> dict[str, int]:
         return self._active_feedback_stats.setdefault(int(group_id), {"engaged": 0, "ignored": 0})
