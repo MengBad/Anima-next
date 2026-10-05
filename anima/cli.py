@@ -369,6 +369,12 @@ def start(config_path, once, identity_attestation):
             retries=int(provider_cfg.get("retries", cfg.llm.retries)),
             retry_backoff_sec=float(provider_cfg.get("retry_backoff_sec", cfg.llm.retry_backoff_sec)),
             fallback_models=list(provider_cfg.get("fallback_models") or cfg.llm.fallback_models),
+            # 🔴 2026-10-06：异族兜底（治「同族全灭」）。必须在这里预热才生效 ——
+            # 单例只在 cli 构造一次，config 改了不重启等于没改。
+            extra_fallback_models=list(
+                provider_cfg.get("extra_fallback_models")
+                or cfg.llm.extra_fallback_models
+            ),
             circuit_failure_threshold=int(provider_cfg.get("circuit_failure_threshold", cfg.llm.circuit_failure_threshold)),
             circuit_cooldown_sec=float(provider_cfg.get("circuit_cooldown_sec", cfg.llm.circuit_cooldown_sec)),
             provider=cfg.llm.active_provider,

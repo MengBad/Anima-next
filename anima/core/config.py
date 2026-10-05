@@ -34,6 +34,18 @@ class LLMConfig(BaseModel):
     retries: int = 2
     retry_backoff_sec: float = 0.6
     fallback_models: list[str] = Field(default_factory=list)  # 同一兼容网关内的备用模型，空=不切换
+    #: 🔴 **异族兜底**（2026-10-06，72h 生产账本驱动）
+    #:
+    #: 实测 72h：`gemini-3.8-flash-n` 1952/1952 **100%**、`gemini-3.8-flash` 377/377 100%，
+    #: 而降级链两级 `gemini-3.6-flash` 96.5%、`gemini-3-flash` **0%**。
+    #: ⇒ 主模型从不出问题；**一旦降级两级都在同一个 provider（google）**，
+    #: 而同 provider 的「200-空」是**上游整体抖动**，换同族模型救不回来
+    #: （00:25 用户面事故即此形状：`-high` 返空 → `3.6` 返空 → 用户看到兜底话术）。
+    #:
+    #: 所以：**异族** provider 的模型是治「同族全灭」的唯一结构性兜底。
+    #: 空列表（默认）⇒ 行为与从前**逐字相同**，是零影响回滚点。
+    #: 🔴 最多生效 **1 档**（链长上限 4 → 5），避免最坏延迟被拖长。
+    extra_fallback_models: list[str] = Field(default_factory=list)
     circuit_failure_threshold: int = 3  # 连续失败达到此值后短暂熔断，保护 QQ 主链路
     circuit_cooldown_sec: float = 30.0
     # 可选的命名提供商配置。保留旧字段是为了兼容现有 config.yaml；
@@ -64,6 +76,7 @@ class LLMConfig(BaseModel):
                 "retries": raw.get("retries", self.retries),
                 "retry_backoff_sec": raw.get("retry_backoff_sec", self.retry_backoff_sec),
                 "fallback_models": raw.get("fallback_models", self.fallback_models),
+                "extra_fallback_models": raw.get("extra_fallback_models", self.extra_fallback_models),
                 "circuit_failure_threshold": raw.get("circuit_failure_threshold", self.circuit_failure_threshold),
                 "circuit_cooldown_sec": raw.get("circuit_cooldown_sec", self.circuit_cooldown_sec),
             }
@@ -75,6 +88,7 @@ class LLMConfig(BaseModel):
             "retries": self.retries,
             "retry_backoff_sec": self.retry_backoff_sec,
             "fallback_models": self.fallback_models,
+            "extra_fallback_models": self.extra_fallback_models,
             "circuit_failure_threshold": self.circuit_failure_threshold,
             "circuit_cooldown_sec": self.circuit_cooldown_sec,
         }

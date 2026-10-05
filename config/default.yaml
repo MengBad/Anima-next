@@ -28,6 +28,11 @@ llm:
     # （多 3–6s），错误信息与失败模型数都不变。**纯开销，不含容灾价值。**
     # 代码侧同样硬拦（`anima/llm/__init__.py::_DEAD_FALLBACK_MODELS`），
     # 即使这里误加也不会进降级链。健康替代：`gemini-3.6-flash`（99% 成功率）。
+  # 🔴 异族兜底（2026-10-06）：同 provider 的"200-空"是**上游整体抖动**，换同族模型救不回来
+  # （72h 实测：主模型 100% 健康，而降级两级都在 google；00:25 事故即此形状）。
+  # 所以链尾追加**一档异族** provider 的模型兜底。留空 ⇒ 行为与从前逐字相同。
+  # 最多生效 1 档（链长上限 4 → 5）。同样受 `_DEAD_FALLBACK_MODELS` 硬拦。
+  extra_fallback_models: []                 # 示例：["claude-opus-5-5-high", "kimi-k3"]
   circuit_failure_threshold: 3             # 连续可恢复失败后短暂熔断
   circuit_cooldown_sec: 30
   # 模块级模型路由：为特定子系统覆盖 llm.model，键是模块名（见 anima/llm/__init__.py 的

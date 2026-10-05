@@ -119,6 +119,7 @@ class LLMClient:
         module_models: dict[str, str] | None = None,
         usage_ledger: UsageLedger | None = None,
         image_fallback_models: list[str] | None = None,
+        extra_fallback_models: list[str] | None = None,
         module_reasoning_effort: dict[str, str] | None = None,
     ):
         self.base_endpoint = endpoint.rstrip("/")
@@ -148,6 +149,28 @@ class LLMClient:
             if str(item).strip() and str(item).strip() != model
             and str(item).strip() not in _DEAD_FALLBACK_MODELS   # 2026-10-05：剔除 0% 模型
         ][:4]
+        #: 🔴 **异族兜底**（2026-10-06，72h 账本驱动）
+        #:
+        #: 72h 实测：`gemini-3.8-flash-n` 1952/1952 **100%**、`gemini-3.8-flash` 377/377 100%，
+        #: 而降级链两级 `gemini-3.6-flash` 96.5%、`gemini-3-flash` **0%**。
+        #: ⇒ 主模型从不出问题，**一旦降级两级都在同一个 provider（google）**，
+        #: 同 provider 返空是**上游整体抖动**，换同族模型救不回来
+        #: （00:25 用户面事故即此形状：`-high` 返空 → `3.6` 返空 → 兜底话术）。
+        #:
+        #: CPA `/v1/models` 实测有 73 个可用模型（claude / grok / kimi / deepseek / glm…），
+        #: 加**一档**异族是治「同族全灭」的唯一结构性修法。
+        #:
+        #: 契约：① 排**链尾**（同族优先，异族保底）② 去重且剔除主模型
+        #: ③ 空/未传 ⇒ 行为**逐字不变**（零影响回滚点）
+        #: ④ **同样过 `_DEAD_FALLBACK_MODELS`** ⇒ 否则 0% 模型能从此处绕过 r19 修复
+        #: ⑤ 链长上限 4 → 5（同族 4 + 异族 1），不得变成无限链
+        _extra = [
+            str(item).strip() for item in (extra_fallback_models or [])
+            if str(item).strip() and str(item).strip() != model
+            and str(item).strip() not in _DEAD_FALLBACK_MODELS
+            and str(item).strip() not in self.fallback_models
+        ]
+        self.fallback_models = (self.fallback_models + _extra)[:5]
         # 图像模型 fallback（跨模型容灾）：主图像模型遇 429/500 等可重试状态时
         # 依次尝试。与文本 fallback_models 独立——文本模型不能用于生图。
         self.image_fallback_models = [
