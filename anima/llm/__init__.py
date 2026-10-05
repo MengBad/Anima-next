@@ -20,6 +20,33 @@ _CIRCUIT_OUTBOUND = "outbound"
 #: 熔断器桶名 —— **后台/旁路**（跨群提取、矛盾检测、表情打标、反刍…）。
 _CIRCUIT_BACKGROUND = "background"
 
+#: **结构性失效**模型（2026-10-05）—— 不得进入 `fallback_models` 降级链。
+#:
+#: 生产 72h 账本实测：
+#: ```
+#: model                总   成功  empty  成功率
+#: gemini-3-flash        36     0     36    0%     ← 全部 empty_completion
+#: gemini-3.6-flash     203   201      0   99%
+#: gemini-3.8-flash     402   402      0  100%
+#: ```
+#:
+#: 🔴 为什么必须剔除而不是"留着碰运气"：它排在链的**最后一位**，所以只在
+#: 「主模型 + 健康备用都失败」时才被调用 —— 而那种情况下它**必然**再失败一次
+#: （成功率 0%）。实测 14:28 的完整链路：
+#: ```
+#: 14:28:38  补全为空 model=gemini-3.8-flash-high   主模型失败
+#: 14:28:40  补全为空 model=gemini-3.6-flash         第一级备用也失败
+#: 14:28:42  补全为空 model=gemini-3-flash           0% 模型凑第三次
+#: 14:28:42  ERROR LLM 请求失败：empty_completion   整链仍报同一个错
+#: ```
+#: ⇒ 它的**唯一**效果是把"一次失败"变成"两次失败"（多 3–6s），
+#: 错误信息与失败模型数都不变 ⇒ **纯开销，不含任何容灾价值**。
+#:
+#: 🔴 本名单**只作用于 `fallback_models`**，绝不改 `self.model`
+#: （主模型是配置决策；误伤会让全站不可用）。
+#: 空名单 ⇒ 行为逐字不变，是零影响回滚点。
+_DEAD_FALLBACK_MODELS: frozenset[str] = frozenset({"gemini-3-flash"})
+
 #: 按模块下发的 ``reasoning_effort`` 默认值（2026-10-02）。
 #:
 #: 只收**实测有收益**的模块。生产实测（带 tools 的抽取任务，每档 3 次取中位）：
@@ -119,6 +146,7 @@ class LLMClient:
         self.fallback_models = [
             str(item).strip() for item in (fallback_models or [])
             if str(item).strip() and str(item).strip() != model
+            and str(item).strip() not in _DEAD_FALLBACK_MODELS   # 2026-10-05：剔除 0% 模型
         ][:4]
         # 图像模型 fallback（跨模型容灾）：主图像模型遇 429/500 等可重试状态时
         # 依次尝试。与文本 fallback_models 独立——文本模型不能用于生图。

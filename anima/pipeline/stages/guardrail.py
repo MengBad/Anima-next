@@ -275,6 +275,54 @@ def _user_asked_question(user_text: str) -> bool:
         return True
     return len(t) >= _SUBSTANTIVE_INPUT_MIN
 
+
+#: 切点可吸附的边界（2026-10-05）：中文句读 + 英文句读 + 换行 + 列表项起始。
+#: 🔴 刻意**不含**逗号、顿号 —— 「基本全是这几首循环播放，听了」切在逗号后
+#: 仍是半句（生产实证），逗号只是句内停顿。
+_TRUNCATE_BOUNDARY_CHARS = frozenset("。！？!?；;：:\n")
+
+
+def _truncate_at_boundary(text: str, limit: int) -> str:
+    """把超长回复截到 `limit` 字以内，且**切点落在句读边界**。
+
+    ## 为什么
+    原实现 `text[:limit].rstrip("，,。；;、 ") + "…"` 是**纯字符数切** ⇒
+    生产上出现过「…基本全是这几首循环播放，听了…」（10-04 21:56），用户看到半句话。
+
+    ## 契约（三条，硬约束）
+    1. **长度上限不放宽**：结果恒 `≤ limit + 1`（省略号占 1）。
+    2. **找不到边界就退回原行为**（纯字符切）—— 不制造新失败模式。
+    3. **回退不得过半**：切点回退超过一半 ⇒ 视为边界无效，退回字符切
+       （否则「嗯。+ 500 字无标点」会被砍成「嗯。」）。
+
+    🔴 刻意**不含逗号/顿号**：它们是句内停顿，切在那里仍是半句。
+    """
+    t = text or ""
+    if len(t) <= limit or limit <= 0:
+        return t
+
+    head = t[:limit]
+    # 回退窗口 = 后一半（不含首字符，避免退到 0）。
+    # 🔴 **正序**扫描取**最靠前**的边界（句子最完整）—— 反向扫描会拿到最靠后的，
+    #    结果是「第一句。第二句|」而不是「第一句|」，实测踩过。
+    floor = max(1, limit // 2)
+    cut = -1
+    for i in range(floor, len(head)):
+        if head[i] in _TRUNCATE_BOUNDARY_CHARS:
+            cut = i
+            break
+    if cut < 0:
+        # 无句读：列表项起始也算一个（行首 "- " / "* "）
+        for i in range(floor, len(head)):
+            if head[i] == "\n" or (i > 0 and head[i] in "-*" and head[i - 1] == "\n"):
+                cut = i
+                break
+    if cut < 0:
+        return head.rstrip("，,。；;、 ") + "…"
+    # 🔴 `cut+1` 保留边界字符本身（句号/问号）—— 少了它就是「你要是嫌长就当本喵在打哈欠好了…」，
+    #    句号被吃掉仍然读着像半句。实测踩过。
+    return head[:cut + 1].rstrip() + "…"
+
 #: 「单语义词 + 长文」路径的**强标记**（2026-09-23 新增）。
 #: 语义词表里两类词的噪声不同：「从X角度看 / 数据分析 / 官方设定」在 ACG 与日常
 #: 闲聊里都是常见说法（生产实测把它们连同 250 字正文一起判成论文体），而下面这些
@@ -720,10 +768,14 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         pass
 
     # 长度限制
+    # 🔴 2026-10-05：切点从**纯字符切**改为**吸附到句读边界**。
+    # 生产实证（10-04 21:56）：原实现 `ctx.reply[:420].rstrip(...) + "…"` 切在
+    # 「…基本全是这几首循环播放，听了|」⇒ 用户看到半句话。
+    # 长度上限**不变**（硬约束），只改**切在哪**。
     hard_limit = 900 if _user_wants_substantive(ctx.text or "") else 420
     if len(ctx.reply) > hard_limit:
-        ctx.reply = ctx.reply[:hard_limit].rstrip("，,。；;、 ") + "…"
-        logger.info("Guardrail: 超长回复截断至 %d 字", hard_limit)
+        ctx.reply = _truncate_at_boundary(ctx.reply, hard_limit)
+        logger.info("Guardrail: 超长回复截断至 %d 字", len(ctx.reply))
 
     # A1: 伤痕治愈
     try:

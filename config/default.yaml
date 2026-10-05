@@ -22,7 +22,12 @@ llm:
   retry_backoff_sec: 0.6
   fallback_models:                         # 同网关备用模型（主模型瞬态失败时切换）
     - "gemini-3.6-flash"
-    - "gemini-3-flash"
+    # 🔴 不列 `gemini-3-flash`：2026-10-05 生产 72h 账本实测 **36 次调用 0 次成功**
+    # （全部 empty_completion，成功率 0%）。它排在链末位，只在「主模型 + 健康备用都失败」
+    # 时才被调用，而那时它必然再失败一次 ⇒ 唯一效果是把"一次失败"变成"两次失败"
+    # （多 3–6s），错误信息与失败模型数都不变。**纯开销，不含容灾价值。**
+    # 代码侧同样硬拦（`anima/llm/__init__.py::_DEAD_FALLBACK_MODELS`），
+    # 即使这里误加也不会进降级链。健康替代：`gemini-3.6-flash`（99% 成功率）。
   circuit_failure_threshold: 3             # 连续可恢复失败后短暂熔断
   circuit_cooldown_sec: 30
   # 模块级模型路由：为特定子系统覆盖 llm.model，键是模块名（见 anima/llm/__init__.py 的
