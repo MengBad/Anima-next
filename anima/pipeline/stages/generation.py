@@ -463,6 +463,19 @@ _IMG_PATH_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: 🔴 图像引用**标签前缀**（2026-10-05 生产实证：`[sticker:` 漏进正文与持久层）
+#:
+#: 🔴 **前瞻是防误伤的关键**，不可去掉：
+#: 标签后必须紧跟「冒号」或「图像路径」，
+#: 否则 `[sticker 这个设计真丑]` 这类**正常正文**会被整段吃掉 —— 那比原缺陷更严重。
+#: 标签集合含 `pic` / `image`：模型会用同族名字，形态完全一样。
+_STICKER_LABEL_RE = re.compile(
+    r"\[\s*(?:sticker|pic|image)\s*"
+    r"(?=[:：]|[\s]*[^\]\s]*\.(?:jpg|jpeg|png|gif|webp|bmp))"
+    r"[^\]\n]*\]?",
+    re.IGNORECASE,
+)
+
 
 def _extract_sticker_path(result: object) -> Optional[str]:
     """从 sticker 工具返回文本中提取真实图像文件路径。"""
@@ -483,6 +496,19 @@ def _strip_sticker_path_from_reply(reply: str, path: str) -> str:
         return reply
 
     cleaned = reply
+
+    # --- 第 0 阶段：🔴 图像引用**标签前缀**（2026-10-05 生产实证）---
+    # 🔴 **必须排在路径剥离之前**：模型写 `…喵！[sticker:/opt/…/x.jpg]` 时，
+    # 若先剥路径，标签就变成悬空的 `[sticker` / `[sticker:` ⇒ 前瞻失效 ⇒ 漏网。
+    # 上面几阶段都只剥**路径**，剥不掉标签本身 ⇒ 用户在群里看到方括号残码，
+    # 且它落进 `chat_memory.content` / `episodes.summary`
+    # ⇒ 会进后续 LLM 上下文 ⇒ **自我强化**。
+    #
+    # 🔴 前瞻是**防误伤的关键**，不可去掉：
+    # 标签后必须紧跟「冒号」或「图像路径」，
+    # 否则 `[sticker 这个设计真丑]` 这类**正常正文**会被整段吃掉 —— 那比原缺陷更严重。
+    # 标签集合刻意包含 `pic` / `image`：模型会用同族名字，形态完全一样。
+    cleaned = _STICKER_LABEL_RE.sub(' ', cleaned)
 
     # --- 第 1 阶段：QQ 图片引用格式 ---
     cleaned = re.sub(
