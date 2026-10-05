@@ -60,6 +60,10 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--files", default="", help="逗号分隔的相对路径；缺省用内置 FILES")
     ap.add_argument("--backup-tag", default="r8", help="备份目录标签")
+    ap.add_argument("--no-restart", action="store_true",
+                    help="上传后**不**重启服务（默认会重启，见下方说明）")
+    ap.add_argument("--verify-restart", default="",
+                    help="重启后断言这些文件已被进程加载（生产绝对路径，逗号分隔）")
     args = ap.parse_args()
 
     files = [x.strip() for x in args.files.split(",") if x.strip()] or FILES
@@ -227,6 +231,70 @@ def main() -> int:
         return 4
 
     print(f"\n✅ 上传与校验全部通过。备份目录: {backup}")
+
+    # ------------------------------------------------------------------
+    # 🔴 重启（2026-10-05 加，r19 踩坑的直接修法）
+    # ------------------------------------------------------------------
+    # 事故：r19 部署后 **没重启** ⇒ 磁盘是新码、**进程是旧码**，
+    # 降级链修复完全没生效（15:16 仍在调 0% 模型）。
+    # 根因：**本工具只上传、不重启**，而"要不要重启"当时靠人记 ⇒ 必然漏。
+    # ⇒ 默认**重启**；`--no-restart` 才跳过，且**跳过时显式警告**。
+    if args.dry_run:
+        ssh.close()
+        return 0
+
+    if args.no_restart:
+        print("\n⚠️⚠️ 已跳过重启（--no-restart）")
+        print("   🔴 磁盘上已是新码，但**运行中的进程仍是旧码**！")
+        print(f"   🔴 本次上传：{', '.join(f for f, _, _ in plan)}")
+        print("   部署后**必须**手动执行：systemctl restart anima")
+        ssh.close()
+        return 0
+
+    print("\n=== 重启 anima ===")
+    rc, out = run("systemctl restart anima; sleep 6; "
+                  "systemctl is-active anima; "
+                  "systemctl show anima -p MainPID -p NRestarts -p ActiveEnterTimestamp "
+                  "--value | tr '\\n' ' '", timeout=180)
+    print("  " + (out or "").strip())
+    if "active" not in (out or ""):
+        print("❌ 重启后服务非 active —— 立刻回滚："
+              f"把 {backup}/ 下的文件拷回 {REMOTE_ROOT}/ 再重启")
+        ssh.close()
+        return 6
+    print("  ✓ 服务 active")
+
+    # 🔴 生效断言：**文件 mtime 必须早于进程启动**，否则进程仍在跑旧码
+    # （r19 失效形态：文件 15:02:56、进程 04:06:04）
+    print("=== 生效断言（文件 mtime 必须 < 进程启动时刻）===")
+    rc3, mt = run(f"stat -c '%Y' {REMOTE_ROOT}/{plan[0][0]}", timeout=60)
+    rc4, act = run("systemctl show anima -p ActiveEnterTimestamp --value", timeout=60)
+    # 把 `ActiveEnterTimestamp`（人类可读）转成 epoch 秒再比
+    rc5, boot = run("systemctl show anima -p ExecMainStartTimestamp --value "
+                    "--value 2>/dev/null | xargs -0 -I{} date -d {} +%s 2>/dev/null || "
+                    "date -d \"$(systemctl show anima -p ActiveEnterTimestamp --value)\" +%s",
+                    timeout=60)
+    print(f"  文件 mtime(epoch)      = {mt.strip()}")
+    print(f"  进程启动 ActiveEnter  = {act.strip()}")
+    print(f"  进程启动 epoch        = {boot.strip()}")
+    if mt.strip().isdigit() and boot.strip().isdigit():
+        if int(mt.strip()) <= int(boot.strip()):
+            print("  ✓ 文件不晚于进程启动 ⇒ **进程跑的是新码**")
+        else:
+            print("  🔴 文件比进程新 ⇒ 进程仍是旧码（这正是 r19 失效的形态）")
+            ssh.close()
+            return 7
+    else:
+        print("  ⚠️ 时间戳解析失败（工具链差异），请人工核对上面的两个时间")
+
+    # 可选：锚点断言（补"进程自报"这一层）
+    if args.verify_restart:
+        print(f"=== 锚点断言 ===")
+        for path in [x.strip() for x in args.verify_restart.split(",") if x.strip()]:
+            rc2, o2 = run(f"grep -cF -- '{path}' "
+                          f"{REMOTE_ROOT}/{path.rsplit('/', 1)[-1]}", timeout=60)
+            print(f"  {path} → 远端命中 {(o2 or '').strip()}")
+
     ssh.close()
     return 0
 

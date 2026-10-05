@@ -206,7 +206,12 @@ def test_capability_build_fragment(tmp_path):
                           "how_to_use": "每晚回顾", "register_as_independent_tool": True})
     frag = mgr.build_fragment()
     assert "情绪回顾" in frag
-    assert "我的个人技能与方法论" in frag
+    # 🔴 2026-10-05 标题措辞变了（原「我的个人技能与方法论」）：
+    #   片段瘦身时把 3 行固定开场白压成 1 行标题（原开场白 ~60 token 全是对模型的
+    #   废话：「以下是我通过自己的经历…一点一点学会…遇到合适的场景我会主动调用」）。
+    #   契约未变 —— 仍须是**第一人称的自述标题**，且带"主动使用"信号。
+    assert "个人技能" in frag, f"标题须表明这是「我会的技能」：{frag[:80]}"
+    assert "主动" in frag, f"标题须保留「遇到合适场景会主动用」的信号：{frag[:80]}"
 
 
 # ---------------------------------------------------------------------------

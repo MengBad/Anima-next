@@ -332,24 +332,34 @@ class CapabilityManager:
     # ------------------------------------------------------------------
 
     def build_fragment(self, top_k: int = 6) -> str:
-        """生成第一人称「我的个人技能与方法论」片段（按价值分 Top-K）。"""
+        """生成第一人称「我的个人技能」片段（按 `value_score` 取 Top-K，每条一行）。
+
+        🔴 2026-10-05 瘦身（实测：本片段 **701 token** ⇒ 在 `system_token_budget=11000`
+        里 **100% 命中丢弃**，24h 24/138 回合"不知道自己有啥"）。
+        量化后可选池并不紧（`11000 − required 3384 = 7616`），
+        真因是这个片段**性价比极低** ⇒ 压缩它而不是抬 priority
+        （抬 priority 会挤掉 `external_exploration`，而后者 24h 有
+        `exploration` 33 次 / `x_search` 7 次实调 ⇒ **拿零效果的换有效果的 = 净负**）。
+
+        瘦身三招（**信号一项不减**）：
+        1. 删掉 3 行固定开场白（~60 token）——「遇到合适的场景我会主动调用」
+           是对模型的废话，真正的信号是能力清单本身。
+        2. **不带 `how_to_use`**（原上限 110 字 × N 条 = 大头）
+           ⇒ 那是 `execute_capability` 执行时 reread 的内容，注入时只需"会什么 + 何时用"。
+        3. 每条能力压成**一行**（原来 4 行）。
+
+        保留：能力名 + 触发场景描述（上限 70 字）+ 置信度
+        （模型据此判断"敢不敢用"）。
+        """
         caps = self._data.get("capabilities", [])
         if not caps:
             return ""
-        lines = [
-            "【我的个人技能与方法论】",
-            "以下是我通过自己的经历、研究和思考，一点一点学会并创造出来的方法。",
-            "遇到合适的场景，我会主动调用其中最贴合的那一个。",
-        ]
+        lines = ["【我会的个人技能（遇到合适的场景会主动用）】"]
         for cap in sorted(caps, key=self.value_score, reverse=True)[:top_k]:
             name = cap.get("name", "未命名能力")
-            desc = (cap.get("description", "") or "")[:140]
-            how = (cap.get("how_to_use", "") or "")[:110]
+            desc = (cap.get("description", "") or "")[:70]
             conf = cap.get("confidence", self.initial_confidence)
-            lines.append(f"\n• {name}（我的置信度 {conf:.0%}）")
-            lines.append(f"  {desc}")
-            if how:
-                lines.append(f"  我通常这样用：{how}")
+            lines.append(f"• {name}（{conf:.0%}）：{desc}")
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
