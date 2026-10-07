@@ -105,6 +105,19 @@ class CompositionStats:
     estimated_tokens: int
     dropped_keys: tuple[str, ...] = ()
     protected_over_budget: bool = False
+    # 🔴 2026-10-06（r26）：裁剪**前**的总量与其中不可裁的底量。
+    #
+    # 为什么必须落这两个数：`estimated_tokens` 是**裁剪之后**的终值，它只能回答
+    # 「裁到哪停手」，**回答不了「到底超了多少」**。r23 与 r25 两轮都拿终值
+    # 反推缺口（「最紧回合终值 10992 ⇒ 只差 8 token」），于是把
+    # `capabilities` 的保留率算成 67%→100%，两轮的预测**都被生产证伪**
+    # （post-12000 的头 3 个回合仍 3/3 丢 `capabilities`）。
+    #
+    # 真实超出量 = ``pre_drop_tokens - budget``；此前从未落盘 ⇒ 无法证伪。
+    # ``required_tokens`` 是 base+suffix 的不可裁底量，用于判断「可选片段究竟
+    # 分到多少余量」，是预算取值的真正锚点。
+    required_tokens: int = 0
+    pre_drop_tokens: int = 0
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -112,6 +125,8 @@ class CompositionStats:
             "estimated_tokens": self.estimated_tokens,
             "dropped_keys": list(self.dropped_keys),
             "protected_over_budget": self.protected_over_budget,
+            "required_tokens": self.required_tokens,
+            "pre_drop_tokens": self.pre_drop_tokens,
         }
 
 
@@ -156,6 +171,8 @@ class ContextComposer:
         kept = list(items)
         dropped: list[str] = []
         total = required + sum(estimate_text_tokens(item.content) for item in kept)
+        # 裁剪前总量：不可裁底量 + **全部**可选片段。与终值之差即真实超出量。
+        pre_drop = total
 
         # 同优先级时优先删除更早注入的片段，保留本轮更靠后的/更相关的信息。
         # protected 片段（S1 此刻状态等）不可裁，直接跳过。
@@ -175,6 +192,8 @@ class ContextComposer:
             estimated_tokens=final_tokens,
             dropped_keys=tuple(dropped),
             protected_over_budget=required > self.system_token_budget,
+            required_tokens=required,
+            pre_drop_tokens=pre_drop,
         )
 
     def compose_messages(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], CompositionStats]:

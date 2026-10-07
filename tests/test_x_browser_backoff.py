@@ -55,6 +55,29 @@ def _fake_session(monkeypatch, *, articles_factory, logs_in=True, raises=None):
     monkeypatch.setattr(s, "_ensure_logged_in", _ensure_logged_in)
     monkeypatch.setattr(s, "_is_logged_in", _is_logged_in)
     monkeypatch.setattr(s, "_human_pause", _human_pause)
+    # 🔴 2026-10-07：`X_IN_CALL_RETRY_WAIT` 是**类常量**（8.0s），**不在**
+    #    `_human_pause` 的 patch 覆盖范围内 ⇒ 每个「空壳」search 会**真实**
+    #    `await asyncio.sleep(8.0)` × `X_IN_CALL_RETRIES`(2) = **16 秒墙钟**。
+    #    本文件 5 个空壳用例各自调用多次 ⇒ 累计**数分钟**（2026-10-07 定位为
+    #    全量回归被拖长的成因之一）。归零后本文件 ~4 分钟 → ~3 秒，
+    #    **不改被测语义**（`X_IN_CALL_RETRIES` 循环与 blocked 断言全部保留）。
+    monkeypatch.setattr(s, "X_IN_CALL_RETRY_WAIT", 0.0)
+    # 🔴 2026-10-07（第二轮定位）：真正的大头是 `_collect_search_once()` **开头**的
+    #    `await asyncio.sleep(3)`（x_browser.py:337）—— 每次抽取都等 3 秒，而每次
+    #    空壳 search 要抽 1(初始)+2(retry)=3 次 ⇒ **9 秒/次 search**。实测单用例
+    #    27.8s ÷ 3 次 search = 9.3s，与推算吻合。这属「人味节流」，对断言零贡献。
+    #    只压缩**长于 0.5s** 的等待；`sleep(0)`／短等待仍走真实实现，保留协程
+    #    调度让步，避免把 event loop 饿死。
+    import asyncio as _aio
+
+    _real_sleep = _aio.sleep
+
+    async def _fast_sleep(sec, *a, **k):
+        if sec and sec >= 0.5:
+            return None
+        return await _real_sleep(sec, *a, **k)
+
+    monkeypatch.setattr(_aio, "sleep", _fast_sleep)
     if raises:
         async def _collect_tweets(page, limit):
             raise raises()

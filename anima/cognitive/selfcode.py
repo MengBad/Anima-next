@@ -120,6 +120,75 @@ _FORBIDDEN_IMPORTS = {
 _FORBIDDEN_CALLS = {"open", "eval", "exec", "compile", "__import__", "input"}
 
 
+# ----------------------------------------------------------------------
+# 能力边界：SelfCode 沙箱**没有网络出口**
+# ----------------------------------------------------------------------
+
+#: 显式出网词：命中即判定需要网络出口。
+_NET_EXPLICIT = (
+    "联网", "上网", "网络请求", "http 请求", "https 请求", "http请求",
+    "发请求", "发送请求", "发起请求", "调用接口", "调用外部", "外部接口",
+    "api 请求", "api请求", "网络接口", "爬虫",
+)
+#: 出网对象：必须与「取回动作」同时出现才判为出网。
+_NET_SUBJECTS = (
+    "网页", "网址", "链接", "url", "快照", "时光机", "wayback", "web archive",
+    "archive.org", "归档站", "归档服务", "镜像站", "网络", "接口", "api",
+    "网站", "站点",
+)
+#: 取回动作。
+_NET_ACTIONS = (
+    "抓取", "爬取", "下载", "获取", "提取", "检索", "查询", "访问",
+    "拉取", "请求", "读取", "采集", "搜索", "调用", "打开",
+)
+#: 本地语境词：命中则**倾向于放行**（宁可漏判，不可误伤本地工具需求）。
+_NET_LOCAL_HINTS = (
+    "本地", "文件", "磁盘", "日志", "json", "csv", "统计", "数据库", "内存",
+)
+
+
+def network_egress_boundary(goal: str) -> str:
+    """目标是否**必须出网**（SelfCode 沙箱做不到）⇒ 返回可读的拒绝理由。
+
+    🔴 依据是**契约事实**而非语义猜测：``_FORBIDDEN_IMPORTS`` 禁掉
+    requests / aiohttp / httpx / urllib **全部** HTTP 客户端
+    ⇒ 「需要发起网络请求」的工具在此沙箱内**结构上无法实现**。
+
+    生产实证（2026-10-06 诊断）：``owner_tasks.json`` 里 **17/17** 条 selfcode 任务
+    全是「失效链接 → 快照正文」这一类；**15 条失败的全部原因**都是静态校验的
+    ``禁止导入：urllib / httpx / aiohttp``。该目标在 20 天里被**重复受理 15 次**，
+    每次白烧一轮 Coder + Critic 双 Agent 算力 —— 本函数把它挡在受理阶段。
+
+    **保守取向：宁可漏判，不可误伤。** 判定要求「出网对象 + 取回动作」同时出现，
+    且只要命中任何本地语境词就放行 ⇒ 本地工具需求（统计群成员 / 格式化 JSON /
+    读本地日志）不会被误拒。
+    """
+    text = (goal or "").lower().strip()
+    if not text:
+        return ""
+
+    explicit = next((w for w in _NET_EXPLICIT if w in text), "")
+    subject = next((w for w in _NET_SUBJECTS if w in text), "")
+    action = next((w for w in _NET_ACTIONS if w in text), "")
+    local = next((w for w in _NET_LOCAL_HINTS if w in text), "")
+
+    if not explicit:
+        if not (subject and action) or local:
+            return ""
+
+    trigger = explicit or f"{subject}+{action}"
+    return (
+        "[能力边界] SelfCode 沙箱**没有网络出口**：运行时工具的静态契约禁止导入 "
+        "requests / aiohttp / httpx / urllib（命中依据：" + trigger + "）。"
+        "\n⇒ 「需要发起网络请求」的工具在此沙箱内结构上无法实现，"
+        "本轮在**受理阶段**直接拒绝，不再消耗 Coder/Critic 生成算力。"
+        "\n已有联网能力可直接使用：**web_search**（联网搜索并自动抓正文）、"
+        "**agent_http_request**（原始 HTTP 请求）、**agent_browser**（浏览器取页）、"
+        "**bilibili_read**（B 站字幕）。"
+        "\n若确需新增受控联网工具，属**安全边界变更**，须 Owner 单独决策。"
+    )
+
+
 def _inspect_candidate(path: Path) -> tuple[dict[str, Any] | None, list[str]]:
     """静态检查候选模块，避免把安全结论完全交给模型。"""
     try:
@@ -1026,6 +1095,28 @@ class SelfCodeManager:
         """生成工程候选并写入任务队列；此阶段绝不安装能力。"""
         if self.cfg is None or not self.cfg.enabled:
             raise ValueError("self_code 未启用")
+
+        # 🔴 能力边界预检（r26）：沙箱无网络出口 ⇒ 出网类目标**结构上做不到**。
+        # 在**受理阶段**就拒掉并给出可执行指引，而不是让 Coder 写出一份
+        # 必然被静态校验拒绝的代码再失败（生产曾这样重复 15 次）。
+        boundary = network_egress_boundary(goal)
+        if boundary:
+            task = self.core.tasks.create(
+                goal, creator,
+                ["能力边界预检（无网络出口）", "受理阶段拒绝，不生成候选"],
+                kind="selfcode",
+            )
+            self.core.tasks.set_status(task.id, "rejected", boundary)
+            logger.info("selfcode 受理期拒绝（需要网络出口）task=%s goal=%s", task.id, goal[:120])
+            try:
+                if getattr(self.core, "audit", None):
+                    self.core.audit.emit(
+                        "selfcode_rejected_boundary", task_id=task.id, reason="no_network_egress",
+                    )
+            except Exception:
+                pass
+            return self.core.tasks.get(task.id) or task
+
         task = self.core.tasks.create(
             goal, creator,
             ["在隔离工作区生成候选", "双 Agent 审查", "静态校验和沙箱自测", "等待 Owner 审批安装"],

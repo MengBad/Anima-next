@@ -15,7 +15,8 @@ class Task:
     request: str
     creator: int
     id: str = field(default_factory=lambda: uuid.uuid4().hex[:10])
-    # planned|running|awaiting_approval|completed|failed|cancelled|rejected
+    # planned|running|awaiting_approval|completed|failed|cancelled|rejected|expired
+    # `expired`：信号自愈后自动关闭的僵尸故障工单（r26），非人工处置。
     status: str = "planned"
     kind: str = "diagnostic"
     plan: list[str] = field(default_factory=list)

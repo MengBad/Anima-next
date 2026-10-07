@@ -193,6 +193,111 @@ def _walk_card_meta(meta: Any) -> dict[str, str]:
     return out
 
 
+#: 转发正文解析的硬上限（r24）。转发是**外部输入** ⇒ 必须限体积，
+#: 否则一个 50 条长消息的转发就能把 system prompt 顶爆（预算只有 11000，
+#: 而 system 长期 95%+ 顶格 —— 见 `pipeline/stages/cognition.py` 的预算器）。
+_FORWARD_MAX_NODES = 20
+_FORWARD_MAX_CHARS_PER_NODE = 500
+_FORWARD_MAX_TOTAL_CHARS = 2000
+
+
+def _forward_node_text(node: object, depth: int = 0) -> str:
+    """从转发节点里取可读文本。
+
+    节点形态在 NapCat/OneBot11 之间不统一（r24 实测与文档对照）：
+      * ``{"message": [{"type":"text","data":{"text":"..."}}, ...]}``（标准）
+      * ``{"message": "纯文本"}``
+      * ``{"content": ...}``（NapCat 变体）
+      * ``{"text": "..."}`` / ``{"nickname": ..., "content": "..."}``（node 段）
+    ⇒ 逐个试，**取到第一个非空就停**；都不中返回 ``""``（fail-closed）。
+    """
+    if isinstance(node, str):
+        return node.strip()
+    if isinstance(node, list):
+        parts: list[str] = []
+        for seg in node:
+            if not isinstance(seg, dict):
+                if isinstance(seg, str) and seg.strip():
+                    parts.append(seg.strip())
+                continue
+            if str(seg.get("type") or "") == "text":
+                data = seg.get("data") or {}
+                if isinstance(data, dict):
+                    txt = str(data.get("text") or "").strip()
+                    if txt:
+                        parts.append(txt)
+        return "\n".join(parts).strip()
+    if isinstance(node, dict):
+        if depth > 2:            # 防自引用结构（NapCat 偶发嵌套环）
+            return ""
+        # 裸消息段（`{"type": "text", "data": {"text": ...}}`）——
+        # 某些实现在转发 content 里直接放段而不是 `{"message": [...]}` 包装。
+        if "type" in node and isinstance(node.get("data"), dict):
+            got = _forward_node_text([node], depth + 1)
+            if got:
+                return got
+        for key in ("message", "content", "text"):
+            if key in node:
+                got = _forward_node_text(node.get(key), depth + 1)
+                if got:
+                    return got
+    return ""
+
+
+def parse_forward_messages(data: dict | None) -> list[str]:
+    """从 forward 段的 ``data`` 里提取转发正文（纯函数，可离线测）。
+
+    🔴 **协议坑（本函数存在的全部理由）**：NapCat 下发的 forward 段
+    **通常只有 ``id``**（生产 5 次实测全是 ``segs=["forward(['id'])"]``），
+    官方文档明说「合并转发 `接收` 只有 id，**需通过 get_forward_msg API
+    获取具体内容**」；而 NapCat 该接口的返回体又有字段名不一致的历史问题
+    —— 标准是 ``data.messages``，NapCat 实际把节点塞在 ``data.content``
+    （或直接就是数组）。⇒ **两个字段名都读**，只读标准字段在 NapCat 上恒空。
+
+    支持三种已观测形态（缺一即在生产上丢内容）：
+      1. ``{"id": .., "content": [节点, ...]}``            —— 裸数组
+      2. ``{"id": .., "content": {"messages": [节点,..]}}`` —— NapCat 包一层
+      3. ``{"id": .., "messages": [节点, ...]}``            —— 标准字段
+
+    缺失/畸形一律返回 ``[]``（**绝不抛**）：调用方据此保持原占位行为，
+    不会因为一次解析失败把整条消息变静默（fail-closed）。
+    """
+    if not isinstance(data, dict):
+        return []
+    nodes: object = data.get("messages")            # 形态 3（标准）
+    if not isinstance(nodes, list):
+        content = data.get("content")
+        if isinstance(content, list):                # 形态 1
+            nodes = content
+        elif isinstance(content, dict):
+            nodes = content.get("messages")          # 形态 2（NapCat）
+            if not isinstance(nodes, list):
+                nodes = content.get("content")
+                if not isinstance(nodes, list):
+                    nodes = []
+    out: list[str] = []
+    total = 0
+    for node in (nodes or [])[:_FORWARD_MAX_NODES]:
+        txt = _forward_node_text(node)
+        if not txt:
+            continue
+        # 剥掉残留 CQ 码痕迹（与 chat_memory 的清洗口径一致，防注入 [CQ:xxx]）
+        txt = re.sub(r"\[CQ:[^\]]{0,400}\]", " ", txt).strip()
+        txt = re.sub(r"\s{2,}", " ", txt)
+        if not txt:
+            continue
+        txt = txt[:_FORWARD_MAX_CHARS_PER_NODE]
+        if total + len(txt) > _FORWARD_MAX_TOTAL_CHARS:
+            txt = txt[: max(0, _FORWARD_MAX_TOTAL_CHARS - total)]
+        if not txt.strip():
+            break
+        out.append(txt)
+        total += len(txt)
+        if total >= _FORWARD_MAX_TOTAL_CHARS:
+            break
+    return out
+
+
 def parse_qq_rich_card(kind: str, data: dict | None) -> dict[str, str]:
     """从 share/json/xml 段提取可给 LLM 的受限摘要字段。
 
@@ -266,7 +371,21 @@ def parse_qq_rich_card(kind: str, data: dict | None) -> dict[str, str]:
         result["label"] = kind or "富媒体"
 
     if kind in {"forward", "node"} and not result["title"]:
-        result["title"] = "合并转发消息"
+        # 🔴 r24（2026-10-06）：此前此处**只填死标题「合并转发消息」**，而
+        # NapCat 下发的 forward 段**通常只有 id**（生产 5 次实测皆
+        # `segs=["forward(['id'])"]`）⇒ bot 拿到的上下文里只有这 10 个字，
+        # 正文一个字都没有 ⇒ 表现为「甩个空壳子过来 / 里面啥字都没有」。
+        #
+        # 🔴 正文必须进 **title**（不能只塞 desc）：`format_rich_card_summary`
+        # 在 title 为空时才回落到 prompt/「未能解析」，而 title 非空时
+        # desc 只在 `desc != title` 才追加 —— 把正文放 desc 会让摘要变成
+        # 「标题：合并转发消息」+ 一大段 desc，模型仍以标题为主判断，
+        # 观感就是「又是空壳子」。⇒ title 直接给正文摘要。
+        _fwd = parse_forward_messages(data)
+        if _fwd:
+            result["title"] = "合并转发：" + " / ".join(_fwd)[:200]
+        else:
+            result["title"] = "合并转发消息（正文需拉取）"
     if not result["title"]:
         result["title"] = "（无标题）"
 
@@ -386,10 +505,24 @@ def parse_onebot_event(raw: dict, *, known_self_id: "int | None" = None) -> dict
                 continue
             card = parse_qq_rich_card(kind, data if isinstance(data, dict) else {})
             rich_blocks.append(card)
+        # 🔴 r24：把 forward 的 id 单独留一份，供 handler 调 `get_forward_msg`
+        # 拉正文（段里通常**没有**正文 —— 生产 5 次实测皆 `segs=["forward(['id'])"]`）。
+        forward_ids: list[str] = []
+        for seg in segments:
+            if str(seg.get("type") or "") not in {"forward", "node"}:
+                continue
+            _d = seg.get("data") or {}
+            if not isinstance(_d, dict):
+                continue
+            _fid = str(_d.get("id") or _d.get("res_id") or _d.get("message_id") or "").strip()
+            if _fid and _fid not in forward_ids:
+                forward_ids.append(_fid)
         if rich_blocks:
             event["rich_blocks"] = rich_blocks[:8]
             summaries = [format_rich_card_summary(item) for item in rich_blocks]
             event["text"] = (event["text"] + "\n" + "\n".join(summaries)).strip()
+        if forward_ids:
+            event["forward_ids"] = forward_ids[:3]
 
         # 文件原始内容不在渠道层读取；这里只保留最小元数据，后续 handler
         # 会通过受控 get_file action 仅解析小型文本附件。
@@ -1305,6 +1438,42 @@ class OneBot11Adapter(Module):
                                attempt, retries, message_id)
         if last_err:
             logger.warning("get_msg 全部重试后仍失败: %s", message_id)
+        return None
+
+    async def get_forward_msg(self, forward_id: Any, retries: int = 1,
+                              timeout: float = 5.0) -> Optional[dict]:
+        """调 OneBot11 ``get_forward_msg`` 拉取合并转发的正文节点（r24）。
+
+        🔴 **这个方法是「bot 看不到转发」的正解**：OneBot11 规范里 forward 段
+        **接收时只带 ``id``**，正文**必须**另行拉取；NapCat 文档明写
+        「合并转发 `接收` 只有 id，需通过 get_forward_msg API 获取具体内容」。
+        生产 5 次实测的 forward 段全是 ``segs=["forward(['id'])"]`` ⇒ 段内无正文。
+
+        与 `get_msg` 同款：带一次重试、失败返回 ``None``（**绝不抛**），
+        调用方据此保持占位，不会让整条消息变静默。
+
+        ⚠️ **返回值不要直接取 ``data['messages']``**：NapCat 这个接口有字段名
+        不一致的历史问题（标准是 ``messages``，NapCat 实际塞在 ``content``）。
+        这里返回**原始 dict**，由 `parse_forward_messages` 统一兼容两个字段名。
+        """
+        if not forward_id:
+            return None
+        for attempt in range(1, max(1, retries) + 1):
+            try:
+                resp = await self._call_action(
+                    "get_forward_msg",
+                    {"message_id": str(forward_id), "id": str(forward_id)},
+                    timeout=timeout,
+                )
+            except Exception:  # _call_action 内部已吞超时/发送异常
+                logger.warning("get_forward_msg 第 %d/%d 次异常: %s",
+                               attempt, retries, forward_id)
+                continue
+            if isinstance(resp, dict):
+                return resp
+            if attempt < retries:
+                logger.warning("get_forward_msg 第 %d/%d 次未拿到响应，重试: %s",
+                               attempt, retries, forward_id)
         return None
 
     # ------------------------------------------------------------------

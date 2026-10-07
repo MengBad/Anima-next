@@ -30,10 +30,41 @@ def _tool_result_ok(result: object) -> bool:
 
 
 #: P2-3：会产生「外部时效事实」的工具。命中后本轮回答要带来源/时间口径。
+#:
+#: 🔴 2026-10-06（r27）：这里必须写 **LLM 真正会调用的名字**，不是 Provider/Tool id。
+#: 生产事故：集合里原写的是 Provider id ``web_search``，而 LLM 调用的是
+#: capability schema name ``search_web``（``capability/index.schema_name_for``：
+#: ``search.web`` → ``search_web``；Tool ``web_search`` 挂了
+#: ``capability_ids=["search.web"]`` ⇒ 在 capability 模式下**其 Tool 名对 LLM 不可见**）。
+#: ⇒ 7d 内 **22 个联网搜索回合**既没拿到时效约束、也没追加时效脚注 —— **静默失效**。
+#: 日志实证：``name=web_search`` 出现 **0** 次、``name=search_web`` 出现 **22** 次。
+#: 守卫见 ``tests/test_r27_freshness_gate.py::test_freshness_tools_are_llm_facing_names``。
 _FRESHNESS_TOOLS = frozenset({
-    "web_search", "x_search", "query_web_memory", "bilibili_read",
+    "search_web", "x_search", "query_web_memory", "bilibili_read",
     "skill_web_brief", "skill_member_profile", "skill_group_roster",
 })
+
+#: 「取到可用内容」的最小字符数 —— 时效脚注的**必要**条件之一。
+#:
+#: 🔴 为什么需要它：脚注的前置条件原先只有 ``_tool_result_ok()``，而它判的是
+#: 「非空 ∧ 无失败标记」⇒ **「本视频没有字幕」这类「成功但没内容」也算 ok**，
+#: 于是脚注照加，出现「正文说抓不到 / 脚注说刚在网上翻到了」的自相矛盾
+#: （72h 实测 14 条脚注里 **12 条**如此）。
+#:
+#: 阈值取自**生产实测分布**（7d，60 次工具调用的 ``result_len``）——**双峰、无重叠**：
+#:   无内容：``query_web_memory`` 19、``x_search`` 23、``bilibili_read`` 49~95
+#:   有内容：``x_search`` 309~1240、``search_web`` 3362~13019
+#: 即**无内容上界 95、有内容下界 309**，取 200 落在 3 倍空档中间。
+#: ⚠️ 这是**长度代理**，不是语义判定：宁可保守（够长才算「取到」），
+#: 因为少加一次脚注只是少一句披露，而**加错脚注是在说假话**。
+_FRESHNESS_MIN_CONTENT_CHARS = 200
+
+
+def _has_usable_content(result: object) -> bool:
+    """工具结果是否**确有可用内容**（区别于「成功但什么都没取到」）。"""
+    text = str(result or "").strip()
+    return len(text) >= _FRESHNESS_MIN_CONTENT_CHARS
+
 
 _FRESHNESS_GUIDANCE = (
     "上面是工具取到的事实材料。给最终回答时务必遵守："
@@ -599,7 +630,11 @@ class ReActLoop:
                     "tool_call_id": call_id,
                     "content": result_for_context,
                 })
-                if name in _FRESHNESS_TOOLS and ok:
+                if name in _FRESHNESS_TOOLS and ok and _has_usable_content(result):
+                    # 🔴 r27：还要**确实取到内容**才记账。
+                    # 只说「工具跑成功了」不够 —— 「本视频没有字幕」也是成功，
+                    # 但它没有任何可披露的检索结论；此时加脚注等于说假话
+                    # （正文「抓不到内容」+ 脚注「刚在网上翻的」）。
                     self._freshness_tools_used.add(name)
 
             # P2-3：时效约束此前只在「触顶强制收尾」路径注入，正常一轮工具→作答的

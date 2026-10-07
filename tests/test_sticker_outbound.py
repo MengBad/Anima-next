@@ -1,5 +1,7 @@
 """出站表情段构建测试 —— 锁定「LLM 已选表情在群聊也必须发出」的修复。"""
 import sys
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -20,11 +22,43 @@ def _ctx(sticker=None, atm="neutral", reply="嗨"):
     )
 
 
+# 当前用例的 data_dir，由下方 autouse 夹具改写为 tmp_path。
+# 🔴 兜底值刻意放在**仓库之外**：`_build_reply_segments` 会**无条件**用它构造真实
+# `StickerManager`（见该函数里取 ``runtime_blocklist()`` 的那次 ``get_sticker_manager`` 调用），
+# 而 `StickerManager.__init__`（`cognitive/stickers.py:185`）会 `mkdir` ⇒ 若写死仓库相对的
+# `"data"`，就会在工作树里建出 `data/stickers/` 污染 CI（实测本文件 21 条用例中 13 条命中），
+# 还会读到仓库里真实的 mood/relation 状态使结果漂移。
+# 放在仓库外 ⇒ 即便夹具被绕过，也绝不写进工作树。
+_DATA_DIR = str(Path(tempfile.gettempdir()) / "anima_test_data")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_sticker_state(tmp_path, monkeypatch):
+    """隔离两类会跨用例泄漏的进程级状态。
+
+    1. **仓库 data_dir 污染**：`_core()` 原先把 data_dir 写死为 ``"data"``，
+       `_build_reply_segments` 无条件调用 ``get_sticker_manager(data_dir)``
+       取 ``runtime_blocklist()`` ⇒ 真实 `StickerManager` 构造时在仓库内
+       ``mkdir data/stickers/``。改为每用例独立 ``tmp_path``，仓库零写入。
+
+    2. **单例泄漏**：`get_sticker_manager` 是进程级单例、**首个 data_dir 定型**
+       （见 `cognitive/stickers.get_sticker_manager`）。不复位时，先跑的用例钉住的
+       （甚至已被删除的）目录会被后续用例静默复用 ⇒ 按文件顺序随机失败。
+       生产只有一个 data_dir，该语义在运行时无影响；测试必须显式隔离。
+    """
+    from anima.cognitive.stickers import close_sticker_manager
+
+    close_sticker_manager()
+    monkeypatch.setattr(sys.modules[__name__], "_DATA_DIR", str(tmp_path / "data"))
+    yield
+    close_sticker_manager()
+
+
 def _core(always=("humorous", "casual")):
     return SimpleNamespace(
         config=SimpleNamespace(
             sticker=SimpleNamespace(always_atmosphere=list(always)),
-            persistence=SimpleNamespace(data_dir="data"),
+            persistence=SimpleNamespace(data_dir=_DATA_DIR),
         )
     )
 
@@ -140,7 +174,7 @@ def test_intent_gate_skips_passive_on_serious_atmosphere(monkeypatch):
     sc = SimpleNamespace(always_atmosphere=("support",), intent_gate=True,
                          intent_gate_serious_atmospheres=("support",))
     core = SimpleNamespace(config=SimpleNamespace(
-        sticker=sc, persistence=SimpleNamespace(data_dir="data")))
+        sticker=sc, persistence=SimpleNamespace(data_dir=_DATA_DIR)))
 
     def _boom(*a, **k):
         raise AssertionError("意图门控未拦截：不应触发选图/取管理器")
@@ -156,7 +190,7 @@ def test_intent_gate_disabled_still_attempts_pick():
     sc = SimpleNamespace(always_atmosphere=("support",), intent_gate=False,
                          intent_gate_serious_atmospheres=("support",))
     core = SimpleNamespace(config=SimpleNamespace(
-        sticker=sc, persistence=SimpleNamespace(data_dir="data")))
+        sticker=sc, persistence=SimpleNamespace(data_dir=_DATA_DIR)))
 
     calls = []
 
@@ -198,20 +232,25 @@ def test_split_generated_image_also_separate(tmp_path):
     assert all(len(m) == 1 and m[0]["type"] == "image" for m in msgs[1:])
 
 
-def test_sticker_manager_returns_absolute_path():
+def test_sticker_manager_returns_absolute_path(tmp_path, monkeypatch):
     """根因回归：mgr._dir 必须绝对化，否则 pick/random_one 返回相对路径，
     被 _extract_sticker_path 拒绝 -> LLM 主动选图却发不出（群聊/私聊都失效）。"""
-    import tempfile
-    from pathlib import Path
-    from anima.cognitive.stickers import get_sticker_manager
+    from anima.cognitive.stickers import close_sticker_manager, get_sticker_manager
 
-    with tempfile.TemporaryDirectory() as td:
-        mgr = get_sticker_manager(td)
-        assert mgr._dir.is_absolute(), f"sticker 目录必须是绝对路径，实际={mgr._dir}"
-        # 即使传入相对 data_dir，_dir 也应解析为绝对
-        rel = str(Path(td) / "rel_data")
-        mgr2 = get_sticker_manager(rel)
-        assert mgr2._dir.is_absolute(), f"相对 data_dir 也应解析为绝对，实际={mgr2._dir}"
+    # 绝对 data_dir
+    mgr = get_sticker_manager(str(tmp_path / "abs_data"))
+    assert mgr._dir.is_absolute(), f"sticker 目录必须是绝对路径，实际={mgr._dir}"
+
+    # 🔴 单例「首个 data_dir 定型」⇒ 不复位时第二次调用拿到的是**同一个实例**，
+    # 下面「相对 data_dir 也绝对化」会退化成永远为真的假绿（本条曾经如此）。
+    close_sticker_manager()
+
+    # 真正的相对 data_dir（相对当前工作目录），验证 resolve() 绝对化确实生效
+    monkeypatch.chdir(tmp_path)
+    mgr2 = get_sticker_manager("rel_data")
+    assert mgr2 is not mgr, "单例未复位：断言会假绿，须先 close_sticker_manager()"
+    assert mgr2._dir.is_absolute(), f"相对 data_dir 也应解析为绝对，实际={mgr2._dir}"
+    assert mgr2._dir == (tmp_path / "rel_data" / "stickers").resolve()
 
 
 def test_group_quote_segment_injected_when_direct_trigger():

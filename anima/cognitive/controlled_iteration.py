@@ -172,6 +172,77 @@ class ControlledIteration:
                 return True
         return False
 
+    #: 视为「仍未关闭」的工单状态。
+    _OPEN_STATUS = {"planned", "running", "awaiting_approval", "approved_pending_apply"}
+
+    def healed_fault_tickets(self, core: Any, report: dict[str, Any]) -> list[Any]:
+        """找出**信号已自愈**的僵尸故障工单（只读判定，不改状态）。
+
+        背景（2026-10-06 生产诊断）：工单开出来后就**没有任何过期机制**。
+        生产里躺着两张 `awaiting_approval` 的工单（`react_max_rounds` 开于 09-21、
+        `outbound_failures` 开于 09-27），而这两个信号在诊断当日实测**均为 0**
+        —— 挂了 9~15 天，持续污染 Owner 审批队列。
+
+        判定规则（**fail-closed，宁可留着也不误关**）：
+          1. 必须是 `fault_ticket` 且处于未关闭状态；
+          2. 工单记录的开单日 **严格早于**今天（**当天开的一律不动** ——
+             计数按自然日重置，当天读数为 0 不足以证明「故障没复发」）；
+          3. 它当初的**全部** signals 今天都低于各自阈值；
+          4. 任何一个 signal 不在规则表里 ⇒ 判不了 ⇒ **不关**。
+        """
+        store = getattr(core, "tasks", None)
+        if store is None:
+            return []
+        today = str(report.get("date") or _day())
+        thresholds = {str(rule["key"]): int(rule["threshold"]) for rule in _FAULT_RULES}
+        healed: list[Any] = []
+        for item in store.list():
+            if getattr(item, "kind", "") != "fault_ticket":
+                continue
+            if getattr(item, "status", "") not in self._OPEN_STATUS:
+                continue
+            prop = getattr(item, "proposal", None) or {}
+            opened_day = str(prop.get("date") or "")
+            raw_signals = prop.get("signals")
+            if not isinstance(raw_signals, (list, tuple)) or not raw_signals:
+                single = prop.get("signal")
+                raw_signals = [single] if single else []
+            signals = [str(s) for s in raw_signals if s]
+            if not signals or not opened_day or opened_day >= today:
+                continue
+            if any(sig not in thresholds for sig in signals):
+                continue
+            if all(int(report.get(sig, 0) or 0) < thresholds[sig] for sig in signals):
+                healed.append(item)
+        return healed
+
+    def close_healed_fault_tickets(self, core: Any, report: dict[str, Any]) -> list[str]:
+        """把已自愈的工单标记为 ``expired``；返回被关闭的 task_id。"""
+        closed: list[str] = []
+        for item in self.healed_fault_tickets(core, report):
+            prop = getattr(item, "proposal", None) or {}
+            signals = [str(s) for s in (prop.get("signals") or [prop.get("signal")]) if s]
+            detail = "、".join(f"{sig}=0" for sig in signals)
+            try:
+                core.tasks.set_status(
+                    item.id, "expired",
+                    f"信号自愈自动关闭（原信号 {detail}，今日已低于阈值）",
+                )
+            except Exception:
+                logger.exception("自动关闭僵尸工单失败 task=%s", getattr(item, "id", "?"))
+                continue
+            closed.append(item.id)
+            try:
+                if getattr(core, "audit", None):
+                    core.audit.emit(
+                        "fault_ticket_auto_closed", task_id=item.id,
+                        signals=signals, reason="signal_healed",
+                    )
+            except Exception:
+                pass
+            logger.info("故障工单自愈关闭 task=%s signals=%s", item.id, ",".join(signals))
+        return closed
+
     def _quota_ok(self, core: Any) -> bool:
         cfg = _iter_cfg(core)
         quota = int(getattr(cfg, "daily_quota", 1) or 1) if cfg else 1
@@ -210,6 +281,14 @@ class ControlledIteration:
 
         opened: list[Any] = []
         tickets = self.state.setdefault("tickets", {})
+
+        # 🔴 r26：先让「信号已自愈」的僵尸工单出队，再考虑开新单。
+        # 工单此前没有任何过期机制 ⇒ 会永久占着 Owner 审批队列（生产实证 9~15 天）。
+        try:
+            self.close_healed_fault_tickets(core, report)
+        except Exception:
+            logger.exception("僵尸工单自愈关闭失败（不影响本轮开单）")
+
         grouped_rules: dict[str, list[dict[str, Any]]] = {}
         for rule in _FAULT_RULES:
             key = str(rule["key"])

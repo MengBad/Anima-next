@@ -367,7 +367,11 @@ def test_source_records_at_every_exit():
         "（该处用 `kind` 参数区分「霸凌冷回 / 回避期冷回」；其中 `cold_avoidance` 桶"
         "自 2026-09-28 起生产恒 0 —— 回避期已改为真静默，无出站）"
     )
-    assert gr.count("_record_fallback(ctx, ") == 5, "guardrail 五处出口都应计数"
+    assert gr.count("_record_fallback(ctx, ") == 6, (
+        "guardrail 六处出口都应计数（前五处为既有的危险/机械/正则机械/内部泄漏/…；"
+        "2026-10-06 r28 新增第六处 `tool_failure_narration` —— 工具故障被播报到群里时"
+        "改写为兜底话术，属「机器话术出站」，必须与正常生成正文分开计数）"
+    )
 
 
 def test_source_fallback_records_cover_every_pool_exit():

@@ -8,6 +8,10 @@
    不产生 reply_unavailable 遥测——与原 return-early 语义一致）；
 2. ``attachment_text_stage`` —— 小文本附件 / 语音转写合并进 ``ctx.text``
    （原在闸门之后、ctx 构建之前执行，顺序保持）；
+   🔴 **r28 例外：合并转发正文已前移** —— r24 把它挂在这里，而本 stage 注册在
+   ``prefilter_stage`` 之后，闸门一旦 STOP 就永远走不到 ⇒ 转发正文**结构性
+   拉不到**（生产 24h 内 5 条 forward，4 个锚点全 0）。现在由
+   ``_expand_forward_text`` 在闸门**之前**拉取，这里只做幂等兜底；
 3. ``bullying_stage`` —— 霸凌检测写 ``ctx.meta`` 标记（generation 据此冷回/沉默）。
 
 防抖（私聊/群聊消息合并）**有意保留在 handler**：它必须先于跨群观察/表情收集
@@ -17,6 +21,7 @@ handler 态）；``trace`` 经 ``ctx.meta["trace"]`` 透传供日志串联。
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 
@@ -30,9 +35,52 @@ from anima.pipeline import PipelineContext, StageResult
 
 logger = logging.getLogger(__name__)
 
+#: r28：合并转发正文拉取的硬上界（秒）。见 `_expand_forward_text` 里的说明。
+_FORWARD_FETCH_TIMEOUT_SEC = 10.0
+
 
 def _handler_of(ctx: PipelineContext):
     return ctx.meta.get("_handler")
+
+
+async def _expand_forward_text(ctx: PipelineContext) -> None:
+    """把合并转发正文拉回 ``ctx.text``（r28 P1-1：**必须在闸门之前**）。
+
+    OneBot11 的 forward 段**接收时只带 id**，正文要另调 ``get_forward_msg``。
+    放在闸门之前有两个理由：
+
+    1. 闸门判「这句值不值得回」用的是 ``ctx.text``；纯转发消息的 text 只有
+       卡片死标题「合并转发消息」（生产实测 39 字空壳），会被当成
+       「纯图/空正文」判 ``idle``，或按亲密度判 ``unfamiliar`` ⇒ 转发永远进不来；
+    2. ``attachment_text_stage`` 在本 stage 之后，闸门 STOP 后根本不会执行。
+
+    fail-soft：拉取失败只降级为空，绝不阻塞回复；``_forward_expanded`` 保证
+    同一条消息只拉一次（闸门之前拉过，后面 stage 不再重复网络往返）。
+    """
+    event = ctx.event or {}
+    if not event.get("forward_ids") or event.get("_forward_expanded"):
+        return
+    h = _handler_of(ctx)
+    fn = getattr(h, "_extract_forward_text", None)
+    if fn is None:
+        return
+    event["_forward_expanded"] = True
+    try:
+        # 🔴 r28：这次网络往返现在跑在闸门**之前**、且仍在 `_turn_lock` 内
+        # （handler.py:1157），NapCat 不响应就会堵住该会话后续所有消息。
+        # 原来挂在闸门之后时只影响「确定要回」的少量消息，前移后影响面变大
+        # ⇒ 必须给硬上界；超时按「拉不到」处理（fail-soft，不阻塞回复）。
+        forward_text = await asyncio.wait_for(fn(event), timeout=_FORWARD_FETCH_TIMEOUT_SEC)
+    except asyncio.TimeoutError:
+        logger.warning("合并转发正文拉取超时（%.0fs），按拉不到处理", _FORWARD_FETCH_TIMEOUT_SEC)
+        return
+    except Exception:
+        logger.exception("合并转发正文提取异常（已隔离，不阻塞回复）")
+        return
+    if forward_text:
+        text = ((ctx.text or "") + "\n" + forward_text).strip()
+        event["text"] = text
+        ctx.text = text
 
 
 async def prefilter_stage(ctx: PipelineContext) -> StageResult:
@@ -54,6 +102,8 @@ async def prefilter_stage(ctx: PipelineContext) -> StageResult:
 async def _prefilter_inner(ctx: PipelineContext) -> StageResult:
     """睡眠 / 免打扰 / 群策略 / 忽略名单 / 回复闸门 / 被动冷却（原样迁移）。"""
     h = _handler_of(ctx)
+    # r28 P1-1：转发正文先拉回，后面所有判定（含闸门）才看得见真实内容。
+    await _expand_forward_text(ctx)
     event, text = ctx.event, ctx.text
     user_id, group_id = ctx.user_id, ctx.group_id
     detail_type, trace = ctx.detail_type, ctx.meta.get("trace", "-")
@@ -231,6 +281,20 @@ async def attachment_text_stage(ctx: PipelineContext) -> StageResult:
                 ctx.text = text
         except Exception:
             logger.exception("文本附件提取异常（已隔离，不阻塞回复）")
+
+    # 合并转发正文（r24）：forward 段只带 id，须经 channel.get_forward_msg 拉。
+    # 与附件/语音同一批 fail-soft：拉不到只留一句说明，不阻塞回复。
+    # 🔴 r28：主拉取点已前移到闸门之前（`_expand_forward_text`），这里只在
+    # 「未经 prefilter 的路径」（如私聊/未来新增 stage）上兜底，且幂等不重复拉。
+    if event.get("forward_ids") and not event.get("_forward_expanded"):
+        try:
+            forward_text = await h._extract_forward_text(event)
+            if forward_text:
+                text = (text + "\n" + forward_text).strip()
+                event["text"] = text
+                ctx.text = text
+        except Exception:
+            logger.exception("合并转发正文提取异常（已隔离，不阻塞回复）")
 
     if event.get("records"):
         try:

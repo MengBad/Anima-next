@@ -784,7 +784,36 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 core.config.persistence.data_dir, **capability_cfg_dict(core.config)
             ).build_fragment()
             if frag:
-                add_system_fragment("capabilities", frag, 20)
+                # 🔴 2026-10-06（r23）：priority 20 → **26**，**仅此一个数字**。
+                #
+                # 生产 7d 账本（128 个超预算回合，各片段被丢频次）：
+                #     capabilities        128/128 = 100%   ← priority 原为 20（全表最低）
+                #     external_exploration 63/128 =  49%   ← priority 25
+                # 也就是**定序反了**：100% 出局的那个排在只丢 49% 的那个之下。
+                # `ContextComposer.compose_system` 按 `(priority, 注入序)` 升序删除
+                # （`pipeline/context.py:162`）⇒ priority 越低越先出局。
+                #
+                # 🔴 **为什么是 26 而不是 25（本地回放量出来的，不是想当然）**：
+                # 两者**同 priority** 时由**注入序**决定，而 capabilities 在
+                # `cognition.py` 里**先注入**（:787 < :798）⇒ 平齐时它照样第一个被丢。
+                # 实测同预算（11000）下：
+                #     prio=20 → dropped=capabilities,external_exploration
+                #     prio=25 → dropped=capabilities,external_exploration   ← 无变化
+                #     prio=26 → dropped=external_exploration                  ← 生效
+                # ⚠️ 「25 无效」这件事说明**改 priority 必须带端到端回放**，
+                # 只断言常量大小会写出假绿判据。
+                #
+                # 零和代价已量化：生产能力库 **3 条**、片段 **210 字 / 估 281 token**
+                # （`capabilities.py:345-363` 已做三重瘦身：删固定开场白、不带 how_to_use、
+                # 每条压一行）⇒ 抬它最多挤掉 external_exploration 的**部分**回合。
+                # 生产 128 个超预算回合里两者同场的有 63 个 ⇒ **实际保留率上界
+                # ≈ 67%（86 回合余量本就够 + 63 回合二选一取一），不是 100%**。
+                #
+                # 判据 `tests/test_capability_fragment_priority.py`（含反向对照：
+                # 60/100 的记忆类片段必须仍优先保留）。⚠️ 本条**只改相对定序**，
+                # 不解决「总预算不足导致它仍可能被丢」—— 那是 owner 的预算决策，
+                # 本轮刻意不动 `system_token_budget`（抬高它 = 抢历史 token，见记忆）。
+                add_system_fragment("capabilities", frag, 26)
         except Exception:
             logger.exception("能力片段注入失败")
 
@@ -904,14 +933,22 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     ctx.meta["inner_state_injected"] = any(
         getattr(fr, "key", "") == "inner_state" for fr in system_fragments
     ) and "inner_state" not in system_stats.dropped_keys
-    if system_stats.dropped_keys:
-        logger.info(
-            "Context system budget: dropped=%s tokens=%d/%d",
-            ",".join(system_stats.dropped_keys),
-            system_stats.estimated_tokens,
-            system_stats.budget,
-        )
-    elif system_stats.protected_over_budget:
+    # 🔴 r26（2026-10-06）：**每回合都记**，不再只在「有片段被丢」时记。
+    #
+    # 只记有丢的回合，会让「修好之后不再丢」与「这一段根本没有样本」在日志里
+    # 长得一模一样 ⇒ 无法证伪。r23/r25 两轮都因此只能拿终值推断缺口。
+    # `pre_drop` 是裁剪**前**总量，`overflow` = 超出量（>0 即必然丢片段），
+    # 这两个数才是预算取值的依据；`required` 是不可裁底量（人格+护栏）。
+    logger.info(
+        "Context system budget: dropped=%s tokens=%d/%d required=%d pre_drop=%d overflow=%d",
+        ",".join(system_stats.dropped_keys),
+        system_stats.estimated_tokens,
+        system_stats.budget,
+        system_stats.required_tokens,
+        system_stats.pre_drop_tokens,
+        system_stats.pre_drop_tokens - system_stats.budget,
+    )
+    if system_stats.protected_over_budget:
         logger.warning(
             "Context system protected content exceeds budget: tokens=%d budget=%d",
             system_stats.estimated_tokens,

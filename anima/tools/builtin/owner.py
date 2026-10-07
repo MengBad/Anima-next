@@ -42,6 +42,10 @@ def make_self_code(core):
             task = await mgr.create_engineering_task(goal, int(owners[0]))
             if task.status == "awaiting_approval":
                 return f"[self_code] 工程任务 {task.id} 已完成候选与测试，等待 Owner 在 WebUI 审批"
+            # 能力边界拒绝：把理由原样回给 Owner（含可用的替代工具），
+            # 不要只说「未形成候选」让 Owner 猜。
+            if task.status == "rejected" and task.evidence:
+                return str(task.evidence[-1])
             return f"[self_code] 工程任务 {task.id} 未形成可审批候选，状态：{task.status}"
         except Exception:
             logger.exception("self_code 执行失败")

@@ -150,8 +150,15 @@ autonomy:
   other_bot_names: []                    # 生产填真实竞品 bot 昵称列表
 
 context:
-  input_token_budget: 0                  # 生产覆盖了默认 12000；当前生产 16000（2026-09-20 抬，给聊天历史留量）
-  system_token_budget: 0                 # 生产覆盖了默认 8000；当前生产 11000（D-27）
+  # 🔴 2026-10-06（r26）重定：system 12000→16000、input 16000→20000。
+  # 差额固定留 4000 给「聊天历史 + 本轮用户消息」，与旧档 16000-12000=4000 **完全一致**
+  # ⇒ 历史额度零损失，纯粹把 system 可选片段的余量从 6480 抬到 10480。
+  # 依据：不可裁底量（人格 base + 护栏 suffix）实测 5520；可选片段实测总量已超 6480，
+  # 导致 7d **138/138 回合**丢片段、`capabilities` 100% 出局（含 vector_recall 等记忆片段）。
+  # ⚠️ 旧值 16000/12000 的问题是「用终值反推缺口」——终值只能说明裁到哪停手，
+  # 说明不了超了多少；现已在日志落 `required=`/`pre_drop=`/`overflow=` 三个真数。
+  input_token_budget: 0                  # 生产覆盖了默认 12000；当前生产 20000（r26）
+  system_token_budget: 0                 # 生产覆盖了默认 8000；当前生产 16000（r26）
   tool_result_token_budget: 0
   image_token_estimate: 0
 

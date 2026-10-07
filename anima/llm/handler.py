@@ -1157,6 +1157,11 @@ class LLMHandler(AnimaCommandsMixin):
             async with self._turn_lock(detail_type, group_id, user_id):
                 ctx = await self.pipeline.run(ctx)
 
+            # r28 P1-2：护栏把「工具故障播报」换成兜底话术后，故障细节由这里
+            # 单独私聊给 owner —— 群里不留痕，owner 仍能拿到排障所需的事实。
+            # 放在群锁外、发送前：不占同群串行窗口，也不依赖本次是否真的发出。
+            await _flush_owner_notice(self, ctx)
+
             # 发送回复
             if not ctx.should_reply or not ctx.reply:
                 if ctx.should_reply:
@@ -1593,6 +1598,49 @@ class LLMHandler(AnimaCommandsMixin):
             rows.append(f"[附件内容 {name}]\n{decoded[:12000]}")
         return "\n".join(rows)
 
+    async def _extract_forward_text(self, event: dict) -> str:
+        """拉取合并转发正文并入上下文（r24，2026-10-06）。
+
+        🔴 **修的是「bot 看不到转发的消息」**：OneBot11 规范里 forward 段
+        **接收时只带 id**，正文必须调 `get_forward_msg` 另取。此前全仓从未调用
+        该 action（`grep -rn get_forward_msg anima/` = 0），`parse_qq_rich_card`
+        又只填死标题「合并转发消息」⇒ bot 上下文里只有这 10 个字，
+        表现为「甩个空壳子过来 / 里面啥字都没有」。
+
+        与附件/语音同款：**失败只降级不抛**，绝不因拉取失败让整条消息变静默。
+        """
+        ids = [str(x) for x in (event.get("forward_ids") or []) if str(x).strip()]
+        if not ids:
+            return ""
+        channel = getattr(self.core.gateway, "channel", None)
+        if channel is None or not hasattr(channel, "get_forward_msg"):
+            return ""
+        try:
+            from anima.channels.onebot11 import parse_forward_messages
+        except Exception:
+            logger.exception("转发解析器导入失败")
+            return ""
+        rows: list[str] = []
+        for fid in ids[:2]:
+            try:
+                resp = await channel.get_forward_msg(fid)
+            except Exception:
+                logger.warning("get_forward_msg 异常 id=%s", fid[:60], exc_info=True)
+                continue
+            if not isinstance(resp, dict):
+                continue
+            # 兼容 NapCat 把节点放在 content.messages / content 的形态
+            texts = parse_forward_messages(resp)
+            if not texts:
+                inner = resp.get("content")
+                texts = (parse_forward_messages({"content": inner})
+                         if inner is not None else [])
+            if texts:
+                rows.append("[合并转发内容]\n" + "\n".join(texts))
+            else:
+                rows.append("[合并转发：未能读取到正文（可能是空转发或 NapCat 未返回）]")
+        return "\n".join(rows)
+
     async def _transcribe_records(self, event: dict, user_id: int) -> str:
         self._record_audio_metric("requests")
         cfg = getattr(self.core.config, "audio", None)
@@ -1887,6 +1935,33 @@ class LLMHandler(AnimaCommandsMixin):
 # §17 安全版反馈自然回话：仅在私聊 + 已有主回复文本时，于主回复段末尾追加
 # 一句轻量确认。绝不额外发第二条消息；默认关（由 handler 显式开启）。
 _FEEDBACK_ACK_SUFFIX = "（本喵已经把这个问题记下喵～会去找原因哒）"
+
+
+async def _flush_owner_notice(handler, ctx) -> bool:
+    """把护栏塞进 ``ctx.meta["owner_notice"]`` 的回执私聊给 owner（r28 P1-2）。
+
+    🔴 为什么必须走私聊：这类内容含工具名、超时秒数、失败原因 —— 属内部机制，
+    发到群里等于向全体成员播报故障（生产实证见 09-26 19:16 的 agent 控制面回执，
+    以及 10-06 20:58 的 x_search 超时播报）。owner 需要事实来排障，群友不需要。
+
+    fail-soft：任何异常都只记日志，绝不因通知失败影响正常回复链路。
+    """
+    notice = (ctx.meta or {}).get("owner_notice")
+    if not notice:
+        return False
+    ctx.meta.pop("owner_notice", None)
+    perms = getattr(getattr(handler.core, "config", None), "permissions", None)
+    owners = getattr(perms, "owners", None) or ()
+    sent = False
+    for oid in owners:
+        try:
+            await handler.core.gateway.send(OutboundMsg("private", int(oid), notice))
+            sent = True
+        except Exception:
+            logger.warning("工具故障回执私聊失败 owner=%s", oid, exc_info=True)
+    if not owners:
+        logger.warning("工具故障回执无人可发：permissions.owners 为空（fail-closed 不伪造发送）")
+    return sent
 
 
 def _maybe_append_feedback_ack(segments: "list[dict]", *, detail_type: str,

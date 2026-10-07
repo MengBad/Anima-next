@@ -26,13 +26,29 @@ class _CtxComposer:
         return text
 
 
+#: 🔴 r27（2026-10-06）：默认工具结果必须**确有可用内容**。
+#:
+#: 原先默认返回 ``"ok"``（2 字符）—— 那是「工具跑成功了」，不是「取到了东西」。
+#: r27 给时效脚注加了「取到内容」门（``_has_usable_content``，阈值 200 字符，
+#: 取自生产 result_len 的双峰分布），``"ok"`` 过不了门 ⇒ 约束与脚注都不再触发。
+#: 这不是把测试改松，而是**把 fixture 从不真实的 ``"ok"`` 修成真实量级的结果**。
+_SUBSTANTIVE_RESULT = (
+    "搜索结果 1：这是从网上取回的一段足够长的正文，用于模拟真实的检索结果，"
+    "包含标题、摘要与正文片段，长度与生产实测同量级（3000~13000 字符）。\n"
+    "搜索结果 2：另一条带标题与摘要的条目，继续填充内容以稳定超过可用内容阈值。\n"
+    "搜索结果 3：第三条正文，仍然在阈值之上，确保本 fixture 不会被内容门拦下。\n"
+    "搜索结果 4：第四条正文，用于把结果长度推高到 200 字符门槛以上并留出余量。\n"
+    "搜索结果 5：补齐末尾，使本 fixture 明显长于门槛，避免卡在边界值上。\n"
+)
+
+
 def _make_loop(llm, *, freshness_footer=True, results=None):
     class _Tools:
         def get_schemas(self, level, **kw):
             return []
 
         async def call(self, name, args, level):
-            return (results or {}).get(name, "ok")
+            return (results or {}).get(name, _SUBSTANTIVE_RESULT)
 
     loop = ReActLoop(llm, _Tools(), max_rounds=3, permission_level=LEVEL_USER,
                      freshness_footer=freshness_footer)
@@ -136,7 +152,7 @@ async def test_channels_respond_but_empty_is_not_reported_as_outage(monkeypatch)
 
 async def test_freshness_guidance_injected_after_web_tool():
     llm = _ScriptedLLM([
-        {"content": "", "tool_calls": [_tool_call("web_search", '{"query":"x"}')]},
+        {"content": "", "tool_calls": [_tool_call("search_web", '{"query":"x"}')]},
         {"content": "结论是甲。", "tool_calls": []},
     ])
     loop = _make_loop(llm)
@@ -153,8 +169,8 @@ async def test_freshness_guidance_injected_after_web_tool():
 
 async def test_freshness_guidance_injected_only_once():
     llm = _ScriptedLLM([
-        {"content": "", "tool_calls": [_tool_call("web_search", "{}", "c1")]},
-        {"content": "", "tool_calls": [_tool_call("web_search", "{}", "c2")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", "{}", "c1")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", "{}", "c2")]},
         {"content": "答案", "tool_calls": []},
     ])
     loop = _make_loop(llm)
@@ -184,7 +200,7 @@ async def test_no_guidance_when_only_non_freshness_tools():
 
 async def test_footer_skipped_when_answer_has_date():
     llm = _ScriptedLLM([
-        {"content": "", "tool_calls": [_tool_call("web_search", "{}")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", "{}")]},
         {"content": "据 2026-09-14 的报道，情况是甲。", "tool_calls": []},
     ])
     loop = _make_loop(llm)
@@ -194,7 +210,7 @@ async def test_footer_skipped_when_answer_has_date():
 
 async def test_footer_can_be_disabled_by_switch():
     llm = _ScriptedLLM([
-        {"content": "", "tool_calls": [_tool_call("web_search", "{}")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", "{}")]},
         {"content": "结论", "tool_calls": []},
     ])
     loop = _make_loop(llm, freshness_footer=False)
@@ -205,9 +221,9 @@ async def test_footer_can_be_disabled_by_switch():
 async def test_footer_added_on_max_round_finalize_path():
     """触顶收尾路径同样要有时效披露（此前只有该路径有约束、现在两条都有脚注）。"""
     llm = _ScriptedLLM([
-        {"content": "", "tool_calls": [_tool_call("web_search", '{"q":"1"}', "c1")]},
-        {"content": "", "tool_calls": [_tool_call("web_search", '{"q":"2"}', "c2")]},
-        {"content": "", "tool_calls": [_tool_call("web_search", '{"q":"3"}', "c3")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", '{"q":"1"}', "c1")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", '{"q":"2"}', "c2")]},
+        {"content": "", "tool_calls": [_tool_call("search_web", '{"q":"3"}', "c3")]},
         {"content": "整理后的结论", "tool_calls": []},
     ])
     loop = _make_loop(llm)

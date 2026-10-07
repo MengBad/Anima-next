@@ -241,6 +241,24 @@ def _build_active_speech_system(
     )
 
 
+def _active_reply_drop_reason(reply: str) -> str:
+    """主动发言候选回复的丢弃原因码；空串 = 可以说。
+
+    🔴 r28 N1：这三个语义完全不同的出口（模型返回空 / 模型自己说 ``[skip]`` /
+    正文太短）此前共用一个**裸 return False**，journal 里什么都没有。生产
+    2026-10-06 主动发言 6 次触发只发出 3 次，另外 3 次（10:43 / 18:44 / 18:49）
+    只能看到「主动发言人格片段」这一行，事后无从归因到底是配额烧了还是模型
+    不想说 —— 而这两者的处置完全相反（降配额 vs 调 prompt）。
+    """
+    if not reply or not str(reply).strip():
+        return "empty"
+    if "[skip]" in str(reply).lower():
+        return "skip_tag"
+    if len(str(reply).strip()) < 4:
+        return "too_short"
+    return ""
+
+
 def _active_speech_persona_fragments(core) -> tuple[str, str, str]:
     """主动发言用的内容类人格片段：(自我笔记, 当前情绪, 世界观)。
 
@@ -1817,7 +1835,15 @@ class Heartbeat:
         reply = _clean_active_reply(reply)
         # P0 纵深防御：主动发言同样过滤内心独白（_speak 不经 generation 的过滤）
         reply = filter_inner_monologue(reply)
-        if not reply or "[skip]" in reply.lower() or len(reply.strip()) < 4:
+        # 🔴 r28 N1：这三个出口此前是裸 return，「触发了但没发」在 journal 里
+        # 完全不可见（10-06 三次未发的主动发言只剩一行人格片段日志）。
+        # 原因码必须落盘，否则「配额烧完了」和「模型不想说话」无法区分。
+        _drop_reason = _active_reply_drop_reason(reply)
+        if _drop_reason:
+            logger.info(
+                "自主发言丢弃：reason=%s group=%d reply_len=%d reply=%s",
+                _drop_reason, group_id, len(reply or ""), (reply or "")[:60],
+            )
             return False
         if _is_low_value_active_reply(reply):
             logger.info("自主发言丢弃低质水话 group=%d text_len=%d", group_id, len(reply))

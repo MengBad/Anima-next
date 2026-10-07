@@ -141,6 +141,72 @@ def _has_internal_tool_leak(reply: str) -> bool:
     return bool(_INTERNAL_TOOL_LEAK_RE.search(reply or ""))
 
 
+# ── r28 P1-2：工具故障播报（群内）───────────────────────────────────────────
+# 生产实证（2026-10-06 20:58）：`工具调用超时(45s) name=x_search` → 5 秒后群里
+# 发出「推特那边卡死超时了，转了半天啥图都没吐出来……！」。`react.py:609` 把超时
+# 当成普通 tool result 回注，模型照着复述；而 `_INTERNAL_TOOL_LEAK_RE` 只认
+# 「工具 + 挂了/卡住」这种**带「工具」二字**的说法，故漏网。
+#
+# 强故障词（单独即成立）：超时/卡死/卡住/卡壳/崩了/挂了/报错/连不上/请求失败。
+# 弱故障词（「失败」「没成功」「不行」）在中文闲聊里太常见 —— 生产里就有
+# 「护食失败也太惨了吧」这种完全正常的句子 —— 必须与「没取到」同现才算播报。
+_TOOL_FAILURE_STRONG_RE = re.compile(
+    r"超时|卡死|卡住|卡壳|崩(?:了|掉)|挂了|报错|连不上|请求失败|接口失败"
+)
+_TOOL_FAILURE_WEAK_RE = re.compile(r"失败|没成功|不行|搞不定|弄不了")
+_TOOL_FAILURE_MISS_RE = re.compile(
+    r"没(?:吐|给|扒|搜|抓|找|拿|取|刷|弄|读|load)(?:出|到|着|出来|回来|上来)?"
+    r"|拿不到|抓不到|没拿到|没结果|啥[^\s，。]{0,4}都没"
+)
+
+
+def _narrates_tool_failure(reply: str, tool_trace: list | None) -> bool:
+    """回复是否在**播报**本回合的工具故障。
+
+    🔴 判据是两个条件的**合取**，缺一不可：
+
+    ① 本回合确实有工具失败（``tool_trace`` 里含 ``ok=False``）；
+    ② 回复里出现超时/卡死一类播报词。
+
+    只看 ② 会误杀 —— 用户本来就可能在聊「失败」（生产「护食失败也太惨了吧」）；
+    只看 ① 会把「工具失败但仍给出了有用回答」的正常回合一起干掉。
+    """
+    if not reply or not tool_trace:
+        return False
+    if not any(not bool(item.get("ok")) for item in tool_trace if isinstance(item, dict)):
+        return False
+    if _TOOL_FAILURE_STRONG_RE.search(reply):
+        return True
+    return bool(_TOOL_FAILURE_WEAK_RE.search(reply)
+                and _TOOL_FAILURE_MISS_RE.search(reply))
+
+
+_SENT_SPLIT_RE = re.compile(r"(?<=[。！？!?…])|\n+")
+
+
+def _strip_tool_failure_narration(reply: str) -> str:
+    """只删掉**播报故障的句子**，其余原样保留。
+
+    🔴 为什么不做整段替换：生产那条样本的后半句 ——「雨萌你今天怎么这个点还在
+    冒泡，一上来就支使猫猫去搜这种奇奇怪怪的癖好图啊！要看让亦萱自己去翻啦，
+    本喵才不帮你们代购！」—— 是有性格的接话，跟故障无关。整段替换会把它一起
+    抹掉，这正是 09-27 分析体护栏误杀的教训（破坏性改写连内容一起丢）。
+    """
+    parts = [p for p in _SENT_SPLIT_RE.split(reply or "") if p and p.strip()]
+    keep = [p for p in parts if not _narrates_tool_failure(p, [{"ok": False}])]
+    return "".join(keep).strip()
+
+
+def _tool_failure_owner_notice(ctx: PipelineContext, trace_failed: list[str]) -> str:
+    """给 owner 的私聊回执：说清哪个工具挂了、群里怎么处理的。"""
+    gid = ctx.group_id if ctx.detail_type == "group" else "-"
+    return (
+        f"[工具故障] 群 {gid}（trace={ctx.meta.get('trace', '-')}）本回合工具失败："
+        f"{'、'.join(trace_failed) or '未知'}。"
+        f"已改用兜底话术，未向群内播报故障细节。原文：{(ctx.reply or '')[:80]}"
+    )
+
+
 def _tool_failure_fallback(user_text: str) -> str:
     if re.search(r"内存|磁盘|cpu|负载|占用|状态", user_text or "", re.I):
         return "本喵这次没拿到完整的运行数据，不想瞎报数字；等查到准信再告诉你喵。"
@@ -641,6 +707,25 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         await _record_reply_memory(ctx)
         return StageResult.CONTINUE
 
+    # r28 P1-2：工具故障播报 —— 群里只给兜底话术，故障细节走私聊给 owner。
+    # 只在群聊生效：私聊对象多半就是 owner，如实说明故障是有价值的。
+    _tool_trace = ctx.meta.get("tool_trace")
+    if ctx.detail_type == "group" and _narrates_tool_failure(ctx.reply, _tool_trace):
+        _failed = [str(t.get("name")) for t in (_tool_trace or [])
+                   if isinstance(t, dict) and not t.get("ok")]
+        logger.warning(
+            "Guardrail: 回复在播报工具故障（%s），群内改写为兜底话术、细节转 owner 私聊",
+            "、".join(_failed) or "未知",
+        )
+        ctx.meta["owner_notice"] = _tool_failure_owner_notice(ctx, _failed)
+        _record_fallback(ctx, "tool_failure_narration")
+        # 先试着只切掉故障句；切完太短（说明整条都在播报）才整条换兜底话术。
+        _stripped = _strip_tool_failure_narration(ctx.reply)
+        ctx.reply = (_stripped if len(_stripped) >= 8
+                     else _runtime_status_reply(_tool_trace) or _tool_failure_fallback(ctx.text or ""))
+        await _record_reply_memory(ctx)
+        return StageResult.CONTINUE
+
     # 破角色「分析体」兜底
     _essay_rule = _analysis_essay_rule(ctx.reply, user_text=ctx.text or "")
     if _essay_rule:
@@ -648,12 +733,22 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         # 原文多长 + 原文开头」——否则事后既回溯不了「它本来想说什么」，
         # 也判断不了某条规则是过严还是有效（这正是上次没发现误杀的原因）。
         _essay_orig = ctx.reply or ""
-        logger.warning(
-            "Guardrail: 检测到破角色分析体，改写为轻松接话（规则=%s 原文=%d字 摘要=%s）",
-            _essay_rule, len(_essay_orig), _essay_orig[:120],
+        # 🔴 2026-10-07：日志文案必须与**实际处置**一致。此前无条件写
+        # 「改写为轻松接话」，而 essay_score / 用户在提问 走的是**保留内容**
+        # （只截断收尾、不整段替换，见下方 2026-09-27/10-04 注释）⇒ 排查时
+        # 把「保留」误读成「整段替换」，会得出错误的命中率与误杀结论。
+        _essay_keep = (
+            _essay_rule == "essay_score"
+            or _user_wants_substantive(ctx.text or "")
+            or _user_asked_question(ctx.text or "")
         )
-        if (_essay_rule == "essay_score" or _user_wants_substantive(ctx.text or "")
-                or _user_asked_question(ctx.text or "")):
+        logger.warning(
+            "Guardrail: 检测到破角色分析体（规则=%s 原文=%d字 处置=%s 摘要=%s）",
+            _essay_rule, len(_essay_orig),
+            "保留内容+截断收尾" if _essay_keep else "整段替换为轻松接话",
+            _essay_orig[:120],
+        )
+        if _essay_keep:
             # 保留内容：只截断、不整段替换。
             # 🔴 2026-09-27：`essay_score` 走这里（原本是整段罐头替换）。
             # 依据 D5 首批生产样本：真阳性「三国杀机制分析」205 字 score **6.5**，
