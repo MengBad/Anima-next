@@ -293,6 +293,34 @@ def _exec_payload(args: dict[str, Any]) -> str:
     return ""
 
 
+#: 普通工具 ``tool_executed`` 审计里结果原文的截断上限（超出部分只在标记里报总长）。
+AUDIT_RESULT_PREVIEW_CHARS = 500
+#: 认作「本次调用的输入」的入参名，按优先级取第一个非空字符串。
+_AUDIT_PRIMARY_ARG_KEYS = ("query", "request", "q", "text", "keyword", "topic", "question")
+
+
+def _audit_request(args: dict[str, Any]) -> str:
+    """从调用入参里取「这次要做什么」——优先 query / request 等主参数。
+
+    只取字符串入参，取不到就是空字符串：**不猜、不补**。执行类工具不走这里
+    （它们已有 ``payload_preview``，且入参是可执行代码，不该再复制一份）。
+    """
+    for key in _AUDIT_PRIMARY_ARG_KEYS:
+        value = args.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    values = [value.strip() for value in args.values() if isinstance(value, str) and value.strip()]
+    return values[0] if values else ""
+
+
+def _audit_result_preview(text: str) -> str:
+    """结果原文预览：超过上限则截断并**带截断标记**（绝不让截断后的文本冒充全文）。"""
+    body = text or ""
+    if len(body) <= AUDIT_RESULT_PREVIEW_CHARS:
+        return body
+    return body[:AUDIT_RESULT_PREVIEW_CHARS] + f"…[已截断，共 {len(body)} 字]"
+
+
 def get_call_context() -> dict[str, Any]:
     return _CALL_CONTEXT.get()
 
@@ -375,7 +403,8 @@ class Tool:
                  granted_scopes: Any = None,
                  capability_only: bool = False,
                  priority: int = 5,
-                 private_only: bool = False):
+                 private_only: bool = False,
+                 template: str = ""):
         self.name = name
         self.description = description
         self.parameters = parameters  # JSON Schema properties
@@ -405,6 +434,10 @@ class Tool:
         # 群内同样拿到 permission_level=4，仅靠 min_level 挡不住）。判定依据是
         # call context 的 detail_type/group_id，不是 permission_level。
         self.private_only = bool(private_only)
+        # --- 审计可回溯：本工具「当时生效的模板文本」---
+        # 普通内置工具没有模板 → 空字符串（字段仍在，供事后恢复轨迹；不省略、不猜）。
+        # 声明式 Skill 由 SkillRegistry 在 _make_tool 时填入 execution.template。
+        self.template = template or ""
 
     def to_openai_schema(self) -> dict:
         required = self.required if self.required is not None else list(self.parameters.keys())
@@ -1232,7 +1265,14 @@ class ToolRegistry:
                 existing = ctx.setdefault("generated_image_paths", [])
                 if isinstance(existing, list):
                     existing.extend(_img_paths[:2])
-        self._audit("tool_executed", tool=tool.name, ok=ok, result_len=len(text))
+        # 普通工具：补上事后可回溯的三样（request / template / result_preview）。
+        # 执行类工具跳过——它们已有 payload_preview 与 execution_finished，不重复记一份。
+        replay_meta = {} if exec_meta is not None else {
+            "request": _audit_request(args),
+            "template": tool.template,
+            "result_preview": _audit_result_preview(text),
+        }
+        self._audit("tool_executed", tool=tool.name, ok=ok, result_len=len(text), **replay_meta)
         if exec_meta is not None:
             self._audit(
                 "execution_finished",

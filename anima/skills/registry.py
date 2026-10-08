@@ -182,7 +182,10 @@ class SkillRegistry:
             # 无提权上界：Skill 工具的可见等级取「技能声明」与「目标工具」中较高者
             level = max(level, getattr(target, "min_level", 0))
         return Tool(f"skill_{manifest.id}", manifest.description, properties, handler,
-                    min_level=level, required=required)
+                    min_level=level, required=required,
+                    # 审计可回溯：把当时生效的 execution.template 挂到工具上，
+                    # 事后才能从 tool_executed 事件恢复「这次调用用的是哪个模板」。
+                    template=manifest.execution.template)
 
     async def _summarize(self, manifest: SkillManifest, payload: str) -> str:
         """按 template 指令整理工具/网页产出；LLM 不可用或失败时返回空串（调用方兜底）。"""
