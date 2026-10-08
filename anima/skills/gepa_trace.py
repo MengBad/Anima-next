@@ -1,20 +1,27 @@
 """GEPA 轨迹导出：从本地审计 JSONL 抽某个技能的工具调用轨迹。
 
 **只做抽取，不做合成。** 审计里没有的东西就是没有——抽不到就写空文件并明确报错，
-绝不编造 ``request`` / ``score`` / ``feedback_text``（No Hidden Authority / Audit Everything）。
+绝不编造 ``request`` / ``template`` / ``feedback_text``（No Hidden Authority / Audit Everything）。
 
-一条可用轨迹必须能同时恢复出：
-- ``request``：本次技能调用的输入（``request`` 或 ``args.request`` / ``args.query``）；
-- ``template``：当时生效的 ``execution.template``；
-- ``score``：0..1 的任务分数证据。
+一条轨迹**可用**，当且仅当同时恢复出：
+- ``request``：本次技能调用的输入（``request``，或 ``args.request`` / ``args.query``）；
+- ``template``：当时生效的 ``execution.template``。
 
-三者缺一即判为**不可用**（计入 ``unusable``），不写进产物。
+缺任一即判为**不可用**（计入 ``unusable``），不写进产物。
 ``trace`` / ``feedback_text`` 可空——空的反馈行本来也进不了 ``D_feedback``。
 
-已知限制（2026-10-09）：``ToolRegistry`` 目前只对执行类工具做结构化审计，
-普通工具调用只记 ``{"type":"tool_executed","tool":...,"ok":...,"result_len":...}``，
-**不含入参与输出原文**。因此对着生产审计抽 ``skill_web_brief`` 会得到 0 条——
-这是「抽不到」而不是「没有发生」，产物为空文件并报错，不伪造。
+字段来源（2026-10-09 起，见 ``anima/tools/__init__.py`` 的 ``tool_executed`` 写入点）：
+- ``trace`` 取 ``result_preview``（截断后的结果原文）；**只有**旧事件没有
+  ``result_preview`` 时才回看旧字段 ``result`` / ``output`` / ``trace``；
+- ``score`` **不**从审计里读，也不另存——一律用
+  ``gepa.deterministic_score(request, trace)`` **现算**（有结果 / 有来源 / 覆盖查询词）；
+- ``ok=true`` 仍**不是**分数证据（它只是 ``normalize_tool_result`` 的结果，不等于任务做成）。
+
+已知限制：21b64cf 之前的旧事件没有 ``template``，因此仍会判为不可用——
+那是「抽不到」而不是「没有发生」，产物为空文件并报错，不伪造。
+
+禁用路径：仓库 ``data/`` 与 ``/opt/anima`` 一律拒读（复用 ``gepa.assert_not_production_data``），
+只接受脱敏导出或夹具。
 
 禁用路径：仓库 ``data/`` 与 ``/opt/anima`` 一律拒读（复用 ``gepa.assert_not_production_data``），
 只接受脱敏导出或夹具。
@@ -30,7 +37,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from anima.skills.gepa import GepaRow, assert_not_production_data, _clamp_score
+from anima.skills.gepa import GepaRow, assert_not_production_data, deterministic_score
 
 __all__ = [
     "TRACE_FIELDS",
@@ -50,7 +57,8 @@ _TOOL_EVENT = "tool_executed"
 #: request 的候选字段名（含嵌套 args）。
 _REQUEST_KEYS = ("request", "query", "input", "args_request", "args_query")
 _TEMPLATE_KEYS = ("template", "execution_template")
-_TRACE_KEYS = ("result", "output", "trace", "result_text")
+#: 结果原文：新事件用 result_preview（截断后的原文），旧事件才回看这些老字段。
+_TRACE_KEYS = ("result_preview", "result", "output", "trace", "result_text")
 _FEEDBACK_KEYS = ("feedback_text", "feedback", "error")
 _ID_KEYS = ("id", "execution_id", "evidence_id", "trace_id")
 
@@ -136,7 +144,7 @@ def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> Trace
 
         request = _pick(row, args, _REQUEST_KEYS)
         template = _pick(row, args, _TEMPLATE_KEYS)
-        raw_score = row.get("score", args.get("score") if args else None)
+        trace = _pick(row, args, _TRACE_KEYS)      # result_preview 优先，旧字段兜底
 
         rid = _pick(row, args, _ID_KEYS) or f"{skill_id}-{index}"
         if not request:
@@ -145,16 +153,14 @@ def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> Trace
         if not template:
             export.unusable.append({"id": rid, "reason": "缺少 template（审计未记录当时生效的模板）"})
             continue
-        if not isinstance(raw_score, (int, float)) or isinstance(raw_score, bool):
-            export.unusable.append({"id": rid, "reason": "缺少 score 证据，拒绝以 ok 猜测分数"})
-            continue
 
         export.rows.append(GepaRow(
             id=rid,
             request=request,
             template=template,
-            trace=_pick(row, args, _TRACE_KEYS),
-            score=_clamp_score(raw_score),
+            trace=trace,
+            # 分数**现算**：不读事件里的 score，也不认 ok —— 只认任务做成没有。
+            score=deterministic_score(request, trace),
             feedback_text=_pick(row, args, _FEEDBACK_KEYS),
         ))
     return export
