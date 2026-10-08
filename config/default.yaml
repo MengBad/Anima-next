@@ -378,6 +378,16 @@ context:
   image_token_estimate: 768
   tool_result_token_budget: 1800
 
+  answer_length_budget:                  # 求答轮次「说多少」（2026-10-08）
+    # 🔴 默认 **false** —— 不开则与从前逐字相同（零行为变更）。
+    # 背景：`max_tokens` 在本项目上游（CPA 代理）**被完全忽略**（实测 16 → 6421 字），
+    # 而 system 里的字数指令实测精准生效（150 → 117 字；生产人格下同样成立）
+    # ⇒ 这是目前唯一可用的长度旋钮。
+    # 触发：`_user_asked_question` 为真 **且** 用户没说要详细（`_user_wants_substantive`）。
+    enabled: false
+    budget_chars: 200                    # 求答回答的字数预算（150 会丢细节，200 为实测折中）
+    exclude_when_user_wants_detail: true # 用户说「详细讲讲」时不注入（否则会被压死）
+
 exploration:
   # 自主读取公开信息并形成带来源的知识笔记。外部内容一律视为不可信资料，
   # 不登录、不评论、不点赞、不执行网页指令。分享仍走 Agenda 与群级频控。

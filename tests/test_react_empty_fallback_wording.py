@@ -136,6 +136,22 @@ def test_pools_have_multiple_variants():
         assert len(set(pool)) == len(pool), f"[{name}] 池内有重复句: {pool!r}"
 
 
+def test_no_tool_pool_has_enough_variants_to_avoid_visible_repeat():
+    """2026-10-08 生产实证：**4 次兜底里 3 次抽到同一句**，用户侧读起来就是复读。
+
+    当日 `chat_memory.json` 中 bot 出站 31 条，其中 4 条是兜底，分布为
+    「打了个嗝」×3 + 「卡了一下」×1 —— 3 句的池子在 4 次抽样下出现重复是数学必然
+    （生日问题），而旧下限「≥2 句」完全允许这种观感。
+
+    只抬高**无工具池**的下限：它是「上游静默」的通用出口，当日 100% 的兜底都落在
+    这一池；工具两池的问题不属本轮实证范围，维持原状。
+    """
+    assert len(set(_NO_TOOL_FALLBACKS)) >= 6, (
+        f"无工具池仅 {len(set(_NO_TOOL_FALLBACKS))} 句，"
+        "4 次出站即出现可见复读（见 docstring 的生产实证）"
+    )
+
+
 def test_pools_are_pairwise_distinct():
     """三池两两不相交 —— 保证随机取用后分支仍可区分（不串味）。"""
     assert set(_TOOL_FAILED_FALLBACKS).isdisjoint(_TOOL_OK_FALLBACKS)

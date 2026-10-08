@@ -166,6 +166,71 @@ def _conversation_tone_fragment(ctx: PipelineContext) -> str:
     return "## 对方现在的语气\n" + "\n".join(lines)
 
 
+#: 求答类回答的字数预算默认值。
+#: 实测（**生产人格 2925 字**作 system）：要求 ≤150 字 → 实得 117 字；≤80 字 → 72 字，
+#: 都精准达标；但 150 字会丢掉「断片/梦游/撤药触电感」这类细节 ⇒ 默认取 200。
+_DEFAULT_ANSWER_BUDGET_CHARS = 200
+
+
+def _answer_length_budget_fragment(ctx: PipelineContext, core) -> str:
+    """求答轮次的「说多少」指令（2026-10-08）。
+
+    ## 为什么走 system 而不是 `max_tokens`
+    实测直连 CPA 同构请求：`max_tokens=16` → **6421 字**、`max_completion_tokens=16`
+    → 4626 字 ⇒ **两个参数都被忽略**。而 system 里写「控制在 150 字以内」→ **117 字**、
+    「80 字以内」→ **72 字**，在生产人格下同样成立。
+    ⇒ 项目原本的 `soul.map_max_tokens`（80~400）是一枚**已经坏掉的旋钮**：
+      它以为在控制长度，实际什么都没控制住。
+
+    ## 触发条件（全过才注入）
+    1. `context.answer_length_budget.enabled`（**默认关** ⇒ 不开则零行为变更）；
+    2. `_user_asked_question(ctx.text)` —— 有人在问知识/做法；
+    3. **用户自己没说要详细**（`_user_wants_substantive` 为假）。
+       🔴 实测教训：指令会**压过用户的显式请求**（人格 + ≤150 字时，用户说
+       「请详细讲讲，越多越好」，模型仍只写 121 字）⇒ 不排除就等于「要详细也拿不到」。
+
+    ## 判据复用（刻意不另起一套）
+    两个判据直接从 `guardrail` 复用 —— 2026-10-08 修的 bug 正是「同一修法在两个
+    分支各写一份、只改了一半」。长度预算与投递端截断必须认**同一套**判据。
+
+    ## 影响面
+    触发面 = 求答类轮次（近期样本 252/600 = 42%），但**真正被改变的只有「本会写超
+    200 字」的那部分**（bot 回复 p50=67 / p95=213 ⇒ 约 5%）。闲聊本就不足 200 字，
+    指令对它们不起作用。
+    """
+    cfg = getattr(
+        getattr(getattr(core, "config", None), "context", None),
+        "answer_length_budget", None,
+    )
+    if not bool(getattr(cfg, "enabled", False)):
+        return ""
+    try:
+        from anima.pipeline.stages.guardrail import (
+            _user_asked_question, _user_wants_substantive,
+        )
+    except Exception:
+        logger.debug("长度预算：判据导入失败", exc_info=True)
+        return ""
+    text = ctx.text or ""
+    if not _user_asked_question(text):
+        return ""
+    if bool(getattr(cfg, "exclude_when_user_wants_detail", True)) \
+            and _user_wants_substantive(text):
+        return ""
+    budget = int(getattr(cfg, "budget_chars", _DEFAULT_ANSWER_BUDGET_CHARS) or 0)
+    if budget <= 0:
+        return ""
+    # 🔴 必须留日志锚：否则「指令到底有没有注入」永远无法从 journal 回测
+    #    （同一类陷阱：判据依赖的锚不存在 ⇒ 生产恒假且无人察觉）。
+    logger.info("[长度预算] 注入上限=%d 字 reason=asked_question text_len=%d",
+                budget, len(text))
+    return (
+        "## 本轮回答长度\n"
+        f"对方是在问知识或做法。先用最关键的要点答完（控制在约 {budget} 字内），"
+        "他没说要详细就别铺开；他追问再展开。"
+    )
+
+
 def _sylann_values(ctx) -> dict:
     return {
         "message_length": min(len(ctx.text) / 500.0, 1.0),
@@ -424,6 +489,16 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     _tone_fragment = _conversation_tone_fragment(ctx)
     if _tone_fragment:
         add_system_fragment("conversation_tone", _tone_fragment, 70)
+
+    # 求答轮次「说多少」（2026-10-08，**默认关**；详见 _answer_length_budget_fragment）。
+    # protected=True：长度指令一旦被预算器静默裁掉，就等于"这条规则没生效"且没人知道 ——
+    # 与「判据锚不存在」同类，故设为不可裁（片段仅约 40 token，代价可忽略）。
+    try:
+        _len_budget = _answer_length_budget_fragment(ctx, core)
+        if _len_budget:
+            add_system_fragment("answer_length_budget", _len_budget, 45, protected=True)
+    except Exception:
+        logger.debug("长度预算注入失败", exc_info=True)
 
     # 对话深度提示
     try:

@@ -782,6 +782,26 @@ class ReactConfig(BaseModel):
     turn_deadline_sec: float = Field(default=0.0, ge=0.0, le=600.0)
 
 
+class AnswerLengthBudgetConfig(BaseModel):
+    """求答轮次「说多少」（2026-10-08，**默认关**）。
+
+    🔴 为什么需要它：`max_tokens` 在本项目上游（CPA 代理）**被完全忽略**
+    （实测 16 → 6421 字、`max_completion_tokens` 同样无效），而 system 里的字数指令
+    实测精准生效（要求 ≤150 字 → 117 字；**生产人格 2925 字作 system 下同样成立**）
+    ⇒ 这是目前唯一可用的长度旋钮，也是「别让它写太长再被截掉」的治本手段。
+
+    ⚠️ 必须做成 ContextConfig 的**显式字段**：pydantic 在本项目是 `extra=ignore`
+    ⇒ 只写 config.yaml 不加字段会被**静默丢弃**（F9.1 G-01 同类，本文件 :340 有记载）。
+    """
+    #: 总开关。**false = 与从前逐字相同**（零行为变更）。
+    enabled: bool = False
+    #: 求答回答的字数预算。实测 150 会丢细节（断片/梦游/撤药触电感），故取 200。
+    budget_chars: int = Field(default=200, ge=0, le=2000)
+    #: 用户自己说要详细时不注入。🔴 实测：指令会压过用户显式请求
+    #: （人格 + ≤150 字时，用户说「请详细讲讲」模型仍只写 121 字）。
+    exclude_when_user_wants_detail: bool = True
+
+
 class ContextConfig(BaseModel):
     """聊天上下文预算。
 
@@ -793,6 +813,9 @@ class ContextConfig(BaseModel):
     system_token_budget: int = Field(default=8000, ge=1024)
     image_token_estimate: int = Field(default=768, ge=64)
     tool_result_token_budget: int = Field(default=1800, ge=128)
+    answer_length_budget: AnswerLengthBudgetConfig = Field(
+        default_factory=AnswerLengthBudgetConfig
+    )
 
 
 class ExplorationConfig(BaseModel):
