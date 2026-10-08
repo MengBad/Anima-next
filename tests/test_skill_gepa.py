@@ -7,10 +7,16 @@
 2. minibatch 无提升则丢弃；
 3. 禁止模式 / 越权 / 未声明占位符一律丢弃且预算照扣；
 4. adoptable 不触发安装（不 approve、不写 skill.yaml、不热注册）；
-5. D_test 搜索期禁读、只在收口算一次；Φ* 取 D_pareto 平均分最高。
+5. D_test 搜索期禁读、只在收口算一次；Φ* 取 D_pareto 平均分最高；
+6. 反射是单独一次中性 LLM 调用；
+7. **默认重放真的执行 execution.tool**（不是两次 llm.chat）；
+8. 分数 = 任务做成没有；feedback_text 只进反射，绝不进打分。
+
+全部不打真实网络与真实 LLM：工具执行器一律注入替身。
 """
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 
@@ -409,3 +415,311 @@ async def test_reflection_is_single_neutral_call():
         assert "QQ" not in payload and "群聊" not in payload and "记忆" not in payload
     # 反射系统提示不得引入人格身份
     assert "哈基米" not in gepa.REFLECT_SYSTEM
+
+
+# ---------------------------------------------------------------------------
+# 8. 默认重放 = 真的执行技能（build_skill_replay），不是两次 llm.chat
+# ---------------------------------------------------------------------------
+#: 真实内置 manifest：tool=web_search，query 必填、num_results 选填
+def _real_modules() -> dict[str, dict]:
+    return {"web_brief": gepa.load_builtin_manifest("web_brief")}
+
+
+class ExecutorSpy:
+    """记录 (tool, args, rendered) 的替身执行器；不联网、不调 LLM。"""
+
+    def __init__(self, output: str | None = "结果", *, fail: Exception | None = None):
+        self.calls: list[tuple[str, dict, dict]] = []
+        self._output = output
+        self._fail = fail
+
+    def __call__(self, tool_name: str, args: dict, rendered: dict) -> str:
+        self.calls.append((tool_name, dict(args), rendered))
+        if self._fail is not None:
+            raise self._fail
+        return self._output
+
+
+#: 一份「任务做成」的工具产出：有结果、有来源、覆盖查询词
+_GOOD_OUTPUT = "关于「请求0」的检索结果：\n1. 标题A https://example.com/a 来源：example.com\n2. 标题B https://b.org/b"
+
+
+async def test_default_replay_executes_the_manifest_tool():
+    spy = ExecutorSpy(_GOOD_OUTPUT)
+    replay = gepa.build_skill_replay(spy, _real_modules())
+    record = await replay("web_brief", "整理要点并标注来源", _row("f0", request="请求0"))
+
+    # tool 必须来自 manifest（web_search），入参由 request 构造
+    assert [call[0] for call in spy.calls] == ["web_search"]
+    assert spy.calls[0][1] == {"query": "请求0"}
+    assert record.score > 0.0
+    assert "https://example.com" in record.output
+
+
+async def test_default_replay_renders_only_the_template():
+    """渲染后的 execution：template 变了，tool / min_level / parameters 一律不动。"""
+    spy = ExecutorSpy(_GOOD_OUTPUT)
+    replay = gepa.build_skill_replay(spy, _real_modules())
+    await replay("web_brief", "整理要点并标注来源", _row("f0", request="请求0"))
+
+    rendered = spy.calls[0][2]
+    base = _real_modules()["web_brief"]
+    assert rendered["execution"]["template"] == "整理要点并标注来源"
+    assert rendered["execution"]["tool"] == base["execution"]["tool"] == "web_search"
+    assert rendered["execution"]["content_summary"] == base["execution"]["content_summary"]
+    assert rendered["min_level"] == base["min_level"] == "user"
+    assert rendered["parameters"] == base["parameters"]
+    gepa.assert_only_template_diff(base, rendered)
+
+
+async def test_no_executor_means_no_score_not_llm_taste():
+    """executor 没跑出结果时，绝不能靠 llm.chat 编出非零分。"""
+    class LoudLLM:
+        async def chat(self, messages, **kwargs):
+            raise AssertionError("默认重放不得用 LLM 编造输出")
+
+    # 未注入 executor：直接拒绝构造
+    with pytest.raises(ValueError):
+        gepa.build_skill_replay(None, _real_modules())
+
+    # 注入了但工具从未成功执行：0 分
+    spy = ExecutorSpy(None, fail=RuntimeError("工具未执行"))
+    replay = gepa.build_skill_replay(spy, _real_modules())
+    record = await replay("web_brief", "整理要点", _row("f0", request="请求0", feedback="缺来源"))
+    assert spy.calls                      # 执行器确实被调用过
+    assert record.score == 0.0            # 但没结果就是 0
+    assert "工具未执行" in record.feedback_text
+    assert "缺来源" in record.feedback_text  # 原反馈保留
+
+
+async def test_tool_failure_error_goes_to_feedback_never_to_scorer():
+    seen: list[tuple[str, str]] = []
+
+    def scorer(request: str, output: str) -> float:
+        seen.append((request, output))
+        return 1.0
+
+    spy = ExecutorSpy(None, fail=TimeoutError("工具超时"))
+    replay = gepa.build_skill_replay(spy, _real_modules(), scorer=scorer)
+    record = await replay("web_brief", "整理要点", _row("f0", request="请求0", feedback="缺来源"))
+
+    assert record.score == 0.0
+    assert seen == []                                  # 打分函数根本没被调用
+    assert "工具超时" in record.feedback_text           # 错误进反射用的 feedback
+    assert "缺来源" in record.feedback_text
+    assert record.trace.startswith("tool=web_search")   # 轨迹记的是工具，不是 LLM
+
+
+async def test_scorer_never_receives_feedback_text():
+    secret = "这条反馈绝不能进打分 XYZ"
+    seen: list[tuple[str, str]] = []
+
+    def scorer(request: str, output: str) -> float:
+        seen.append((request, output))
+        return 0.9
+
+    spy = ExecutorSpy(_GOOD_OUTPUT)
+    replay = gepa.build_skill_replay(spy, _real_modules(), scorer=scorer)
+    await replay("web_brief", "整理要点", _row("f0", request="请求0", feedback=secret))
+
+    assert len(seen) == 1
+    request_arg, output_arg = seen[0]
+    assert request_arg == "请求0"
+    assert secret not in output_arg and secret not in request_arg
+
+
+def test_score_signature_has_no_feedback_slot():
+    """打分契约里根本没有 feedback_text 的位置（结构性保证，不靠自觉）。"""
+    import inspect
+
+    params = list(inspect.signature(gepa.deterministic_score).parameters)
+    assert params == ["request", "output"]
+
+
+async def test_judge_is_off_by_default_and_never_sees_feedback():
+    secret = "反馈要点不能给判分 ABC"
+    judge_seen: list[tuple[str, str]] = []
+
+    def judge(request: str, output: str) -> float:
+        judge_seen.append((request, output))
+        return 1.0
+
+    # 默认关闭：不传 judge 就不调用
+    spy = ExecutorSpy(_GOOD_OUTPUT)
+    closed = gepa.build_skill_replay(spy, _real_modules())
+    plain = await closed("web_brief", "整理要点", _row("f0", request="请求0", feedback=secret))
+    assert judge_seen == []
+    assert plain.score == pytest.approx(gepa.deterministic_score("请求0", _GOOD_OUTPUT))
+
+    # 显式打开：只看 request + 工具输出
+    opened = gepa.build_skill_replay(ExecutorSpy(_GOOD_OUTPUT), _real_modules(), judge=judge)
+    await opened("web_brief", "整理要点", _row("f0", request="请求0", feedback=secret))
+    assert len(judge_seen) == 1
+    assert judge_seen[0][0] == "请求0"
+    assert secret not in judge_seen[0][1]
+
+
+# ---------------------------------------------------------------------------
+# 9. 重放不写记忆：真跑 web_search 也不许碰 WebKnowledgeStore.add
+# ---------------------------------------------------------------------------
+#: 假的 Tavily 应答——让 tool_web_search 真跑到「有结果 + 自动记忆化」那段，
+#: 全程不打真实网络（urllib 被替换）。
+_TAVILY_PAYLOAD = json.dumps({
+    "answer": "摘要答案",
+    "results": [
+        {"title": "标题A", "url": "https://example.com/a", "content": "内容A",
+         "published_date": "2026-10-01"},
+        {"title": "标题B", "url": "https://example.org/b", "content": "内容B"},
+    ],
+}).encode("utf-8")
+
+
+class _FakeResp:
+    def __init__(self, payload: bytes):
+        self._payload = payload
+
+    def read(self):
+        return self._payload
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def no_network_search(monkeypatch):
+    """把 urllib 换成假应答，并把 WebKnowledgeStore 换成**只会计数**的假 store。
+
+    假 store 不落任何文件；仓库 data/ 与 /opt/anima 全程不碰。
+    """
+    import urllib.request
+
+    import anima.memory.web_knowledge as wk
+    from anima.tools.builtin import web as web_mod
+
+    calls: list[dict] = []
+
+    class FakeStore:
+        def __init__(self, data_dir=None, file_name="web_knowledge.json"):
+            self.data_dir = data_dir
+
+        def add(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(urllib.request, "urlopen",
+                        lambda req, *a, **kw: _FakeResp(_TAVILY_PAYLOAD))
+    monkeypatch.setenv("ANIMA_TAVILY_API_KEY", "fake-key-for-offline-test")
+    monkeypatch.setattr(wk, "WebKnowledgeStore", FakeStore)
+    # web.py 在函数内部 import，这里确保拿到的是被替换后的模块属性
+    assert web_mod is not None
+    return calls
+
+
+async def test_default_replay_never_writes_web_knowledge(no_network_search):
+    """走 GEPA 默认重放（真 executor + 真 web_search）→ add 调用次数为 0。"""
+    executor = gepa.build_readonly_tool_executor()
+    replay = gepa.build_skill_replay(executor, _real_modules())
+    record = await replay("web_brief", "整理要点并标注双来源", _row("f0", request="请求0"))
+
+    assert record.score > 0.0                 # 工具确实跑出了结果（不是靠失败拿 0 分蒙混）
+    assert "https://example.com" in record.output
+    assert no_network_search == []            # ← 关键：一次都没写
+
+
+async def test_plain_web_search_still_memorizes_by_default(no_network_search):
+    """不走 GEPA、不带只读开关的原路径：行为与改前一致（仍然记忆化）。"""
+    from anima.tools.builtin.web import tool_web_search
+
+    out = await tool_web_search("请求0")
+    assert "https://example.com" in out
+    assert len(no_network_search) == 1
+    assert no_network_search[0]["query"] == "请求0"
+
+    # 显式关掉才不写——证明开关本身生效，而不是记忆化逻辑被误删
+    await tool_web_search("请求0", memorize=False)
+    assert len(no_network_search) == 1
+
+
+def test_memorize_switch_defaults_to_on():
+    """线上默认 True：调用方什么都不传时，行为与改前逐字一致。"""
+    import inspect as _inspect
+
+    from anima.tools.builtin.web import tool_web_search
+
+    assert _inspect.signature(tool_web_search).parameters["memorize"].default is True
+    # 该开关不进工具 schema，LLM 看不到、也不会被 ReAct 传出来
+    from anima.tools import create_default_registry
+
+    schema = create_default_registry(core=None).tools["web_search"].parameters
+    assert "memorize" not in schema
+
+
+# ---------------------------------------------------------------------------
+# 10. 分数 = 任务做成没有（空结果 / 护栏拒绝 / 未执行 → 0）
+# ---------------------------------------------------------------------------
+@pytest.mark.parametrize("output", [
+    "",                                              # 空结果
+    "   ",                                           # 空白
+    "错误: 你的权限不足，无法调用工具 'web_search'",      # 权限护栏拒绝
+    "没有搜到「请求0」的相关结果（通道状态：bing=empty）",   # 检索为空
+    "联网检索全部通道都不通（通道状态：x）",                # 环境不通
+    "搜索时出错了：TimeoutError",                       # 工具异常
+    "工具暂时不可用，未获得可验证结果。",                   # 安全失败文案
+])
+async def test_failed_or_refused_tool_output_scores_zero(output):
+    spy = ExecutorSpy(output)
+    replay = gepa.build_skill_replay(spy, _real_modules())
+    record = await replay("web_brief", "整理要点", _row("f0", request="请求0"))
+    assert record.score == 0.0
+    assert "[工具执行失败]" in record.feedback_text
+
+
+async def test_executor_timeout_scores_zero():
+    async def slow(tool_name, args, rendered):
+        await asyncio.sleep(5)
+        return _GOOD_OUTPUT
+
+    replay = gepa.build_skill_replay(slow, _real_modules(), timeout_sec=0.01)
+    record = await replay("web_brief", "整理要点", _row("f0", request="请求0"))
+    assert record.score == 0.0
+    assert "工具执行失败" in record.feedback_text
+
+
+def test_deterministic_score_rewards_results_source_and_coverage():
+    assert gepa.deterministic_score("请求0", "") == 0.0
+    bare = gepa.deterministic_score("请求0", "请求0 的一些内容，但没有任何链接")
+    with_source = gepa.deterministic_score("请求0", "请求0 的一些内容 https://example.com/a 来源：x")
+    assert with_source > bare                       # 有来源加分
+    unrelated = gepa.deterministic_score("请求0", "完全无关的内容 https://example.com/a")
+    assert gepa.deterministic_score("请求0", _GOOD_OUTPUT) > unrelated   # 覆盖查询词加分
+    assert 0.0 < gepa.deterministic_score("请求0", _GOOD_OUTPUT) <= 1.0
+
+
+async def test_default_replay_path_still_does_not_approve(tmp_path):
+    """默认重放跑完整循环：Φ* 可以进提案，但绝不 approve / 写 skill.yaml / 热注册。"""
+    def executor(tool_name: str, args: dict, rendered: dict) -> str:
+        # 只有新模板（含「双来源」）整理出的产出带来源 → 分更高，模拟真实可测的提升
+        template = rendered["execution"]["template"]
+        return _GOOD_OUTPUT if "双来源" in template else "一些内容，没链接"
+
+    optimizer = gepa.GepaOptimizer(
+        modules=_real_modules(), d_feedback=_feedback_rows(), d_pareto=_pareto_rows(),
+        replay_fn=gepa.build_skill_replay(executor, _real_modules()),
+        reflect_fn=_reflect("```\n整理要点并标注双来源\n```"),
+        budget=200, minibatch=3, seed=5,
+    )
+    report = await optimizer.run()
+    proposal = await optimizer.finalize(_test_rows(), report)
+
+    # 默认重放下循环真的能选出更优 Φ*（证明路径没死）
+    assert len(report.pool) >= 2
+    assert report.best.cid != "phi0"
+    assert proposal["adoptable"] is True
+    assert proposal["diff"]["changed"] is True
+    assert proposal["dry_run"] is True
+    assert proposal["evaluation"]["sandbox_ok"] is True
+    # 即便 adoptable=True 也只是提案：没有任何安装副作用
+    assert list(tmp_path.iterdir()) == []
+    assert "未 approve" in proposal["note"] and "未写 skill.yaml" in proposal["note"]

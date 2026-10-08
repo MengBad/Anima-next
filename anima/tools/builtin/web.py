@@ -116,7 +116,7 @@ def _rank_by_authority(results: list[dict]) -> list[dict]:
 
 
 async def tool_web_search(query: str, num_results: int = 5,
-                          fetch_content: bool = True) -> str:
+                          fetch_content: bool = True, memorize: bool = True) -> str:
     """联网搜索（Bing，无需 API key）。
 
     抓 Bing 的 HTML 结果页拿到标题/摘要/直链，再可选抓取前 1-2 条网页正文
@@ -124,6 +124,10 @@ async def tool_web_search(query: str, num_results: int = 5,
 
     适用：用户问到需要实时/最新信息、事实查证、新闻、具体资料，而你知识
     范围之外时。返回结构化的「标题 + 链接 + 摘要 (+ 正文节选)」。
+
+    ``memorize``：是否把结果摘要自动写入 WebKnowledgeStore（默认 True，线上行为不变）。
+    离线重放 / 评测这类「只是量一下、不是真的在用」的调用传 ``False``，
+    避免把重放轨迹写进生产知识库。它不在工具 schema 里，仅供内部调用方使用。
     """
     query = str(query or "").strip()
     # 工具回显、CQ 码或素材哈希绝不是用户的检索意图；拒绝它们可防止模型被
@@ -367,17 +371,19 @@ async def tool_web_search(query: str, num_results: int = 5,
             blocks.append(block)
 
         # --- 自动记忆化（P1）：搜网结果摘要写入独立知识库，避免重复搜网且不污染成员事实 ---
-        try:
-            from anima.memory.web_knowledge import WebKnowledgeStore, extract_summary
-            summary_text = extract_summary(results, max_n=3)
-            if summary_text:
-                WebKnowledgeStore().add(
-                    query=query,
-                    summary=summary_text,
-                    source_urls=[r.get("url", "") for r in results[:3] if r.get("url")],
-                )
-        except Exception as e:  # 记忆化失败绝不拖累搜索本身
-            logger.debug("web_search 自动记忆化跳过: %s", e)
+        # memorize=False（离线重放 / 评测）时整段跳过：重放只是测量，不该写生产知识库。
+        if memorize:
+            try:
+                from anima.memory.web_knowledge import WebKnowledgeStore, extract_summary
+                summary_text = extract_summary(results, max_n=3)
+                if summary_text:
+                    WebKnowledgeStore().add(
+                        query=query,
+                        summary=summary_text,
+                        source_urls=[r.get("url", "") for r in results[:3] if r.get("url")],
+                    )
+            except Exception as e:  # 记忆化失败绝不拖累搜索本身
+                logger.debug("web_search 自动记忆化跳过: %s", e)
 
         header = (
             f"当前日期是 {_today_str}（今天）。抓取时间：{_today_str}。关于「{query}」的搜索结果"
