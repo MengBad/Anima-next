@@ -20,8 +20,12 @@
 已知限制：21b64cf 之前的旧事件没有 ``template``，因此仍会判为不可用——
 那是「抽不到」而不是「没有发生」，产物为空文件并报错，不伪造。
 
-禁用路径：仓库 ``data/`` 与 ``/opt/anima`` 一律拒读（复用 ``gepa.assert_not_production_data``），
-只接受脱敏导出或夹具。
+``feedback_text`` 的来源（也就这四类，多一条都不认）：
+1. 事件自带的 ``feedback_text`` / ``feedback`` / ``error`` 字段（Owner 纠正走这里）；
+2. ``ok=false`` —— 调用本身失败；
+3. ``result_preview`` 命中 ``gepa.TOOL_FAILURE_MARKERS`` —— 软失败：工具没抛异常，
+   但返回的是「没搜到 / 通道不通 / 权限不足」这类失败原文，那原文就是反馈。
+成功调用**不写**反馈：没有反馈的行本来就进不了 ``D_feedback``，不硬凑。
 
 禁用路径：仓库 ``data/`` 与 ``/opt/anima`` 一律拒读（复用 ``gepa.assert_not_production_data``），
 只接受脱敏导出或夹具。
@@ -37,7 +41,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from anima.skills.gepa import GepaRow, assert_not_production_data, deterministic_score
+from anima.skills.gepa import (
+    GepaRow,
+    TOOL_FAILURE_MARKERS,
+    assert_not_production_data,
+    deterministic_score,
+)
 
 __all__ = [
     "TRACE_FIELDS",
@@ -129,6 +138,13 @@ def _pick(row: dict[str, Any], args: dict[str, Any], keys: Sequence[str]) -> str
     return ""
 
 
+def _looks_failed(row: dict[str, Any], trace: str) -> bool:
+    """这次调用是不是失败了：``ok=false``，或结果原文命中失败标记（软失败）。"""
+    if row.get("ok") is False:
+        return True
+    return bool(trace) and any(marker in trace for marker in TOOL_FAILURE_MARKERS)
+
+
 def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> TraceExport:
     """从已解析的审计行里抽 ``skill_<skill_id>`` 的工具调用轨迹。"""
     tool_name = f"skill_{skill_id}"
@@ -154,6 +170,12 @@ def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> Trace
             export.unusable.append({"id": rid, "reason": "缺少 template（审计未记录当时生效的模板）"})
             continue
 
+        feedback = _pick(row, args, _FEEDBACK_KEYS)
+        if not feedback and _looks_failed(row, trace):
+            # 软失败：工具没抛异常，但返回的原文就是「没搜到 / 通道不通 / 权限不足」。
+            # 那段原文属于「工具错误 / 空结果 / 护栏拒绝」，照抄过来，不改写、不润色。
+            feedback = trace
+
         export.rows.append(GepaRow(
             id=rid,
             request=request,
@@ -161,7 +183,7 @@ def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> Trace
             trace=trace,
             # 分数**现算**：不读事件里的 score，也不认 ok —— 只认任务做成没有。
             score=deterministic_score(request, trace),
-            feedback_text=_pick(row, args, _FEEDBACK_KEYS),
+            feedback_text=feedback,
         ))
     return export
 
@@ -186,7 +208,7 @@ def export_skill_traces(audit_path: str | Path, out_path: str | Path,
         raise TraceUnavailable(
             f"审计 {audit_path} 中没有可恢复的 {skill_id} 轨迹"
             f"（扫描 {export.scanned} 行，命中 skill_{skill_id} {export.matched} 条，"
-            f"均因缺少 request/template/score 判为不可用）。已写出空文件 {target}，禁止伪造。"
+            f"均因缺少 request/template 判为不可用）。已写出空文件 {target}，禁止伪造。"
         )
     return export
 

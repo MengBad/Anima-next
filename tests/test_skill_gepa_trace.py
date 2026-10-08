@@ -170,6 +170,68 @@ def test_ok_true_is_never_used_as_the_score(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# 4b. feedback 通道：工具错误 / 空结果 / 护栏拒绝 → 进 feedback_text
+# ---------------------------------------------------------------------------
+SOFT_FAIL = "没有搜到「查 X 最新版本」的相关结果（通道状态：bing=empty）。"
+GUARD_FAIL = "错误: 你的权限不足，无法调用工具 'web_search'"
+
+
+def test_soft_failure_text_becomes_feedback(tmp_path):
+    """软失败：工具没抛异常，返回原文就是失败 → 那段原文即反馈。"""
+    audit = _write(tmp_path / "a.jsonl", [_event(id="e1", result_preview=SOFT_FAIL)])
+    row = gepa_trace.extract_skill_traces(
+        gepa_trace.load_audit_rows(audit), "web_brief").rows[0]
+    assert row.feedback_text == SOFT_FAIL
+    assert row.trace == SOFT_FAIL
+
+
+def test_guardrail_refusal_becomes_feedback(tmp_path):
+    audit = _write(tmp_path / "a.jsonl", [_event(id="e1", result_preview=GUARD_FAIL)])
+    row = gepa_trace.extract_skill_traces(
+        gepa_trace.load_audit_rows(audit), "web_brief").rows[0]
+    assert row.feedback_text == GUARD_FAIL
+
+
+def test_ok_false_becomes_feedback_even_without_marker(tmp_path):
+    audit = _write(tmp_path / "a.jsonl", [
+        _event(id="e1", ok=False, result_preview="不知道为什么没成"),
+    ])
+    row = gepa_trace.extract_skill_traces(
+        gepa_trace.load_audit_rows(audit), "web_brief").rows[0]
+    assert row.feedback_text == "不知道为什么没成"
+
+
+def test_successful_call_has_no_feedback(tmp_path):
+    """成功调用不硬凑反馈——没有反馈的行本来就不进 D_feedback。"""
+    audit = _write(tmp_path / "a.jsonl", [_event(id="e1", ok=True)])
+    row = gepa_trace.extract_skill_traces(
+        gepa_trace.load_audit_rows(audit), "web_brief").rows[0]
+    assert row.feedback_text == ""
+
+
+def test_explicit_feedback_field_wins(tmp_path):
+    """Owner 纠正等显式反馈优先，不被引擎推断的失败原文覆盖。"""
+    audit = _write(tmp_path / "a.jsonl", [
+        _event(id="e1", result_preview=SOFT_FAIL, feedback_text="Owner：别用这个词"),
+    ])
+    row = gepa_trace.extract_skill_traces(
+        gepa_trace.load_audit_rows(audit), "web_brief").rows[0]
+    assert row.feedback_text == "Owner：别用这个词"
+
+
+def test_failed_rows_can_form_d_feedback(tmp_path):
+    """凑得出 D_feedback：失败行带反馈，成功行不带。"""
+    audit = _write(tmp_path / "a.jsonl", [
+        _event(id="f0", result_preview=SOFT_FAIL),
+        _event(id="f1", result_preview=GUARD_FAIL),
+        _event(id="f2", ok=True),
+    ])
+    rows = gepa_trace.extract_skill_traces(
+        gepa_trace.load_audit_rows(audit), "web_brief").rows
+    assert [r.id for r in gepa.feedback_ready(rows)] == ["f0", "f1"]
+
+
+# ---------------------------------------------------------------------------
 # 5. 六字段产物 / 只收目标技能 / 坏行隔离 / 拒读生产路径
 # ---------------------------------------------------------------------------
 def test_exported_file_is_readable_by_gepa(tmp_path):
