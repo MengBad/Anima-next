@@ -555,9 +555,22 @@ def deterministic_score(request: str, output: str) -> float:
 
     三分构成：有结果(0.4) + 有来源(0.3) + 覆盖 request 里的查询词(0.3)。
     输入只有 ``request`` 与工具 ``output``——**没有 feedback_text**。
+
+    🔴 失败原文不是「结果」（P0-3，owner 提出并经实测核实）：
+    工具可能不抛异常，却整段返回「没搜到 / 通道不通 / 权限不足」——这是**软失败**。
+    此前这段文本只因非空就拿到 0.4，恰好含 URL 与查询词时能到 1.0，而**同一次
+    重放**在 ``replay()`` 里判 ``failed`` ⇒ 0.0，同一条轨迹两个读数。
+
+    Φ0/Φ*/D_test 全部取自重放侧，所以这个不一致不影响选址与采纳门槛，但它迟早
+    会被当成 Φ0 用。这里与重放口径拉齐：命中失败标记 ⇒ 0.0，且**优先于**
+    「有来源 / 覆盖查询词」的加分（失败的结果再像样也不是结果）。
+
+    方向是 fail-safe：宁可把一条存疑的输出判成 0，也不给失败原文虚高的分。
     """
     text = (output or "").strip()
     if not text:
+        return 0.0
+    if any(marker in text for marker in TOOL_FAILURE_MARKERS):
         return 0.0
     score = 0.4
     if SOURCE_MARKERS_RE.search(text):
