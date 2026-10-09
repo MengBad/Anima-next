@@ -743,6 +743,35 @@ class DebtTrackingConfig(BaseModel):
     inject_to_cognition: bool = True
 
 
+class SkillRouteHintConfig(BaseModel):
+    """给指定 Skill 一张「能争取到注意力」的卡（2026-10-10，**默认关**）。
+
+    ## 为什么需要它
+    `skill_web_brief` 在生产**近 40 天 0 次调用**，而同期联网检索 177+ 次。
+    根因是**结构性位置**，不是配置/注册问题：生产 `capability_mode=true` ⇒
+    `ToolRegistry.get_schemas()` 返回 `capability_schemas() + legacy_only_schemas()`，
+    **capability 卡恒前、legacy 卡恒后**；而 `sort_by_priority`（Memory-First 排序）
+    **只在非 capability 分支生效** ⇒ 没有 capability id 的 Skill **抬不动位置**
+    （实测：群聊 29/29、owner 48/48，竞品 `search_web` 第 1 位）。
+
+    ⇒ 只能走 system 提示这条既有通道（与 `AnswerLengthBudgetConfig` 同机制）。
+
+    ## 为什么默认关
+    它会把「联网检索」的默认路径从裸 `search_web` 改成 `skill_web_brief`（多一次
+    整理 LLM 调用）⇒ 属于**行为变更**。默认 false 与从前逐字相同。
+
+    ⚠️ 必须做成 `ReactConfig` 的**显式字段**：pydantic 在本项目是 `extra=ignore`
+    ⇒ 只写 config.yaml 不加字段会被**静默丢弃**（F9.1 G-01 同类，本文件 :340 有记载）。
+    """
+    #: 总开关。**false = 与从前逐字相同**（零行为变更）。
+    enabled: bool = False
+    #: 要导流到的技能工具名。**该工具不在工具面时一律不注入**（fail-closed，
+    #: 绝不向 LLM 提一个它调不到的工具名）。
+    skill: str = "skill_web_brief"
+    #: 提示文本；``{skill}`` 会被替换成上面的工具名。留空则用代码内默认文案。
+    text: str = ""
+
+
 class ReactConfig(BaseModel):
     """P0-1 Memory-First（DESIGN_REACT_MEMORY_FIRST.md）总开关。
 
@@ -780,6 +809,7 @@ class ReactConfig(BaseModel):
     upstream_patience_sec: float = Field(default=20.0, ge=0.0, le=30.0)
     tool_timeout_sec: float = Field(default=45.0, ge=1.0, le=600.0)
     turn_deadline_sec: float = Field(default=0.0, ge=0.0, le=600.0)
+    skill_route_hint: SkillRouteHintConfig = Field(default_factory=SkillRouteHintConfig)
 
 
 class AnswerLengthBudgetConfig(BaseModel):

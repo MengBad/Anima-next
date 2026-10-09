@@ -171,6 +171,59 @@ def _conversation_tone_fragment(ctx: PipelineContext) -> str:
 #: 都精准达标；但 150 字会丢掉「断片/梦游/撤药触电感」这类细节 ⇒ 默认取 200。
 _DEFAULT_ANSWER_BUDGET_CHARS = 200
 
+#: 技能路由提示的默认文案（``{skill}`` 替换为工具名）。
+#: 措辞要点：① 点名工具（模型才知道调谁）；② 说清**什么时候**用（避免无脑全走）；
+#: ③ 点明它与裸检索的差别（带来源与时间的要点），否则模型没有换卡的理由。
+_DEFAULT_SKILL_ROUTE_HINT = (
+    "## 工具选择\n"
+    "要联网查外部资料（时效、事实、价格、版本、新闻）时，用工具 `{skill}`，"
+    "不要用 search_web 直接把原始检索结果丢出去——它会先检索、再整理成带来源和时间的要点。"
+)
+
+
+def _skill_route_hint_fragment(ctx: PipelineContext, core) -> str:
+    """给指定 Skill 一张「能争取到注意力」的卡（2026-10-10，**默认关**）。
+
+    ## 背景（为什么要走 system）
+    `skill_web_brief` 近 40 天 0 次调用，而同期联网检索 177+ 次。根因是**结构性
+    位置**，不是没加载/没权限/没注册：生产 `capability_mode=true` ⇒ `get_schemas()`
+    返回 `capability_schemas() + legacy_only_schemas()`，**capability 卡恒前、
+    legacy 卡恒后**；`sort_by_priority` **只在非 capability 分支生效** ⇒ 没有
+    capability id 的 Skill 抬不动位置（实测群聊 29/29、owner 48/48，竞品
+    `search_web` 第 1 位）。位置改不了，只能改「模型读到什么」。
+
+    ## 触发条件（全过才注入）
+    1. `react.skill_route_hint.enabled`（**默认关** ⇒ 不开则零行为变更）；
+    2. 目标工具**真的在工具面里且处于启用状态** —— fail-closed：
+       🔴 绝不向 LLM 提一个它调不到的工具名（那只会诱发幻觉式调用与「工具不存在」报错）。
+
+    ## 为什么必须留日志锚
+    与「长度预算」同因：不留锚 ⇒ 「指令到底有没有生效」永远无法从 journal 回测，
+    判据会退化成「看有没有调用」，而两者可能同时为零（提示没生效 vs 没人问）。
+    """
+    cfg = getattr(
+        getattr(getattr(core, "config", None), "react", None),
+        "skill_route_hint", None,
+    )
+    if not bool(getattr(cfg, "enabled", False)):
+        return ""
+    skill = str(getattr(cfg, "skill", "") or "").strip()
+    if not skill:
+        return ""
+    tools = getattr(getattr(core, "tools", None), "tools", None) or {}
+    tool = tools.get(skill)
+    if tool is None or not bool(getattr(tool, "enabled", True)):
+        # fail-closed：技能不可达 ⇒ 闭嘴，别让模型去调一个不存在的名字
+        logger.debug("[技能路由] 跳过注入：%s 不在工具面或已停用", skill)
+        return ""
+    text = str(getattr(cfg, "text", "") or "").strip() or _DEFAULT_SKILL_ROUTE_HINT
+    if "{skill}" in text:
+        text = text.format(skill=skill)
+    elif skill not in text:
+        return ""
+    logger.info("[技能路由提示] 注入 skill=%s", skill)
+    return text
+
 
 def _answer_length_budget_fragment(ctx: PipelineContext, core) -> str:
     """求答轮次的「说多少」指令（2026-10-08）。
@@ -499,6 +552,15 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             add_system_fragment("answer_length_budget", _len_budget, 45, protected=True)
     except Exception:
         logger.debug("长度预算注入失败", exc_info=True)
+
+    # 技能路由提示（2026-10-10，**默认关**；详见 _skill_route_hint_fragment）。
+    # protected=True：被预算器静默裁掉 = 这条规则没生效且无人知道。
+    try:
+        _route_hint = _skill_route_hint_fragment(ctx, core)
+        if _route_hint:
+            add_system_fragment("skill_route_hint", _route_hint, 45, protected=True)
+    except Exception:
+        logger.debug("技能路由提示注入失败", exc_info=True)
 
     # 对话深度提示
     try:

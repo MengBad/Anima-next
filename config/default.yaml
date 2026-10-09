@@ -315,6 +315,16 @@ react:
   # 「多轮工具 + 多次 LLM 往返」的累计；超预算则带已得工具结果收口作答，
   # 给单回合持锁时间一个硬上界。默认 0 = 关闭（不改变既有行为）；要启用显式配 90。
   turn_deadline_sec: 0.0
+  # 技能路由提示（2026-10-10，**默认关**）。
+  # 动机：`skill_web_brief` 在能力模式下被排在工具清单**末位**（capability 卡恒前、
+  # legacy 卡恒后，sort_by_priority 在能力分支不生效），实测 40 天 0 次调用；
+  # 位置抬不动，只能在 system 里点名导流。
+  # ⚠️ 开启后「联网检索」的默认路径会多一次整理 LLM 调用 ⇒ 属行为变更，默认关。
+  # 目标工具不在工具面时自动不注入（fail-closed）。
+  skill_route_hint:
+    enabled: false
+    skill: skill_web_brief
+    # text: "要联网查外部资料时，用工具 `{skill}`（先检索再整理成带来源与时间的要点）。"
 
 memory:
   # 长期记忆（事件→知识→行为模式；anima/memory/long_term.py）
