@@ -22,9 +22,20 @@
 
 ``feedback_text`` 的来源（也就这四类，多一条都不认）：
 1. 事件自带的 ``feedback_text`` / ``feedback`` / ``error`` 字段（Owner 纠正走这里）；
-2. ``ok=false`` —— 调用本身失败；
-3. ``result_preview`` 命中 ``gepa.TOOL_FAILURE_MARKERS`` —— 软失败：工具没抛异常，
-   但返回的是「没搜到 / 通道不通 / 权限不足」这类失败原文，那原文就是反馈。
+2. ``ok=false`` —— 调用本身失败 ⇒ **整段**原文照抄（此时没有"做成"的部分要保护）；
+3. ``result_preview`` 命中 ``gepa.TOOL_FAILURE_MARKERS`` —— 硬失败：工具没抛异常，
+   但返回的是「通道不通 / 权限不足」这类失败原文 ⇒ **整段**照抄；
+4. ``result_preview`` 命中 ``gepa.SOFT_FAILURE_MARKERS``（2026-10-11 新增）——
+   **部分成功**：整体跑成了，但某几句承认「没查到 / 无结果」。
+   此时**只搬命中的那几句**（``_missing_sentences``），做成的内容不带走。
+
+为什么 3 和 4 要分开（这是踩过坑的）：生产实测 4 条轨迹里 2 条写了「没查到」，
+而硬词表里只有「没有搜到」⇒ **全部漏网**，D_feedback 产出 0/天。
+但直接往硬词表补词会把这 2 条从 0.8 打成 0.0——它们是部分成功，
+既承认缺失也给了可用内容，判 0 是误杀。两套问法本来就不同：
+``deterministic_score`` 问「任务做成没有」，``feedback_text`` 问「哪里还能改」。
+⇒ 软词表只喂反馈，不碰评分。
+
 成功调用**不写**反馈：没有反馈的行本来就进不了 ``D_feedback``，不硬凑。
 
 禁用路径：仓库 ``data/`` 与 ``/opt/anima`` 一律拒读（复用 ``gepa.assert_not_production_data``），
@@ -37,12 +48,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from anima.skills.gepa import (
     GepaRow,
+    SOFT_FAILURE_MARKERS,
     TOOL_FAILURE_MARKERS,
     assert_not_production_data,
     deterministic_score,
@@ -139,10 +152,38 @@ def _pick(row: dict[str, Any], args: dict[str, Any], keys: Sequence[str]) -> str
 
 
 def _looks_failed(row: dict[str, Any], trace: str) -> bool:
-    """这次调用是不是失败了：``ok=false``，或结果原文命中失败标记（软失败）。"""
+    """是不是**真失败**：``ok=false``，或结果原文命中硬失败标记。
+
+    与 :data:`~anima.skills.gepa.SOFT_FAILURE_MARKERS` 的分工（2026-10-11）：
+    这里只管「整体没做成」的情形 ⇒ feedback 可以**整段**搬走；
+    而「做成了大半、但缺一块」的部分成功走 :func:`_missing_sentences`，
+    **只搬缺失句** —— 缺的那部分才是反馈，做成的部分不是。
+    """
     if row.get("ok") is False:
         return True
     return bool(trace) and any(marker in trace for marker in TOOL_FAILURE_MARKERS)
+
+
+def _missing_sentences(trace: str, markers: Sequence[str]) -> str:
+    """从整段产出里**只切出**命中缺失信号的句子（2026-10-11）。
+
+    为什么要句级：Skill 的产出是整理后的要点列表，一句说「没查到」、
+    另一句给了可用内容是常态。整段搬进 feedback 会把做成的内容也一起丢给
+    变异器 ⇒ 反馈被稀释，GEPA 看不出到底哪里该改
+    （同类纪律：护栏改写要「只切命中句」，不能整段替换）。
+
+    提取不到任何句子就返回空串 —— 没有反馈的行本来就进不了 ``D_feedback``，
+    不硬凑。
+    """
+    if not trace or not markers:
+        return ""
+    picked: list[str] = []
+    for paragraph in trace.split("\n"):
+        for sentence in re.split(r"(?<=[。！？])", paragraph):
+            sentence = sentence.strip()
+            if sentence and any(marker in sentence for marker in markers):
+                picked.append(sentence)
+    return "\n".join(picked)
 
 
 def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> TraceExport:
@@ -172,9 +213,14 @@ def extract_skill_traces(rows: Iterable[dict[str, Any]], skill_id: str) -> Trace
 
         feedback = _pick(row, args, _FEEDBACK_KEYS)
         if not feedback and _looks_failed(row, trace):
-            # 软失败：工具没抛异常，但返回的原文就是「没搜到 / 通道不通 / 权限不足」。
-            # 那段原文属于「工具错误 / 空结果 / 护栏拒绝」，照抄过来，不改写、不润色。
+            # 真失败（ok=false / 硬失败原文）：工具没跑成或被拒，整段原文即反馈，
+            # 照抄过来，不改写、不润色。
             feedback = trace
+        elif not feedback:
+            # 部分成功：整体跑成了，但某几句承认「没查到 / 无结果」。
+            # 只把**这几句**喂给变异器 —— score 照给（任务确实做成了大半），
+            # 反馈也精准（缺的到底是哪一个具体信息）。
+            feedback = _missing_sentences(trace, SOFT_FAILURE_MARKERS)
 
         export.rows.append(GepaRow(
             id=rid,
