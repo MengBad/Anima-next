@@ -81,6 +81,7 @@ class HealthHistory:
             audio = self.core.llm_handler.audio_health() if self.core.llm_handler and hasattr(self.core.llm_handler, "audio_health") else {}
         except Exception:
             audio = {}
+        cap = self._cap_usage()
         agenda = getattr(self.core, "agenda", None)
         approvals = getattr(self.core, "approvals", None)
         monitors = getattr(self.core, "monitors", None)
@@ -135,7 +136,46 @@ class HealthHistory:
             # → `observability.latency_snapshot()`。**只加字段，不改任何既有字段**
             # （WebUI 在读它们），也不新增周期任务（复用 `record()` 既有调用点）。
             "stage_latency_ms": self._stage_latency(),
+            # ── 上游（CAP）自述的用量与失败归因（2026-10-11 新增）──────
+            # 🔴 这条是**断链修复**：此前 Anima 只能靠自己被打回来才知道上游出事
+            # （10-11 实测：CPA 13:25 已判死某模型并冷却 9.27h，Anima 侧累积 89 次
+            # 失败才切换）。CAP 插件其实一直记着 failed/failure_status/effort，
+            # 只是没人读。**只加字段，不新增周期任务**。
+            # fail-closed：CAP 不可达 ⇒ `upstream_reachable=False`，**不谎报健康**。
+            "upstream_cap": cap,
         }
+
+    def _cap_usage(self) -> dict[str, Any]:
+        """拉一次 CAP 用量快照（只读 HTTP）。
+
+        🔴 **必须是同步实现，不能用 `asyncio.run(probe.fetch())`。**
+        `record()` 的调用方（`Heartbeat.start()` / `Heartbeat._loop()`）**本身就在
+        运行中的事件循环里** ⇒ `asyncio.run` 会抛
+        `RuntimeError: asyncio.run() cannot be called from a running event loop`，
+        被这里的 `except` 吞掉 ⇒ **每次都静默返回"不可达"**（10-11 实测：
+        `upstream_cap.reachable=None`、groups=0，同时 stderr 打
+        `coroutine 'fetch' was never awaited`）。所以走同步路径。
+
+        失败即 `upstream_reachable=False` —— 读不到就是未知，
+        绝不能因为"拉不动"就当成"上游正常"。同理**不缓存**：
+        缓存会让一次成功掩盖随后的长时间失联。
+        """
+        probe = getattr(self.core, "cap_probe", None)
+        if probe is None:
+            return {"configured": False}
+        try:
+            snapshot = probe.fetch_sync()
+            # 🔴 `to_dict()` 也必须在 try 内 —— 否则探针返回非预期类型时
+            # `AttributeError` 会掀翻整次健康采样，**让监控自己变成故障源**。
+            data = snapshot.to_dict()
+        except Exception as exc:  # noqa: BLE001 — 探针绝不影响健康采样
+            return {"configured": True, "upstream_reachable": False,
+                    "error": f"{type(exc).__name__}: {exc}"}
+        if not isinstance(data, dict):  # 防御：形状不对即视为不可达
+            return {"configured": True, "upstream_reachable": False,
+                    "error": "探针返回非 dict"}
+        data["configured"] = True
+        return data
 
     def _stage_latency(self) -> dict[str, Any]:
         """各阶段耗时分位；无样本的阶段补零值占位。"""

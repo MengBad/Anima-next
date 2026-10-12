@@ -63,6 +63,10 @@ class AnimaCore:
         self.modules: list[Module] = []
         self.gateway = Gateway(self)
         self.llm = None  # P2: LLM client
+        # 上游（CAP）用量探针 —— 只读。让"CPA 侧已判死某模型"这件事能被 Anima 看见，
+        # 而不是等自己被打回来 89 次。未配置 endpoint 时为 None（健康面报 configured=False）。
+        # 初始化在 8088 启动期，由 `_init_cap_probe()` 依据 config.llm 填充。
+        self.cap_probe = None
         self.usage_ledger = None
         self.llm_handler = None  # 入站消息处理器（可选持有状态）
         self.tools = None  # P4: ToolRegistry

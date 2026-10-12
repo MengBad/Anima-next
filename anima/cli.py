@@ -388,6 +388,22 @@ def start(config_path, once, identity_attestation):
         core.usage_ledger = llm.usage_ledger
         click.echo(f"LLM 已接入: {cfg.llm.model} @ {cfg.llm.endpoint}")
 
+        # 上游（CAP）用量探针 —— 只读。与 LLM 同端点、同凭据。
+        # 存在的意义：CPA 侧「某组合已全失败/被冷却」这件事，Anima 以前只能靠
+        # 自己被打回来才感知到（10-11 实测：CPA 13:25 判死、Anima 侧累积 89 次失败
+        # 才切换）。挂上探针后，健康面能直接读到上游自述的失败归因。
+        # 装配失败必须**静默降级**（AGENTS.md「可选模块不阻断启动」）。
+        try:
+            from anima.monitors.cap_usage import CapUsageProbe
+
+            core.cap_probe = CapUsageProbe(
+                str(provider_cfg.get("endpoint") or cfg.llm.endpoint),
+                token=provider_api_key,
+            )
+        except Exception:
+            core.cap_probe = None
+            logging.getLogger("anima.cli").exception("CAP 用量探针装配失败，已跳过")
+
         # 工具注册表
         from anima.tools import create_default_registry
         core.tools = create_default_registry(core)
