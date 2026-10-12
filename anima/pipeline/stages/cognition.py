@@ -372,13 +372,21 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
 
     time_ctx = get_time_context(user_id=ctx.user_id)
     desire = get_desire_system()
-    relation = get_relation()
+    _autonomy_cfg = getattr(getattr(core, "config", None), "autonomy", None)
+    relation = get_relation(data_dir, autonomy=_autonomy_cfg)
     learning = get_learning()
     world_model = get_world_model()
     scar = get_scar_system()
 
     # 更新关系
-    rel = relation.touch(ctx.user_id, ctx.text)
+    # R1：owner 豁免熟悉度衰减（主人可以说狠话，ta 不是攻击者）。
+    _perm_owners = getattr(getattr(getattr(core, "config", None),
+                                   "permissions", None), "owners", [])
+    try:
+        _r1_owner = int(ctx.user_id) in list(_perm_owners or [])
+    except (TypeError, ValueError):
+        _r1_owner = False
+    rel = relation.touch(ctx.user_id, ctx.text, is_owner=_r1_owner)
 
     # D2: 里程碑记录——关系阶段变化、伤痕创建
     try:

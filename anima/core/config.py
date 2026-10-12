@@ -143,6 +143,23 @@ class AutonomyConfig(BaseModel):
     # 双闸门 = 命中词表 ∧ 唤醒窗活跃；关闭则恢复一律冷却。
     correction_exempt_cooldown: bool = True
 
+    # —— R1（2026-10-12）：熟悉度质量闸门 ——
+    # 修复前 `RelationEngine.touch()` 的 familiarity 增益**无条件 +0.02**，与消息
+    # 内容好坏无关 ⇒ 群里「骂 bot」也算一次交互、照样涨熟度 ⇒ 生产 8 个高频用户
+    # 里 6 个 fam = 1.000 封顶，而熟人放行门槛（`familiar_min` = 0.85）对他们
+    # **恒成立** ⇒ 只要 >12 字、非闲聊短语、非纯图、非 @ 别人，就一律放行
+    # ⇒ 观感「没叫它也回」，且**骂它反而喂它熟悉度**（正反馈环）。
+    # 打开后：关系已破裂（信任见底 / 情绪显著负面）时熟悉度改为**缓慢下降**，
+    # 使其重新落回门槛以下。False = 完全回到修复前行为（应急回滚）。
+    familiarity_quality_gate: bool = True
+    familiarity_gain: float = 0.02            # 正常交互增量（原值）
+    familiarity_gain_decay: float = 0.5       # 已 >0.6 时的增益衰减（原值）
+    familiarity_bad_trust: float = 0.3        # 信任 <= 此值 ⇒ 关系已破裂
+    familiarity_bad_valence: float = -0.3     # 情绪价态 <= 此值 ⇒ 关系已破裂
+    familiarity_bad_gain: float = -0.01       # 破裂时每次交互的增量（缓慢疏远）
+    familiarity_min: float = 0.03             # 下限保护
+    familiarity_max: float = 1.0             # 上限（原语义）
+
     # 社交疲劳阈值（第四轮体验测试 C2）：5 分钟窗口内被 @/引用次数超过 soft
     # 触发 overwhelmed 情绪、超过 hard 直接罐头短回复跳过 LLM（owner 豁免硬闸）。
     # 此前硬编码 6/8 不可调，管理员长会话也被误拦。

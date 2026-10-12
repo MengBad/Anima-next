@@ -50,7 +50,7 @@ class _Stub:
 def patch_cognitive(monkeypatch):
     monkeypatch.setattr(time_sense_mod, "get_time_context", lambda user_id=None: "")
     monkeypatch.setattr(desire_mod, "get_desire_system", lambda: _Stub())
-    monkeypatch.setattr(relation_mod, "get_relation", lambda: _Stub())
+    monkeypatch.setattr(relation_mod, "get_relation", lambda *a, **k: _Stub())
     monkeypatch.setattr(learning_mod, "get_learning", lambda: _Stub())
     monkeypatch.setattr(world_model_mod, "get_world_model", lambda: _Stub())
     monkeypatch.setattr(scar_mod, "get_scar_system", lambda: _Stub())

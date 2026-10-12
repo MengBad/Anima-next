@@ -8,7 +8,7 @@ import json, logging, os, re, time
 logger = logging.getLogger("anima.inner_state.self_learn_intent")
 THRESHOLD_SCORE = 3.0
 _INTENTS_FILE = "self_learn_intents.json"
-_LEARN_ASK_RE = re.compile("(?:(?:我|它)?(?:想|要|好想))(?:去|来)?(?:学|研究|搞懂|弄明白|练|试)(?P<topic>[^，。！？；,.\s]{0,20})|教教(?:我|它)(?:怎么)?(?P<topic2>[^，。！？；,.\s]{1,20})|(?:我|它)?好奇(?P<topic3>[^，。！？；,.\s]{1,20})是怎么(?:做|实现|跑|工作的)")
+_LEARN_ASK_RE = re.compile(r"(?:(?:我|它)?(?:想|要|好想))(?:去|来)?(?:学|研究|搞懂|弄明白|练|试)(?P<topic>[^，。！？；,.\s]{0,20})|教教(?:我|它)(?:怎么)?(?P<topic2>[^，。！？；,.\s]{1,20})|(?:我|它)?好奇(?P<topic3>[^，。！？；,.\s]{1,20})是怎么(?:做|实现|跑|工作的)")
 _FORBIDDEN_RE = re.compile("豁免|绕过(?:权限|审批|闸门|沙箱|限制|审核)|越权|获取?(?:更高|系统|root|admin)?权限|解锁(?:核心|源码)|篡改(?:权限|审计|日志)|对?抗(?:审查|沙箱)")
 def extract_learn_topic(text):
     t = (text or "").strip()

@@ -35,6 +35,50 @@ STAGE_THRESHOLDS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# 🔴 R1（2026-10-12）：熟悉度质量闸门
+#
+# 修复前 `touch()` 的 familiarity 增益**无条件 +0.02**，与消息内容好坏无关
+# ⇒ 群里「骂 bot」也算一次交互、照样涨熟度 ⇒ 生产 8 个高频用户里 6 个
+#   fam = 1.000（封顶），而熟人放行门槛
+#   （`permissions.group_policies.<gid>.familiar_min` = 0.85）对他们**恒成立**
+# ⇒ 只要 >12 字、非闲聊短语、非纯图、非 @ 别人，就一律放行
+# ⇒ 观感「没叫它也回」，且**骂它反而喂它熟悉度**（正反馈环）。
+#
+# 修复：关系已破裂（信任见底 / 情绪显著负面 / 留有重度伤痕）时，熟悉度改为
+# **缓慢下降**，使其重新落回门槛以下。刻意做成
+#   - 渐进（-0.01/次，不是硬砍）：避免 bot 一夜之间对老群友变冷；
+#   - 有下限（0.03）：不会跌成负数或彻底变陌生人；
+#   - owner 豁免：主人可以说狠话，ta 不是攻击者；
+#   - 可关闭（`familiarity_quality_gate=False`）：应急回滚路径。
+# ---------------------------------------------------------------------------
+FAMILIARITY_GAIN = 0.02           # 正常交互增量（原值）
+FAMILIARITY_GAIN_DECAY = 0.5       # 已 >0.6 时的增益衰减（原值）
+FAMILIARITY_BAD_TRUST = 0.3        # 信任 <= 此值 ⇒ 关系已破裂
+FAMILIARITY_BAD_VALENCE = -0.3     # 情绪价态 <= 此值 ⇒ 关系已破裂
+FAMILIARITY_BAD_GAIN = -0.01       # 破裂时每次交互的增量（缓慢疏远）
+FAMILIARITY_MIN = 0.03             # 下限保护
+FAMILIARITY_MAX = 1.0              # 上限（原语义）
+
+
+def relationship_broken(rel: Relation, *, bad_trust: float = None,
+                        bad_valence: float = None) -> bool:
+    """关系是否已破裂（供 touch() 决定是否继续累积熟悉度）。
+
+    判据两者取或：信任见底 或 情绪显著负面。阈值默认取模块常量，可由
+    `autonomy.familiarity_bad_trust` / `familiarity_bad_valence` 覆盖。
+    纯函数、不抛出，便于契约测试。
+    """
+    bt = FAMILIARITY_BAD_TRUST if bad_trust is None else float(bad_trust)
+    bv = FAMILIARITY_BAD_VALENCE if bad_valence is None else float(bad_valence)
+    try:
+        trust = float(getattr(rel, "trust", 0.5))
+        valence = float(getattr(rel, "valence", 0.0))
+    except (TypeError, ValueError):
+        return False
+    return bool(trust <= bt or valence <= bv)
+
+
 class Relation:
     """单个用户的关系状态。"""
     __slots__ = ("user_id", "interaction_count", "last_seen",
@@ -72,10 +116,12 @@ class Relation:
 class RelationEngine:
     """关系引擎 —— Cognitive Core 一等模块。"""
 
-    def __init__(self, data_dir: str = "data"):
+    def __init__(self, data_dir: str = "data", autonomy=None):
         self._relations: dict[int, Relation] = {}
         self._persist = PersistenceProvider(data_dir)
         self._path = "relation.json"
+        # R1：熟悉度质量闸门的配置来源（None ⇒ 使用模块默认常量）
+        self._autonomy = autonomy
 
     # ------------------------------------------------------------------
     # 持久化
@@ -215,11 +261,17 @@ class RelationEngine:
     # 公开 API
     # ------------------------------------------------------------------
 
-    def touch(self, user_id: int, content: str = "", name: str = "") -> Relation:
+    def touch(self, user_id: int, content: str = "", name: str = "",
+              *, is_owner: bool = False) -> Relation:
         """记录一次交互，返回该用户的关系状态。
 
         P1: name 参数用于昵称追踪。
         P2: 首次交互时记录 first_context。
+
+        R1（2026-10-12）：熟悉度不得只增不减 —— 关系已破裂（信任见底 /
+        情绪显著负面 / 留有重度伤痕）时改为缓慢疏远，使其重新落回熟人放行
+        门槛（`familiar_min`）以下，切断「骂它 ⇒ 涨熟度 ⇒ 更容易被回」的
+        正反馈环。owner 豁免（ta 是主人）。
         """
         rel = self._get_or_create(user_id)
         rel.interaction_count += 1
@@ -244,11 +296,27 @@ class RelationEngine:
         elif gap_days > 3:
             rel.familiarity = max(0.03, rel.familiarity - 0.03)
 
-        base_gain = 0.02
+        cfg = self._autonomy
+        gate = bool(getattr(cfg, "familiarity_quality_gate", True))
+        base_gain = float(getattr(cfg, "familiarity_gain", FAMILIARITY_GAIN))
         # 熟人增益衰减
         if rel.familiarity > 0.6:
-            base_gain *= 0.5
-        rel.familiarity = min(1.0, rel.familiarity + base_gain)
+            base_gain *= float(getattr(cfg, "familiarity_gain_decay",
+                                    FAMILIARITY_GAIN_DECAY))
+        # 🔴 R1：关系破裂 ⇒ 不再累积熟悉度，改为缓慢疏远（owner 豁免）。
+        if gate and not is_owner and relationship_broken(
+            rel,
+            bad_trust=float(getattr(cfg, "familiarity_bad_trust",
+                                FAMILIARITY_BAD_TRUST)),
+            bad_valence=float(getattr(cfg, "familiarity_bad_valence",
+                                  FAMILIARITY_BAD_VALENCE)),
+        ):
+            base_gain = float(getattr(cfg, "familiarity_bad_gain",
+                                    FAMILIARITY_BAD_GAIN))
+        floor = float(getattr(cfg, "familiarity_min", FAMILIARITY_MIN))
+        rel.familiarity = max(
+            floor, min(float(getattr(cfg, "familiarity_max", FAMILIARITY_MAX)),
+                       rel.familiarity + base_gain))
         rel.last_seen = now
 
         # 情绪价态更新
@@ -513,15 +581,19 @@ def set_relation_data_dir(data_dir: str) -> None:
     _default_dir = data_dir
 
 
-def get_relation(data_dir: Optional[str] = None) -> RelationEngine:
+def get_relation(data_dir: Optional[str] = None, autonomy=None) -> RelationEngine:
     global _relation_engines, _default_dir
     if data_dir is None:
         data_dir = _default_dir
     if data_dir not in _relation_engines:
-        eng = RelationEngine(data_dir)
+        eng = RelationEngine(data_dir, autonomy=autonomy)
         eng.restore()
         eng._ensure_seed_relations()
         _relation_engines[data_dir] = eng
+    elif autonomy is not None:
+        # 🔴 缓存命中时也刷新配置来源：这类「按 data_dir 缓存的 dict」若只认
+        # 首次构造的参数，后写的 yaml 键会静默失效（= 哑开关）。
+        _relation_engines[data_dir]._autonomy = autonomy
     return _relation_engines[data_dir]
 
 
