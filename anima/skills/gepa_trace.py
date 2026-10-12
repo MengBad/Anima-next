@@ -55,6 +55,9 @@ from typing import Any, Iterable, Sequence
 
 from anima.skills.gepa import (
     GepaRow,
+    MIN_D_FEEDBACK,
+    MIN_D_PARETO,
+    MIN_D_TEST,
     SOFT_FAILURE_MARKERS,
     TOOL_FAILURE_MARKERS,
     assert_not_production_data,
@@ -68,6 +71,7 @@ __all__ = [
     "load_audit_rows",
     "extract_skill_traces",
     "export_skill_traces",
+    "readiness",
     "main",
 ]
 
@@ -89,6 +93,38 @@ class TraceUnavailable(RuntimeError):
     """抽不到真实轨迹（已写出空文件）。调用方必须显式处理，不得拿夹具顶替。"""
 
 
+def readiness(n_feedback: int, n_pareto: int, n_test: int = 0) -> dict[str, object]:
+    """算「离 GEPA 启动门槛还差多少」（2026-10-11）。
+
+    🔴 为什么要有它：门槛此前**只活在报告里** ⇒ 「还差几条」每次都要人肉
+    重算一遍（且算完不留痕）。这里把它做成一行调用，并**直接挂在导出结果上**，
+    让 CLI 输出自带距离 —— 下次不用再跑一次性脚本。
+
+    - ``gap`` = ``max(0, 阈值 - 现有)`` ⇒ **绝不为负**：够了就是够了，
+      下游不许拿"超额"当额外收益（GEPA 不看超额，只看够不够）；
+    - ``ready`` 是**显式布尔**：两个数据集**都**够才算，避免调用方自己比大小
+      时漏掉其中一个（D_feedback 正是历史瓶颈所在）。
+
+    ⚠️ 只做可观测化，**不降门槛**（数值仍取 :data:`~anima.skills.gepa.MIN_D_FEEDBACK` 等）。
+    """
+    def _gap(have: int, need: int) -> int:
+        return max(0, int(need) - int(have))
+
+    def _one(have: int, need: int) -> dict[str, object]:
+        return {"have": int(have), "need": int(need),
+                "gap": _gap(have, need), "ok": _gap(have, need) == 0}
+
+    feedback = _one(n_feedback, MIN_D_FEEDBACK)
+    pareto = _one(n_pareto, MIN_D_PARETO)
+    test = _one(n_test, MIN_D_TEST)
+    return {
+        "feedback": feedback,
+        "pareto": pareto,
+        "test": test,
+        "ready": bool(feedback["ok"] and pareto["ok"]),
+    }
+
+
 @dataclass
 class TraceExport:
     """一次导出的结果（无论成败都给得出证据）。"""
@@ -104,6 +140,11 @@ class TraceExport:
     def ok(self) -> bool:
         return bool(self.rows)
 
+    @property
+    def n_feedback(self) -> int:
+        """带 ``feedback_text`` 的行数 —— 只有这些能进 ``D_feedback``。"""
+        return sum(1 for r in self.rows if getattr(r, "feedback_text", ""))
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "skill_id": self.skill_id,
@@ -113,6 +154,8 @@ class TraceExport:
             "matched": self.matched,
             "unusable": len(self.unusable),
             "unusable_sample": self.unusable[:5],
+            # 门槛距离直接挂在这里 ⇒ CLI 输出自带，不必人肉重算（2026-10-11）
+            "readiness": readiness(self.n_feedback, len(self.rows)),
         }
 
 

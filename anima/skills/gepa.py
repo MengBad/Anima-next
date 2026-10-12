@@ -105,6 +105,25 @@ DEFAULT_BUDGET = 40
 DEFAULT_MINIBATCH = 3
 #: 与 SkillEvolutionAgent 默认阈值一致的启发式门槛。
 ADOPT_THRESHOLD = 0.6
+
+# ---------------------------------------------------------------------------
+# 启动门槛（2026-10-11：**从报告里搬进代码**）
+#
+# 🔴 为什么必须有代码锚点：
+# 这三个数字此前**只**存在于 `reports/2026-10-10_skill-route-hint.md` §8.4 的
+# 表格里 —— 没有常量、没有测试、CLI 读不出来。后果是「离门槛还差多少」
+# 每次都要人肉跑一次性脚本重算（2026-10-11 实测为此跑了 5 个脚本），
+# 算完还不留痕。**不可观测的门槛 = 没有门槛**：没人知道该等什么、等到没有。
+#
+# ⚠️ 数值**逐字沿用**既定门槛，本次只做"可观测化"，**不降门槛**。
+# 真要调整须 Owner 定 —— 那等于改验收口径。
+# ---------------------------------------------------------------------------
+#: ``D_feedback`` 最少条数（带 ``feedback_text`` 的行）。
+MIN_D_FEEDBACK = 20
+#: ``D_pareto`` 最少条数（有分数的可用轨迹）。
+MIN_D_PARETO = 10
+#: ``D_test`` 最少条数（收口时才算，搜索期间禁止读取）。
+MIN_D_TEST = 10
 #: 帕累托并列的浮点容差。
 _EPS = 1e-9
 
@@ -564,8 +583,29 @@ async def _maybe_await(value: Any) -> Any:
     return value
 
 
+#: ASCII 词内被当作分隔符的字符。
+#: 🔴 为什么是 `-` / `_` 而**不是** `.`（2026-10-11，生产实测）：
+#: 请求侧 `"MiMo v2.6"`（空格分隔）切成 `{'mimo', 'v2.6'}`，
+#: 产出侧 `"MiMo-V2.6-Pro"`（连字符）被整段吞成 `{'mimo-v2.6-pro'}`
+#: ⇒ `v2.6` **字面可见却判缺失**，覆盖度虚低（生产那条好产出因此被压到 0.75）。
+#: 它靠 **`-`** 就能拆出来；若把 `.` 也当分隔符，`v2.6` 会被打成 `v2` + `6`，
+#: **版本号语义当场碎掉**，且与请求侧的 `v2.6` 仍然对不上。
+#: ⇒ 点号保留在段内。
+_ASCII_INNER_SEP_RE = re.compile(r"[-_]+")
+
+
 def _query_terms(text: str) -> set[str]:
-    """把请求/输出切成可比较的词片：中文取二元组，ASCII 取整词（≥2 字符）。"""
+    """把请求/输出切成可比较的词片：中文取二元组，ASCII 取整词 + 逐段子词。
+
+    🔴 ASCII 侧**同时**收两种粒度（2026-10-11）：
+    - 整 token（`mimo-v2.6-pro`）—— 保证精确写法仍能被认出来；
+    - 按 `-` / `_` 拆开的子段（`mimo` / `v2.6` / `pro`）—— 保证与请求侧的
+      空格分隔写法能对上。**点号不拆**，否则 `v2.6` 会被打成 `v2` + `6`。
+
+    只加不减：既有断言（整 token 在集合里）逐字不变。
+    ⚠️ 这**只**影响"字面是否出现"，不影响失败判定——
+       失败标记仍走 :data:`TOOL_FAILURE_MARKERS` 精确子串匹配。
+    """
     terms: set[str] = set()
     for run in re.findall(r"[\u4e00-\u9fff]+", text or ""):
         if len(run) <= 2:
@@ -573,7 +613,12 @@ def _query_terms(text: str) -> set[str]:
             continue
         terms.update(run[index:index + 2] for index in range(len(run) - 1))
     for token in re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]*", text or ""):
-        terms.add(token.lower())
+        lowered = token.lower()
+        terms.add(lowered)
+        # 版本号 / 命名空间类词：`MiMo-V2.6-Pro` → mimo / v2.6 / pro
+        parts = [p for p in _ASCII_INNER_SEP_RE.split(lowered) if p]
+        if len(parts) > 1:
+            terms.update(parts)
     return {term for term in terms if len(term) >= 2}
 
 

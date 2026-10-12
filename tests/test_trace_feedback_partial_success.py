@@ -94,14 +94,17 @@ async def test_feedback_is_shorter_than_the_whole_trace(tmp_path):
 async def test_partial_success_keeps_a_high_score(tmp_path):
     """部分成功必须拿到「做成」的那份分，不许因为补了词就被打成 0。
 
-    实测这条：有结果 0.4 + 有来源 0.3 + 覆盖查询词 0.3×⅓ = **0.8**
-    （三个查询词里命中一个 —— 覆盖是按命中比例给的分）。
-    本意的防线是「**不许 0**」：补 SOFT_FAILURE_MARKERS 若不小心并进
+    实测这条：有结果 0.4 + 有来源 0.3 + 覆盖查询词 0.3×⅔ = **0.9**。
+
+    ⚠️ 分数 2026-10-11 由 0.8 → 0.9：产出里的 `Saki-Saki Memes` 现在能被切出
+    `saki`（修复前整段吞成 `saki-saki`，与请求里的 `saki` 对不上）。这是那次
+    「查询词覆盖按字面判定、按 `-`/`_` 拆子段」修复的**正确效果**，不是回归。
+    本意的防线没变：**不许 0** —— 补 SOFT_FAILURE_MARKERS 若不小心并进
     deterministic_score 的短路，这里会直接塌到 0.0。
     """
     row = _row(tmp_path)
-    assert row.score == pytest.approx(0.8), (
-        f"部分成功的分数不对：{row.score}（期望 0.8；"
+    assert row.score == pytest.approx(0.9), (
+        f"部分成功的分数不对：{row.score}（期望 0.9；"
         f"若为 0.0 说明软失败词表被误接进了 deterministic_score）")
     assert row.score > 0.5
 
