@@ -165,6 +165,34 @@ class VisionManager:
         self.throttle = describe_throttle_per_user
         self._last: dict[str, float] = {}
 
+    # ------------------------------------------------------------------
+    # 描述节流（2026-10-14 真正接线）
+    # ------------------------------------------------------------------
+    # 🔴 此前 `throttle` / `_last` 只在 `__init__` 里赋值，全仓**无任何读取点**
+    #    ⇒ `vision.describe_throttle_per_user` 是个死配置，节流从未生效。
+    #    这在「只于出站回合描述」的旧行为下不明显（触发本来就少）；一旦改成
+    #    「入站即描述」，672 张图/7天会全部涌进 LLM 队列 ⇒ 必须真的有节流兜底，
+    #    否则刷图（表情包连发）能瞬间打满。节流按 user 隔离。
+    def allow_user(self, user_key: str, now: float) -> bool:
+        """该用户此刻是否允许发起一次描述。throttle<=0 视为不限。"""
+        try:
+            t = int(self.throttle or 0)
+        except (TypeError, ValueError):
+            t = 0
+        if t <= 0:
+            return True
+        last = self._last.get(str(user_key))
+        if last is None:
+            return True
+        try:
+            return (float(now) - float(last)) >= t
+        except (TypeError, ValueError):
+            return True
+
+    def mark_user(self, user_key: str, now: float) -> None:
+        """记录该用户本次描述时刻（调用于真正发起描述之前）。"""
+        self._last[str(user_key)] = float(now)
+
     async def _prepared_uris(self, image_data: bytes, img: dict, *,
                              max_bytes: int = DEFAULT_MAX_LLM_IMAGE_BYTES,
                              max_frames: int = 3) -> list[str]:

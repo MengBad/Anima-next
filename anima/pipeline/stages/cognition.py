@@ -367,8 +367,15 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
 
     # 提前提取 core 和 data_dir，供里程碑/伤痕/重逢/情绪等认知子系统使用
     core = ctx.meta.get("core")
-    _persist_cfg = getattr(getattr(core, "config", None), "persistence", None)
-    data_dir = getattr(_persist_cfg, "data_dir", "data") if _persist_cfg else "data"
+    # 🔴 2026-10-12：data_dir 必须走 paths 门面，与 anima_core._init_cognitive_state
+    # 同源。此前此处读 config.persistence.data_dir（生产是**相对** 'data'），而装配用
+    # str(paths.data_dir())（**绝对** '/opt/anima/data'）⇒ get_relation('data') 与
+    # get_relation() 命中两个缓存键、两个 RelationEngine 实例 ⇒ touch 只登记自己实例的
+    # deferred 队列，心跳 flush 的却是另一个（恒空）⇒ **永不落盘**，重启后 relation/
+    # desire/time_sense/learning/world_model 全部回退。paths.data_dir() 未接线时
+    # fail-safe 回退 Path("data")，行为与从前一致。
+    from anima.core import paths as _paths
+    data_dir = str(_paths.data_dir())
 
     time_ctx = get_time_context(user_id=ctx.user_id)
     desire = get_desire_system()
@@ -391,9 +398,9 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     # D2: 里程碑记录——关系阶段变化、伤痕创建
     try:
         from anima.cognitive.simulated_life import get_milestone_tracker
-        _data_dir_ms = getattr(getattr(core, "config", None), "persistence", None)
-        _data_dir_ms = getattr(_data_dir_ms, "data_dir", "data") if _data_dir_ms else "data"
-        _mt = get_milestone_tracker(_data_dir_ms)
+        # 🔴 与上面 data_dir 同源（该 getter 目前是忽略参数的全局单例，
+        # 一旦改成按 data_dir 缓存，此处若再读 config 就会重新引入 split-brain）
+        _mt = get_milestone_tracker(data_dir)
         _mt.record(f"第一次和 QQ{ctx.user_id} 说话", "first_contact")
         from anima.cognitive.relation import Stage as _StageMS
         if rel.stage == _StageMS.FRIEND and rel.familiarity < 0.55:
@@ -620,7 +627,12 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         gap_sec, gap_label = ts.time_since(int(ctx.user_id))
         rel = get_relation(data_dir).get(int(ctx.user_id))
         if gap_sec > 3 * 86400 and rel.stage in (Stage.FRIEND, Stage.CLOSE):
-            _reunion_frag = "这个人你好几天没见了，可以自然表达一下（'诶，好久没看到你了喵'），但别太夸张"
+            # 🔴 U2（2026-10-13）：只给**意图描述**，不再给可照搬的例句。
+            # 原写法把一整句口头语写进 prompt 引号里 ⇒ 模型高频直接照搬，
+            # 同句式在多天/多用户重复出现（与 unusual_hour 同一缺陷族，
+            # 实测某句深夜问候 7 天复读 5 次）。判据见
+            # tests/test_ux_fixes_u1_u2_u3.py 的源码守卫。
+            _reunion_frag = "这个人你好几天没见了，可以自然表达一下重逢的惊喜，但别太夸张、也别每次都用同一套说辞"
             if gap_sec > 7 * 86400:
                 _reunion_frag += "。你有点想念这个人"
             add_system_fragment("long_lost_reunion", _reunion_frag, 88)
@@ -632,9 +644,12 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         from anima.cognitive.time_sense import get_time_sense as _get_ts
         _ts = _get_ts(data_dir)
         if _ts.is_unusual_hour(int(ctx.user_id)):
+            # 🔴 U2（2026-10-13）：同 reunion —— 只给意图，不给例句。
+            # 原 prompt 在引号里写了一句完整的深夜问候语，那句会被模型原样
+            # 搬进出站（7 天 5 次），群友读起来就是复读。
             add_system_fragment(
                 "unusual_hour",
-                "这个人平时不在这个点在线，今天有点反常，可以随口提一句（'诶，今天怎么这个点还在'），但别追问",
+                "这个人平时不在这个点在线，今天有点反常，可以对这一点自然地随口反应，但别追问、也别每次都用同样的说法",
                 82,
             )
         _pattern = _ts.activity_pattern(int(ctx.user_id))
@@ -690,9 +705,12 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         from anima.cognitive.inner_state.hard_facts import (
             HardFactStore, maybe_record_correction)
         _perm_lv = int(ctx.meta.get("permission_level", 0) or 0)
-        _fact = maybe_record_correction(data_dir, getattr(ctx, "text", ""),
-                                        admin=_perm_lv >= 3)
-        ctx.meta["hard_fact_recorded"] = bool(_fact)
+        # 🔴 2026-10-14 X5：原先这里把纠错结果写进 ctx.meta["hard_fact_recorded"]，
+        # 但全仓（含 tests/）零读取点 ⇒ 算了却没有任何消费方（静默失效第三类）。
+        # 已删该死写入；maybe_record_correction 的**副作用**（记录纠错）是真功能，
+        # 必须保留，故改为不接收返回值。
+        maybe_record_correction(data_dir, getattr(ctx, "text", ""),
+                                admin=_perm_lv >= 3)
         _hf_store = HardFactStore(data_dir)
         _hf_always = _hf_store.always_on_text()
         if _hf_always:
@@ -731,6 +749,13 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         logger.debug("发癫注入失败，已隔离")
 
     # G1：跨群氛围 + 用户跨群记忆
+    # 🔴 2026-10-14 X4：desire_count 必须在此写入。`_observe_sylann()` →
+    # `_sylann_values()` 读 `ctx.meta["desire_count"]`，而原写入点在本函数更后面
+    # （约 L1138）⇒ Sylann 侧恒取默认 0.0，`desire_count` 特征对人格适配层零区分度
+    # （与 X1 的 helped 同一「读早于写」静默失效族）。
+    # `desire` 已在本函数早先定义，`desire.add` 只发生在此处之前 ⇒ 前移后数值
+    # 与原写入点逐字节相同，generation 侧读到的值不变。
+    ctx.meta["desire_count"] = len(desire.get_active())
     sylann = getattr(core, "sylann", None)
     await _observe_sylann(sylann, ctx)
     cg_cfg = getattr(core, "config", None)
@@ -806,6 +831,15 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 ), 70,
             )
             ctx.atmosphere_style = atmosphere.style.value
+            # 可观测锚点：atmosphere.style 的真实分布（此前不落日志 ⇒ 无法证伪）。
+            # 2026-10-14 白天实测 43 次：casual 22 / formal 13 / humorous 8，
+            # 其中 81% 落在「无情绪映射」的空隙 —— 正是这个锚点暴露了
+            # 原代码引用不存在的 tense/quiet 枚举（见下方 I1 注释）。
+            logger.info(
+                "[群氛围] group=%s style=%s descriptors=%s",
+                ctx.group_id, atmosphere.style.value,
+                "、".join(atmosphere.descriptors) if getattr(atmosphere, "descriptors", None) else "",
+            )
             # E1: 群内社交图谱注入
             try:
                 from anima.cognitive.social_graph import get_social_graph
@@ -819,12 +853,14 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
                 from anima.cognitive.mood import get_mood_system
                 _mood_sys = get_mood_system(data_dir)
                 _atm_style = atmosphere.style.value
+                # 🔴 2026-10-14：原代码还有 `elif tense → failed` / `elif quiet → boring`
+                # 两条分支，但 `AtmosphereStyle` 枚举**从没有过 tense / quiet**
+                # （只有 formal / casual / humorous / neutral）⇒ 两条结构性不可达，
+                # `failed` / `boring` 恒 0（白天实测 43 次氛围无一命中）。
+                # 已删除；若今后要给 formal / casual 补情绪映射，属**产品决策**，
+                # 须 owner 拍板后再加，不要凭直觉接上。
                 if _atm_style == "humorous":
                     _mood_sys.trigger("interesting", 0.15)
-                elif _atm_style == "tense":
-                    _mood_sys.trigger("failed", 0.1)
-                elif _atm_style == "quiet":
-                    _mood_sys.trigger("boring", 0.1)
             except Exception:
                 pass
         except Exception:
@@ -1109,8 +1145,6 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         {"role": "system", "content": ctx.system_prompt},
         *[m for m in ctx.messages if m.get("role") != "system"],
     ]
-    ctx.meta["desire_count"] = len(desire.get_active())
-
     # D1: 灵魂能量槽更新
     try:
         soul_cfg = getattr(getattr(core, "config", None), "soul", None)
@@ -1137,10 +1171,10 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             _flashbulb = _mood_st.arousal > 0.6
             _topic_rel = 0.5 if ctx.meta.get("vector_recall") else 0.0
             _group_atm = 0.0
+            # 🔴 2026-10-14：原还有 `elif tense → -0.3`（氛围压抑拉低灵魂状态），
+            # 但 AtmosphereStyle 无 tense 值 ⇒ 该负向分量从未生效。已删除。
             if ctx.atmosphere_style == "humorous":
                 _group_atm = 0.4
-            elif ctx.atmosphere_style == "tense":
-                _group_atm = -0.3
             _soul.update(
                 mood_valence=_mood_st.valence,
                 mood_arousal=_mood_st.arousal,

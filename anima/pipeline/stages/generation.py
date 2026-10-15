@@ -26,6 +26,11 @@ _DEGRADE_FALLBACKS = (
     "本喵刚打了个磕巴，缓一下再说喵…",
 )
 
+#: 「查了但没拢出结论」那一支的兜底句（2026-10-13 提为常量）。
+#: 原为 :1092 处的**内联字面量** ⇒ 出站侧的兜底判定（`handler._is_degrade_fallback`）
+#: 扫不到它，会漏剥这一类的引用块。提出来才有单一来源。
+_TOOL_NO_RESULT_FALLBACK = "本喵这边没查到准信喵，你换个说法或过会儿再问本喵一次？"
+
 
 def _record_fallback(core: Any, kind: str) -> None:
     """兜底出站计数（fail-soft）。
@@ -50,7 +55,15 @@ _REALTIME_TOOL_RE = re.compile(
     r"新闻|"
     r"多少度|华氏|摄氏|几点|开了吗|更新|版本|发布|上市|股价|汇率|比分|赛程|"
     r"bilibili|B站|b站|space\.bilibili|https?://|是什么|为什么|多少钱|哪里|哪家|"
-    r"官网|官方|资料|维基|百科|知乎|小红书|微博|推特|x\.com|youtube|youtu\.be)",
+    r"官网|官方|资料|维基|百科|知乎|小红书|微博|推特|x\.com|youtube|youtu\.be|"
+    # 🔴 2026-10-15：补「找图 / X上」类问法。
+    # 审核实证：『帮我找张猫咪图』『X上怎么说』『找个表情包外的图』原先均不命中，
+    # 而 7 天工具分布里 x_search 仅 1 次、search_web 8 次 ⇒ 模型偏用通用搜索。
+    # 注意 `[^\s，。]{0,4}`：要跨过「找**张猫咪**图」中间的修饰词，但不能跨标点
+    # （否则「找我有事吗」会误命中）。保持「窄」——引导会加 token。
+    r"找(?:一|两|几)?(?:张|个|些|点)?[^\s，。]{0,4}(?:图|照片|图片|表情包)|"
+    r"拿(?:一|两|几)?(?:张|个|些)?[^\s，。]{0,2}图|要(?:一|两)?(?:张|个)?图|"
+    r"(?:X|Twitter|推特|twitter)(?:上|里|中))",
     re.I,
 )
 # 图片操作关键词（宽松匹配：只要涉及图片操作/编辑/处理即触发引导）
@@ -298,6 +311,25 @@ def _inject_runtime_tool_guidance(ctx: PipelineContext, guidance: str) -> bool:
     return True
 
 
+def _tool_trace_for_mood(ctx: PipelineContext, react: Any) -> list | None:
+    """A2 情绪用的「本回合工具轨迹」。
+
+    🔴 2026-10-14 修复：此前 A2 块直接读 ``ctx.meta["tool_trace"]``，而该键要等到
+    本函数更后面的「P0 工具调用轨迹记录」处才写入；``PipelineContext`` 每回合新建
+    （全仓唯一创建点 ``anima/llm/handler.py``）⇒ A2 读取时**恒为 None**
+    ⇒ ``helped`` 情绪 7 天 0 次触发（生产日志实测 175 条情绪事件中 helped=0，
+    而同块不依赖 trace 的 praised=4 / insulted=8 照常工作）。
+
+    本回合轨迹只可能来自刚跑完的 ``react`` 实例，故优先读它；``ctx.meta`` 仅作
+    向后兼容的兜底（既有调用方语义不变）。
+    """
+    if react is not None:
+        trace = getattr(react, "tool_trace", None)
+        if trace:
+            return trace
+    return ctx.meta.get("tool_trace") if ctx is not None else None
+
+
 def _memory_first_enabled(core) -> bool:
     """P0-1 总开关：``react.memory_first``（默认 True）。
 
@@ -347,6 +379,26 @@ def _tool_timeout_sec(core) -> float:
         return max(1.0, float(getattr(cfg, "tool_timeout_sec", _DEFAULT_TOOL_TIMEOUT_SEC)))
     except (TypeError, ValueError):
         return _DEFAULT_TOOL_TIMEOUT_SEC
+
+
+def _tool_timeout_overrides(core) -> dict[str, float]:
+    """per-tool 超时覆盖：``react.tool_timeout_overrides``（默认空 = 零行为变更）。
+
+    🔴 2026-10-15：`x_search` 实测 45–102s，而全局上限 45s ⇒ 结构性超时。
+    但抬高全局值会一起放松所有工具（10-02「同群排队 2 分钟零回复」事故同因），
+    故只给长任务开小灶。解析失败/非数值一律丢弃该项，绝不让脏配置放大超时。
+    """
+    cfg = getattr(getattr(core, "config", None), "react", None)
+    raw = getattr(cfg, "tool_timeout_overrides", None)
+    if not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for k, v in raw.items():
+        try:
+            out[str(k)] = max(1.0, float(v))
+        except (TypeError, ValueError):
+            continue
+    return out
 
 
 def _turn_deadline_sec(core) -> float:
@@ -580,13 +632,29 @@ _REPLY_LABEL_INLINE_RE = re.compile(
     r"(?:^|\n)\s*(?:text\s*[:：]\s*)?\[(?:你|哈基米|anima|Anima|MengWuy)\]\s*[:：]\s*",
     re.IGNORECASE,
 )
+# 🔴 2026-10-15：内部协议标记泄漏清洗。
+# 出站审核实证：24h 内 7/98 条出站带 `<<<subcall:pick_sticker{query:…}>>>`，
+# 全部骂战场景。该串**全仓不存在** ⇒ 是模型幻觉 —— 它想调表情工具却没真发起调用，
+# 而是模仿 prompt 里 `<<<用户消息开始>>>`（本文件 :801）的形态，即兴写在正文里。
+# 原先 `_strip_speaker_labels` 只覆盖 `[哈基米]:` 类说话人标签，对 `<<<…>>>` 完全无覆盖
+# ⇒ 原样进群，用户直接看到内部乱码。
+# 判据用 `<{2,3}` / `>{2,3}`：实测存在 `<<subcall:…>>>` 这种少一个括号的变体。
+_INTERNAL_MARKER_RE = re.compile(r"<{2,3}[^<>\n]{1,80}>{2,3}")
 
 
 def _strip_speaker_labels(reply: str) -> str:
-    """剥掉回复开头/行首的说话人标签。"""
+    r"""剥掉回复开头/行首的说话人标签，以及泄漏的内部协议标记。
+
+    🔴 顺序不可交换：必须先剥 `<<<…>>>`，再剥说话人标签。
+    因为 `<<<…>>>[哈基米]: 正文` 里 `[哈基米]:` 并不在行首，
+    反过来做会剩下 `[哈基米]: 正文`（标签清洗的行首锚匹配不上）。
+    🔴 本 docstring 必须是 raw string：内含 `^\s*` 等反斜杠，
+    非 raw 会触发 SyntaxWarning: invalid escape sequence（10-15 实测踩过）。
+    """
     text = (reply or "").strip()
     if not text:
         return text
+    text = _INTERNAL_MARKER_RE.sub("", text)
     text = _REPLY_LABEL_RE.sub("", text, count=1).strip()
     text = _REPLY_LABEL_INLINE_RE.sub("\n", text).strip()
     return text
@@ -888,6 +956,8 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         upstream_patience_sec=_upstream_patience_sec(core),
         # 2026-10-03：单次工具调用墙钟上限（react.tool_timeout_sec，默认 45s）
         tool_timeout_sec=_tool_timeout_sec(core),
+        # 2026-10-15：per-tool 覆盖（只给 x_search 这类长任务放长，其余仍 45s）
+        tool_timeout_overrides=_tool_timeout_overrides(core),
         # 2026-10-03：整回合墙钟预算（react.turn_deadline_sec，默认 0 = 关）
         turn_deadline_sec=_turn_deadline_sec(core),
     )
@@ -1089,7 +1159,7 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         logger.warning("LLM 返回空或占位兜底")
         _record_fallback(core, "empty_reply")
         if re.search(r"(直播|天气|搜索|查一下|多少|几点|开了吗)", ctx.text or ""):
-            ctx.reply = "本喵这边没查到准信喵，你换个说法或过会儿再问本喵一次？"
+            ctx.reply = _TOOL_NO_RESULT_FALLBACK
         else:
             ctx.reply = random.choice(_DEGRADE_FALLBACKS)
         return StageResult.CONTINUE
@@ -1110,7 +1180,10 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
         elif ctx.detail_type == "group" and len(ctx.text) > 5 and not ctx.event.get("reply_to_self"):
             if random.random() < 0.15:
                 _mood_sys_auto.trigger("ignored", 0.15)
-        _trace = ctx.meta.get("tool_trace")
+        # 本回合轨迹取自刚跑完的 react 实例：ctx.meta 里那份要到下面
+        # 「P0 工具调用轨迹记录」才写入，直接读它会让 helped 恒不触发
+        # （详见 _tool_trace_for_mood 文档串）。
+        _trace = _tool_trace_for_mood(ctx, react)
         if _trace and any(t.get("ok") for t in _trace):
             _mood_sys_auto.trigger("helped", 0.2)
     except Exception:

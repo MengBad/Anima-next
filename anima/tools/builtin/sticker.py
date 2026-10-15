@@ -9,6 +9,13 @@ from anima.tools import Tool, LEVEL_USER, get_call_context
 logger = logging.getLogger("anima.tools.sticker")
 
 
+# 🔴 2026-10-15：本文件所有工具描述**不得再给可照搬的示例词**。
+# 出站审核实证：模型会照搬描述里的示例词，并模仿 prompt 的 `<<<…>>>` 形态，
+# 在正文里即兴写出幻觉的工具调用串（24h 内 7/98 条出站泄漏，全在骂战场景）。
+# ⇒ 只给「用中文描述」的**意图**，不给例子。同 U2 手法。
+# 守卫：tests/test_outbound_marker_leak_fix.py 扫本文件全文（含注释）。
+
+
 def make_sticker_tools(core) -> list[Tool]:
     """表情包选图工具工厂（仅在 sticker 启用时返回非空列表）。"""
     cfg = getattr(core, "config", None)
@@ -163,8 +170,8 @@ def make_sticker_tools(core) -> list[Tool]:
         Tool(
             "pick_sticker",
             "选择一张贴合语境的表情包图片，附带在回复之后。仅在回复轻松、调侃、玩梗、情绪化、想活跃气氛时使用；"
-            "正式问答、严肃说明、纯信息回复不要调用。query 用中文描述想要的情绪/用途，如『无语』『狗头』『开心』『赞同』。",
-            {"query": {"type": "string", "description": "想要的情绪/梗，如 无语/狗头/开心"}},
+            "正式问答、严肃说明、纯信息回复不要调用。query 用中文自由描述你想要的情绪或用途（一句短语即可）。",
+            {"query": {"type": "string", "description": "用中文描述想要的情绪或用途（一句短语）"}},
             _pick, min_level=LEVEL_USER,
         ),
         Tool(
@@ -176,21 +183,21 @@ def make_sticker_tools(core) -> list[Tool]:
         Tool(
             "search_meme",
             "在表情库里按中文描述检索表情（不发送），返回匹配项的路径/分类/情绪/标签。先查库里有啥再说。",
-            {"query": {"type": "string", "description": "想找的情绪/梗，如 狗头/无语/开心"},
+            {"query": {"type": "string", "description": "用中文描述想找的情绪或梗（一句短语）"},
              "limit": {"type": "integer", "description": "最多返回几条，默认5，上限20"}},
             _search, min_level=LEVEL_USER,
         ),
         Tool(
             "send_meme",
             "按中文描述选一张表情图片，在本次回复里实际附带发出。仅在轻松、调侃、玩梗、情绪化语境使用，严肃问答不要调用。",
-            {"query": {"type": "string", "description": "想要的情绪/梗，如 无语/狗头/开心"}},
+            {"query": {"type": "string", "description": "用中文描述想要的情绪或用途（一句短语）"}},
             _send, min_level=LEVEL_USER,
         ),
         Tool(
             "steal_meme",
             "把当前这条消息里对方发的图片（最多2张）收进表情库。需刚收到带图消息；审核开启时进待审核区。",
             {"desc": {"type": "string", "description": "对这张图的一句话描述/想打的标签(可选)"},
-             "category": {"type": "string", "description": "给图分的分类，如 狗头/梗图/日常(可选)"}},
+             "category": {"type": "string", "description": "给图分一个中文分类名(可选)"}},
             _steal, min_level=LEVEL_USER,
         ),
     ]

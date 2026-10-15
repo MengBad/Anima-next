@@ -199,6 +199,106 @@ def _walk_card_meta(meta: Any) -> dict[str, str]:
 _FORWARD_MAX_NODES = 20
 _FORWARD_MAX_CHARS_PER_NODE = 500
 _FORWARD_MAX_TOTAL_CHARS = 2000
+#: 转发内嵌图片上限（2026-10-13）。视觉管线一次最多吃 4 张（`_vision_describe`
+#: 里 `images[:4]`），这里放宽到 6 只为留出被去重/超限裁剪的余量。
+_FORWARD_MAX_IMAGES = 6
+
+#: 可入视觉管线的段类型。🔴 **刻意不含 ``face``**：QQ 系统表情走另一条
+#: （`stickers.json` sha1 识别），且顶层段收集口径同样是这三个
+#: （见本文件 `parse_event` 的 images 收集）——两处必须一致，否则同一张图
+#: 在顶层算表情、在转发里算图片。
+_FORWARD_IMAGE_SEG_TYPES = ("image", "bface", "sface")
+
+
+def _forward_nodes(data: dict | None) -> list:
+    """按 NapCat/OneBot11 的三种形态取出转发**节点列表**（纯函数）。
+
+    形态（缺一即在生产上丢内容，见 `parse_forward_messages` docstring）：
+      1. ``{"id": .., "content": [节点, ...]}``            裸数组
+      2. ``{"id": .., "content": {"messages": [节点,..]}}`` NapCat 包一层
+      3. ``{"id": .., "messages": [节点, ...]}``            标准字段
+
+    已按 ``_FORWARD_MAX_NODES`` 截断；畸形一律 ``[]``（fail-closed，不抛）。
+    """
+    if not isinstance(data, dict):
+        return []
+    nodes: object = data.get("messages")            # 形态 3（标准）
+    if not isinstance(nodes, list):
+        content = data.get("content")
+        if isinstance(content, list):                # 形态 1
+            nodes = content
+        elif isinstance(content, dict):
+            nodes = content.get("messages")          # 形态 2（NapCat）
+            if not isinstance(nodes, list):
+                nodes = content.get("content")
+                if not isinstance(nodes, list):
+                    nodes = []
+    if not isinstance(nodes, list):
+        return []
+    return nodes[:_FORWARD_MAX_NODES]
+
+
+def _collect_forward_image_segs(node: object, depth: int = 0) -> list[dict]:
+    """递归收拢一个转发节点里的图片段（兼容各实现的包装差异）。
+
+    与 ``_forward_node_text`` 同口径地兼容：裸段 ``{"type":..,"data":..}``、
+    ``{"message": [...]}`` / ``{"content": ...}`` / ``{"text": ...}`` 包装。
+    depth 上限 3 防 NapCat 偶发的嵌套环。
+    """
+    out: list[dict] = []
+    if depth > 3:
+        return out
+    if isinstance(node, list):
+        for seg in node:
+            out.extend(_collect_forward_image_segs(seg, depth + 1))
+        return out
+    if isinstance(node, dict):
+        # 裸消息段：某些实现在转发 content 里直接放段而不包 message
+        if (str(node.get("type") or "") in _FORWARD_IMAGE_SEG_TYPES
+                and isinstance(node.get("data"), dict)):
+            out.append(node)
+            return out
+        for key in ("message", "content"):
+            if key in node:
+                out.extend(_collect_forward_image_segs(node.get(key), depth + 1))
+    return out
+
+
+def parse_forward_images(data: dict | None) -> list[dict]:
+    """从 forward 段里提取**内嵌图片**，供视觉管线理解（2026-10-13）。
+
+    🔴 **修的是「转发里的图不识别」**：`parse_forward_messages` 只取
+    ``type == "text"`` 的段 ⇒ 转发节点里的 image/bface/sface 被整体丢弃，
+    ``event["images"]`` 永远看不到它们。生产 14 天 47 条 forward 段中
+    text_len 最高 549 ⇒ 正文展开本是通的，**唯独图片这条路从来不存在**。
+
+    返回的 dict 与顶层段收集**同构**（url/file/sub_type/file_id），
+    因此可直接并入 ``event["images"]``；调用方负责打 ``from_forward=True``。
+
+    按 file → file_id → url 去重；畸形一律 ``[]``（**绝不抛**）。
+    """
+    out: list[dict] = []
+    seen: set[str] = set()
+    for node in _forward_nodes(data):
+        for seg in _collect_forward_image_segs(node):
+            d = seg.get("data") or {}
+            url = str(d.get("url") or d.get("src") or "")
+            file = str(d.get("file") or "")
+            file_id = str(d.get("file_id") or d.get("id") or "")
+            key = file or file_id or url
+            if key and key in seen:
+                continue
+            if key:
+                seen.add(key)
+            out.append({
+                "url": url,
+                "file": file,
+                "sub_type": str(d.get("subType") or "") or str(seg.get("type") or ""),
+                "file_id": file_id,
+            })
+            if len(out) >= _FORWARD_MAX_IMAGES:
+                return out
+    return out
 
 
 def _forward_node_text(node: object, depth: int = 0) -> str:
@@ -264,17 +364,7 @@ def parse_forward_messages(data: dict | None) -> list[str]:
     """
     if not isinstance(data, dict):
         return []
-    nodes: object = data.get("messages")            # 形态 3（标准）
-    if not isinstance(nodes, list):
-        content = data.get("content")
-        if isinstance(content, list):                # 形态 1
-            nodes = content
-        elif isinstance(content, dict):
-            nodes = content.get("messages")          # 形态 2（NapCat）
-            if not isinstance(nodes, list):
-                nodes = content.get("content")
-                if not isinstance(nodes, list):
-                    nodes = []
+    nodes = _forward_nodes(data)   # 三种形态的取节点逻辑见 _forward_nodes
     out: list[str] = []
     total = 0
     for node in (nodes or [])[:_FORWARD_MAX_NODES]:
@@ -1542,6 +1632,15 @@ class OneBot11Adapter(Module):
         if not buf:
             return []
         return [(uid, text) for ts, uid, text in buf if ts > since_ts]
+
+    async def get_group_list(self) -> Optional[list[dict]]:
+        """获取 bot 已加入的群列表（供 bot 发现扫描枚举群；与成员列表同走 WS）。"""
+        resp = await self._call_action("get_group_list", {}, timeout=15.0)
+        if isinstance(resp, list):
+            return resp
+        if isinstance(resp, dict) and isinstance(resp.get("data"), list):
+            return resp["data"]
+        return None
 
     async def get_group_member_list(self, group_id: int) -> Optional[list[dict]]:
         """获取群成员列表。"""

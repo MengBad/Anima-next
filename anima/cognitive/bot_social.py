@@ -501,6 +501,112 @@ def suggest_bots_from_nickname(members: list[dict]) -> list[int]:
 
 
 # ---------------------------------------------------------------------------
+# 群成员扫描：让「自动发现」真正接线（2026-10-14）
+# ---------------------------------------------------------------------------
+#: 单次扫描最多枚举多少个群（上限保护，避免大号一次拉爆 WS 回执）
+BOT_SCAN_MAX_GROUPS = 20
+
+
+async def scan_group_bots(core: Any, *, max_groups: int = BOT_SCAN_MAX_GROUPS) -> dict:
+    """扫描 bot 所在群的成员，发现其他 bot。**全程 fail-soft，绝不抛给调用方**。
+
+    两条通路，边界不可混淆：
+    - **平台真相** `role=='bot'` ⇒ 自动 `KnownBotsStore.add(confirmed=True)`。
+      这是平台已标记的事实，自动确认是安全的。
+    - **昵称命中** ⇒ **只记日志建议**（`[多Bot发现-建议]`），**绝不写入注册表**。
+      把真人误判成 bot 的代价（Anima 突然不理 trust 1.0 的老朋友）远大于收益，
+      这是 KnownBotsStore「UID 唯一主键」设计铁律的核心。
+
+    2026-10-14 实测：NapCat 对第三方 bot 不标 role（3 群 576 人 role=='bot' 为 0）
+    ⇒ 当前自动确认恒为空集，现实收益主要来自建议日志；若将来平台开始标记则自动生效。
+
+    返回 `{"groups": n, "confirmed": [...], "suggested": [...]}`；
+    不可用时带 `skipped` / `error` 键。
+    """
+    out: dict = {"groups": 0, "confirmed": [], "suggested": []}
+
+    try:
+        data_dir = str(getattr(getattr(core, "config", None), "persistence", None).data_dir)
+    except Exception:  # noqa: BLE001
+        data_dir = "data"
+
+    ch = getattr(getattr(core, "gateway", None), "channel", None)
+    if ch is None or not hasattr(ch, "get_group_list"):
+        out["skipped"] = "no_channel"
+        return out
+
+    try:
+        groups = await ch.get_group_list()
+    except Exception:  # noqa: BLE001
+        logger.warning("群列表拉取失败，本次 bot 发现跳过（已隔离）", exc_info=True)
+        out["skipped"] = "group_list_failed"
+        return out
+    if not isinstance(groups, list):
+        out["skipped"] = "no_groups"
+        return out
+
+    gids: list[int] = []
+    for g in groups[:max_groups]:
+        gid = g.get("group_id") if isinstance(g, dict) else g
+        try:
+            gids.append(int(gid))
+        except (TypeError, ValueError):
+            continue
+    out["groups"] = len(gids)
+    if not gids:
+        return out
+
+    store: Optional["KnownBotsStore"] = None
+    for gid in gids:
+        try:
+            members = await ch.get_group_member_list(gid)
+        except Exception:  # noqa: BLE001
+            logger.warning("群 %s 成员拉取失败，跳过该群（已隔离）", gid, exc_info=True)
+            continue
+        if not isinstance(members, list):
+            continue
+
+        # ① 平台真相
+        try:
+            found = discover_bots_from_members(members)
+        except Exception:  # noqa: BLE001
+            logger.exception("discover_bots_from_members 异常（已隔离）")
+            found = set()
+        for uid in sorted(found):
+            name = next(
+                (str(m.get("card") or m.get("nickname") or "")
+                 for m in members
+                 if isinstance(m, dict) and str(m.get("user_id")) == str(uid)),
+                "",
+            )
+            try:
+                if store is None:
+                    store = KnownBotsStore(data_dir)
+                store.add(uid, name=name, confirmed=True)
+            except Exception:  # noqa: BLE001
+                logger.exception("写入 known_bots.json 失败（已隔离）uid=%s", uid)
+                continue
+            out["confirmed"].append(uid)
+            logger.info("[多Bot发现-确认] 平台标记 role=bot → 已自动确认 uid=%s name=%s 群=%s",
+                        uid, name, gid)
+
+        # ② 昵称建议 —— 只落日志，绝不写入
+        try:
+            suggested = suggest_bots_from_nickname(members)
+        except Exception:  # noqa: BLE001
+            logger.exception("suggest_bots_from_nickname 异常（已隔离）")
+            suggested = []
+        fresh = [u for u in suggested if u not in found and u not in out["suggested"]]
+        if fresh:
+            out["suggested"].extend(fresh)
+            logger.info(
+                "[多Bot发现-建议] 群=%s 昵称疑似 bot 的 UID=%s"
+                "（仅人工确认建议，绝不自动写入 known_bots.json）", gid, fresh,
+            )
+    return out
+
+
+# ---------------------------------------------------------------------------
 # 防循环：入站环缓冲
 # ---------------------------------------------------------------------------
 _recent_lock = threading.Lock()

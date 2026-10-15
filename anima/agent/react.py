@@ -221,6 +221,7 @@ class ReActLoop:
                  freshness_footer: bool = True,
                  upstream_patience_sec: float = _DEFAULT_UPSTREAM_PATIENCE_SEC,
                  tool_timeout_sec: float = _DEFAULT_TOOL_TIMEOUT_SEC,
+                 tool_timeout_overrides: dict | None = None,
                  turn_deadline_sec: float = _DEFAULT_TURN_DEADLINE_SEC):
         self.llm = llm
         self.tools = tools
@@ -237,6 +238,13 @@ class ReActLoop:
         self.upstream_patience_sec = max(0.0, float(upstream_patience_sec))
         # 单次工具调用的墙钟上限（秒）。见 `_DEFAULT_TOOL_TIMEOUT_SEC`。
         self.tool_timeout_sec = max(1.0, float(tool_timeout_sec))
+        # 🔴 2026-10-15：per-tool 超时覆盖。**空 dict = 全部走全局值（零行为变更）**。
+        # 动机：`x_search` 实测 45–102s 远超普通工具，但抬高全局值会一起放松所有工具
+        # （10-02「同群排队 2 分钟零回复」事故同因）⇒ 只给长任务开小灶。
+        self.tool_timeout_overrides: dict[str, float] = {
+            str(k): max(1.0, float(v))
+            for k, v in (tool_timeout_overrides or {}).items()
+        }
         # 整回合墙钟预算（秒）。0 = 关闭。见 `_DEFAULT_TURN_DEADLINE_SEC`。
         self.turn_deadline_sec = max(0.0, float(turn_deadline_sec))
         self._turn_start: float | None = None
@@ -608,15 +616,19 @@ class ReActLoop:
 
                 # 权限二次校验（工具调用前的最后一道闸）
                 # A2（收敛计划）：工具级超时——单工具卡死不再拖死整条回复
+                # 🔴 2026-10-15：超时值先查 per-tool 覆盖表（长任务如 x_search 单独放长），
+                # 未命中才落回全局值 —— 全局值本身不动，避免放松所有工具。
+                _t_timeout = self.tool_timeout_overrides.get(
+                    name, self.tool_timeout_sec)
                 try:
                     result = await asyncio.wait_for(
                         self.tools.call(name, args, self.permission_level),
-                        timeout=self.tool_timeout_sec,
+                        timeout=_t_timeout,
                     )
                 except asyncio.TimeoutError:
-                    logger.warning("工具调用超时(%.0fs) name=%s", self.tool_timeout_sec, name)
+                    logger.warning("工具调用超时(%.0fs) name=%s", _t_timeout, name)
                     result = (
-                        f"工具执行超时（超过 {self.tool_timeout_sec:.0f} 秒），本次未获得结果"
+                        f"工具执行超时（超过 {_t_timeout:.0f} 秒），本次未获得结果"
                     )
                 # 工具参数和结果可能含用户正文、URL、文件路径；journal 只保留
                 # 名称、成败和长度，排障走受控 audit/任务记录而非聊天日志。

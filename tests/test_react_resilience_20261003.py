@@ -174,10 +174,19 @@ def test_tool_timeout_default_applied():
 
 
 def test_source_has_no_hardcoded_120_timeout():
-    """源码不得再有硬编码 `timeout=120.0`（正是本次要拆掉的常量）。"""
+    """源码不得再有硬编码 `timeout=120.0`（正是本次要拆掉的常量）。
+
+    🔴 2026-10-15 判据随实现走：超时值改为**先查 per-tool override 表**
+    （`_t_timeout = overrides.get(name, self.tool_timeout_sec)`）后再传进
+    `wait_for`。**意图未变** —— 仍是配置驱动、仍无硬编码；只是多了一层
+    长任务覆盖。故判据锚到新变量名（旧的 `timeout=self.tool_timeout_sec`
+    已不成立，属判据过期而非行为回归）。
+    """
     src = (_ROOT / "anima" / "agent" / "react.py").read_text(encoding="utf-8-sig")
     assert "timeout=120.0" not in src
-    assert "timeout=self.tool_timeout_sec" in src
+    assert "timeout=_t_timeout" in src
+    # override 表必须存在且被查（保证配置驱动这条不变）
+    assert "tool_timeout_overrides" in src
 
 
 def test_tool_timeout_config_defaults_are_same_source():

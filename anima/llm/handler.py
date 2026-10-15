@@ -183,6 +183,42 @@ def _merge_reply_images(event: dict, extra: Optional[list]) -> int:
         logger.debug("引用图归属合并失败（已隔离）", exc_info=True)
         return 0
 
+
+def _merge_forward_images(event: dict, extra: Optional[list]) -> int:
+    """把**合并转发内嵌**的图并入 `event["images"]`，返回新增数。绝不抛出。
+
+    - 打 `from_forward=True`：转发别人的图 ≠ 用户自己发了这张表情 ⇒
+      `_observe_stickers` 必须跳过（与 `from_reply` 同理由，09-28 实况：
+      bot 自己发的图被记成引用者的表情收进库）。
+    - 按 file → file_id 去重，保留既有语义。
+    - 埋点 `[转发取图]`：出站正文不入 journal ⇒ 这条链路通没通只能靠自埋点观测。
+    """
+    try:
+        base = event.get("images")
+        if not isinstance(base, list):
+            base = []
+        added = 0
+        seen = {(i.get("file") or i.get("file_id"))
+                for i in base if isinstance(i, dict)}
+        for im in (extra or []):
+            if not isinstance(im, dict):
+                continue
+            key = im.get("file") or im.get("file_id")
+            if key and key in seen:
+                continue
+            im["from_forward"] = True
+            base.append(im)
+            if key:
+                seen.add(key)
+            added += 1
+        if added:
+            event["images"] = base
+            logger.info("[转发取图] 并入 %d 张转发内嵌图片", added)
+        return added
+    except Exception:
+        logger.debug("转发图合并失败（已隔离）", exc_info=True)
+        return 0
+
 _TEXT_ATTACHMENT_SUFFIXES = {".txt", ".md", ".json", ".csv", ".yaml", ".yml", ".py", ".log"}
 _DOCUMENT_ATTACHMENT_SUFFIXES = {".pdf", ".docx", ".xlsx"}
 _MAX_ATTACHMENT_BYTES = 2 * 1024 * 1024
@@ -1059,6 +1095,16 @@ class LLMHandler(AnimaCommandsMixin):
                 except Exception:
                     logger.exception("群短时上下文记录失败（已隔离）")
 
+            # U4（2026-10-14）：入站即描述 —— 带图消息一进来就后台描述，不再等
+            # 「本回合真的回复了」（生产实测：672 张入站图只有 19 条进了记忆）。
+            # 🔴 必须排在 observe_group_message **之后**：user 条目刚落进
+            #    `group_<gid>_<uid>` 持久桶，`set_vision_desc` 才补写得上；
+            #    排前面 ⇒ 补写到空桶，静默全丢且无任何报错。
+            try:
+                await self._schedule_vision_describe(event, user_id, group_id, detail_type)
+            except Exception:
+                logger.exception("入站视觉描述调度失败（已隔离，不阻塞回复）")
+
             # 引用回复取图：用户「引用图片 + @bot」时，NapCat 的 reply 段只带被引用
             # 消息 id 而不内联原图；这里主动 get_msg 拉回原消息，提取其中的 image 段
             # 合并进 event["images"]，让 bot 能真正「理解图片」（及表情收集）。仅在含
@@ -1401,7 +1447,13 @@ class LLMHandler(AnimaCommandsMixin):
             # 让后续轮次能忆起「用户发过一张什么图」。绝不阻塞回复。
             if (event.get("images")
                     and self.core.config.vision.enabled
-                    and self.core.config.vision.store_desc_to_memory):
+                    and self.core.config.vision.store_desc_to_memory
+                    # 群路径已由 `_schedule_vision_describe` 在入站时调度过（U4）；
+                    # 这里再来一次只会撞上同一把 per-user 节流 ⇒ 纯浪费。
+                    # 私聊的 user 条目在 pipeline memory stage 才落盘，入站调度补写
+                    # 会落空 ⇒ 私聊仍保留这条出站分支。
+                    and not (detail_type == "group"
+                             and getattr(self.core.config.vision, "describe_on_inbound", False))):
                 asyncio.create_task(
                     self._vision_describe(event["images"], user_id, group_id, detail_type)
                 )
@@ -1448,12 +1500,18 @@ class LLMHandler(AnimaCommandsMixin):
         # 🔴 引用图不得入库：`from_reply` 的图是**别人（或 bot 自己）**发的，
         # 记成「本用户发的表情」既污染归属、也会把生成图混进表情库
         # （09-28 实况：bot 自己发的图被记成引用者的表情）。
+        # 🔴 `from_forward` 同理（2026-10-13）：**转发**里的图同样是别人发的。
+        # 当前 `_observe_stickers` 跑在流水线之前、转发展开在流水线内部
+        # ⇒ 时序上本就碰不到；但把不变量写在这里，防止将来调整 stage 顺序时
+        # 静默把别人的图收进本用户的表情库。
         # 只在本函数内过滤、**不改动 event** —— `event["images"]` 是
         # `ctx.inbound_images`（`_handle_inner` 里 `inbound_images=event.get("images")`）
         # 的唯一来源，动它就等于砍 vision 与沙箱。
         _raw_images = event.get("images")
         images = [i for i in (_raw_images or [])
-                  if isinstance(i, dict) and not i.get("from_reply")]
+                  if isinstance(i, dict)
+                  and not i.get("from_reply")
+                  and not i.get("from_forward")]
         if not images:
             return
         group_rule = f"group:{group_id}"
@@ -1616,7 +1674,10 @@ class LLMHandler(AnimaCommandsMixin):
         if channel is None or not hasattr(channel, "get_forward_msg"):
             return ""
         try:
-            from anima.channels.onebot11 import parse_forward_messages
+            from anima.channels.onebot11 import (
+                parse_forward_images,
+                parse_forward_messages,
+            )
         except Exception:
             logger.exception("转发解析器导入失败")
             return ""
@@ -1628,6 +1689,7 @@ class LLMHandler(AnimaCommandsMixin):
                 logger.warning("get_forward_msg 异常 id=%s", fid[:60], exc_info=True)
                 continue
             if not isinstance(resp, dict):
+                logger.info("[转发展开] id=%s 结果=非dict响应，按拉不到处理", fid[:60])
                 continue
             # 兼容 NapCat 把节点放在 content.messages / content 的形态
             texts = parse_forward_messages(resp)
@@ -1635,6 +1697,21 @@ class LLMHandler(AnimaCommandsMixin):
                 inner = resp.get("content")
                 texts = (parse_forward_messages({"content": inner})
                          if inner is not None else [])
+            # 🔴 U3（2026-10-13）：**可观测埋点**。此前这条链路零锚点 ——
+            # `[合并转发内容]` 只进 `ctx.text`（喂 LLM）、**不入 journal**，
+            # 拿它 grep 恒得 0（我因此差点误判成「从没成功过」）。
+            # 现在成功/失败都留一条，节点数与字数是判断「展开是否真的成功」的判据。
+            logger.info("[转发展开] id=%s 节点=%d 字数=%d 结果=%s",
+                        fid[:60], len(texts), sum(len(t) for t in texts),
+                        "成功" if texts else "空")
+            # 🔴 2026-10-13：转发内嵌图片。**复用同一次 get_forward_msg 的响应**
+            # （不新增网络往返）——`parse_forward_messages` 只取 text 段，
+            # 图片此前被整体丢弃 ⇒ bot 对转发里的图完全失明。
+            # 打 from_forward=True ⇒ 不进表情库（转发 ≠ 自己发表情）。
+            try:
+                _merge_forward_images(event, parse_forward_images(resp))
+            except Exception:
+                logger.debug("转发内嵌图片合并失败（已隔离）", exc_info=True)
             if texts:
                 rows.append("[合并转发内容]\n" + "\n".join(texts))
             else:
@@ -1895,6 +1972,43 @@ class LLMHandler(AnimaCommandsMixin):
     # 视觉理解（后台，不阻塞回复）
     # ------------------------------------------------------------------
 
+    def _vision_enabled(self) -> bool:
+        """视觉描述的总前置条件（入站/出站两条路径共用，避免判据分叉）。"""
+        cfg = getattr(self.core.config, "vision", None)
+        return bool(
+            cfg is not None
+            and getattr(cfg, "enabled", False)
+            and getattr(cfg, "store_desc_to_memory", False)
+            and self.core.llm is not None
+        )
+
+    async def _schedule_vision_describe(self, event: dict, user_id: Any,
+                                        group_id: Any, detail_type: str) -> bool:
+        """**入站**即调度图片描述（可选开关），返回是否真的调度了。
+
+        🔴 为什么要有这条路：原先 `_vision_describe` 只挂在**出站分支**（`_send_reply`
+        末尾）⇒ 只有「本回合真的回复了」的带图消息才会被描述。生产 7 天实测：
+        `[图段]` 672 条，而 `视觉描述已存记忆` 仅 19 条（2.8%）⇒ 使用者体感是
+        「我发的图，它只在搭理我那次看，看完就忘」。
+
+        🔴 为什么只走群路径：群消息的 user 条目由 `observe_group_message`（本文件，
+        回复闸门**之前**）写进 `group_<gid>_<uid>` 持久桶 ⇒ `set_vision_desc` 补写得上。
+        私聊的 user 条目要等 pipeline memory stage 才写（更晚），此时补写会落空
+        ⇒ 私聊保持走出站分支。
+
+        fail-closed：开关未开 / 无图 / 无 LLM / vision 关 ⇒ 一律不调度，不抛异常。
+        """
+        if not self._vision_enabled():
+            return False
+        if not getattr(self.core.config.vision, "describe_on_inbound", False):
+            return False
+        if not event.get("images"):
+            return False
+        asyncio.create_task(
+            self._vision_describe(event["images"], user_id, group_id, detail_type)
+        )
+        return True
+
     async def _vision_describe(self, images: list, user_id: Any,
                                group_id: Any, detail_type: str) -> None:
         """后台视觉理解：对入站图生成中文描述，补写进对话记忆。绝不抛出。"""
@@ -1907,6 +2021,14 @@ class LLMHandler(AnimaCommandsMixin):
 
             cfg = self.core.config.vision
             vmgr = get_vision_manager(cfg.describe_throttle_per_user)
+            # 🔴 节流此前是**死配置**：`VisionManager.throttle` 只在 __init__ 赋值，
+            #    全仓无读取点 ⇒ 从未生效。改成入站即描述后每张图都会走到这里，
+            #    没有真节流的话，表情包连发能瞬间打满 LLM 队列。按 user 隔离。
+            if not vmgr.allow_user(str(user_id), time.time()):
+                logger.info("[视觉描述] 节流跳过 user=%s throttle=%ss",
+                            user_id, cfg.describe_throttle_per_user)
+                return
+            vmgr.mark_user(str(user_id), time.time())
             resolver = self._image_resolver()
             descs: list[str] = []
             for img in images[:4]:
@@ -2044,6 +2166,44 @@ def _note_sent_stickers(core, ctx, detail_type: str, sent_image_files: list,
     return note
 
 
+def _is_degrade_fallback(text: str) -> bool:
+    """出站文本是否就是「故障兜底话术」—— 严格等值判定，绝不抛。
+
+    🔴 **为什么需要它（2026-10-13 使用者视角排查，P1）**：
+    兜底话术的出口在**正常回复路径**上，于是 `_build_reply_segments` 会照常
+    前插 reply 段 ⇒ 使用者看到的是「**它引用我的原话，然后自称没接住**」：
+
+        [回复消息 [哈基岸] @MengKing  你复活了]
+        本喵刚打了个磕巴，缓一下再说喵…
+
+    7 天实测 12 次兜底、**100% 带引用块**，还伴随答非所问。
+    修法 = 兜底文本不挂引用块（只剥引用，不吞回复）。
+
+    覆盖三个来源（都是同一缺陷族）：
+      - `anima/agent/react.py:_NO_TOOL_FALLBACKS`（7 句，上游无输出）
+      - `anima/pipeline/stages/generation.py:_DEGRADE_FALLBACKS`（3 句，熔断/异常/空回复）
+      - `.../generation.py:_TOOL_NO_RESULT_FALLBACK`（1 句，查了没拢出结论）
+
+    🔴 **必须严格等值、禁用 `in`**：`in` 会把「含尾巴的整句」误判成兜底
+    （实测口径差 15 倍，见审计报告 §2.2）。两侧空白先剥掉。
+    """
+    try:
+        t = (text or "").strip()
+        if not t:
+            return False
+        from anima.agent.react import _NO_TOOL_FALLBACKS
+        from anima.pipeline.stages.generation import (
+            _DEGRADE_FALLBACKS,
+            _TOOL_NO_RESULT_FALLBACK,
+        )
+        return t in _NO_TOOL_FALLBACKS or t in _DEGRADE_FALLBACKS \
+            or t == _TOOL_NO_RESULT_FALLBACK
+    except Exception:
+        # 判定失败 ⇒ 当作非兜底（保留引用）。fail-closed 方向选「不改形态」：
+        # 误剥会让正常回复丢了上下文锚定，误留只多一次难看的引用。
+        return False
+
+
 def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
                           sticker_auto_last: dict | None = None,
                           at_trigger: bool = True,
@@ -2078,8 +2238,16 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
             ctx.reply = "喵"
     # 引用(quote)优先：凡在回复某条消息(有 message_id)即前插 reply 段——含被动接话，
     # 让回复锚定上下文、热群不显凭空插话；引用本身会通知被引用者。
+    # 🔴 U1（2026-10-13）：**故障兜底话术不挂引用块**。兜底走的是同一条正常回复
+    # 路径，若不剥，使用者看到的就是「它引用我的原话 → 自称没接住」——
+    # 7 天 12 次、100% 带引用，还伴随答非为问（问「你复活了」答「打了个磕巴」）。
+    # 只剥引用、不吞回复：文本照发，只是不再通知被引用者「我没接住」。
     if detail_type == "group" and message_id is not None:
-        segments.append({"type": "reply", "data": {"id": str(message_id)}})
+        if _is_degrade_fallback(getattr(ctx, "reply", None)):
+            logger.info("[兜底剥引用] 故障兜底话术不挂引用块 msg_id=%s text=%r",
+                        message_id, (getattr(ctx, "reply", "") or "")[:40])
+        else:
+            segments.append({"type": "reply", "data": {"id": str(message_id)}})
     # @ 兜底：仅真点到且拿不到可引用消息时用 @；已有引用时不再重复 @，避免同消息双提醒。
     if detail_type == "group" and at_trigger and message_id is None:
         segments.append({"type": "at", "data": {"qq": str(user_id)}})

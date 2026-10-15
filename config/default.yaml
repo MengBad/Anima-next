@@ -9,6 +9,13 @@ qq:
   access_token: ""                         # NapCat 鉴权 token
   event_concurrency: 12                    # 同时处理的长业务事件上限
   max_pending_events: 128                  # 高峰时的等待任务上限
+  known_bot_ids: [486159181, 838916454, 3852906976]   # 其他 bot 的 QQ（UID 权威集；昵称不作为判定依据）
+                                          # 486159181 = Aki/沙琪玛
+                                          # 838916454 = 群 727631526 的 owner「丰川刻子」，owner 坐实账号本身就是 bot
+                                          #   （🔴 我曾据昵称启发式判其为真人、建议排除，被 owner 纠正：
+                                          #    昵称永远不能反推身份，UID 必须 owner 逐条坐实）
+                                          # 3852906976 = 昵称 '1'／群名片「网友莉顺卡」，owner 确认是 bot 账号
+                                          # 注：bot 发现开关在 social 段（bot_discovery_enabled）
 
 llm:
   endpoint: "https://api.openai.com/v1"
@@ -199,6 +206,7 @@ vision:                                    # 全量多模态视觉理解（真·
   max_dimension: 1280                      # 自动缩放后的最长边
   max_animation_frames: 3                  # GIF/WebP 动图的关键帧数
   describe_throttle_per_user: 600          # 后台描述任务每发送者最小间隔（秒）
+  describe_on_inbound: false               # 入站即描述：带图消息一进来就后台描述（默认关；开启后群图不再只在「回复了才看」）
   comprehend_in_chat: true                 # 用户在聊天发图时，bot 当场看图并接话
   store_desc_to_memory: true               # 把图片一句描述存进对话记忆，供后续轮次忆起
 
@@ -310,10 +318,29 @@ react:
   # 单次工具调用的墙钟上限（秒）。旧值是硬编码 120s，放过了 102s 的 x_search
   # （整回合被拖死、同群用户排队 2 分钟）。默认 45s，覆盖 browser goto 30s +
   # click 15s 的内部串行最坏。
+  # 🔴 保持 45 不动：抬高它会一起放松**所有**工具（10-02 事故同因）。
   tool_timeout_sec: 45.0
+  # per-tool 超时覆盖（2026-10-15）。**默认空 = 全部走上面的全局值（零行为变更）**。
+  #
+  # 用途：工具耗时差异极大 —— `x_search` 实测 45–102s（浏览器冷启动 + goto30s +
+  # 渲染 + 下载配图 + 视觉过滤），而 45s 全局上限下它**结构性超时**
+  # （2026-10-15 审核实证：7 天唯一一次调用 `工具调用超时(45s) name=x_search`）。
+  # 但抬高全局值会一起放松**所有**工具（10-02「同群排队 2 分钟零回复」事故同因）
+  # ⇒ 正确做法是只给长任务开小灶。
+  #
+  # 🔴 本文件保持空 dict（与代码默认同源，守卫 test_tool_timeout_config_defaults_are_same_source
+  # 的同类原则）；**生产 config.yaml 显式配**：
+  #     tool_timeout_overrides:
+  #       x_search: 75.0
+  # 与 `x_search.py` 的 `_X_SEARCH_BUDGET_SEC=65` 配套：内部先于外部收口，
+  # 保证超时能优雅返回原因码，而不是被硬掐。
+  tool_timeout_overrides: {}
   # 整回合 ReAct 墙钟预算（秒）。单次工具上限只挡「一个工具卡死」，挡不住
   # 「多轮工具 + 多次 LLM 往返」的累计；超预算则带已得工具结果收口作答，
-  # 给单回合持锁时间一个硬上界。默认 0 = 关闭（不改变既有行为）；要启用显式配 90。
+  # 给单回合持锁时间一个硬上界。
+  # 🔴 默认 0 = 关闭（与代码默认同源，守卫 test_default_yaml_has_turn_deadline）。
+  # per-tool 把 x_search 放到 75s 后，**生产 config.yaml 应显式配 90**，
+  # 否则「x_search 75s + 多轮工具」仍可能让同群串行锁被持住过久（10-02 排队事故）。
   turn_deadline_sec: 0.0
   # 技能路由提示（2026-10-10，**默认关**）。
   # 动机：`skill_web_brief` 在能力模式下被排在工具清单**末位**（capability 卡恒前、

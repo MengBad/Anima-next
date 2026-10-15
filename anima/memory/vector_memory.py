@@ -400,13 +400,55 @@ class VectorMemory:
         self.embedding_dim = embedding_dim
         self.reranker = reranker
         self._ready = False
+        # 🔴 2026-10-14 X6：vec0 虚表是否真的可用。
+        # 原实现只用模块级 `_SQLITE_VEC_AVAILABLE` 判断，但 `_init_db` 里
+        # sqlite-vec 加载失败会被 except **吞掉**（走 BM25 降级）并继续置 `_ready=True`
+        # ⇒ 写入端仍按「可用」走 vec0 路径 ⇒ `no such table: memories` ⇒ **记忆丢失**。
+        # 改为按**本实例实际初始化结果**判断：加载成功才置位，add/search 据此选路。
+        self._vec_ready = False
+        # 🔴 2026-10-14 X6：初始化锁（懒建 + loop 重建，范式同 Embedder._save_lock）。
+        # asyncio.Lock 绑定首次使用的 loop，跨 loop 复用会 RuntimeError；
+        # VectorMemory 又可能在无运行 loop 时构造（工厂/测试），故懒建。
+        self._init_lock: Optional[asyncio.Lock] = None
+        self._init_loop: Optional[asyncio.AbstractEventLoop] = None
+        # 🔴 2026-10-14 X6：写入锁（add 写入段串行化，治并发写竞争）
+        self._write_lock: Optional[asyncio.Lock] = None
+        self._write_loop: Optional[asyncio.AbstractEventLoop] = None
         # P0-B2：遗忘导出分页轮转偏移——保证超 limit 行后仍能覆盖全体，而非反复评同一批
         self._dump_offset = 0
 
+    def _get_init_lock(self) -> asyncio.Lock:
+        """取当前 loop 上的初始化锁（跨 loop 自动重建）。"""
+        loop = asyncio.get_running_loop()
+        if self._init_lock is None or self._init_loop is not loop:
+            self._init_lock = asyncio.Lock()
+            self._init_loop = loop
+        return self._init_lock
+
+    def _get_write_lock(self) -> asyncio.Lock:
+        """取当前 loop 上的写入锁（跨 loop 自动重建）。
+
+        🔴 2026-10-14 X6：add() 写入段靠它串行化，消除并发写竞争导致的
+        `attempt to write a readonly database`（记忆静默丢失，本机并发约 30% 复现）。
+        """
+        loop = asyncio.get_running_loop()
+        if self._write_lock is None or self._write_loop is not loop:
+            self._write_lock = asyncio.Lock()
+            self._write_loop = loop
+        return self._write_lock
+
     async def _init_db(self) -> None:
+        # 🔴 2026-10-14 X6：修 check-then-act 竞态。
+        # 原实现 `self._ready = True` 前置在建表 await 之前 ⇒ 并发首用时，
+        # 后到者见 _ready=True 立即返回，此时表尚不存在 ⇒ 其 SELECT/INSERT 抛
+        # OperationalError（no such table / attempt to write a readonly database）
+        # ⇒ 该条记忆**静默丢失**。
+        # 修法：锁 + 双检 + `_ready` 移到建表成功之后。
         if self._ready:
             return
-        self._ready = True
+        async with self._get_init_lock():
+            if self._ready:
+                return
         async with aiosqlite.connect(self.db_path) as db:
             # 深审 P1：WAL——并发读写不再互相阻塞/SQLITE_BUSY 丢记忆
             await db.execute("PRAGMA journal_mode=WAL")
@@ -464,8 +506,21 @@ class VectorMemory:
                         f"CREATE VIRTUAL TABLE IF NOT EXISTS memories USING vec0(embedding float[{self.embedding_dim}])"
                     )
                     await db.commit()
+                    # vec0 虚表确认可用（供 add/search 选路，替代模块级判断）
+                    self._vec_ready = True
                 except Exception as e:
-                    logger.warning("sqlite-vec 加载失败，将使用 BM25 降级: %s", e)
+                    # 🔴 2026-10-14 X6：降级必须可观测 + **写入端必须知道**。
+                    # 原实现仅 warning 后继续，而 add() 仍按模块级可用走 vec0
+                    # ⇒ `no such table: memories` ⇒ 记忆静默丢失。
+                    logger.warning(
+                        "sqlite-vec 加载失败，降级为纯 meta 存储（记忆不丢，但无语义召回）: %s", e
+                    )
+                    self._vec_ready = False
+            # 🔴 2026-10-14 X6：建表全部完成后才置 _ready。
+            # 置位过早会让并发后到者跳过初始化、撞上「表不存在」。
+            # 注意：sqlite-vec 加载失败走纯 meta 降级，**不影响** memory_meta 可用性，
+            # 故此处置位是正确的（meta 表已由上面 CREATE + commit 保证存在）。
+            self._ready = True
 
     async def add(
         self,
@@ -480,39 +535,49 @@ class VectorMemory:
         if not text.strip():
             return False
 
-        # P0-B2：精确文本去重——同一全文已存在则跳过（原实现每条消息无脑入库，
-        # 长期记忆被重复项稀释且无上限）。近重复仍允许入库（交由遗忘机制衰减）。
-        async with aiosqlite.connect(self.db_path) as db:
-            cur = await db.execute(
-                "SELECT 1 FROM memory_meta WHERE text = ? LIMIT 1", (text,)
-            )
-            if await cur.fetchone():
-                logger.debug("向量记忆去重跳过（相同全文已存在）")
-                return True
-
         vec = None
         if self.embedding:
             vec = await self.embedding.embed(text)
 
-        if vec is None or not _SQLITE_VEC_AVAILABLE:
+        # 🔴 2026-10-14 X6：写入段整体串行化。
+        # 原实现无写锁，并发 add 时多个连接同时首次写同一个库 ⇒ SQLite WAL 的
+        # `-wal` 文件创建竞争 ⇒ 间歇性 `attempt to write a readonly database`
+        # ⇒ 该条记忆**静默丢失**（本机实测并发约 30% 失败，串行 15 轮 0 失败）。
+        # 顺带：原先那「三遍去重复检」是无锁下试图缩小 TOCTOU 窗口的旧设计，
+        # 有锁后一遍即够，故合并（行为等价：都返回 True、都不写行）。
+        async with self._get_write_lock():
+            # P0-B2：精确文本去重——同一全文已存在则跳过（原实现每条消息无脑入库，
+            # 长期记忆被重复项稀释且无上限）。近重复仍允许入库（交由遗忘机制衰减）。
             async with aiosqlite.connect(self.db_path) as db:
-                # 深审 P1：embed await 窗口内并发消息可能同时通过首个去重，
-                # 插入前同一连接复检（窗口从网络级收窄到即时）
                 cur = await db.execute(
                     "SELECT 1 FROM memory_meta WHERE text = ? LIMIT 1", (text,)
                 )
                 if await cur.fetchone():
+                    logger.debug("向量记忆去重跳过（相同全文已存在）")
                     return True
+
+            # 选路依据为本实例实际初始化结果 `_vec_ready`（X6）：
+            # 初始化期降级（except 吞掉）后若仍按模块级可用走 vec0，
+            # 会撞 `no such table: memories` ⇒ 记忆静默丢失。
+            if vec is None or not self._vec_ready:
+                async with aiosqlite.connect(self.db_path) as db:
+                    await db.execute(
+                        "INSERT INTO memory_meta(text, meta, ts, salience, source_uin, source_gid) VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            text,
+                            json.dumps(meta or {}, ensure_ascii=False),
+                            time.time(),
+                            salience,
+                            source_uin,
+                            source_gid,
+                        ),
+                    )
+                    await db.commit()
+                return True
+
             async with aiosqlite.connect(self.db_path) as db:
-                # 深审 P1：embed await 窗口内并发消息可能同时通过首个去重，
-                # 插入前同一连接复检（窗口从网络级收窄到即时）
+                # 先写 memory_meta，让 SQLite 自动分配 rowid（避免并发时 vec0 rowid 冲突）
                 cur = await db.execute(
-                    "SELECT 1 FROM memory_meta WHERE text = ? LIMIT 1", (text,)
-                )
-                if await cur.fetchone():
-                    return True
-            async with aiosqlite.connect(self.db_path) as db:
-                await db.execute(
                     "INSERT INTO memory_meta(text, meta, ts, salience, source_uin, source_gid) VALUES (?, ?, ?, ?, ?, ?)",
                     (
                         text,
@@ -523,33 +588,17 @@ class VectorMemory:
                         source_gid,
                     ),
                 )
+                meta_rowid = cur.lastrowid
+                # 再用该 rowid 写入 vec0 虚表（_vec_ready 已由 _init_db 实测）
+                if self._vec_ready:
+                    await db.enable_load_extension(True)
+                    await db.load_extension(sqlite_vec.loadable_path())
+                await db.execute(
+                    "INSERT INTO memories(rowid, embedding) VALUES (?, ?)",
+                    (meta_rowid, json.dumps(vec)),
+                )
                 await db.commit()
             return True
-
-        async with aiosqlite.connect(self.db_path) as db:
-            # 先写 memory_meta，让 SQLite 自动分配 rowid（避免并发时 vec0 rowid 冲突）
-            cur = await db.execute(
-                "INSERT INTO memory_meta(text, meta, ts, salience, source_uin, source_gid) VALUES (?, ?, ?, ?, ?, ?)",
-                (
-                    text,
-                    json.dumps(meta or {}, ensure_ascii=False),
-                    time.time(),
-                    salience,
-                    source_uin,
-                    source_gid,
-                ),
-            )
-            meta_rowid = cur.lastrowid
-            # 再用该 rowid 写入 vec0 虚表
-            if _SQLITE_VEC_AVAILABLE:
-                await db.enable_load_extension(True)
-                await db.load_extension(sqlite_vec.loadable_path())
-            await db.execute(
-                "INSERT INTO memories(rowid, embedding) VALUES (?, ?)",
-                (meta_rowid, json.dumps(vec)),
-            )
-            await db.commit()
-        return True
 
     async def search(
         self,
@@ -566,7 +615,8 @@ class VectorMemory:
             return []
 
         # 两阶段：向量宽松召回候选 + reranker 重排
-        if self.embedding and _SQLITE_VEC_AVAILABLE:
+        # 🔴 X6：用实例级 _vec_ready（模块级可用 ≠ 本实例初始化成功）
+        if self.embedding and self._vec_ready:
             vec = await self.embedding.embed(query)
             if vec is not None:
                 # 宽松召回更多候选，供 reranker 二次精排
@@ -740,7 +790,7 @@ class VectorMemory:
         """删除指定记忆。"""
         await self._init_db()
         async with aiosqlite.connect(self.db_path) as db:
-            if _SQLITE_VEC_AVAILABLE and self.embedding:
+            if self._vec_ready and self.embedding:
                 await db.enable_load_extension(True)
                 await db.load_extension(sqlite_vec.loadable_path())
                 await db.execute("DELETE FROM memories WHERE rowid = ?", (rowid,))
@@ -785,7 +835,7 @@ class VectorMemory:
             "rerank": self.reranker is not None,
             "semantic": False,
         }
-        if _SQLITE_VEC_AVAILABLE and self.embedding:
+        if self._vec_ready and self.embedding:
             try:
                 async with aiosqlite.connect(":memory:") as db:
                     await db.enable_load_extension(True)

@@ -615,6 +615,8 @@ class Heartbeat:
         self._last_morning_dream_date = data.get("last_morning_dream_date", "")
         self._last_secret_gen_date = data.get("last_secret_gen_date", "")
         self._last_consolidation_date = data.get("last_consolidation_date", "")
+        # 2026-10-14：bot 发现扫描日期标记（防重启后当天重复调度）
+        self._last_bot_discovery_date = data.get("last_bot_discovery_date", "")
         raw_expressed = data.get("recent_expressed_desires", {})
         self._recent_expressed_desires = {}
         for k, v in raw_expressed.items():
@@ -669,6 +671,7 @@ class Heartbeat:
             "last_secret_gen_date": getattr(self, "_last_secret_gen_date", ""),
             # 队列②前微修：沉淀日期标记同样持久化，防重启后当天重复调度沉淀
             "last_consolidation_date": getattr(self, "_last_consolidation_date", ""),
+            "last_bot_discovery_date": getattr(self, "_last_bot_discovery_date", ""),
             # A1（队列③）：欲望表达冷却记录
             "recent_expressed_desires": {
                 str(k): [(str(c), float(t)) for c, t in v[-20:]]
@@ -901,6 +904,13 @@ class Heartbeat:
                 logger.info("[记忆沉淀] 每日沉淀已调度")
         except Exception:
             logger.debug("记忆沉淀调度失败（已隔离）", exc_info=True)
+
+        # 多 Bot 发现：每日至多一次扫描群成员（受 social.bot_discovery_enabled 保护）。
+        # 平台 role=='bot' 自动确认；昵称命中只记建议日志，绝不自动写入权威集。
+        try:
+            await self._bot_discovery_tick(time.time())
+        except Exception:
+            logger.debug("bot 发现扫描调度失败（已隔离）", exc_info=True)
 
         # 记忆可靠性（深审批次5）：关系/对话记忆节流落盘。
         # relation 走 deferred 队列（touch 每次消息登记，此处批量 fsync）；
@@ -1409,6 +1419,35 @@ class Heartbeat:
 
     def _bj_date_str(self, ts: float) -> str:
         return datetime.fromtimestamp(ts, _BJ).strftime("%Y-%m-%d")
+
+    async def _bot_discovery_tick(self, now: float) -> bool:
+        """每日至多一次：扫描群成员发现其他 bot。返回本次是否调度。
+
+        让 `bot_social.scan_group_bots` 真正接进生产调用链（此前它是零调用点的孤儿）。
+        边界（不可混淆）：
+        - 平台 `role=='bot'` ⇒ 自动确认（平台已标记，安全）
+        - 昵称命中 ⇒ **只记建议日志**，绝不写入 known_bots.json
+        2026-10-14 实测 NapCat 不标 role ⇒ 自动确认当前恒空，收益主要来自建议日志。
+        """
+        # 🔴 开关在 **social 段**（与 bot_talk_enabled 同族），不在 qq 段。
+        #    2026-10-14 曾误挂 qq 段（那里没有这个字段 ⇒ 恒 False ⇒ 哑开关）。
+        _scfg = getattr(self.core.config, "social", None)
+        if not (_scfg and getattr(_scfg, "bot_discovery_enabled", False)):
+            return False
+        today = self._bj_date_str(now)
+        if getattr(self, "_last_bot_discovery_date", "") == today:
+            return False
+        self._last_bot_discovery_date = today
+        self.persist()
+        try:
+            from anima.cognitive.bot_social import scan_group_bots
+
+            _launch_bg(scan_group_bots(self.core), "bot_discovery")
+            logger.info("[多Bot发现] 每日扫描已调度")
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("bot 发现扫描调度失败（已隔离）")
+            return False
 
     def _maybe_morning_dream_share(self, now: float) -> bool:
         """A3：仅 08:00、每天至多一次、10% 概率主动分享梦境。返回是否本次应当分享。"""

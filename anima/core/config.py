@@ -21,6 +21,9 @@ class QQConfig(BaseModel):
     max_pending_events: int = 128     # 高峰保护；超过后只丢新事件并计入健康指标
     typing_indicator: bool = True     # 私聊回复前发送“正在输入...”状态（NapCat 扩展）
     known_bot_ids: list[int] = Field(default_factory=list)  # 多 bot 环境：显式标注其他 bot 的 QQ，用于归属/过滤
+    #: 🔴 bot 发现的开关【不在这里】，在 `SocialConfig.bot_discovery_enabled`
+    #: （social 段，与 bot_social_enabled / bot_talk_enabled 同族）。2026-10-14 修：
+    #: 曾误在此处新增同名字段，造成两处同名开关，已删除。
 
 
 class LLMConfig(BaseModel):
@@ -533,6 +536,7 @@ class VisionConfig(BaseModel):
     max_dimension: int = 1280        # 视觉输入最长边；再压以控制网关载荷
     max_animation_frames: int = 3    # GIF/WebP 动图保留的关键帧数
     describe_throttle_per_user: int = 600    # 后台描述任务每发送者最小间隔（秒）
+    describe_on_inbound: bool = False  # 入站即描述：带图消息一进来就后台描述（不再等「本回合真的回复了」）
     comprehend_in_chat: bool = True  # 用户在聊天里发图时，bot 当场看图并接话
     store_desc_to_memory: bool = True  # 把图片一句描述存进对话记忆，供后续轮次忆起
 
@@ -825,6 +829,19 @@ class ReactConfig(BaseModel):
     freshness_footer: bool = True
     upstream_patience_sec: float = Field(default=20.0, ge=0.0, le=30.0)
     tool_timeout_sec: float = Field(default=45.0, ge=1.0, le=600.0)
+    #: 🔴 per-tool 超时覆盖（2026-10-15）。**默认空 dict = 零行为变更**。
+    #:
+    #: 为什么需要它：`tool_timeout_sec` 是**全局**上限，但工具耗时差异极大 ——
+    #: `x_search` 实测 45–102s（浏览器冷启动 + `goto` + 渲染 + 下载配图 + 视觉过滤），
+    #: 而普通工具是亚秒级。把全局值抬高会让**所有**工具一起放松（10-02 那次
+    #: 「同群排队 2 分钟零回复」事故正是这么来的）；压到 45s 又使 x_search
+    #: 结构性超时（7 天唯一一次实证 `工具调用超时(45s) name=x_search`）。
+    #: ⇒ 正确解法是**只给长任务开小灶**，其余工具仍受全局值约束。
+    #:
+    #: 取值建议：`{"x_search": 75}` —— 覆盖「冷启动+goto30s+渲染+下载」的常规路径，
+    #: 同时把 100s 级极端（`react.py:156` 记载的 102s）留在外面。
+    #: 必须与 `turn_deadline_sec` 配合：per-tool 放长后，整回合硬上界才有意义。
+    tool_timeout_overrides: dict[str, float] = Field(default_factory=dict)
     turn_deadline_sec: float = Field(default=0.0, ge=0.0, le=600.0)
     skill_route_hint: SkillRouteHintConfig = Field(default_factory=SkillRouteHintConfig)
 
@@ -1030,7 +1047,13 @@ class SocialConfig(BaseModel):
     bot_social_enabled: bool = True       # 总开关：识别其他 Bot + 防循环
     bot_cooldown_sec: int = 30            # 被某 Bot @后，对该 Bot 的沉默冷却（秒）
     bot_loop_max_depth: int = 2           # 循环检测最大深度（连续 Bot 消息数≥此且含本喵→截断）
-    bot_discovery_enabled: bool = False   # 动态发现：扫描群成员昵称启发式标记 Bot（默认关，避免误判）
+    #: 动态发现：周期扫描群成员识别其他 Bot。**2026-10-14 起真正接线**
+    #: （此前是死配置：全仓无读取点，`discover_bots_from_members` 从未被调用）。
+    #: 语义边界（不可混淆）：
+    #:   - 平台真相 `role=='bot'` ⇒ 自动写入 known_bots.json（平台已标记，安全）
+    #:   - 昵称命中 ⇒ **只记 `[多Bot发现-建议]` 日志**，绝不自动确认（UID 才是主键）
+    #: 实测 NapCat 对第三方 bot 不标 role ⇒ 自动确认当前恒空，现实收益主要来自建议日志。
+    bot_discovery_enabled: bool = False
     bot_talk_enabled: bool = False        # 心跳每日最多一次「找其他 Bot 说话」意图（rivalry>0.3 才触发）
     bot_whisper_enabled: bool = False      # Bot 间私聊通道（经 NapCat 私聊，标记 [Bot内部]）
     bot_whisper_daily_limit: int = 10      # 每日私聊上限

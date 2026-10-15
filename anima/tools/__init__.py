@@ -62,6 +62,12 @@ TOOL_REASON_X_QUOTA_TIMELINE = "X 时间线今日额度已用尽，次日 00:00 
 TOOL_REASON_X_RISK_COOLDOWN = "X 触发风控冷却，稍后自动恢复"
 TOOL_REASON_X_EMPTY_RENDER = "X 页面未渲染出内容，稍后重试"
 TOOL_REASON_X_NOT_LOGGED_IN = "X 登录态失效，需重新登录"
+#: 🔴 2026-10-15：X 搜索耗时超出本次预算（**不是接口故障**）。
+#: 审核实证：`x_search` 实测 45–102s（浏览器冷启动 + `goto` + 渲染 + 下载配图 +
+#: 视觉过滤），此前只能被 ReAct 外层 45s 硬掐 ⇒ 模型拿到通用串后归因成
+#: 「推特接口挂了」。有了本原因码，模型能说「这次没搜完，可以再试」而不是误报故障。
+#: 措辞刻意**不含**内部标识（超时值/异常名/堆栈），符合白名单安全边界。
+TOOL_REASON_X_SLOW = "X 搜索耗时超出本次预算，可稍后再试或换个说法"
 
 _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_DISABLED,
@@ -70,6 +76,7 @@ _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_RISK_COOLDOWN,
     TOOL_REASON_X_EMPTY_RENDER,
     TOOL_REASON_X_NOT_LOGGED_IN,
+    TOOL_REASON_X_SLOW,
 })
 
 

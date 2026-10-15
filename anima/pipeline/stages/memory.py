@@ -143,6 +143,26 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
     if not ctx.text and ctx.inbound_images:
         ctx.text = "[用户发送了图片]"
     if not ctx.text and not ctx.inbound_images:
+        # 🔴 2026-10-15：富媒体消息静默埋点。
+        # 出站审核实证：纯文件/视频消息走到这里 ⇒ SKIP_REPLY，原先**无日志/无计数/无出站**
+        # ⇒ 用户「发了没人理」且事后完全无法追溯（24h 实测静默率 42.9%，样本仅 7 条）。
+        # 只加可观测性，**不改行为**（仍 SKIP_REPLY，仍不回复）。
+        # 注：该群（Terraria 模组群）发文件是常态 ⇒ 埋点量可接受。
+        try:
+            _ev = ctx.event if isinstance(ctx.event, dict) else {}
+            _seg_kinds = []
+            for _seg in (_ev.get("message_segments") or []):
+                if isinstance(_seg, dict):
+                    _t = _seg.get("type")
+                    if _t:
+                        _seg_kinds.append(str(_t))
+            logger.info(
+                "[富媒体静默] group=%s user=%s detail=%s 段类型=%s 原因=正文被剥空且无图",
+                ctx.group_id, ctx.user_id, ctx.detail_type,
+                ",".join(_seg_kinds) if _seg_kinds else "未知",
+            )
+        except Exception:
+            logger.debug("[富媒体静默] 埋点自身失败（已隔离）", exc_info=True)
         return StageResult.SKIP_REPLY
 
     _memory_audit(ctx, "requested")

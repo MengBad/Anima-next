@@ -81,6 +81,14 @@ async def _expand_forward_text(ctx: PipelineContext) -> None:
         text = ((ctx.text or "") + "\n" + forward_text).strip()
         event["text"] = text
         ctx.text = text
+    # 🔴 2026-10-13：转发内嵌图片同步进 ctx.inbound_images。
+    # `ctx.inbound_images` 在流水线**之前**就快照了 `event["images"]`
+    # （`handler._handle_inner`），而本函数跑在流水线**内部**（stage 0）
+    # ⇒ `_extract_forward_text` 并进 `event["images"]` 的图，vision 侧
+    # （`ctx.inbound_images`）默认看不到，必须在此重新快照。
+    _imgs = event.get("images")
+    if isinstance(_imgs, list) and _imgs:
+        ctx.inbound_images = list(_imgs)
 
 
 async def prefilter_stage(ctx: PipelineContext) -> StageResult:

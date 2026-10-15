@@ -86,11 +86,15 @@ class XBrowserSession:
         self._x_blocked_until = 0.0
         self._x_blocked_reason = ""
         self._x_block_count = 0
-        # 会话级运行统计（P2-2 X 搬图失败可视化用）：进程内存计数，重启清零。
+        # 会话级运行统计（P2-2 X 搬图失败可视化用）**落盘**（2026-10-15）。
+        # 🔴 原先仅进程内存 ⇒ 重启清零，而审核时（10-15）想回答「x_search 到底
+        # 成功过几次 / 超时几次」时**无据可查**（7 天只剩 1 条日志）。改为落盘续用，
+        # 跨日**不清零**（这是累计运行画像，便于算成功率），只在文件损坏时归零。
         self._stats = {
             "searches": 0, "search_ok": 0, "search_failed": 0,
             "blocked_events": 0, "images_downloaded": 0, "images_failed": 0,
         }
+        self._load_stats()
         # core 引用（set_x_browser 注入）：供 x_search 拿 llm 做「图内容相关性」视觉过滤。
         self._core = None
 
@@ -100,6 +104,45 @@ class XBrowserSession:
 
     def _quota_path(self) -> Path:
         return self.data_dir / "daily_quota.json"
+
+    # -- 运行统计落盘（2026-10-15）--
+    def _stats_path(self) -> Path:
+        return self.data_dir / "stats.json"
+
+    def _load_stats(self) -> None:
+        """续用落盘统计（跨日不清零：这是累计运行画像，用于算成功率）。
+
+        文件缺失/损坏 → 保留构造时的零值。**绝不让读失败影响主流程**。
+        """
+        try:
+            p = self._stats_path()
+            if not p.exists():
+                return
+            raw = json.loads(p.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return
+            for k in list(self._stats.keys()):
+                v = raw.get(k)
+                if isinstance(v, (int, float)):
+                    self._stats[k] = int(v)
+        except Exception:  # noqa: BLE001
+            logger.warning("X 统计读取失败，本次从零开始（文件损坏/权限）", exc_info=True)
+
+    def _persist_stats(self) -> None:
+        """把当前统计落盘（原子写）。失败只记日志，不影响搜索/回复路径。"""
+        try:
+            p = self._stats_path()
+            tmp = p.with_suffix(".json.tmp")
+            tmp.write_text(json.dumps(self._stats, ensure_ascii=False),
+                           encoding="utf-8")
+            tmp.replace(p)
+        except Exception:  # noqa: BLE001
+            logger.debug("X 统计落盘失败（忽略）", exc_info=True)
+
+    def _bump_stats(self, key: str, delta: int = 1) -> None:
+        """累加一个统计并落盘。所有 *_stats[...] 写入都应经此函数（保证可追溯）。"""
+        self._stats[key] = self._stats.get(key, 0) + delta
+        self._persist_stats()
 
     def _load_daily(self) -> dict[str, Any]:
         """读取落盘的当日额度计数；跨日 / 文件缺失 / 损坏 → 归零。
@@ -181,8 +224,10 @@ class XBrowserSession:
     def _bump(self, kind: str) -> None:
         self._sync_from_disk()
         self._daily[kind] = self._daily.get(kind, 0) + 1
-        # limit<=0（不限制）的 kind 无需落盘：省 IO，也避免留下误导性计数文件。
-        # （内存计数照加，`stats()` 仍可观测。）
+        # 🔴 2026-10-15：limit<=0（不限制）时 daily_quota.json 仍不落盘（避免误导性
+        # 额度文件），但**必须**把调用次数落进 stats.json —— 否则「到底调用过几次」
+        # 完全不可追溯（审核时踩过：daily_quota 的 search 恒 0，无法判断是否调用过）。
+        self._bump_stats(kind)
         if int(getattr(self.config, f"{kind}_daily_limit", 0) or 0) > 0:
             self._persist_daily()
 
@@ -397,7 +442,7 @@ class XBrowserSession:
         - 任意一次成功抽到图 → 清除被挡标记（恢复）。
         所有失败均 fail-soft，不影响 happy path。
         """
-        self._stats["searches"] = self._stats.get("searches", 0) + 1
+        self._bump_stats("searches")
         if not self.enabled:
             return {"ok": False, "logged_in": False, "tweets": [], "note": "x_browser 未启用", "blocked": False}
         if not self._within_limit("search"):
@@ -407,7 +452,7 @@ class XBrowserSession:
         if self._x_blocked_until and time.time() < self._x_blocked_until:
             remain = int(self._x_blocked_until - time.time())
             logger.info("X 处于风控窗口内（剩余 %ds），快速失败不硬撞", remain)
-            self._stats["search_failed"] = self._stats.get("search_failed", 0) + 1
+            self._bump_stats("search_failed")
             return {
                 "ok": False, "logged_in": False, "tweets": [],
                 "note": f"X 暂被风控拦截，约 {remain}s 后恢复（会话级退避）",
@@ -463,7 +508,7 @@ class XBrowserSession:
                         logger.info("X 搜索抽到 0 图 (retry %d，证据：%s)", _ + 1, _evidence)
                         _wall = _wall or bool(_evidence.get("login_wall"))
                     if not tweet_images:
-                        self._stats["search_failed"] = self._stats.get("search_failed", 0) + 1
+                        self._bump_stats("search_failed")
                         if not _wall and getattr(self, "_consec_empty", 0) < 3:
                             # 无登录墙证据：大概率慢渲染而非风控，不进 30 分钟窗口，
                             # 连续 3 次无证据空壳才升级（保守降惩罚，防误伤）
@@ -479,7 +524,7 @@ class XBrowserSession:
                         self._x_blocked_until = time.time() + self.X_BLOCK_WINDOW_SEC
                         self._x_blocked_reason = "空壳(登录墙证据)" if _wall else "连续空壳"
                         logger.warning("X 搜索连续空壳，标记风控窗口 %ds", self.X_BLOCK_WINDOW_SEC)
-                        self._stats["blocked_events"] = self._stats.get("blocked_events", 0) + 1
+                        self._bump_stats("blocked_events")
                         await page.close()
                         return {
                             "ok": False, "logged_in": False, "tweets": [],
@@ -493,7 +538,7 @@ class XBrowserSession:
                 self._x_blocked_until = 0.0
                 self._x_block_count = 0
                 self._x_blocked_reason = ""
-                self._stats["search_ok"] = self._stats.get("search_ok", 0) + 1
+                self._bump_stats("search_ok")
 
                 # fresh 过滤：排除本会话已发过的图
                 fresh_images = self._filter_fresh(tweet_images)

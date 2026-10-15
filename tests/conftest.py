@@ -58,6 +58,11 @@ def _isolate_x_browser_quota(tmp_path, monkeypatch):
 
     repo_data = (pathlib.Path.cwd() / "data").resolve()
     original = xb.XBrowserSession._quota_path
+    #: 🔴 2026-10-15：`_stats` 落盘续用后，**同样**必须隔离 —— 否则测试构造
+    #: XBrowserSession 时会读到 `data/x_browser/stats.json` 的累计计数，
+    #: 断言「新 session 从 0 开始」（如 test_stats_reflects_search_counters）
+    #: 会拿到生产历史值（实测 18）而假红。
+    original_stats = xb.XBrowserSession._stats_path
 
     def _redirected(self):
         path = original(self)
@@ -69,7 +74,18 @@ def _isolate_x_browser_quota(tmp_path, monkeypatch):
             return tmp_path / "x_daily_quota.json"
         return path
 
+    def _redirected_stats(self):
+        path = original_stats(self)
+        try:
+            resolved = pathlib.Path(path).resolve()
+        except OSError:
+            return path
+        if repo_data in resolved.parents:
+            return tmp_path / "x_stats.json"
+        return path
+
     monkeypatch.setattr(xb.XBrowserSession, "_quota_path", _redirected)
+    monkeypatch.setattr(xb.XBrowserSession, "_stats_path", _redirected_stats)
 
 
 @pytest.fixture(autouse=True)

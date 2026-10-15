@@ -24,6 +24,20 @@ logger = logging.getLogger("anima.tools.x_search")
 # 视觉相关性过滤总超时（秒）：视觉慢/网关挂不阻塞拿图流程，超时即回退全发。
 _RELEVANCE_TIMEOUT = 20.0
 
+#: 🔴 2026-10-15：x_search 的**内部**搜索预算（秒）。
+#:
+#: 为什么需要：本工具的耗时远高于常规工具 —— 浏览器冷启动 + `page.goto`
+#: （30s 上限）+ 渲染等待 + 下载最多 `limit*2` 张配图 + 2 次视觉调用。
+#: 审核实证：7 天唯一一次调用撞上 ReAct 外层 45s 被硬掐（`ok=False result_len=23`），
+#: 而 `react.py:156` 更记载过 **102s** 的极端 ⇒ 没有自己的预算时，只能被外层掐，
+#: 连「浏览器已开、推文已拿到一部分」都留不下。
+#:
+#: 取值 65s：> 外层 per-tool 覆盖值 75s **以内**（必须小于，否则仍被硬掐、
+#: 优雅原因码走不到），且 > 「冷启动 + goto30s + 渲染 + 下载」的常规路径。
+#: 与 `react.tool_timeout_overrides: {x_search: 75}` 配套使用。
+_X_SEARCH_BUDGET_SEC = 65.0
+assert _X_SEARCH_BUDGET_SEC < 75.0, "内部预算必须小于外层 per-tool 覆盖值"
+
 
 def _note_to_reason(note: str) -> str:
     """把 x_browser 的失败 ``note`` 映射成**白名单原因码**（P0，2026-09-18）。
@@ -480,7 +494,19 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
             from anima.tools import TOOL_REASON_X_DISABLED, tool_unavailable
 
             return tool_unavailable(TOOL_REASON_X_DISABLED)
-        res = await session.search(query, limit=limit, fresh=fresh, images_only=want_images)
+        res = await asyncio.wait_for(
+            session.search(query, limit=limit, fresh=fresh, images_only=want_images),
+            timeout=_X_SEARCH_BUDGET_SEC,
+        )
+    except asyncio.TimeoutError:
+        # 🔴 2026-10-15：内部预算到点，主动收口（**不是**被外层硬掐）。
+        # 区别很重要：被外层掐时连「已经打开了浏览器、拿到了一部分推文」都留不下，
+        # 且模型只拿到通用串 ⇒ 归因成「接口挂了」。这里返回明确原因码。
+        logger.warning("x_search 超出内部预算 %ss（浏览器/网络慢），主动收口",
+                       _X_SEARCH_BUDGET_SEC)
+        from anima.tools import TOOL_REASON_X_SLOW, tool_unavailable
+
+        return tool_unavailable(TOOL_REASON_X_SLOW)
     except Exception as e:  # noqa: BLE001
         logger.warning("x_search 调用失败（已隔离）: %s", e)
         return f"X 搜索失败：{e}"
@@ -530,11 +556,17 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
                     _cand_paths.append(p)
                 if len(_cand_paths) >= limit * 2:
                     break
-            # 更新会话级下载统计（P2-2 失败可视化）
+            # 更新会话级下载统计（P2-2 失败可视化）；2026-10-15 起经 _bump_stats 落盘
             try:
-                s = session._stats
-                s["images_downloaded"] = s.get("images_downloaded", 0) + len(_cand_paths)
-                s["images_failed"] = s.get("images_failed", 0) + max(0, len(_candidate_urls) - len(_cand_paths))
+                if hasattr(session, "_bump_stats"):
+                    session._bump_stats("images_downloaded", len(_cand_paths))
+                    session._bump_stats("images_failed",
+                                        max(0, len(_candidate_urls) - len(_cand_paths)))
+                else:  # 兼容：注入的假 session（测试桩）
+                    s = session._stats
+                    s["images_downloaded"] = s.get("images_downloaded", 0) + len(_cand_paths)
+                    s["images_failed"] = s.get("images_failed", 0) + max(
+                        0, len(_candidate_urls) - len(_cand_paths))
             except Exception:  # noqa: BLE001
                 pass
             # 视觉相关性过滤：用 Gemini 看图判断是否与 query 相关，只发相关图。
