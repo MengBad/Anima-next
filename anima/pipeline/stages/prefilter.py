@@ -32,6 +32,7 @@ from anima.llm.group_gate import (
     resolve_group_reply_mode,
 )
 from anima.pipeline import PipelineContext, StageResult
+from ._shared import log_rich_media_silent
 
 logger = logging.getLogger(__name__)
 
@@ -99,12 +100,21 @@ async def prefilter_stage(ctx: PipelineContext) -> StageResult:
     「异常退回正常流程」语义由内部局部 try/except 保留。
     """
     try:
-        return await _prefilter_inner(ctx)
+        res = await _prefilter_inner(ctx)
     except Exception:
         logger.exception("[prefilter] 前置闸门异常，fail-closed 拦截")
         ctx.should_reply = False
         ctx.stop_reason = "prefilter:error"
-        return StageResult.STOP
+        res = StageResult.STOP
+
+    # 🔴 2026-10-16：富媒体静默埋点必须打在**真实拦截点之后**。
+    # 该埋点原先只装在 memory_stage，而本 stage 排在 memory **之前**，
+    # 纯视频/文件消息在回复闸门就 STOP ⇒ memory 永不执行 ⇒ 19 小时零命中
+    # （同期确有 3 条 video，完全不可追溯）。这里覆盖**所有** STOP 出口；
+    # CONTINUE 时不打——那类消息会走到 memory，由那里兜底，避免重复计数。
+    if res is StageResult.STOP:
+        log_rich_media_silent(ctx, where="prefilter", reason=ctx.stop_reason)
+    return res
 
 
 async def _prefilter_inner(ctx: PipelineContext) -> StageResult:

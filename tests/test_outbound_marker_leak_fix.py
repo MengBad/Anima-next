@@ -139,28 +139,53 @@ def test_sticker_tool_still_registered():
 # R3：富媒体静默必须有可观测埋点
 # ═══════════════════════════════════════════════════════════════
 
+# 🔴 2026-10-16 判据迁移：埋点原本只装在 memory.py，而 prefilter 排在 memory
+# **之前**，纯视频/文件消息在回复闸门就 STOP ⇒ memory 永不执行 ⇒ 部署 19h 零命中
+# （同期确有 3 条 video）。判据改为锁定「埋点在真实拦截点也会打出来」。
+SHR = Path(__file__).resolve().parent.parent / "anima/pipeline/stages/_shared.py"
+PRE = Path(__file__).resolve().parent.parent / "anima/pipeline/stages/prefilter.py"
+
+
 def test_media_silent_anchor_exists():
-    """memory.py 的 SKIP_REPLY 前必须有埋点。"""
-    src = MEM.read_text(encoding="utf-8")
-    assert "[富媒体静默]" in src, (
-        "memory.py 缺 [富媒体静默] 锚点 ⇒ D2 永远无法量化（无日志/无计数）"
-    )
+    """埋点实现必须在 `_shared.log_rich_media_silent` 中（单一实现，防漂移）。"""
+    src = SHR.read_text(encoding="utf-8")
+    assert "def log_rich_media_silent" in src, "埋点实现丢失"
+    assert "[富媒体静默]" in src, "锚点字符串丢失 ⇒ 富媒体静默永远无法量化"
+
+
+def test_prefilter_logs_anchor_on_stop():
+    """核心判据：prefilter 的 STOP 出口必须打埋点（否则真实流量永远打不出来）。"""
+    src = PRE.read_text(encoding="utf-8")
+    assert "log_rich_media_silent" in src, "prefilter 未接入埋点"
+    tail = src.split("if res is StageResult.STOP", 1)
+    assert len(tail) == 2, "prefilter 缺 STOP 出口判定"
+    assert "log_rich_media_silent" in tail[1][:400], "埋点未紧跟 STOP 判定"
 
 
 def test_anchor_before_skip_reply():
-    """埋点必须排在 return SKIP_REPLY **之前**。"""
+    """memory.py 兜底埋点仍排在 return SKIP_REPLY **之前**。"""
     src = MEM.read_text(encoding="utf-8")
     lines = src.splitlines()
-    ai = next(i for i, ln in enumerate(lines) if "[富媒体静默]" in ln)
-    si = next(i for i, ln in enumerate(lines)
-              if "return StageResult.SKIP_REPLY" in ln)
-    assert ai < si, "埋点(L%d) 必须在 SKIP_REPLY(L%d) 之前" % (ai + 1, si + 1)
+    ai = next((i for i, ln in enumerate(lines) if "log_rich_media_silent" in ln), -1)
+    si = next((i for i, ln in enumerate(lines)
+               if "return StageResult.SKIP_REPLY" in ln), -1)
+    assert 0 <= ai < si, "兜底埋点(L%d) 必须在 SKIP_REPLY(L%d) 之前" % (ai + 1, si + 1)
 
 
 def test_skip_reply_behavior_unchanged():
     """行为不变：仍返回 SKIP_REPLY（不因为加埋点就改成回复）。"""
     src = MEM.read_text(encoding="utf-8")
     assert "return StageResult.SKIP_REPLY" in src, "SKIP_REPLY 分支被删了"
+
+
+def test_prefilter_continues_to_still_work():
+    """反向：prefilter 的 CONTINUE 出口不得打埋点（避免与 memory 重复计数）。"""
+    src = PRE.read_text(encoding="utf-8")
+    # 全文件应恰好 2 处：1 处 import + 1 处调用
+    assert src.count("log_rich_media_silent") == 2, (
+        "prefilter 中 log_rich_media_silent 出现 %d 次（应为 import+调用 各 1）"
+        % src.count("log_rich_media_silent")
+    )
 
 
 # ═══════════════════════════════════════════════════════════════

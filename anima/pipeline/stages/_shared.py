@@ -63,6 +63,55 @@ def _clean_transport_text(text: str) -> str:
     return _strip_markdown_math(_CQ_TRANSPORT_RE.sub("", text or "")).strip()
 
 
+def _inbound_seg_types(ctx) -> list[str]:
+    """本回合入站的段类型列表（如 ``["video"]``、``["at", "text"]``）。异常隔离。"""
+    try:
+        ev = ctx.event if isinstance(ctx.event, dict) else {}
+        segs = ev.get("message_segments") or []
+        if not isinstance(segs, (list, tuple)):
+            return []
+        out = []
+        for seg in segs:
+            if isinstance(seg, dict):
+                t = seg.get("type")
+                if t:
+                    out.append(str(t))
+        return out
+    except Exception:
+        return []
+
+
+def log_rich_media_silent(ctx, *, where: str, reason: str = "") -> bool:
+    """纯富媒体消息「发了没人理」的可观测埋点。**只打日志，不改任何行为**。
+
+    🔴 2026-10-16：埋点**必须在真实拦截点之后**打。原先只装在 ``memory_stage``，
+    而 ``prefilter_stage`` 排在它**之前**，纯视频/文件消息在回复闸门就 ``STOP``
+    ⇒ memory 永不执行 ⇒ 部署 19 小时零命中（同期确有 3 条 video）。
+    现在 prefilter 的 STOP 出口也调用本函数；``where`` 用于区分来源。
+
+    判据（三条件同时成立才算静默）：
+      ① 正文为空；② 无入站图（有图会转成「[用户发送了图片]」走正常路径）；
+      ③ 段类型非空**且不含 text**（转发/空串文本不算富媒体）。
+
+    :return: 是否实际打了点（便于测试自证与调用方统计）。
+    """
+    try:
+        if getattr(ctx, "text", "") or getattr(ctx, "inbound_images", None):
+            return False
+        segs = _inbound_seg_types(ctx)
+        if not segs or "text" in segs:
+            return False
+        logger.info(
+            "[富媒体静默] group=%s user=%s detail=%s 段类型=%s 来源=%s 原因=%s",
+            ctx.group_id, ctx.user_id, ctx.detail_type,
+            ",".join(segs), where, reason or "正文被剥空且无图",
+        )
+        return True
+    except Exception:
+        logger.debug("[富媒体静默] 埋点自身失败（已隔离）", exc_info=True)
+        return False
+
+
 def _detect_hurtful(text: str) -> bool:
     """检测是否包含伤害性语言，排除 playful teasing 语境。"""
     if not text:

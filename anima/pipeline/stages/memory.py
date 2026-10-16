@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 
 from anima.pipeline import StageResult, PipelineContext
-from ._shared import _clean_transport_text, _PROMISE_RE
+from ._shared import _clean_transport_text, _PROMISE_RE, log_rich_media_silent
 
 logger = logging.getLogger("anima.pipeline.stages")
 
@@ -148,21 +148,9 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
         # ⇒ 用户「发了没人理」且事后完全无法追溯（24h 实测静默率 42.9%，样本仅 7 条）。
         # 只加可观测性，**不改行为**（仍 SKIP_REPLY，仍不回复）。
         # 注：该群（Terraria 模组群）发文件是常态 ⇒ 埋点量可接受。
-        try:
-            _ev = ctx.event if isinstance(ctx.event, dict) else {}
-            _seg_kinds = []
-            for _seg in (_ev.get("message_segments") or []):
-                if isinstance(_seg, dict):
-                    _t = _seg.get("type")
-                    if _t:
-                        _seg_kinds.append(str(_t))
-            logger.info(
-                "[富媒体静默] group=%s user=%s detail=%s 段类型=%s 原因=正文被剥空且无图",
-                ctx.group_id, ctx.user_id, ctx.detail_type,
-                ",".join(_seg_kinds) if _seg_kinds else "未知",
-            )
-        except Exception:
-            logger.debug("[富媒体静默] 埋点自身失败（已隔离）", exc_info=True)
+        # 🔴 2026-10-16：实现已抽到 `_shared.log_rich_media_silent`，本处是**兜底**
+        # ——绝大多数纯富媒体消息在 prefilter 闸门就 STOP，走不到这里。
+        log_rich_media_silent(ctx, where="memory", reason="正文被剥空且无图")
         return StageResult.SKIP_REPLY
 
     _memory_audit(ctx, "requested")
