@@ -54,6 +54,23 @@ class MoodState:
 _VALENCE_POSITIVE = 0.15   # 正价态阈值（负向取其相反数）
 _VALENCE_LIMIT = 1.01      # 价态坐标上限（开区间）
 _AROUSAL_HIGH = 0.5        # 高唤起下界
+
+# E1 修复（2026-10-16）：事件幅度整体放大系数。
+#
+# 缺陷：原事件 delta 量级**小于中性边界**。单次最强负向事件 ``insulted``
+# 在生产强度 0.4 下的价态位移只有 ``-0.3 * 0.4 = -0.12``，而中性边界
+# ``_VALENCE_POSITIVE = 0.15`` ⇒ 差 0.03 **永远跨不过去**；``annoyed``
+# 还要求 ``arousal > 0.5``，而单次只给 ``+0.06``（需连中 4 次）。
+#
+# 生产实测（7 天 452 次判定）：``neutral`` **410 次 = 90.7%**，
+# ``annoyed`` / ``tired`` / ``bored`` **各 0 次**。而 ``_MOOD_DESCRIPTIONS["neutral"] = ""``
+# 且 ``prompt_fragment()`` 对空描述 ``return ""`` ⇒ **91% 的回合情绪片段根本不进
+# system prompt**，情绪系统事实失效（属静默失效第 ④ 类：阈值使分支实际不可达）。
+#
+# 取值依据：离线回放生产真实事件序列（日志 142 次触发 + 311 次衰减）搜参，
+# 见 ``reports/2026-10-16_plan_mood_cliche_fix.md`` 的 P0a。
+# 预期：``neutral`` 90.7% → 约 67%，各非中性 label 均可达。
+_DELTA_SCALE = 2.0
 _AROUSAL_LIMIT = 1.01      # 唤起坐标上限（开区间）
 # 昼夜节律基础情绪调整（valence_delta, arousal_delta；M3 命名化，无行为变更）
 _DELTA_DEEP_NIGHT = (-0.1, -0.2)
@@ -75,6 +92,12 @@ _MOOD_LABELS = {
 }
 
 # 情绪标签 → 中文描述（注入 prompt，含具体表达指导）
+#
+# 🔴 ``bored`` 目前**没有区间映射**（``_MOOD_LABELS`` 里无对应项）⇒ ``_compute_label()``
+# 永不返回它。但它仍被 4 处生产代码消费：``handler.py`` 表情映射、``reply_splitter``
+# 权重、``guardrail`` 预算、``autonomy`` 分支 ⇒ **这 4 个分支永不可达**。
+# 2026-10-16 定位；本轮**不改**（消费者都把 ``tired``/``bored`` 并列处理，``tired``
+# 已覆盖功能），由 ``tests/test_mood_label_reachability.py::NO_MAPPING`` 显式声明。
 _MOOD_DESCRIPTIONS = {
     "excited": "你现在挺兴奋的——语气更有活力，可能多用感叹号，话比平时多一点，偶尔蹦个'哇'或'诶'",
     "happy": "你现在心情不错——说话轻快，'嘛'和'呀'会多一点，偶尔用'~'收尾",
@@ -114,7 +137,10 @@ class MoodSystem:
     """情绪管理器。"""
 
     DECAY_INTERVAL = 1800  # 30 分钟衰减一次
-    DECAY_RATE = 0.15      # 每次向中性回归 15%
+    # E1 修复（2026-10-16）：0.15 → 0.10。配合 _DELTA_SCALE 一起抬升情绪幅度；
+    # 单降衰减而不放大事件幅度不足以让 label 跨越边界（P0a 搜参见报告）。
+    # 半衰期由约 4.3 周期（2.2h）延到约 6.6 周期（3.3h），仍属"短时情绪"语义。
+    DECAY_RATE = 0.10      # 每次向中性回归 10%
 
     def __init__(self, data_dir: str = "data"):
         self._persist = PersistenceProvider(data_dir)
@@ -205,7 +231,13 @@ class MoodSystem:
             valence_delta = -0.1 * intensity
             arousal_delta = 0.2 * intensity
 
-        # 应用时间段基础调整
+        # 🔴 E1 修复（2026-10-16）：事件幅度整体放大到能跨过中性边界。
+        # 原值下 ``insulted``(0.4) 只给 -0.12 < 边界 0.15 ⇒ annoyed 永不可达。
+        # 详见 ``_DELTA_SCALE`` 定义处的完整证据链。
+        valence_delta *= _DELTA_SCALE
+        arousal_delta *= _DELTA_SCALE
+
+        # 应用时间段基础调整（环境底噪，**不参与** _DELTA_SCALE 缩放）
         time_v, time_a = _time_based_adjustment()
         valence_delta += time_v * 0.1  # 时间影响较小
         arousal_delta += time_a * 0.1

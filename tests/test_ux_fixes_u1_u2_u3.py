@@ -176,6 +176,37 @@ def test_unusual_hour_fragment_states_intent():
     assert "好久没看到你了" not in src, "久违重逢片段仍写着示例句"
 
 
+# ---- U2 扩面：persona 文件从未被扫过（2026-10-16 补）----
+
+def _persona_src() -> str:
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[1]
+    return (root / "config" / "persona_core.yaml").read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("cliche", ["大半夜的", "大清早的", "大中午的", "大晚上的"])
+def test_persona_has_no_mood_cliche(cliche):
+    """🔴 U2 同病扩面：persona 不得把作息词列举进 prompt。
+
+    历史形态（`persona_core.yaml:33`，2026-09-20 加入，存活 26 天）::
+
+        别把作息当固定开场：「大半夜的 / 大清早的 / 大中午的」这类起手偶尔用就好…
+
+    为了说明「**别用**什么」而把三个具体词写进 prompt —— 与 U2 完全同病原：
+    ``cognition.py`` 的注释已记下同一条教训（引号里的例句会被模型原样搬进出站）。
+    实测（10-16，24h 8 条作息起手式）：**7 条是「大清早」**，其中 13:22 / 15:48 /
+    16:15 / 16:52 四条与真实时段不符 —— 是「抓 prompt 里的词」而非「读时间选表达」。
+
+    ⇒ 判据收紧为**字面禁词**：这三个词属「可自由替换的表达」，写成描述性说法即可，
+      不需要出现在 prompt 里。这样即便模型本就会说时段词，也不再是我们教它的。
+    """
+    src = _persona_src()
+    assert cliche not in src, (
+        "persona 仍列举作息词 %r ⇒ 模型会照搬（U2 同病）。"
+        "改成只给意图、不举例。" % cliche
+    )
+
+
 # ---------------------------------------------------------------- U3
 
 class _FakeChannel:

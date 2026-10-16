@@ -27,9 +27,12 @@ def beijing_now() -> datetime:
     return datetime.now(TZ)
 
 
-def time_description() -> str:
-    """生成当前时间的自然语言描述。"""
-    now = beijing_now()
+def time_description(now: datetime | None = None) -> str:
+    """生成当前时间的自然语言描述。
+
+    ``now`` 可注入以便测试；缺省取 ``beijing_now()``。
+    """
+    now = now or beijing_now()
     hour = now.hour
     weekday = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"][now.weekday()]
 
@@ -48,7 +51,13 @@ def time_description() -> str:
     else:
         period = "深夜"
 
-    return f"{now.strftime('%Y年%m月%d日')} {weekday} {period}{hour}点{now.minute:02d}分"
+    # 🔴 2026-10-16（P3）：中文时段词后必须跟 **12 小时制** 数字。
+    # 原实现直接拼 24 小时制 hour，产出「下午13点22分」——中文不这么说
+    # （应「下午1点22分」）。该串经 get_time_context() 注入 persona 模板
+    # （persona_core.yaml:85 {time_context}，cognition.py:463 注明**不可裁**），
+    # 是模型判断时段的唯一权威来源。
+    hour12 = hour % 12 or 12          # 0→12（凌晨12点）、12→12（中午12点）、13→1
+    return f"{now.strftime('%Y年%m月%d日')} {weekday} {period}{hour12}点{now.minute:02d}分"
 
 
 class TimeSense:

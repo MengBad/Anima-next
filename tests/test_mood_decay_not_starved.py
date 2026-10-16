@@ -120,8 +120,11 @@ def test_touch_time_lets_decay_run_after_interval(tmp_path):
 
     ms.touch_time()
 
-    # DECAY_RATE = 0.15 ⇒ valence *= 0.85
-    assert ms._state.valence == pytest.approx(-0.754 * 0.85, abs=1e-6), "间隔到点应回归一次"
+    # 衰减系数**从源码取**，不硬编码 —— DECAY_RATE 是可调参数
+    # （2026-10-16 E1 由 0.15 调为 0.10 以让情绪 label 可达）。
+    # 本文件守的是「衰减不被饿死」，与具体系数无关。
+    keep = 1 - MoodSystem.DECAY_RATE
+    assert ms._state.valence == pytest.approx(-0.754 * keep, abs=1e-6), "间隔到点应回归一次"
     assert ms._state.last_updated == pytest.approx(now, abs=2.0)
     assert ms._state.label == _compute_label(ms._state.valence, ms._state.arousal)
 
@@ -134,7 +137,8 @@ def test_decay_is_persisted(tmp_path):
     ms.touch_time()
 
     raw = (tmp_path / "mood.json").read_text(encoding="utf-8")
-    assert "-0.641" in raw or "-0.64" in raw, f"衰减结果未落盘: {raw}"
+    _v = -0.754 * (1 - MoodSystem.DECAY_RATE)
+    assert ("%.3f" % _v) in raw or ("%.2f" % _v) in raw, f"衰减结果未落盘: {raw}"
 
 
 # ----------------------------------------------------------------------
@@ -176,8 +180,9 @@ def test_event_trigger_no_longer_starves_decay(tmp_path, monkeypatch):
         ms.trigger("mentioned", 0.05)
 
     # `mentioned` 不注入 valence ⇒ 只要衰减跑过，valence 必已回归。
-    # 60 分钟 = 2 个衰减周期 ⇒ -0.754 × 0.85² = -0.545
-    assert ms._state.valence == pytest.approx(-0.754 * 0.85 ** 2, abs=1e-3), (
+    # 60 分钟 = 2 个衰减周期；系数从源码取，不写死 0.85
+    keep = 1 - MoodSystem.DECAY_RATE
+    assert ms._state.valence == pytest.approx(-0.754 * keep ** 2, abs=1e-3), (
         f"60 分钟 / 2 周期后应为 -0.545，实为 {ms._state.valence} ⇒ 衰减被事件饿死"
     )
 
@@ -194,8 +199,18 @@ def test_autonomy_uses_touch_time_not_trigger_mentioned():
 
 
 def test_decay_interval_is_still_thirty_minutes():
+    """间隔必须仍是 30 分钟 —— 饿死 bug 的根因就是间隔永不被满足。
+
+    `DECAY_RATE` 是**可调参数**（2026-10-16 E1 由 0.15 调为 0.10，以让
+    annoyed/tired 等 label 可达），此处只守它的**合法区间**：
+    > 0（必须真的衰减）且 < 0.5（不得瞬间归零、丢光情绪记忆）。
+    具体取值的合理性由 `tests/test_mood_label_reachability.py` 的可达性判据守住。
+    """
     assert MoodSystem.DECAY_INTERVAL == 1800
-    assert MoodSystem.DECAY_RATE == 0.15
+    assert 0 < MoodSystem.DECAY_RATE < 0.5, (
+        "DECAY_RATE 越界（%.3f）：0 ⇒ 永不衰减（饿死），>=0.5 ⇒ 近乎瞬间归零"
+        % MoodSystem.DECAY_RATE
+    )
 
 
 # ----------------------------------------------------------------------
@@ -252,6 +267,8 @@ def test_restore_persists_decay(tmp_path):
 
     ms = MoodSystem(str(tmp_path))
 
-    assert ms._state.valence == pytest.approx(-0.754 * 0.85, abs=1e-6), "启动补衰减未执行"
+    assert ms._state.valence == pytest.approx(-0.754 * (1 - MoodSystem.DECAY_RATE),
+                                              abs=1e-6), "启动补衰减未执行"
     raw = (tmp_path / "mood.json").read_text(encoding="utf-8")
-    assert "-0.641" in raw or "-0.64" in raw, f"启动补衰减未落盘: {raw}"
+    _v = -0.754 * (1 - MoodSystem.DECAY_RATE)
+    assert ("%.3f" % _v) in raw or ("%.2f" % _v) in raw, f"启动补衰减未落盘: {raw}"
