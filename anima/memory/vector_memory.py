@@ -76,7 +76,7 @@ class Embedder:
         self.model = model
         self.timeout = aiohttp.ClientTimeout(total=timeout)
         self.cache_enabled = cache
-        self._cache: dict[str, list[float]] = {}      # 真源：hash → 向量（检索用）
+        self._cache: dict[str, array.array] = {}     # 真源：hash → array('f') 向量（检索用）
         self._cache_b64: dict[str, str] = {}          # 落盘镜像：hash → base64(float32)
         self._cache_path = Path(data_dir) / "embedding_cache.json"
         self._session: Optional[aiohttp.ClientSession] = None
@@ -93,30 +93,46 @@ class Embedder:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def _encode_vec(vec: list[float]) -> str:
-        """向量 → base64(float32 bytes)。1024 维 ⇒ 5464 字符（裸 float 约 20K）。"""
-        return base64.b64encode(array.array("f", vec).tobytes()).decode("ascii")
+    def _encode_vec(vec: "array.array | list[float]") -> str:
+        """向量 → base64(float32 bytes)。1024 维 ⇒ 5464 字符（裸 float 约 20K）。
+
+        🔴 接受 array('f') 或 list —— 改为 array 后真源就是 array，
+        直接 `tobytes()` 即可，省一次逐元素转换。
+        """
+        buf = vec.tobytes() if isinstance(vec, array.array) else array.array("f", vec).tobytes()
+        return base64.b64encode(buf).decode("ascii")
 
     @staticmethod
-    def _decode_vec(raw: Any) -> Optional[list[float]]:
-        """v2（str）或 v1（list）→ list[float]；无法解析返回 None。"""
+    def _decode_vec(raw: Any) -> Optional[array.array]:
+        """v2（str）或 v1（list）→ **array('f')**；无法解析返回 None。
+
+        🔴 2026-10-16：返回 array('f') 而非 list[float]。
+
+        缺陷（生产实测）：原实现 `return list(arr)` 把 1024 维解成 **1024 个独立
+        Python float 对象**。实测单条 `list[float]` = 32,824 B vs `array('f')` = 4,444 B
+        ⇒ **7.4x**。生产 6361 条 ⇒ 199.1MB vs 27.0MB（可省 172MB）。
+        逐阶段实测确认 `_init_vector_memory()` 一步吃掉 299.8MB，占进程 660MB 的 45%。
+
+        精度无损失：`array('f')` 是 float32，而缓存本来就是 float32 编出来的
+        （`_encode_vec` 用 `array("f")`），也是 sqlite-vec `float[1024]` 的实际检索精度。
+        """
         if isinstance(raw, str):
             try:
                 buf = base64.b64decode(raw, validate=True)
                 arr = array.array("f")
                 arr.frombytes(buf)
-                return list(arr)
+                return arr
             except Exception:
                 return None
         if isinstance(raw, list):
-            return raw  # v1 向后兼容
+            return array.array("f", raw)  # v1 向后兼容
         return None
 
     def _load_cache(self) -> None:
         if self._cache_path.exists():
             try:
                 payload = json.loads(self._cache_path.read_text("utf-8"))
-                cache: dict[str, list[float]] = {}
+                cache: dict[str, array.array] = {}
                 dropped = 0
                 legacy = 0
                 for key, raw in (payload or {}).items():
@@ -247,7 +263,11 @@ class Embedder:
 
         key = self._hash(text)
         if self.cache_enabled and key in self._cache:
-            return self._cache[key]
+            # 🔴 出口转 list（2026-10-16）：缓存在内存里存 array('f') 以省 7.4x，
+            # 但对外契约仍是 list[float] —— `VectorMemory.add()` / `search()` 里有
+            # `json.dumps(vec)`，而 json.dumps 不接受 array。转一次 list 让消费方零改动。
+            # 附带好处：返回新对象，调用方修改返回值不会污染缓存。
+            return list(self._cache[key])
 
         if self._session is None or self._session.closed:
             self._session = aiohttp.ClientSession(timeout=self.timeout)
@@ -270,7 +290,8 @@ class Embedder:
                     data = await resp.json()
                     vec = data["data"][0]["embedding"]
                     if self.cache_enabled:
-                        self._cache[key] = vec
+                        # 存 array('f')（内存 4.4KB/条）而非 list（32.8KB/条）
+                        self._cache[key] = array.array("f", vec)
                         # 落盘镜像当场编好（32µs/条）——把编解码从「整文件落盘时」
                         # 挪到「单条插入时」，见 _write_cache_file 的说明。
                         self._cache_b64[key] = self._encode_vec(vec)
