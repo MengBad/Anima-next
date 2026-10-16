@@ -108,6 +108,36 @@ class UsageEvent:
     #: `output_tokens` 把思考与正文混在一起，**无法归因「这次为什么慢」**（实测 49–2129 波动）。
     #: 缺字段即 0（「没有」≠「有」），存量行由迁移补 0。
     reasoning_tokens: int = 0
+    #: 🔴 2026-10-16（A2 上下文预算可观测）：本回合**注入上下文**的估算 token 数与
+    #: 记忆**召回命中条数**。与 `input_tokens` 的分工：后者是上游回报的**总量**，
+    #: 这两项用于**分项归因**（到底是记忆塞太多、还是历史太长）。
+    #: 缺值即 0（「没有」≠「有」），存量行由 `_migrate_columns` 补 0。
+    ctx_tokens: int = 0
+    recall_hits: int = 0
+
+
+#: 本回合上下文采样的**进程内传递通道**：pipeline（记忆/组帧）写入，
+#: `LLMClient._record_usage` 读取后入账。用 contextvar 而非改 `chat()` 签名
+#: （签名一改，所有调用点与测试桩都要跟着动）。
+_CTX_SAMPLE: contextvars.ContextVar[dict[str, int]] = contextvars.ContextVar(
+    "anima_ctx_sample", default={}
+)
+
+
+def note_ctx_sample(*, ctx_tokens: int = 0, recall_hits: int = 0) -> None:
+    """记下本回合的上下文预算 / 召回命中（供 usage ledger 归因）。任何异常都吞。"""
+    try:
+        _CTX_SAMPLE.set({"ctx_tokens": int(ctx_tokens or 0), "recall_hits": int(recall_hits or 0)})
+    except Exception:  # noqa: BLE001 - 观测绝不阻断主流程
+        pass
+
+
+def current_ctx_sample() -> dict[str, int]:
+    """读本回合采样；无采样时返回空 dict（调用方按 0 处理）。"""
+    try:
+        return _CTX_SAMPLE.get()
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 class UsageLedger:
@@ -154,7 +184,9 @@ class UsageLedger:
                     status TEXT NOT NULL,
                     estimated INTEGER NOT NULL DEFAULT 0,
                     error TEXT NOT NULL DEFAULT '',
-                    reasoning_tokens INTEGER NOT NULL DEFAULT 0
+                    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                    ctx_tokens INTEGER NOT NULL DEFAULT 0,
+                    recall_hits INTEGER NOT NULL DEFAULT 0
                 )
             """)
             conn.execute("CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage_events(created_at)")
@@ -174,6 +206,13 @@ class UsageLedger:
         if "reasoning_tokens" not in cols:
             conn.execute("ALTER TABLE llm_usage_events "
                          "ADD COLUMN reasoning_tokens INTEGER NOT NULL DEFAULT 0")
+        # 🔴 2026-10-16（A2）：存量库补上下文预算两列（同上，IF NOT EXISTS 不补列）。
+        if "ctx_tokens" not in cols:
+            conn.execute("ALTER TABLE llm_usage_events "
+                         "ADD COLUMN ctx_tokens INTEGER NOT NULL DEFAULT 0")
+        if "recall_hits" not in cols:
+            conn.execute("ALTER TABLE llm_usage_events "
+                         "ADD COLUMN recall_hits INTEGER NOT NULL DEFAULT 0")
 
     def record(self, event: UsageEvent) -> None:
         with self._db() as conn:
@@ -181,14 +220,16 @@ class UsageLedger:
                 INSERT INTO llm_usage_events
                 (created_at, trace_id, module, operation, provider, requested_model,
                  actual_model, input_tokens, output_tokens, cached_tokens, total_tokens,
-                 latency_ms, retries, status, estimated, error, reasoning_tokens)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 latency_ms, retries, status, estimated, error, reasoning_tokens,
+                 ctx_tokens, recall_hits)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 event.created_at, event.trace_id, event.module, event.operation,
                 event.provider, event.requested_model, event.actual_model,
                 event.input_tokens, event.output_tokens, event.cached_tokens,
                 event.total_tokens, event.latency_ms, event.retries, event.status,
                 int(event.estimated), event.error[:240], int(event.reasoning_tokens),
+                int(event.ctx_tokens), int(event.recall_hits),
             ))
 
     async def arecord(self, event: UsageEvent) -> None:

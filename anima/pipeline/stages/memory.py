@@ -185,6 +185,21 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
             ctx.messages.extend(history)
     _memory_audit(ctx, "allowed", "chat_memory")
 
+    # 🔴 A2（2026-10-16）：记本回合的**上下文预算 / 召回命中**，供 usage ledger 分项归因。
+    # 口径：`ctx_tokens` 用与 `usage.estimate_tokens` 同源（len//4）估算**实际注入**的历史；
+    # `recall_hits` = 经密钥过滤后**真正进上下文**的条数（不是召回候选数）。
+    # 观测失败绝不阻断——整段吞异常。
+    try:
+        from anima.llm.usage import estimate_tokens, note_ctx_sample
+
+        _injected = [m for m in history if isinstance(m, dict)]
+        note_ctx_sample(
+            ctx_tokens=estimate_tokens([m.get("content", "") for m in _injected]),
+            recall_hits=len(_injected),
+        )
+    except Exception:
+        pass
+
     # 向量记忆召回（长期记忆）—— D1: 灵魂记忆深度驱动 top_k
     if core and core.vector_memory:
         try:

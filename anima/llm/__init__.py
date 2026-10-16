@@ -971,6 +971,14 @@ class LLMClient:
             out = estimate_tokens(((data or {}).get("choices") or [{}])[0].get("message", {}).get("content", "")) if data else 0
             total = inp + out
         actual = str((data or {}).get("model") or payload.get("model") or self.model)
+        # 🔴 2026-10-16（A2）：读本回合的上下文预算 / 召回命中采样（pipeline 侧写入）。
+        # 无采样时为空 dict ⇒ 两项按 0 落库（「没有」≠「有」）。
+        try:
+            from anima.llm.usage import current_ctx_sample
+
+            _sample = current_ctx_sample() or {}
+        except Exception:  # noqa: BLE001 - 观测绝不阻断
+            _sample = {}
         event = UsageEvent(
             created_at=time.time(), trace_id=info.trace_id or "unscoped", module=info.module,
             operation=info.operation, provider=self.provider,
@@ -980,6 +988,8 @@ class LLMClient:
             retries=max(0, self.retry_count - retry_start), status=status,
             estimated=estimated, error=self.last_error if status != "ok" else "",
             reasoning_tokens=self._reasoning_from_response(data),
+            ctx_tokens=int(_sample.get("ctx_tokens") or 0),
+            recall_hits=int(_sample.get("recall_hits") or 0),
         )
         try:
             await self.usage_ledger.arecord(event)
