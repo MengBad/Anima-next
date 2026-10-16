@@ -865,22 +865,55 @@ class LLMHandler(AnimaCommandsMixin):
                 await self._drain_coalesced(key)
 
     async def _drain_coalesced(self, key: tuple) -> None:
-        """上一回复完成后, 把吸收的后续@合并成一条统一再回复。"""
+        """上一回复完成后, 把吸收的后续@合并成一条统一再回复。
+
+        🔴 A1（2026-10-16）：合并必须覆盖**多模态**，不能只并 text。
+        原实现（V3 北极星四体验列为「A1·P0 行为损失」）有两个损失：
+          ① 只取 `text` ⇒ 前面各条的 `images` 被丢（`synth` 只继承最后一条）；
+          ② 纯富媒体连发（text 全空）直接 `return` ⇒ **整批静默丢弃** ——
+             用户 @ 了 bot 并连发图，一条都不回且无任何痕迹。
+        """
         pending = self._coalesced.pop(key, None)
         if not pending:
             return
-        texts = [str(e.get("text") or "").strip() for e in pending]
-        texts = [t for t in texts if t]
-        if not texts:
-            return
-        head = texts[-1]
+        texts = [t for t in (str(e.get("text") or "").strip() for e in pending) if t]
+        # 合并所有在途消息的图片（按 file/file_id/url 去重）；最后一条的图由
+        # `synth` 自动继承，这里补齐前面各条。
+        merged_images: list = []
+        _seen: set = set()
+        for _e in pending:
+            for _img in (_e.get("images") or []):
+                if not isinstance(_img, dict):
+                    continue
+                _k = str(_img.get("file") or _img.get("file_id") or _img.get("url") or "")
+                if _k and _k in _seen:
+                    continue
+                if _k:
+                    _seen.add(_k)
+                merged_images.append(_img)
+        if not texts and not merged_images:
+            return  # 真·空（无正文且无媒体）⇒ 保持原语义，不触发
+        head = texts[-1] if texts else ""
         extras = [t for t in texts[:-1] if t]
         merged = head
         if extras:
             joined = "；".join(reversed(extras))
-            merged = f"{head}\n（另补充: {joined[:400]}）"
+            merged = (head + "\n（另补充: " + joined[:400] + "）") if head \
+                else ("（另补充: " + joined[:400] + "）")
         synth = dict(pending[-1])
         synth["text"] = merged[:800]
+        if merged_images:
+            _base = list(synth.get("images") or [])
+            _have = {str(i.get("file") or i.get("file_id") or i.get("url") or "")
+                     for i in _base if isinstance(i, dict)}
+            for _img in merged_images:
+                _k = str(_img.get("file") or _img.get("file_id") or _img.get("url") or "")
+                if _k and _k in _have:
+                    continue
+                if _k:
+                    _have.add(_k)
+                _base.append(_img)
+            synth["images"] = _base
         _audit = getattr(self.core, "audit", None)
         if _audit:
             try:
