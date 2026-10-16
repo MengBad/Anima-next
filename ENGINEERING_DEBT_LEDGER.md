@@ -19,17 +19,22 @@
 
 | 状态 | 条数 | 条目 |
 |---|---|---|
-| `FIXED` | 21 | D-01/02/03/04/05/06/08/09/10/11/15/18/19/20/21/23/24/25/26/27/28 |
+| `FIXED` | 22 | D-01/02/03/04/05/06/08/09/10/11/13/15/18/19/20/21/23/24/25/26/27/28 |
 | `VERIFIED-NON-ISSUE`（实测证伪） | 2 | D-12（数据轮转）、D-22（context 预算=0） |
 | `DECIDED`（口径裁定，非代码改动） | 1 | D-14 |
 | `DEFERRED`（显式挂起，含重启前置条件） | 1 | D-16 |
-| `CLOSED-AS-UNDERSTOOD`（归真后判定"不改逻辑"） | 0 | ——（D-27 经 **owner 显式授权**改判 `FIXED`：抬至 11000，见下） |
+| `CLOSED-AS-UNDERSTOOD`（归真后判定"不改逻辑"） | 1 | D-17（游离物：环境级阻塞、零影响、处置已定）·（D-27 经 **owner 显式授权**改判 `FIXED`：抬至 11000，见下） |
 | `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 0 | ——（D-21 已于 09-18 部署窗口执行，见下） |
-| `PARTIALLY-CLOSED`（口径 (a) 达成 / (b) 仍需 owner 裁定） | 1 | D-13 |
-| `OPEN` | 1 | D-17（17 项受 OS 阻塞） |
+| `PARTIALLY-CLOSED` | 0 | ——（D-13 层一 (a)(b) 已达成 ⇒ 改判 `FIXED`；层二另立 D-30） |
+| `OPEN` | 0 | —— |
 | `NEEDS-OWNER` | 1 | D-07（明文密钥外置） |
-| `SEALED` | 1 | D-29 |
-| **合计** | **29** | |
+| `SEALED` | 3 | D-29（接线断言）、D-30（数值 trait 通道）、D-31（`bored` 死枚举） |
+| **合计** | **31** | |
+
+> 🔴 **2026-10-17 自主批次更新**（owner「做完计划」）：D-13 层一 (a)(b) 达成 ⇒ 改判 `FIXED`；
+> 其**层二（数值 trait 通道）**与 **`bored` 死枚举**经裁定 `SEALED`（**新增 D-30 / D-31**）；
+> D-17 游离物经复核为**环境级阻塞（Windows `WinError 5`）、零影响**，转 `CLOSED-AS-UNDERSTOOD`。
+> ⇒ 台账**无 `OPEN` 项**；唯一 `NEEDS-OWNER` 仍是 **D-07（明文密钥外置，涉停机与凭据轮换）**。
 
 > 🔴 **E 轮新增一条 `VERIFIED-NON-ISSUE` 式更正（D-27）**：台账原写"`capabilities` 段
 > **从不进** prompt / 100% 被丢弃"，经生产落盘计数器实测**证伪**（65 天 1346 次请求、
@@ -208,8 +213,8 @@
 - **验收口径（已达成）**：给出每个存储的上限锚点 + 算术校验，并纠正原文表述。
 - **⚠️ 教训**：审查用"体积变大"推断"无轮转"是**未查上限锚点**的推断；体积增长与有上限并不矛盾。
 
-## D-13 · Reflection → Memory 闭环无生产 producer —— `PARTIALLY-CLOSED`
-（09-18 后段：口径 (a) 已达成；第二层「数值 trait 通道」另需 owner 裁定）
+## D-13 · Reflection → Memory 闭环无生产 producer —— `FIXED`（层一）
+（层一 (a)(b) 均已达成；第二层「数值 trait 通道」经 2026-10-17 裁定 `SEALED`，另立 **D-30**）
 
 - **来源**：审查 P1-2。
 - **证据（修复前）**：`MemoryAuthority.ingest` 全库无生产调用者（仅 `invariants.py:28` 导入自检）；
@@ -300,8 +305,17 @@
   `RFC-0003-FINAL-SCOPE-CONFIRMATION.md` 均为 APPROVED；代码未见 Task DAG / Workflow DSL。
 - **验收口径**：二选一 —— 实现，或明确回退为 `Deferred`。当前状态是"批准了但没人做"，
   这在治理语义上等价于永久挂起，应当写明。
+- 🔴 **2026-10-17 复核（自主批次，只读）**：本条的**裁定已存在**（`DEFERRED`，见标题与上段）。
+  复核另发现**文档层仍四处不一致**：`docs/governance/M0.5-RFC-0002-APPROVAL-READINESS-REPORT.md`
+  （称与已批准的 0003 对等）、`M0.5-RFC-0002-IMPLEMENTATION-CHECKLIST.md`（称 Slice 0 完成、待进实现）、
+  `RFC-0002-FINAL-SCOPE-CONFIRMATION.md` / `RFC-0003-FINAL-SCOPE-CONFIRMATION.md`（称 APPROVED）。
+  **未擅改这些文档** —— `docs/governance/M0.5-ROADMAP.md` 头部明写
+  「**Status: APPROVED BASELINE (frozen — no further roadmap revision without explicit reopening
+  by the reviewer)**」，其余为历史快照（"as of the production of the … Package"）。
+  ⇒ **依冻结纪律，改它们须 owner 显式解冻**。**本条的权威实时状态 = `DEFERRED`（以本台账为准）**；
+  文档层一致性属 owner 裁定（解冻后重述，或保持快照并在本台账留权威状态）。
 
-## D-17 · 仓库游离物（64 项）—— `OPEN`（48/64 已回收；**17** 个受 OS 权限阻塞）
+## D-17 · 仓库游离物 —— `CLOSED-AS-UNDERSTOOD`（2026-10-17：48/65 已回收；17 项经复核为**环境级阻塞、零影响**，处置已定）
 
 - **来源**：审查 P2-1。
 - **实测清单（2026-09-18，`glob` 全量；E8 订正为 65 项）**：**62 项 / 共 1389.6 MB**，且**全部 `.gitignore` 已覆盖**
@@ -327,6 +341,14 @@
 - **验收口径（部分达成）**：**48/65** 已移出工作树；剩余 **17** 个需在**普通终端/管理员**下处理，属环境权限问题。
   （65 = 原清单 62 + E8 补收 2 个 `_step0_*.txt` + 1 个此前未登记的根目录 `MagicMock`；48 + 17 = 65，账平。）
 - **附带结论**：`tmp_astrbot_test` 一项即占 **97%** 的体积，是 2026-07 遗留的 astrbot 试验环境。
+- 🔴 **2026-10-17 处置（自主批次）**：17 项经**本机复核**仍全部拒绝
+  （16 个 `.pytest-tmp*` 连 `os.listdir` 都报 `PermissionError [WinError 5]`；`MagicMock` 非空）。
+  实测结果：`目标 17 → 已删除 0 / 非空 1 / 仍阻塞 16`。
+  **判定：环境级（Windows ACL/句柄）阻塞，非仓库问题** ⇒ 依既有纪律（同 `.git` 事故）**不强删**。
+  影响面**复核定格为零**：全 0 字节或空 + `.gitignore` 覆盖 + `git ls-files` 无跟踪 + 无功能引用；
+  且 **17 项均不存在于生产（Linux）**，纯本地 Windows 工作树残留。
+  **处置结论**：`CLOSED-AS-UNDERSTOOD` —— **无需进一步动作**。如需清空，在**管理员终端**逐项 `rmdir`
+  （16 个为空目录；`MagicMock` 须先确认内容）—— **不使用递归强删**（遵循既有纪律）。
 
 ## D-18 · `_TOOL_FAILURE_PREFIXES` 之外仍有一条待决语义 —— `FIXED`（E7：新增 COLLAPSE 表，三层语义）
 
@@ -456,6 +478,33 @@
   `memory_engine/memory_authority` **WIRED**），但缺"输入端非空"的证明。
 - **处置**：本轮的机制守卫测试（Phase B）只覆盖**生命链**一条；
   其余 `WIRED` 断言的逐条取证列为后续独立任务，**本轮不做**，避免范围失控。
+
+## D-30 · Reflection → Memory 的「数值 trait 通道」—— `SEALED`（2026-10-17 裁定：不接）
+
+- **来源**：自 D-13 拆出（D-13 **层一 (a)(b) 已达成** ⇒ 改判 `FIXED`；层二即本条）。
+- **证据**：`constitution/invariants.py` 与 `MemoryAuthority` 侧**无「数值 trait」生产 producer**；
+  身份 trait 目前只有 `ReflectionSedimenter` 走的**定性**记录（emit 里带 `identity_traits` 计数），
+  不存在"数值型 trait 通道"的写入方，也无读取方。
+- **验收口径（二选一）**：(a) 接真实 producer；或 (b) 明确 `SEALED`，不得留"自称在跑"。
+- **2026-10-17 裁定**：**(b) `SEALED`** —— 既无 producer 也无 consumer，接入属**新增能力**
+  （非缺陷修复），且会改变身份漂移语义 ⇒ 归入架构演进（Track 5 / M0.5），**本轮不接**。
+- **反向守卫**：`tests/test_constitution_memory_closure.py` 已钉死断层形状；将来若接 producer，守卫会提醒复核。
+
+## D-31 · `bored` 是死枚举（有描述、有消费者，但无区间映射）—— `SEALED`（2026-10-17 裁定）
+
+- **来源**：2026-10-16 E1 情绪可达性修复时连带发现（未入台账，本次补登记）。
+- **证据**：`anima/cognitive/mood.py` 的 `_MOOD_DESCRIPTIONS` 有 `"bored"` 文案，
+  但 `_MOOD_LABELS` **无对应区间映射** ⇒ `_compute_label()` **永不返回它**。
+  而它被 **4 处**生产代码消费：`llm/handler.py`（`"bored":"speechless"` 表情映射）、
+  `core/reply_splitter.py`（分割权重 1.3）、`pipeline/stages/guardrail.py`（预算 120）、
+  `core/autonomy.py`（`mood_label in ("tired","bored")` 分支）⇒ **4 个消费分支永不可达**
+  （"算了却没人用"的反面：**消费者在等一个不存在的值**）。
+- **验收口径（二选一）**：补区间映射，**或** 显式标 `SEALED`。
+- **2026-10-17 裁定**：**`SEALED`**（不补映射）——
+  ① 补映射 = 让情绪系统**开始产生 bored 并触发那 4 个分支**，属**行为变更**（需 owner 定调情绪语义）；
+  ② 4 处消费者都把 `tired`/`bored` 并列处理，**`tired` 已覆盖功能**，缺 `bored` **无功能损失**。
+- **落地**：`tests/test_mood_label_reachability.py` 以 `NO_MAPPING = {"bored"}` 白名单**显式声明**；
+  `test_mood_tables_key_consistent` 在两张表不一致时失败 ⇒ 想补映射**必先改白名单**（有摩擦，防手滑）。
 
 
 ---
