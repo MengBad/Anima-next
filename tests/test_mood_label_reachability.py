@@ -28,6 +28,7 @@ import re
 import sys
 import tempfile
 import time
+from unittest import mock
 
 import pytest
 
@@ -69,8 +70,28 @@ _ALL_EVENTS = ["praised", "insulted", "interesting", "ignored", "helped",
 _PROBE_INTENSITIES = [0.15, 0.2, 0.3, 0.4, 0.5, 0.7, 1.0]
 
 
+#: 时间段调整函数的限定名 —— 可达性判据必须与它解耦。
+_TIME_PATCH = "anima.cognitive.mood._time_based_adjustment"
+
+
+def _neutral_time():
+    """把 `_time_based_adjustment()` 归零的 mock。
+
+    🔴 2026-10-17：原探针直接用真实 `MoodSystem.trigger()`，而后者会叠加
+    **随钟点变化**的时间段调整（``mood.py:241`` —— 深夜 ``_DELTA_DEEP_NIGHT``
+    给 arousal 负调整）。结果：``annoyed`` 的可达性判定**随墙钟变化** ——
+    傍晚（18-22 点，正向调整）能达，深夜（0-6 点）达不了 ⇒ **flaky 测试**
+    （实测 03:xx 跑必红、19:xx 跑必绿）。
+
+    可达性判据的语义是「**事件 delta 是否跨得过阈值**」，属时间无关的设计问题；
+    时间段调整是另一维度（情绪随作息波动，属预期）。故探针内把时间项归零，
+    只留事件 delta ⇒ 结论可复现。**不要**为了让本测试变绿去改 mood 的 delta。
+    """
+    return mock.patch(_TIME_PATCH, return_value=(0.0, 0.0))
+
+
 class _Probe:
-    """复用单实例 + 禁用落盘的探针。"""
+    """复用单实例 + 禁用落盘 + **时间项归零**的探针。"""
 
     def __init__(self):
         self._td = tempfile.TemporaryDirectory()
@@ -87,13 +108,14 @@ class _Probe:
         self.ms._state.last_updated = time.time()
 
     def reaches(self, target, events, repeat=1):
-        """指定序列能否到达 target。"""
-        self._reset()
-        for _ in range(repeat):
-            for ev, inten in events:
-                self.ms.trigger(ev, inten)
-                if self.ms.get_state().label == target:
-                    return True
+        """指定序列能否到达 target（时间项归零，结论与钟点无关）。"""
+        with _neutral_time():
+            self._reset()
+            for _ in range(repeat):
+                for ev, inten in events:
+                    self.ms.trigger(ev, inten)
+                    if self.ms.get_state().label == target:
+                        return True
         return False
 
     def reachable_labels(self):
@@ -101,13 +123,14 @@ class _Probe:
         if self._cache is not None:
             return self._cache
         reached = set()
-        for ev in _ALL_EVENTS:
-            for inten in _PROBE_INTENSITIES:
-                for rep in range(1, 5):
-                    self._reset()
-                    for _ in range(rep):
-                        self.ms.trigger(ev, inten)
-                    reached.add(self.ms.get_state().label)
+        with _neutral_time():
+            for ev in _ALL_EVENTS:
+                for inten in _PROBE_INTENSITIES:
+                    for rep in range(1, 5):
+                        self._reset()
+                        for _ in range(rep):
+                            self.ms.trigger(ev, inten)
+                        reached.add(self.ms.get_state().label)
         self._cache = reached
         return reached
 
@@ -179,6 +202,23 @@ def test_label_reachable_at_production_intensity(probe, label, events, repeat):
     assert probe.reaches(label, events, repeat), (
         "label=%s 在 %d 轮生产强度 %s 内不可达 ⇒ 阈值与 delta 量级失衡"
         "（生产实测 90.7%% 回合停在 neutral，而 neutral 不注入）" % (label, repeat, events)
+    )
+
+
+def test_reachability_is_clock_independent(probe):
+    """可达性结论不得随墙钟变化（随钟点变 = flaky 测试的定义）。
+
+    pre-fix：探针直接吃真实时间段调整 ⇒ 同一输入在深夜/傍晚给出不同结论 ⇒ 本断言失败。
+    post-fix：探针内时间项归零 ⇒ 两次结论一致（且都等于中性时间下的结论）。
+    """
+    deep_night = (-0.1, -0.2)   # 深夜形（_DELTA_DEEP_NIGHT 量级的负 arousal）
+    evening = (0.1, 0.15)       # 傍晚形（_DELTA_EVENING 量级的正 arousal）
+    with mock.patch(_TIME_PATCH, return_value=deep_night):
+        night = probe.reaches("annoyed", [("insulted", PROD["insulted"])], 2)
+    with mock.patch(_TIME_PATCH, return_value=evening):
+        eve = probe.reaches("annoyed", [("insulted", PROD["insulted"])], 2)
+    assert night == eve, (
+        "可达性判定随钟点变化（深夜=%s / 傍晚=%s）⇒ 探针未与时间段调整解耦" % (night, eve)
     )
 
 

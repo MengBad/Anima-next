@@ -856,7 +856,16 @@ class VectorMemory:
             "rerank": self.reranker is not None,
             "semantic": False,
         }
-        if self._vec_ready and self.embedding:
+        # 🔴 2026-10-17：原 gate 是实例级 `self._vec_ready`，但它**只在 `_init_db()`
+        # 里置位**，而本方法不触发初始化 ⇒ doctor / 运维探针「新建实例 → 立即 health()」
+        # 时 `_vec_ready` 恒为 False ⇒ **恒报 degraded（假阴性）**。
+        # （回归来源：3f84464 X6 把 gate 从模块级 `_SQLITE_VEC_AVAILABLE` 一并换成实例级。）
+        # 修法：用 in-memory vec0 探测**能力**（不碰真实 DB、不触发维度迁移），
+        # 再结合「本实例是否已初始化、初始化是否成功」给最终结论：
+        #   · 未初始化（`_ready=False`）⇒ 以能力探测为准（doctor 正是这条路径）
+        #   · 已初始化且 `_vec_ready=True` ⇒ ok
+        #   · 已初始化但 `_vec_ready=False` ⇒ 真降级（不得被能力探测粉饰）
+        if self.embedding and _SQLITE_VEC_AVAILABLE:
             try:
                 async with aiosqlite.connect(":memory:") as db:
                     await db.enable_load_extension(True)
@@ -865,8 +874,10 @@ class VectorMemory:
                         f"CREATE VIRTUAL TABLE IF NOT EXISTS _health_check "
                         f"USING vec0(embedding float[{self.embedding_dim}])"
                     )
-                result["semantic"] = True
-                result["status"] = "ok"
+                instance_ok = (not self._ready) or self._vec_ready
+                result["semantic"] = bool(instance_ok)
+                if instance_ok:
+                    result["status"] = "ok"
             except Exception as e:
                 logger.warning("向量后端健康检查失败（降级为 BM25）: %s", e)
         return result
