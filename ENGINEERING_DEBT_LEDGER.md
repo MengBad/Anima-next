@@ -19,7 +19,7 @@
 
 | 状态 | 条数 | 条目 |
 |---|---|---|
-| `FIXED` | 22 | D-01/02/03/04/05/06/08/09/10/11/13/15/18/19/20/21/23/24/25/26/27/28 |
+| `FIXED` | 23 | D-01/02/03/04/05/06/07/08/09/10/11/13/15/18/19/20/21/23/24/25/26/27/28 |
 | `VERIFIED-NON-ISSUE`（实测证伪） | 2 | D-12（数据轮转）、D-22（context 预算=0） |
 | `DECIDED`（口径裁定，非代码改动） | 1 | D-14 |
 | `DEFERRED`（显式挂起，含重启前置条件） | 1 | D-16 |
@@ -27,14 +27,15 @@
 | `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 0 | ——（D-21 已于 09-18 部署窗口执行，见下） |
 | `PARTIALLY-CLOSED` | 0 | ——（D-13 层一 (a)(b) 已达成 ⇒ 改判 `FIXED`；层二另立 D-30） |
 | `OPEN` | 0 | —— |
-| `NEEDS-OWNER` | 1 | D-07（明文密钥外置） |
+| `NEEDS-OWNER` | 0 | ——（D-07 已于 2026-10-17 完成外置 ⇒ 改判 `FIXED`） |
 | `SEALED` | 3 | D-29（接线断言）、D-30（数值 trait 通道）、D-31（`bored` 死枚举） |
 | **合计** | **31** | |
 
-> 🔴 **2026-10-17 自主批次更新**（owner「做完计划」）：D-13 层一 (a)(b) 达成 ⇒ 改判 `FIXED`；
+> 🔴 **2026-10-17 自主批次更新**（owner「计划内容全部完成」）：D-13 层一 (a)(b) 达成 ⇒ 改判 `FIXED`；
 > 其**层二（数值 trait 通道）**与 **`bored` 死枚举**经裁定 `SEALED`（**新增 D-30 / D-31**）；
-> D-17 游离物经复核为**环境级阻塞（Windows `WinError 5`）、零影响**，转 `CLOSED-AS-UNDERSTOOD`。
-> ⇒ 台账**无 `OPEN` 项**；唯一 `NEEDS-OWNER` 仍是 **D-07（明文密钥外置，涉停机与凭据轮换）**。
+> D-17 游离物经复核为**环境级阻塞（Windows `WinError 5`）、零影响**，转 `CLOSED-AS-UNDERSTOOD`；
+> **D-07 明文密钥全部外置完成 ⇒ 改判 `FIXED`**。
+> ⇒ 台账**无 `OPEN` 项、无 `NEEDS-OWNER` 项、无 `PARTIALLY-CLOSED` 项**。
 
 > 🔴 **E 轮新增一条 `VERIFIED-NON-ISSUE` 式更正（D-27）**：台账原写"`capabilities` 段
 > **从不进** prompt / 100% 被丢弃"，经生产落盘计数器实测**证伪**（65 天 1346 次请求、
@@ -123,7 +124,7 @@
 - **验收口径**：7 段补齐到 `default.yaml`，且 `AnimaConfig` 全字段与 `default.yaml` 键集
   一致（可加一条测试钉住）。
 
-## D-07 · 生产 config.yaml 含 6 处明文密钥，其中 2 处无 env 通道 —— `NEEDS-OWNER`
+## D-07 · 生产 config.yaml 含明文密钥 —— `FIXED`（2026-10-17：全部外置到 `EnvironmentFile=/opt/anima/.secrets`）
 
 - **来源**：本轮新发现。
 - **证据**：`llm.api_key`(48) · `vector.embedding_api_key`(51) · `vector.rerank_api_key`(51) ·
@@ -133,7 +134,27 @@
     `llm.endpoint` / `vector.embedding_api_key` / `vector.rerank_api_key` / `tavily.api_key`。
   - 🔴 **无 env 通道**（需代码改动）：`webui.token` · `x_browser.password`。
 - **验收口径**：`deploy/check_config_drift.py` 第 4 节「明文密钥 = 0 处」。
-- **卡点**：外置 = 改生产凭据注入方式 + 轮换，**需 owner 决定**（涉及停机与凭据轮换）。
+- 🔴 **2026-10-17 完成（owner「计划内容全部完成」）**
+  - **代码**：`anima/core/config.py::load_config` 补两条 env 通道
+    `ANIMA_WEBUI_TOKEN → webui.token`、`ANIMA_X_BROWSER_PASSWORD → x_browser.password`
+    （此前这 2 处无通道，只能明文落盘）。判据 `tests/test_d07_secret_env_channels.py`（8 项）。
+  - **外置**：`.secrets` 追加这 2 个变量（另 4 处早已在）；`config.yaml` 6 处明文清空为 `""`。
+    全流程**在服务器本地处理值、不回传**；属主/权限全程保持 `anima:anima:600`（`999:989:600`）。
+  - **验收（生产实测）**：
+    - `deploy/check_config_drift.py` 第 4 节 ⇒ **「未发现（或均已外置到环境变量）」合计 0 处** ✅
+    - `set -a; . /opt/anima/.secrets; set +a` 后跑 `anima doctor` ⇒
+      **OK LLM endpoint 可达** + **OK 向量记忆后端正常** ✅
+    - 重启后（MainPID 4177581 → 4178062，NRestarts=0）启动日志：
+      **`LLM 已接入: gemini-3-flash`**、`向量记忆已启用`、`人格正本加载 OK`、Traceback/CRITICAL = 0。
+  - 备份 `/opt/anima/_backup_d07_20261017_062938/config.yaml`（可原样取回）。
+  - 🔴 **运维影响（必须记住）**：手动跑 `anima doctor` / `anima x-diag` 等 CLI 时，
+    **`.secrets` 不在你的 shell 里**（`EnvironmentFile` 只注入 systemd 服务）
+    ⇒ 会误报「LLM api_key 未配置（echo 模式）/ 向量记忆后端不可用」。
+    **正确姿势**：`cd /opt/anima && set -a && . /opt/anima/.secrets && set +a && python -m anima.cli doctor`
+    （`anima doctor` 本身读到的是**真实状态**：服务进程有 env ⇒ 一切正常）。
+  - ⚠️ **未做（需你另批）**：**密钥轮换**。外置只改变存放位置，未改值；且本轮侦察时
+    `webui.token` / `x_browser.password` 的值曾被打印进对话记录 ⇒ 建议排一次轮换窗口
+    （改 `.secrets` 值 + 重启，config.yaml 无需再动）。
 
 ## D-08 · `ConfigDriftMonitor` 结构上抓不到重启期变更 —— `FIXED`（E3：基线落盘）
 
@@ -288,6 +309,10 @@
   (c) 逐模块判定收敛（`pilot/` 只能逐模块，因 `conversation_evidence`/`safety_filter` 已被生产使用）。
   **本轮执行 (b) 的文档侧** → `docs/RUNTIME_SURFACE_STATUS.md`。
 - **卡点**：任何"接线"都会新建生产写入路径 ⇒ 需独立授权（**审计通过 ≠ 运行时授权**）。
+- 🔴 **2026-10-17 只读复核（计划 Track 3.2 收口）**：产物层 `ls -d data/{execution_ledger,workflow_runs,pilot,observation}`
+  **4 个目录仍全部不存在**（本地＋生产）；模块层仍承重（生产 `grep -c 'anima.runtime'`：`cli.py`=**2**、`tools/__init__.py`=**3**）。
+  ⇒ 裁定 **(b) 保持休眠**继续有效，**无变化**。复核记录入 `docs/RUNTIME_SURFACE_STATUS.md §7`。
+  **本面"接线还是封存"至此有明确书面决策：产物层不激活 / 模块层保留。**
 
 ## D-15 · 两个 `capability` 同名不同物 —— `FIXED`（E7：MAINTENANCE §3.5 三层口径）
 

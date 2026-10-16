@@ -126,3 +126,22 @@ ls -d data/execution_ledger data/workflow_runs data/pilot data/observation   # �
 grep -n 'anima.runtime' anima/cli.py anima/tools/__init__.py
 grep -n 'anima.pilot' anima/pipeline/stages/memory.py anima/cognitive/sylann_suggestion_controller.py
 ```
+
+---
+
+## 7. 复核记录 — 2026-10-17（升级计划 Track 3.2 收口）
+
+本节**不修改 §3 的任何裁定**，只记录一次**只读复核**（owner 授权「计划内容全部完成」）。
+
+| 复核项 | 命令 | 结果 |
+|---|---|---|
+| 产物层仍为零足迹 | `ls -d data/{execution_ledger,workflow_runs,pilot,observation}` | **4 个目录全部不存在**（本地与生产） |
+| 模块层仍承重 | `grep -c 'anima.runtime' anima/cli.py anima/tools/__init__.py`（生产） | cli.py = **2** · tools/__init__.py = **3** |
+
+⇒ §3 的三面裁定（C-1 `runtime/` 保持休眠 · C-2 `pilot/` 逐模块 · C-3 RFC-0002/0003 = `Deferred`）
+**继续有效，无需变更**。**本面"接线还是封存"的决策即 §3 C-1「(b) 保持休眠」**：
+
+- **产物层** ⇒ 明确**不激活**（无 producer、无 consumer、不在排期）；
+- **模块层** ⇒ **保留**（39 模块中 31 个有生产导入者；§3.1 已论证 `SEALED` 不是合法选项）。
+
+**一句话**：本面维持"**模块可达、无人驱动**"——既不接 producer，也不封存。
