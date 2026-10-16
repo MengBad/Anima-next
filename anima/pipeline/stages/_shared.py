@@ -90,13 +90,19 @@ def log_rich_media_silent(ctx, *, where: str, reason: str = "") -> bool:
     现在 prefilter 的 STOP 出口也调用本函数；``where`` 用于区分来源。
 
     判据（三条件同时成立才算静默）：
-      ① 正文为空；② 无入站图（有图会转成「[用户发送了图片]」走正常路径）；
+      ① 正文为空 —— 🔴 **必须先剥 CQ 传输残留再判**。`ctx.text` 来自
+         `constants.event_text()`，它是 `text or raw_message or message` 的 `or` 链；
+         纯富媒体消息的 `text` 是空串（falsy）⇒ **回落到 `message`（CQ 原文）**
+         ⇒ `ctx.text` 形如 `'[CQ:video,file=x]'`，**非空**。不剥就永远判不出「空正文」
+         （2026-10-16 实测：前移部署后 19h 仍零命中，同期有 11 条 video）。
+      ② 无入站图（有图会转成「[用户发送了图片]」走正常路径）；
       ③ 段类型非空**且不含 text**（转发/空串文本不算富媒体）。
 
     :return: 是否实际打了点（便于测试自证与调用方统计）。
     """
     try:
-        if getattr(ctx, "text", "") or getattr(ctx, "inbound_images", None):
+        if _clean_transport_text(getattr(ctx, "text", "") or "") \
+                or getattr(ctx, "inbound_images", None):
             return False
         segs = _inbound_seg_types(ctx)
         if not segs or "text" in segs:

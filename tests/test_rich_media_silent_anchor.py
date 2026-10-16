@@ -128,6 +128,55 @@ def test_helper_never_raises(cap_logger):
     assert log_rich_media_silent(ctx, where="unit") is False
 
 
+# ───────── 1b. 🔴 真实输入形态：ctx.text 不是空串，而是 CQ 传输原文 ─────────
+
+def test_helper_cq_transport_text_still_counts(cap_logger):
+    """🔴 2026-10-16 第二层根因：`event_text()` 用 `or` 链回落。
+
+    `constants.event_text` = `event["text"] or event["raw_message"] or event["message"]`。
+    纯富媒体消息 `event["text"]` 为空串（falsy）⇒ **回落到 `event["message"]`（CQ 原文）**
+    ⇒ `ctx.text` 形如 `'[CQ:video,file=x]'`，**非空** ⇒ 判据「正文为空」不成立 ⇒ 永不命中。
+
+    实测：04:00 部署后 19h 零命中，而同期 `[段结构]` 有 11 条 video。
+    修法：判空前先 `_clean_transport_text()` 剥掉 CQ 残留（与 memory_stage 同口径）。
+    """
+    ctx = _ctx("[CQ:video,file=abc.video,url=http://x/y]",
+               segs=[{"type": "video", "data": {}}])
+    assert log_rich_media_silent(ctx, where="unit") is True, (
+        "ctx.text 为 CQ 传输原文时被判成「有正文」⇒ 纯富媒体静默永远不可观测"
+    )
+    assert ANCHOR in cap_logger.getvalue()
+
+
+def test_helper_cq_transport_mixed_with_real_text_not_counted(cap_logger):
+    """反向对照：CQ 残留里**夹着真实文本** ⇒ 剥后非空 ⇒ 不是静默。"""
+    ctx = _ctx("[CQ:at,qq=1] 你好啊", segs=[{"type": "at"}, {"type": "text"}])
+    assert log_rich_media_silent(ctx, where="unit") is False
+    assert ANCHOR not in cap_logger.getvalue()
+
+
+def test_helper_cq_empty_payload_not_counted(cap_logger):
+    """反向：剥完仍剩内容（如只有 at）⇒ 段里含 text 时不由 helper 负责。"""
+    ctx = _ctx("[CQ:at,qq=1]", segs=[{"type": "text", "data": {"text": ""}}])
+    assert log_rich_media_silent(ctx, where="unit") is False
+
+
+def test_prefilter_stop_with_cq_text_only(cap_logger):
+    """端到端：真实链路形态（text = CQ 原文）下，prefilter STOP 仍须留下埋点。"""
+    ctx = _ctx("[CQ:video,file=abc.video]",
+               segs=[{"type": "video", "data": {"file": "a.mp4"}}])
+    ctx.meta["_handler"] = _fake_handler()
+
+    res = asyncio.run(prefilter_stage(ctx))
+
+    if res is StageResult.STOP:
+        out = cap_logger.getvalue()
+        assert ANCHOR in out, (
+            "真实链路（ctx.text=CQ 原文）下 prefilter STOP 未打点 ⇒ R3 埋点无效"
+        )
+        assert "video" in out
+
+
 # ─────────────────── 2. prefilter STOP 出口必须打埋点 ───────────────────
 
 def test_prefilter_stop_logs_rich_media(cap_logger):
