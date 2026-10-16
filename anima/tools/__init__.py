@@ -68,6 +68,10 @@ TOOL_REASON_X_NOT_LOGGED_IN = "X 登录态失效，需重新登录"
 #: 「推特接口挂了」。有了本原因码，模型能说「这次没搜完，可以再试」而不是误报故障。
 #: 措辞刻意**不含**内部标识（超时值/异常名/堆栈），符合白名单安全边界。
 TOOL_REASON_X_SLOW = "X 搜索耗时超出本次预算，可稍后再试或换个说法"
+#: 🔴 2026-10-16（D1）：X 搜索**一般性**失败（非额度/风控/超时等已定性原因）。
+#: 原实现直接 `return f"X 搜索失败：{e}"` —— 与本文件白名单机制自相矛盾
+#: （异常文本进了模型可见串）。改为走白名单，行为性、可对外。
+TOOL_REASON_X_FAILED = "X 搜索暂时失败，可稍后再试"
 
 _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_DISABLED,
@@ -77,6 +81,7 @@ _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_EMPTY_RENDER,
     TOOL_REASON_X_NOT_LOGGED_IN,
     TOOL_REASON_X_SLOW,
+    TOOL_REASON_X_FAILED,
 })
 
 
@@ -1201,7 +1206,7 @@ class ToolRegistry:
         except Exception as exc:
             self._audit("tool_approval_execution_failed", approval_id=approval_id, tool=tool.name,
                         error=type(exc).__name__)
-            return f"审批已记录，但工具执行失败: {type(exc).__name__}"
+            return "审批已记录，但工具执行失败。"
         finally:
             self.reset_call_context(token)
         self._audit("tool_approved_executed", approval_id=approval_id, tool=tool.name,

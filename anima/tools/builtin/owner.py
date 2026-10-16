@@ -20,7 +20,7 @@ def make_propose_skill_draft(core):
         try:
             draft = await manager.create_from_request(request)
         except (ValueError, RuntimeError) as exc:
-            return f"创建 SkillDraft 失败：{str(exc)[:180]}"
+            return "创建 SkillDraft 失败：请求未通过校验（详见日志）"
         verdict = "静态验证通过" if not draft.errors else "静态验证未通过：" + "；".join(draft.errors)
         return (f"已创建待审核 SkillDraft {draft.id}（{verdict}）。"
                 "请 owner 先预览，随后用 !anima draft approve <id> 或 WebUI 批准。")
@@ -65,7 +65,7 @@ def make_generate_image(core):
         try:
             path = await manager.generate(prompt)
         except (ValueError, RuntimeError) as exc:
-            return f"生图失败：{str(exc)[:180]}"
+            return "生图失败：图像服务暂时不可用"
         context = get_call_context()
         paths = context.setdefault("generated_image_paths", [])
         if isinstance(paths, list):
@@ -94,7 +94,7 @@ def make_edit_image(core):
         try:
             path = await manager.edit(prompt, input_b64)
         except (ValueError, RuntimeError) as exc:
-            return f"改图失败：{str(exc)[:180]}"
+            return "改图失败：图像服务暂时不可用"
         context = get_call_context()
         paths = context.setdefault("generated_image_paths", [])
         if isinstance(paths, list):

@@ -211,4 +211,4 @@ async def run(content: str, context: dict[str, Any]) -> str:
     except Exception as e:
         manager.record_post(content, "manual", False, str(e))
         logger.exception("空间说说发布失败")
-        return f"发布失败：{e}"
+        return "发布失败：空间服务暂时不可用"

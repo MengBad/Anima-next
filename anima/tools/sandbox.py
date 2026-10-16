@@ -951,7 +951,7 @@ def _validate_shell_command(command: str) -> tuple[bool, str]:
     try:
         tokens = shlex.split(command)
     except ValueError as e:
-        return False, f"命令解析失败: {e}"
+        return False, "命令解析失败：引号或转义不匹配"
 
     if not tokens:
         return False, "命令为空"

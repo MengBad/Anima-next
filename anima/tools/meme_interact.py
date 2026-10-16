@@ -205,4 +205,4 @@ async def run(target_qq: str = "", context: dict[str, Any] = None) -> str:
 
     except Exception as e:
         logger.exception("摸头杀执行失败")
-        return f"摸头杀失败：{e}"
+        return "摸头杀执行失败，暂时没能完成"

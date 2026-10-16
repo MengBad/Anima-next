@@ -415,4 +415,4 @@ async def tool_web_search(query: str, num_results: int = 5,
                 f"请如实告诉用户暂时查不到，不要凭记忆补答案。")
     except Exception as exc:
         logger.warning("web_search 执行失败: %s", exc)
-        return f"搜索时出错了：{type(exc).__name__}"
+        return "搜索时出错了：暂时拿不到结果"

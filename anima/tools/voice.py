@@ -58,4 +58,4 @@ async def run(text: str, context: dict[str, Any]) -> str:
         return f"已发送语音：{text[:30]}..."
     except Exception as e:
         logger.exception("语音发送失败")
-        return f"语音发送失败：{e}"
+        return "语音发送失败：暂时不可用"

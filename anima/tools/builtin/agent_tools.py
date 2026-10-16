@@ -115,7 +115,7 @@ async def agent_http_request(core, method: str = "GET", url: str = "", *,
         status, raw = await asyncio.to_thread(_sync_http_request, req, _MAX_HTTP_BODY, max(1, int(timeout)))
     except Exception as e:
         _audit(core, "agent_http", ok=False, url=url, error=type(e).__name__)
-        return f"[agent] 请求失败: {type(e).__name__}: {str(e)[:200]}"
+        return "[agent] 请求失败：agent 服务暂时不可用"
 
     truncated = len(raw) > _MAX_HTTP_BODY
     text = raw[:_MAX_HTTP_BODY].decode("utf-8", errors="replace")
@@ -134,7 +134,7 @@ async def agent_read_file(core, path: str) -> str:
     try:
         content = target.read_text(encoding="utf-8", errors="replace")
     except Exception as e:
-        return f"[agent] 读取失败: {type(e).__name__}: {e}"
+        return "[agent] 读取失败：文件读不到"
     _audit(core, "agent_read_file", path=str(target), ok=True)
     return content[:_MAX_FILE_READ]
 
@@ -149,7 +149,7 @@ async def agent_write_file(core, path: str, content: str) -> str:
         target.write_text(content, encoding="utf-8")
         size = target.stat().st_size
     except Exception as e:
-        return f"[agent] 写入失败: {type(e).__name__}: {e}"
+        return "[agent] 写入失败：文件写不进去"
     _audit(core, "agent_write_file", path=str(target), bytes=size, ok=True)
     return f"[agent] 已写入 {target} ({size} 字节)"
 
@@ -179,7 +179,7 @@ async def agent_list_dir(core, path: str = "") -> str:
         lines = [("d" if p.is_dir() else "f") + " " + p.name
                  for p in sorted(candidate.iterdir())]
     except Exception as e:
-        return f"[agent] 列举失败: {type(e).__name__}: {e}"
+        return "[agent] 列举失败：目录读不到"
     _audit(core, "agent_list_dir", path=str(candidate), ok=True)
     return "\n".join(lines) or "(空目录)"
 
@@ -202,7 +202,7 @@ async def agent_exec(core, command: str, timeout: int = _DEFAULT_EXEC_TIMEOUT) -
             return f"[agent] 命令超时 ({timeout}s)，已终止"
     except Exception as e:
         _audit(core, "agent_exec", ok=False, error=type(e).__name__)
-        return f"[agent] 执行失败: {type(e).__name__}: {str(e)[:200]}"
+        return "[agent] 执行失败：命令未能完成"
     text = out.decode("utf-8", errors="replace")[:_MAX_EXEC_OUTPUT]
     _audit(core, "agent_exec", ok=True, returncode=proc.returncode, result_len=len(text))
     return f"[exit {proc.returncode}]\n{text}"
@@ -266,7 +266,7 @@ async def agent_browser(core, action: str, *, url: str = "",
     except Exception as e:
         _audit(core, "agent_browser", ok=False, action=action, url=url,
                error=type(e).__name__)
-        return f"[agent] 浏览器操作失败: {type(e).__name__}: {str(e)[:200]}"
+        return "[agent] 浏览器操作失败：未能完成"
     _audit(core, "agent_browser", ok=True, action=action, url=url)
     return result[:_MAX_FILE_READ]
 

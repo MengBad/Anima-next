@@ -509,7 +509,9 @@ async def tool_x_search(query: str, limit: int = 5, want_images: bool = False,
         return tool_unavailable(TOOL_REASON_X_SLOW)
     except Exception as e:  # noqa: BLE001
         logger.warning("x_search 调用失败（已隔离）: %s", e)
-        return f"X 搜索失败：{e}"
+        from anima.tools import TOOL_REASON_X_FAILED, tool_unavailable
+
+        return tool_unavailable(TOOL_REASON_X_FAILED)
 
     if not res.get("ok"):
         note = str(res.get("note", "") or "").strip()

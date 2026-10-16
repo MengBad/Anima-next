@@ -77,7 +77,7 @@ def make_group_honor(core) -> Tool:
         try:
             info = await ch.get_group_honor_info(gid, ht)
         except Exception as exc:  # 通道异常绝不拖垮 bot
-            return f"群荣誉榜查询出错（{type(exc).__name__}），暂时拿不到数据"
+            return "群荣誉榜查询出错，暂时拿不到数据"
         if not isinstance(info, dict) or not info:
             # 与「群没开这个功能」区分：这里是我们拿不到数据，必须如实说。
             return (f"没能从 OneBot 取到群 {gid} 的荣誉榜数据"

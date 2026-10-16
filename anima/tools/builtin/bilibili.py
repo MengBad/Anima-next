@@ -249,7 +249,7 @@ def make_bilibili_read(core):
                 logger.exception("读取 B 站主页失败 mid=%s", mid)
                 return (
                     f"这是 B 站用户主页链接（mid={mid}），不是单个视频。"
-                    f"主页最近投稿暂时读不到（{str(exc)[:80]}）。"
+                    f"主页最近投稿暂时读不到。"
                     "请发具体视频的 BV 链接，或告诉本喵要看哪一期。"
                 )
 
@@ -472,6 +472,6 @@ def make_bilibili_read(core):
             return f"《{title}》视频概要：\n{summary}"
         except Exception as e:
             logger.exception("bilibili_read 处理失败 bvid=%s", bv)
-            return f"读取 B 站视频失败：{str(e)[:160]}"
+            return "读取 B 站视频失败：暂时拿不到内容，可稍后再试"
 
     return _tool_bilibili_read

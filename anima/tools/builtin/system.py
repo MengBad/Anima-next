@@ -34,7 +34,7 @@ def tool_calc(expression: str) -> str:
             return f"结果过大（{result:.6e}），超出显示范围"
         return str(result)
     except Exception as e:
-        return f"计算出错: {e}"
+        return "计算出错：表达式无法求值"
 
 
 async def tool_weather(city: str) -> str:
@@ -73,7 +73,7 @@ async def tool_weather(city: str) -> str:
         )
     except Exception as e:
         logger.warning("天气查询失败: %s", e)
-        return f"天气查询失败（{city}）: {e}。可稍后重试或检查网络。"
+        return f"天气查询失败（{city}）：暂时拿不到数据，可稍后重试。"
 
 
 async def _run_runtime_status_command(argv: tuple[str, ...]) -> str | None:
