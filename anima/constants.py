@@ -99,3 +99,83 @@ COMMITMENT_RE = re.compile(
     r")",
     re.I,
 )
+
+
+# ── 否定守卫（2026-10-18，D-35）──────────────────────────────────────────────
+# 🔴 生产实证（这次是**假账**，不是话术）：
+#   bot 出站「…本喵才不**帮你看**什么脑洞学生会呢，要看你自己看去喵！」
+#   被 `COMMITMENT_RE` 的**裸多字短语分支**（`帮你查|帮你看|帮你盯|…`）命中
+#   ⇒ 判成承诺 ⇒ 建债 `content/due_hint`=整句 ⇒ 建 2 条议程（promise_followup +
+#   debt_due，`text_intent`=「之前答应了 X 一件事…当时的回复是：<这句拒绝>」）
+#   ⇒ T+6h 议程到期，主动发言把「当时回复的是拒绝」喂回模型
+#   ⇒ 模型把"没帮"改写成"帮了"（06:32「勉为其难帮你瞅了一眼」）并沿用旧句式
+#   ⇒ 新句再被同一分支判成承诺。**一句拒绝 → 13 假债 → 26 议程**（生产实测）。
+#
+# 根因形状与 09-21 那次完全相同：那轮发现「`帮/来/记得` 不得裸用」，
+# 于是给 **代词+动词核** 分支加了 `(?![不的])`，却**漏了多字短语分支**
+# （`帮你看` 前面紧邻的通常正是"不"）⇒ 同一个坑挪到了隔壁。
+# 这次不靠"再加一个字符类"（lookbehind 定宽，组合会爆炸），改用**匹配后判定**：
+# 看命中位置的**同一句内**前缀，若 ≤4 字内出现否定词，则该命中作废。
+_NEGATION_MARKERS = (
+    "才不", "不会", "不想", "不用", "不必", "不", "别", "没", "甭",
+    "懒得", "拒绝", "绝不", "从不", "休想", "妄想",
+)
+#: 命中点之前、同一句内允许的最大间隔（超过则不属于"否定这句承诺"）
+_NEG_LOOKBACK_CHARS = 6
+
+#: 真正贴住动词的否定形态：可选副词 + 否定词 + 可选情态字，且必须**紧邻命中点**。
+#: 🔴 不能只做"前 6 字里出现否定词"——「别急，我等下再帮你查」里的「别」是在
+#:    安抚对方，不是否定承诺；放宽会把这句真承诺判成拒绝（首版实测漏判 1/6）。
+_NEG_ADJACENT_RE = re.compile(
+    r"(?:懒得|拒绝|休想|妄想|绝不|从不)$"
+    r"|(?:[才就也都还又])?(?:不|别|没|甭)(?:太)?[会想用必得]?$"
+)
+
+
+#: 落在**命中区间内部**的否定（时间词分支允许中间夹 ≤14 字，
+#: 「今晚休想让本喵帮你踩背」的「休想」离动词 5 字，紧邻判定看不到）。
+_NEG_IN_SPAN_RE = re.compile(r"休想|妄想|别想|做梦|才不|不会|不想|懒得|凭什么|少来")
+
+
+def _sent_prefix(text: str, pos: int) -> str:
+    """取 `pos` 之前、**同一句内**的前缀（遇句末标点截断）。"""
+    cut = -1
+    for i in range(pos - 1, -1, -1):
+        if text[i] in "。！？!?\n":
+            cut = i
+            break
+    return text[cut + 1:pos]
+
+
+def _negated_at(text: str, pos: int) -> bool:
+    """命中点**紧邻处**是否有否定（≤4 字内且必须贴在动词前）。"""
+    head = _sent_prefix(text, pos)
+    if not head:
+        return False
+    tail = head[-4:]
+    if _NEG_ADJACENT_RE.search(tail):
+        return True
+    return any(mark in tail for mark in ("懒得", "拒绝", "休想", "妄想", "绝不", "从不"))
+
+
+def commitment_match(text: str):
+    """返回**第一个未被否定**的承诺命中（`re.Match`），无则 `None`。
+
+    所有消费者都应改用它而不是 `COMMITMENT_RE.search()` —— 后者会把
+    「本喵才不帮你看」这种**语义相反的拒绝**当成承诺记账。
+    """
+    for m in COMMITMENT_RE.finditer(text or ""):
+        if _negated_at(text, m.start()):
+            continue
+        # 第二道：否定词可能落在**命中区间内部**（时间词分支允许中间夹 ≤14 字）：
+        #   「今晚**休想**让本喵帮你踩背暖床」——否定在动词前 5 字，紧邻判定看不到。
+        # 生产实证：这类句子进了 debts（"休想…帮你踩背"被记成承诺）。
+        if _NEG_IN_SPAN_RE.search(m.group(0)):
+            continue
+        return m
+    return None
+
+
+def is_commitment(text: str) -> bool:
+    """`commitment_match` 的布尔壳（供只需要"有没有"的调用点用）。"""
+    return commitment_match(text) is not None

@@ -8,7 +8,8 @@ import uuid
 from dataclasses import asdict, dataclass
 
 from anima.core.persistence import PersistenceProvider
-from anima.constants import COMMITMENT_RE as _COMMITMENT_HINT
+from anima.constants import COMMITMENT_RE as _COMMITMENT_HINT  # noqa: F401（保留兼容）
+from anima.constants import commitment_match as _commitment_match
 
 
 # 用户侧约定 / bot 侧承诺 —— 🔴 判据**唯一口径在 `anima/constants.COMMITMENT_RE`**。
@@ -109,7 +110,10 @@ class EpisodicMemory:
             return None
         # 判据单一真源（2026-09-20 复检）：bot 侧**不再**有独立词表（原 `_BOT_PROMISE_HINT`
         # 含裸 `本喵会`，会让能力陈述在 role="bot" 时记成承诺）。
-        has_commit = bool(_COMMITMENT_HINT.search(text))
+        # 🔴 2026-10-18（D-35）：必须走带否定守卫的判据 ——
+        # `COMMITMENT_RE.search` 会把「本喵才不帮你看」判成承诺（裸短语分支），
+        # 生产实测因此产生 13 笔假债/26 条议程。
+        has_commit = _commitment_match(text) is not None
         # 威胁 / 角色扮演攻击语境不算承诺（“你今晚死定了”≠ 承诺）
         if has_commit and _THREAT_ROLEPLAY_RE.search(text):
             has_commit = False

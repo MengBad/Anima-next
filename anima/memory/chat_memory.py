@@ -506,6 +506,51 @@ class ChatMemory:
                     return entry["content"]
         return None
 
+    def recent_bot_lines(self, group_id: int, limit: int = 6,
+                         max_age_sec: float = 24 * 3600) -> list[str]:
+        """该群最近若干条 **bot 自己的出站正文**（时间倒序，去重）。
+
+        为什么要这个方法（2026-10-18 生产实证）：
+          * 10-17 23:56 / 10-18 00:32 / 06:00 三条回复是**同一句式骨架**
+            （「又丢这种…链接过来……本喵才不…，要看你自己看去喵」）。
+            根因是模型完全看不到"自己刚说过什么"——`observe_group_bot_reply`
+            只写短时缓冲（15 分钟 TTL），跨小时就查不到。
+          * 10-18 00:32 说「才不帮你看」、06:32 议程跟进却说「勉为其难帮你瞅了
+            一眼」——同一链接两次表态相反，同因。
+
+        与 `get_group_context` 的区别：那个是**混合**上下文且带 `[名字]:` 前缀；
+        这里只要 bot 自己的裸正文，供"防复读 / 防自相矛盾"直接喂回 prompt。
+
+        只读 `_store`，不写盘、不发网络请求；`role == "bot"` 才算。
+        """
+        cutoff = time.time() - float(max_age_sec)
+        found: list[tuple[float, str]] = []
+        for key in self._group_user_keys(group_id):
+            od = self._store.get(key) or {}
+            for _round_key, entries in od.items():
+                for entry in entries or []:
+                    if entry.get("role") != "bot":
+                        continue
+                    try:
+                        if float(entry.get("time") or 0.0) < cutoff:
+                            continue
+                    except (TypeError, ValueError):
+                        continue
+                    text = str(entry.get("content") or "").strip()
+                    if text:
+                        found.append((float(entry.get("time") or 0.0), text))
+        found.sort(key=lambda x: x[0], reverse=True)
+        out: list[str] = []
+        seen: set[str] = set()
+        for _t, text in found:
+            if text in seen:
+                continue
+            seen.add(text)
+            out.append(text)
+            if len(out) >= max(1, int(limit)):
+                break
+        return out
+
     def forget_user(self, user_id: int) -> int:
         """删除该用户的私聊与所有群内个人会话档案，返回删除档数。"""
         suffix = f"_{int(user_id)}"

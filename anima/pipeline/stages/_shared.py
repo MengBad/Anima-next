@@ -20,6 +20,10 @@ from anima.constants import CQ_TRANSPORT_RE as _CQ_TRANSPORT_RE
 # 导致玩笑与斗嘴被记成承诺 —— 生产实测 agenda/commitments/debts 三本账里
 # 大片是假账，再由主动发言去"跟进"一件不存在的事。
 from anima.constants import COMMITMENT_RE as _PROMISE_RE
+# 🔴 2026-10-18（D-35）：裸 `_PROMISE_RE.search()` 会把**拒绝**当承诺
+# （「本喵才不帮你看」命中裸短语分支 `帮你看`）⇒ 必须走带否定守卫的
+# `commitment_match`（同文件 constants 内有完整证据链）。
+from anima.constants import commitment_match as _commitment_match
 
 
 def _bg_task_done(task: asyncio.Task) -> None:
@@ -205,7 +209,7 @@ def _promise_excerpt(reply: str) -> str:
     content 应当回答"欠了什么"，故截取命中承诺的那一小句。
     """
     r = (reply or "").strip()
-    m = _PROMISE_RE.search(r)
+    m = _commitment_match(r)
     if m is None:
         return r[:120]
     # 回退到本句起点（上一个句末标点之后）
@@ -245,7 +249,12 @@ def _detect_promise_and_schedule(ctx: "PipelineContext") -> None:
     if _PROMISE_THREAT_RE.search(ctx.reply):
         return
 
-    has_promise = _PROMISE_RE.search(ctx.reply)
+    # 🔴 2026-10-18（D-35）：改用带**否定守卫**的判据。
+    # 原 `_PROMISE_RE.search(ctx.reply)` 会把「本喵才不帮你看什么…呢」判成承诺：
+    # 该正则的多字短语分支 `帮你查|帮你看|帮你盯|…` 是**裸短语**（同文件里
+    # 代词+动词核那支早有 `(?![不的])`，这一支漏了）⇒ 生产实测一句拒绝造出
+    # 13 笔假债 + 26 条议程，再在 T+6h 由议程回灌给模型（拒绝被改写成"帮了"）。
+    has_promise = _commitment_match(ctx.reply)
     has_failure = _FAILURE_RE.search(ctx.reply)
     has_retry_promise = _RETRY_PROMISE_RE.search(ctx.reply)
 

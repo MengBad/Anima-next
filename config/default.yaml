@@ -27,6 +27,13 @@ llm:
   timeout: 60.0
   retries: 2                               # 仅超时、429、5xx 时重试；鉴权错误不重试
   retry_backoff_sec: 0.6
+  # 2026-10-19（D-39）：**出站轮次总预算**。timeout × retries × 候选数 没人管总账的
+  # 后果是实测 p90 = 105s、max = 209s（用户等两分钟拿到一句兜底）。
+  # 生产建议 45.0（代码默认也是 45.0）；0 = 关闭，行为与修复前逐字相同。
+  outbound_turn_budget_sec: 45.0
+  # 出站单候选的重试次数（覆盖 retries）。ClientOSError 类故障重试在同一黑洞上，
+  # 换候选比原地重试有效 ⇒ 出站默认 1（共 2 次尝试），后台仍用 retries。
+  outbound_retries: 1
   fallback_models:                         # 同网关备用模型（主模型瞬态失败时切换）
     - "gemini-3.6-flash"
     # 🔴 不列 `gemini-3-flash`：2026-10-05 生产 72h 账本实测 **36 次调用 0 次成功**

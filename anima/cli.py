@@ -377,6 +377,12 @@ def start(config_path, once, identity_attestation):
             ),
             circuit_failure_threshold=int(provider_cfg.get("circuit_failure_threshold", cfg.llm.circuit_failure_threshold)),
             circuit_cooldown_sec=float(provider_cfg.get("circuit_cooldown_sec", cfg.llm.circuit_cooldown_sec)),
+            # 🔴 D-39（2026-10-19）：出站轮次预算。必须在这里预热才生效 ——
+            # 单例只在 cli 构造一次，改 config 不重启等于没改。
+            outbound_turn_budget_sec=float(
+                provider_cfg.get("outbound_turn_budget_sec", cfg.llm.outbound_turn_budget_sec)),
+            outbound_retries=int(
+                provider_cfg.get("outbound_retries", cfg.llm.outbound_retries)),
             provider=cfg.llm.active_provider,
             module_models=cfg.llm.module_models,
             # 2026-10-03：reasoning_effort 的配置入口（None = 用代码默认表；{} = 全关）

@@ -184,6 +184,156 @@ def _narrates_tool_failure(reply: str, tool_trace: list | None) -> bool:
 _SENT_SPLIT_RE = re.compile(r"(?<=[。！？!?…])|\n+")
 
 
+# ── 时段词纠偏（2026-10-18）───────────────────────────────────────────────────
+# 生产实证（10-17 23:56，群聊出站原文）：
+#   「哼，**大清早的**又丢这种椎名もた的歌单链接过来……」
+# 而同一条消息注入的 `{time_context}` 是「…周六 深夜11点56分」
+# （`time_sense.time_description` 已改 12 小时制，链路没问题）。
+# ⇒ 属「**链路给了、模型没听**」：P2 在 `persona_core.yaml:33` 删掉词列举，
+#   删的是**示例**，管不住模型自己造词。
+# 因此在出站护栏做**确定性**纠偏：命中时段词但与真实小时不符 ⇒ 换成该小时
+# 对应的词（保留句式，只换词，不删句、不整段改写）。
+# 🔴 词表按「中文口语里真的成立的时间带」定义，**必须允许跨夜**：
+#    「大晚上」从 18 点能说到次日 5 点，「大半夜」从 21 点能说到次日 5 点。
+#    10-18 Track 2 就是因为把「大晚上」写成 (18,23)，把 00:xx/01:xx 说
+#    「大晚上」误判成错配（虚报 3/8）。
+_PERIOD_WORD_WINDOWS: dict[str, tuple[int, int]] = {
+    "大清早": (5, 10),
+    "大早上": (5, 10),
+    "一大早": (5, 10),
+    "大中午": (10, 15),
+    "大下午": (14, 18),
+    "大晚上": (18, 5),   # 跨夜：18:00 → 次日 04:59
+    "大半夜": (21, 5),   # 跨夜：21:00 → 次日 04:59
+}
+# 长词优先（「大早上」先于「早上」这类包含关系；当前表内最长 3 字，仍显式排序）。
+_PERIOD_WORD_ORDER = tuple(
+    sorted(_PERIOD_WORD_WINDOWS, key=len, reverse=True)
+)
+
+
+def _period_word_for_hour(hour: int) -> str:
+    """该小时最自然的时段说法。返回值**必定落在自己的时间带内**（幂等）。"""
+    hour = int(hour) % 24
+    if 0 <= hour < 5:
+        return "大半夜"
+    if 5 <= hour < 10:
+        return "大清早"
+    if 10 <= hour < 14:
+        return "大中午"
+    if 14 <= hour < 18:
+        return "大下午"
+    return "大晚上"
+
+
+def _hour_in_window(hour: int, window: tuple[int, int]) -> bool:
+    lo, hi = window
+    hour = int(hour) % 24
+    if lo == hi:
+        return True
+    if lo < hi:
+        return lo <= hour < hi
+    return hour >= lo or hour < hi
+
+
+def fix_period_words(reply: str, *, hour: int | None = None
+                     ) -> tuple[str, list[tuple[str, str]]]:
+    """把与真实时间不符的时段词换成正确说法。
+
+    返回 `(新正文, [(原词, 新词), ...])`；无命中时第二个元素为空列表。
+    `hour` 可注入（测试用），缺省取北京时间当前小时。
+    """
+    if not reply:
+        return reply, []
+    if hour is None:
+        from anima.cognitive.time_sense import beijing_now
+        hour = beijing_now().hour
+    correct = _period_word_for_hour(hour)
+    out = reply
+    fixes: list[tuple[str, str]] = []
+    for word in _PERIOD_WORD_ORDER:
+        window = _PERIOD_WORD_WINDOWS[word]
+        if word not in out or _hour_in_window(hour, window):
+            continue
+        if word == correct:          # 理论不可达（correct 必在窗内），保险
+            continue
+        out = out.replace(word, correct)
+        fixes.append((word, correct))
+    return out, fixes
+
+
+# ── 骨架复读检测（2026-10-18，D-33 层二的**度量**：只记日志、不改正文）───────
+# 为什么不用 difflib：实体替换会把相似度压垮 ——
+#   `00:32` vs `06:00` = 0.744、`00:32` vs `08:57` = 0.690（都低于主动发言的 0.76 阈值），
+#   但三句**去标点后头尾逐字相同**（`又甩这种…链接过来` / `要看你自己看去喵`）。
+# 因此按「去标点/空白后的**头部 n 字**与**尾部 m 字**」比对，分两个独立计数，
+# 明确"重的是头还是尾"，而不是含糊的"相似"。
+# 🔴 刻意**只检测、不改写**：改写要额外一次 LLM 重生成（成本/延迟），
+#   先攒基线；本锚点即下一轮是否上"骨架级重生成"的分母。
+_SKELETON_STRIP_RE = re.compile(r"[，。！？!?…~、；：:,.!?()（）「」『』“”\"'\s·]+")
+_SKELETON_HEAD_N = 8
+_SKELETON_TAIL_N = 8
+
+
+def _is_canned_reply(reply: str) -> bool:
+    """出站正文是否来自**兜底/罐头话术池**（而非模型自产）。
+
+    🔴 为什么要单独判（2026-10-19 生产实证，D-38）：
+    `[骨架复读]` 上线后第一次命中，样本是这两条 ——
+        `本喵这边卡壳了喵，这条没接住，真不是故意晾着你。`（×2，间隔 13 分钟）
+    可这**根本不是模型复读**，是 `agent/react._NO_TOOL_FALLBACKS` 里的罐头句：
+    池子只有 7 句，上游抖动时反复抽到同一句是数学必然。
+    ⇒ 若不排除，**上游一抖，"复读率"就假性飙升**，这个指标就没法用来判断 D-33 了。
+       （与 2026-10-08 "3 句池在 4 次抽样下必然重复" 是同一条教训的计量学版本。）
+
+    覆盖：上游全空的三个池（复用 `handler._is_degrade_fallback`，**单一真源**）
+    + 工具侧两个池 + 护栏自己的两个改写池 + 泄漏拦截文案。
+    """
+    t = (reply or "").strip()
+    if not t:
+        return False
+    try:
+        from anima.llm.handler import _is_degrade_fallback
+        if _is_degrade_fallback(t):
+            return True
+    except Exception:
+        logger.debug("兜底判定导入失败（已隔离）", exc_info=True)
+    try:
+        from anima.agent.react import _TOOL_FAILED_FALLBACKS, _TOOL_OK_FALLBACKS
+        if t in _TOOL_FAILED_FALLBACKS or t in _TOOL_OK_FALLBACKS:
+            return True
+    except Exception:
+        logger.debug("工具兜底池导入失败（已隔离）", exc_info=True)
+    return t in _MECHANICAL_REWRITES or t in _ANALYSIS_ESSAY_FALLBACKS \
+        or t == "（这条回复被护栏拦截了）"
+
+
+def skeleton_parts(text: str, *, head_n: int = _SKELETON_HEAD_N,
+                   tail_n: int = _SKELETON_TAIL_N) -> tuple[str, str]:
+    """返回 `(骨架头, 骨架尾)`；短句返回 `(去标点全文, 去标点全文)`。"""
+    body = _SKELETON_STRIP_RE.sub("", text or "")
+    if len(body) <= head_n + tail_n:
+        return body, body
+    return body[:head_n], body[-tail_n:]
+
+
+def skeleton_duplicates(reply: str, prior_lines: list[str]) -> dict[str, list[str]]:
+    """与既往自身发言的骨架重合：`{"head": [...], "tail": [...]}`。"""
+    head, tail = skeleton_parts(reply)
+    out: dict[str, list[str]] = {"head": [], "tail": []}
+    if not head:
+        return out
+    for line in prior_lines or []:
+        o_head, o_tail = skeleton_parts(line)
+        if not o_head:
+            continue
+        if head == o_head:
+            out["head"].append(line)
+        if tail == o_tail:
+            out["tail"].append(line)
+    return out
+
+
 def _strip_tool_failure_narration(reply: str) -> str:
     """只删掉**播报故障的句子**，其余原样保留。
 
@@ -689,6 +839,36 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
     """输出护栏 —— 过滤危险/机械回复。"""
     ctx.reply = _clean_transport_text(ctx.reply)
     ctx.reply = _strip_speaker_labels(ctx.reply)
+    # 时段词纠偏（见 `_PERIOD_WORD_WINDOWS` 注释）：模型不听 prompt 的第二道闸。
+    # 放在所有改写之前 —— 后面几条分支可能整段替换，替换后就不需要再纠。
+    try:
+        ctx.reply, _period_fixes = fix_period_words(ctx.reply)
+        for _bad, _good in _period_fixes:
+            logger.warning(
+                "[时段纠偏] 出站时段词与真实时间不符：%s→%s", _bad, _good)
+    except Exception:
+        logger.debug("时段词纠偏失败（已隔离）", exc_info=True)
+
+    # 骨架复读检测（只读日志，不改正文）：见 `skeleton_parts` 上方注释。
+    # 放在所有改写之前 —— 要度量的是**模型产出的骨架**，不是护栏改写后的。
+    # 🔴 兜底/罐头话术**不计入**（D-38）：它们来自固定池，抽到同一句是必然，
+    # 拿来当"复读"会让上游抖动直接污染指标。
+    try:
+        if (ctx.detail_type == "group" and ctx.group_id
+                and len(ctx.reply or "") >= 12
+                and not _is_canned_reply(ctx.reply)):
+            from anima.memory.chat_memory import get_chat_memory
+            _prior = get_chat_memory().recent_bot_lines(int(ctx.group_id), limit=8)
+            _dup = skeleton_duplicates(ctx.reply, _prior)
+            if _dup["head"] or _dup["tail"]:
+                logger.warning(
+                    "[骨架复读] head=%d tail=%d 样本=%s",
+                    len(_dup["head"]), len(_dup["tail"]),
+                    (ctx.reply or "")[:60],
+                )
+    except Exception:
+        logger.debug("骨架复读检测失败（已隔离）", exc_info=True)
+
     if not ctx.reply and ctx.sticker_to_send:
         ctx.reply = "喏，给你。"
     if not ctx.reply:

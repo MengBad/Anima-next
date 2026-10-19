@@ -121,6 +121,8 @@ class LLMClient:
         image_fallback_models: list[str] | None = None,
         extra_fallback_models: list[str] | None = None,
         module_reasoning_effort: dict[str, str] | None = None,
+        outbound_turn_budget_sec: float = 45.0,
+        outbound_retries: int = 1,
     ):
         self.base_endpoint = endpoint.rstrip("/")
         self.endpoint = self.base_endpoint + "/chat/completions"
@@ -143,6 +145,13 @@ class LLMClient:
         )
         self._session: Optional[aiohttp.ClientSession] = None
         self.retries = max(0, min(int(retries), 4))
+        # 🔴 D-39（2026-10-19）：**出站轮次预算**。<=0 ⇒ 关闭（行为与修复前逐字相同）。
+        # 语义是"这一轮出站最多花多久"，与 `timeout`（单次尝试）不是一回事：
+        # 生产 p90 = 105s 的根因就是"单次 60s × 2 重试 × 6 候选"没人管总账。
+        self.outbound_turn_budget_sec = max(0.0, float(outbound_turn_budget_sec or 0.0))
+        self.outbound_retries = max(0, min(int(outbound_retries), 3))
+        #: `_post` 进入时按 outbound 计算；非出站恒 None（旁路/后台不受限）。
+        self._outbound_deadline: Optional[float] = None
         self.retry_backoff_sec = max(0.0, min(float(retry_backoff_sec), 5.0))
         self.fallback_models = [
             str(item).strip() for item in (fallback_models or [])
@@ -814,6 +823,14 @@ class LLMClient:
         self.request_count += 1
         started = time.perf_counter()
         retry_start = self.retry_count
+        # 🔴 D-39（2026-10-19）：**出站轮次预算**。只在 outbound scope 内生效；
+        # 0 = 关闭（行为与修复前逐字相同）。不 try/finally 清：下次 _post 重新赋值，
+        # 非出站一律 None（旁路/后台不该被 QQ 的体验预算牵连）。
+        self._outbound_deadline = (
+            started + self.outbound_turn_budget_sec
+            if current_call_info().outbound and self.outbound_turn_budget_sec > 0
+            else None
+        )
         now = time.time()
         if self.circuit_open_until > now:
             self.last_status = None
@@ -852,6 +869,15 @@ class LLMClient:
         candidates = [requested_model, *[item for item in self.fallback_models if item != requested_model]]
         data: dict | None = None
         for position, candidate in enumerate(candidates):
+            if (self._outbound_deadline is not None
+                    and time.perf_counter() >= self._outbound_deadline):
+                self._set_error("turn_budget_exhausted")
+                logger.warning(
+                    "出站轮次预算 %.0fs 耗尽，放弃剩余 %d 个候选（已试 %d 个：%s）",
+                    self.outbound_turn_budget_sec, len(candidates) - position,
+                    position, ",".join(candidates[:position]) or "-",
+                )
+                break
             payload["model"] = candidate
             self._empty_completion = False  # 逐候选重置，避免上一位的降级污染本位的判定
             data = await self._try_post(payload, headers)
@@ -998,10 +1024,24 @@ class LLMClient:
 
     async def _try_post(self, payload: dict[str, Any], headers: dict[str, str]) -> dict | None:
         """仅对可恢复故障进行有限重试，避免鉴权错误造成无意义等待。"""
-        for attempt in range(self.retries + 1):
+        _outbound = bool(current_call_info().outbound)
+        _retries = self.outbound_retries if _outbound else self.retries
+        for attempt in range(_retries + 1):
+            _kwargs: dict[str, Any] = {}
+            if _outbound and self._outbound_deadline is not None:
+                _remain = self._outbound_deadline - time.perf_counter()
+                if _remain <= 1.0:
+                    # 预算不够一次像样的尝试：立刻交回，让 `_post` 停候选循环、
+                    # 上层据此落兜底 —— 而不是眼睁睁再等 60s。
+                    self._set_error("turn_budget_exhausted")
+                    logger.warning("出站轮次预算耗尽（剩余 %.1fs），停止尝试 model=%s",
+                                   max(0.0, _remain), payload.get("model"))
+                    return None
+                _kwargs["timeout"] = aiohttp.ClientTimeout(
+                    total=_remain, sock_connect=min(10.0, _remain))
             try:
                 async with self._session.post(  # type: ignore[union-attr]
-                    self.endpoint, json=payload, headers=headers,
+                    self.endpoint, json=payload, headers=headers, **_kwargs,
                 ) as response:
                     self.last_status = response.status
                     if response.status == 200:
@@ -1046,11 +1086,18 @@ class LLMClient:
                 logger.exception("LLM 请求异常")
                 return None
 
-            if attempt < self.retries:
+            if attempt < _retries:
+                if (self._outbound_deadline is not None
+                        and self._outbound_deadline - time.perf_counter()
+                        <= self.retry_backoff_sec * (2 ** attempt) + 2.0):
+                    self._set_error("turn_budget_exhausted")
+                    logger.warning("出站轮次预算不足以再重试一次 model=%s",
+                                   payload.get("model"))
+                    return None
                 self.retry_count += 1
                 delay = self.retry_backoff_sec * (2 ** attempt)
                 logger.warning("LLM 请求失败，%.1fs 后第 %d/%d 次重试：%s",
-                               delay, attempt + 1, self.retries, self.last_error)
+                               delay, attempt + 1, _retries, self.last_error)
                 await asyncio.sleep(delay)
 
         return None

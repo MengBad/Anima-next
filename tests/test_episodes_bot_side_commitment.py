@@ -67,11 +67,20 @@ def test_episodes_side_uses_the_shared_lexicon():
 
 
 def test_source_has_a_single_predicate_line():
-    """源码级：`:105` 那行的判据不得再出现按角色分叉的第二入口。"""
+    """源码级：判据只有一行，且不得再出现按角色分叉的第二入口。
+
+    🔴 2026-10-18（D-35）：判据实现从 `bool(_COMMITMENT_HINT.search(text))`
+    改为 `_commitment_match(text) is not None` —— 裸正则会命中
+    「本喵才不帮你看」这种**拒绝**（生产实测造出 13 笔假债 + 26 条议程）。
+    这里同步收口到新实现；本测试的**原意不变**：只允许一个判据入口。
+    """
     src = (_ROOT / "anima" / "memory" / "episodes.py").read_text(encoding="utf-8-sig")
-    line = next(ln for ln in src.splitlines() if "has_commit = bool(" in ln)
-    assert '_BOT_PROMISE_HINT' not in line, f"bot 侧第二判据又回来了: {line.strip()!r}"
-    assert '_COMMITMENT_HINT.search(text)' in line
+    lines = [ln for ln in src.splitlines()
+             if "has_commit =" in ln and "commitment_match" in ln]
+    assert len(lines) == 1, f"承诺判据出现 {len(lines)} 行（应唯一）: {lines}"
+    line = lines[0]
+    assert "_BOT_PROMISE_HINT" not in line, f"bot 侧第二判据又回来了: {line.strip()!r}"
+    assert "commitment_match" in line, f"判据必须走带否定守卫的入口: {line.strip()!r}"
 
 
 # ---------------------------------------------------------------------------

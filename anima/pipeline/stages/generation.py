@@ -131,6 +131,33 @@ _REALTIME_TOOL_GUIDANCE = (
     "若用户丢的是 space.bilibili.com 主页链接，用 bilibili_read 读主页最近投稿；"
     "不要对主页链接反复 web_search 空转，也不要假装已经看完某个具体视频。"
 )
+# ── 索取型请求：先动手找，再决定给不给（2026-10-19，D-40）────────────────────
+# 生产实证（00:20，群 727631526）：用户「来点达摩人肉公共马桶的本子」，
+# 该轮 `ReAct: ... tools=52` —— **工具全在上下文里**，模型却直接回了
+# 「你小子脑子里到底天天在装些什么有害垃圾啊」，既没去查，还顺手评判了用户。
+# 根因不是"缺工具"，而是**触发词没命中**：上面那张 `_REALTIME_TOOL_RE` 只有
+# 「搜/查/找…图」这类**指令式**问法，`来点 / 给我 / 有没有 …` 这类**索取式**
+# 问法一条都不在 ⇒ 模型收不到"先去查"的引导，就按 persona 的
+# 「帮忙是情分不是义务」选择了拒绝。
+# 🔴 红线不动：露骨色情/违法/他人隐私**仍然拒绝**。这里改的只是**顺序与姿态** ——
+#   先真去查，查不到就说没查到；确实不该给的，一句短话带过、**不评价对方**。
+_EXPLORE_INTENT_RE = re.compile(
+    r"(?:来|整|搞|弄)(?:一|两|几)?(?:点|张|个|些|份|首|部|本)"
+    r"[^\s，。！？]{0,14}(?:图|照片|图片|链接|资源|视频|歌|曲|歌单|本子|模组|壁纸|表情包|游戏|电影|动漫|小说)|"
+    r"(?:有没有|有无|有木有)[^。！？\n]{0,14}"
+    r"(?:图|照片|图片|链接|资源|视频|歌|歌单|本子|模组|壁纸|表情包|游戏|电影|动漫|小说)|"
+    r"给(?:我|我点|点)[^。！？\n]{0,14}"
+    r"(?:图|照片|图片|链接|资源|视频|歌|歌单|本子|模组|壁纸|表情包|游戏|电影|动漫|小说)",
+    re.I,
+)
+_EXPLORE_INTENT_GUIDANCE = (
+    "用户是在**向你要某样具体的东西**（图 / 链接 / 资源 / 推荐 / 作品）。"
+    "先动手去找：能用工具查的就真查一遍（web_search / x_search / bilibili_read 等），"
+    "查到之后把最贴题的那一两个给出来；查不到就直说没查到，不要编。"
+    "如果这东西本身不该给（露骨色情、违法、别人的隐私），用一句短话带过去就行——"
+    "不解释理由、不说教、不评价对方是什么人，然后照常聊别的。"
+)
+
 # --- P0-1 Memory-First（DESIGN_REACT_MEMORY_FIRST.md）---
 # 与 _REALTIME_TOOL_GUIDANCE 反向互补：成员/事实类问题先查内部记忆，别一上来就搜网。
 # 注意与 _REALTIME_TOOL_RE 的关系：后者刻意宽松（含「是什么/为什么/资料/百科」等泛事实词），
@@ -986,6 +1013,16 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     ):
         _inject_runtime_tool_guidance(ctx, _MEMORY_FIRST_GUIDANCE)
 
+    # 索取型请求：先查再决定给不给（见 `_EXPLORE_INTENT_RE` 注释）。
+    # 只在**没有**命中实时/记忆引导时补 —— 三条引导同轮叠加会让模型无所适从。
+    if (
+        available_tools
+        and not _realtime_hit
+        and not _MEMORY_FIRST_RE.search(ctx.text or "")
+        and _EXPLORE_INTENT_RE.search(ctx.text or "")
+    ):
+        _inject_runtime_tool_guidance(ctx, _EXPLORE_INTENT_GUIDANCE)
+
     # X（Twitter）搜索专用引导：用户明确要求去 X/推特上搜时，优先走 x_search 而非 web_search
     if available_tools and _X_SEARCH_RE.search(ctx.text or ""):
         _inject_runtime_tool_guidance(ctx, _X_SEARCH_GUIDANCE)
@@ -1216,6 +1253,20 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                 if path and Path(path).exists() and stickers_enabled:
                     ctx.sticker_to_send = path
                     ctx.reply = _strip_sticker_path_from_reply(ctx.reply, path)
+                    # 🔴 2026-10-20：纯观测埋点（不改任何行为）。
+                    # 起因：10-19 22:25–22:48「跑图」事件里 bot 连发三轮表情包，
+                    # 但现有证据只能证明「同情绪」（chat_memory 记的是 emotion 标签），
+                    # **无法证明是否同一张图** —— `sticker_to_send` 的落点此前无日志，
+                    # 事后不可反查。此处把文件 stem（= stickers.json 的 sha1 索引键）记下，
+                    # 下次再出现"连发"即可直接判同图 vs 同情绪。
+                    try:
+                        logger.info(
+                            "[表情选图] trace=%s tool=%s stem=%s",
+                            ctx.meta.get("trace", "-"), t.get("name"),
+                            Path(path).stem[:16],
+                        )
+                    except Exception:
+                        logger.debug("表情选图埋点失败（已隔离）", exc_info=True)
                     break
                 logger.debug("sticker 工具未返回有效图像路径，跳过附带: %.40s", str(res))
 

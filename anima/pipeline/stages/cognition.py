@@ -658,6 +658,15 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.debug("用户活跃节律注入失败", exc_info=True)
 
+    # 🔴 2026-10-18（D-33 层二撤回）：这里**曾经**注入「你最近在这个群说过下面这些话」
+    # （`self_recent_lines`），目的是防复读。部署后首个真实样本证明它**反向放大**了复读：
+    #   · 该群 30 分钟窗口内 bot 条目 = 0 ⇒ 那句话在 prompt 里的**唯一来源就是本注入**；
+    #   · 预算未裁（`dropped=` 空、`overflow=-1026`）⇒ 模型确实看见了那 4 条；
+    #   · 结果是输出与注入中最像的一条 ratio **0.690（全场最高）**并沿用同一骨架。
+    #   ⇒ 「不要用这几句」+ 4 份原句 = **给模板 + 一句没人遵守的否定**（U2 定律第三例）。
+    # 复读的真病灶在 `COMMITMENT_RE` 把拒绝判成承诺（见 constants.D-35 注释），
+    # 因此这条注入已删除；需要度量骨架重复时用 `guardrail` 的 `[骨架复读]` 检测锚（只读日志、不喂 prompt）。
+
     # 情绪状态注入
     try:
         from anima.cognitive.mood import get_mood_system

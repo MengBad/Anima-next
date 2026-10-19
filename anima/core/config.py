@@ -49,6 +49,21 @@ class LLMConfig(BaseModel):
     #: 空列表（默认）⇒ 行为与从前**逐字相同**，是零影响回滚点。
     #: 🔴 最多生效 **1 档**（链长上限 4 → 5），避免最坏延迟被拖长。
     extra_fallback_models: list[str] = Field(default_factory=list)
+    #: 🔴 2026-10-19（D-39）：**出站轮次的 LLM 总预算**（秒）。
+    #:
+    #: 生产实证：24h 里真实回复轮次 p90 = **105s**、max = **209s**，最慢三轮
+    #: `generation_stage` 独占 102945/103290/107354 ms —— 用户等了两分钟，
+    #: 收到的第一句是「本喵这边卡壳了喵」。根因不是上游坏（那是外部事实），
+    #: 而是**出站调用不在任何轮次预算内**：`timeout 60s × retries 2 × 6 个候选`
+    #: 理论最坏 1080s。`react.turn_deadline_sec` 只管 ReAct 内部，管不到这段。
+    #:
+    #: 语义：**只在 `llm_scope(outbound=True)` 内生效**；旁路/后台任务不受影响
+    #: （它们慢一点没关系，且不该被 QQ 的体验预算牵连）。
+    #: 0 或负数 ⇒ 关闭（行为与修复前逐字相同，零影响回滚点）。
+    outbound_turn_budget_sec: float = 45.0
+    #: 出站单候选的重试次数（覆盖 `retries`）。今日 1466 次 `transport:ClientOSError`
+    #: 说明重试**打在同一个黑洞上**：换候选比原地重试更有用。默认 1（共 2 次尝试）。
+    outbound_retries: int = 1
     circuit_failure_threshold: int = 3  # 连续失败达到此值后短暂熔断，保护 QQ 主链路
     circuit_cooldown_sec: float = 30.0
     # 可选的命名提供商配置。保留旧字段是为了兼容现有 config.yaml；
