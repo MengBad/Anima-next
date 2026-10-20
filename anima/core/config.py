@@ -1067,9 +1067,16 @@ class IterationConfig(BaseModel):
     绝不改 config.yaml / 权限 / 密钥。
     """
     enabled: bool = True                 # 故障扫描与工单
-    auto_repair: bool = False            # 档 3：自动生成补丁并 apply
+    #: 🔴 2026-10-21 语义变更（owner 拍板方案 A）：**不再是「自动改代码」**。
+    #: 开启后它做的是「自主发现 → 自主写补丁 → **私聊推送待审**」，
+    #: 落地仍须 owner 执行 `!anima iterate approve <id>` + `apply <id>`。
+    #: 此前该开关走的是自批自落地（`set_status(approved_pending_apply)` 后直接
+    #: `apply_core_patch`），与铁律「Self improvement ≠ Self authorization」冲突；
+    #: 白名单里是 onebot11 / handler / autonomy / react / tools 等承重文件。
+    #: 现在可安全开启：开了只会多出「待审补丁」，不会自己改生产。
+    auto_repair: bool = False            # 档 3：自主生成补丁并推送待审（不自动落地）
     auto_restart: bool = True            # apply 成功后尝试 systemctl restart anima
-    daily_quota: int = 1                 # 每日自动 apply 上限
+    daily_quota: int = 1                 # 每日自主生成补丁上限
     ticket_cooldown_sec: int = 6 * 3600
     auto_repair_cooldown_sec: int = 3600 # 两次自动修复最小间隔
     max_files_per_patch: int = 2         # 单次最多改几个白名单文件

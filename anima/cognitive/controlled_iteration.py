@@ -634,25 +634,80 @@ class ControlledIteration:
                 return f"自动修复失败 task={task.id}：无可用补丁"
 
             self.attach_diffs(core, task.id, diffs)
-            # 自动路径：跳过人工审批，但保留审计
-            core.tasks.set_status(task.id, "approved_pending_apply", "档3自动修复：跳过人工审批（已审计）")
-            msg = self.apply_core_patch(
-                core, task.id, owner_id,
-                skip_status_check=False,
-                run_tests=True,
-                restart=bool(getattr(cfg, "auto_restart", True)) if cfg else True,
+            # 🔴 2026-10-21 纪律改造（owner 拍板方案 A）：
+            #   此前这里是「自动路径：跳过人工审批，但保留审计」——
+            #   直接 `set_status(approved_pending_apply)` 再 `apply_core_patch`，
+            #   即 **它自己改自己的生产代码、不经 owner 点头**。
+            #   这与项目铁律「Self improvement ≠ Self authorization」正面冲突，
+            #   也与 Dots 官方默认（需批准，非自动）相反。
+            #   而白名单里恰是 onebot11 / handler / autonomy / react / tools
+            #   —— 全是生产主链路承重文件，改坏了 owner 会立刻看见，也最难排。
+            #
+            #   现在：**自主生成照旧**（发现问题→写补丁→落库都在这里完成），
+            #   但**落地那一步交回 owner**：状态停在 `awaiting_approval`，
+            #   并私聊推送一条带 task_id 的审批提示。
+            #   owner 用 `!anima iterate approve <id>` 批准、
+            #   `!anima iterate apply <id>` 落地（既有两步分离通道，不新造）。
+            core.tasks.set_status(
+                task.id, "awaiting_approval",
+                "档3自主生成补丁完成；按 Self improvement≠Self authorization，"
+                "落地须 owner 批准",
             )
-            # apply_core_patch requires approved_pending_apply - we set it above
+            self.state["last_auto_repair_at"] = time.time()
             self._bump_quota()
-            logger.warning("档3自动修复成功 task=%s %s", task.id, msg[:200])
-            return msg
+            await self._notify_patch_awaiting_approval(core, task, diffs)
+            logger.warning("档3自主生成补丁待审 task=%s files=%s",
+                           task.id, list((diffs[0] or {}).keys())[:3] if diffs else [])
+            return (f"自主生成补丁待审 task={task.id}（{len(diffs)} 个文件）；"
+                    f"未落地，等 owner 批准")
         except Exception as exc:
-            logger.exception("档3自动修复失败")
+            logger.exception("档3自主生成补丁失败")
             self.state["last_auto_repair_at"] = time.time()
             self._save()
             return f"自动修复异常：{type(exc).__name__}: {str(exc)[:200]}"
         finally:
             self._auto_running = False
+
+    async def _notify_patch_awaiting_approval(
+            self, core: Any, task: Any, diffs: list[dict[str, str]]) -> None:
+        """私聊推送「补丁待审批」（复用 D-41 的 owner 私聊通道）。
+
+        fail-closed：owners 为空不发、任何异常只记日志 —— 绝不因通知失败
+        影响补丁本身已落库的事实。
+        """
+        owners = list(getattr(getattr(core.config, "permissions", None), "owners", []) or [])
+        if not owners:
+            logger.warning("[自主补丁] permissions.owners 为空，跳过通知（不伪造目标）")
+            return
+        try:
+            from anima.core.gateway import OutboundMsg
+        except Exception:
+            logger.debug("[自主补丁] 无法导入 OutboundMsg", exc_info=True)
+            return
+        files: list[str] = []
+        for d in diffs or []:
+            if isinstance(d, dict):
+                files.extend([k for k in d.keys()][:1])
+        _fl = "、".join(files[:3]) if files else "（见任务详情）"
+        body = (
+            f"本喵自己发现一个问题，补丁写好了，但**没敢自己改**喵。\n"
+            f"任务：{task.id}\n涉及：{_fl}\n"
+            f"看细节：!anima iterate status\n"
+            f"批准：!anima iterate approve {task.id}\n"
+            f"批准后落地：!anima iterate apply {task.id}（不自动重启）"
+        )
+        for oid in owners:
+            try:
+                await core.gateway.send(OutboundMsg("private", int(oid), body))
+            except Exception:
+                logger.warning("[自主补丁] 私聊通知失败 owner=%s", oid, exc_info=True)
+        try:
+            audit = getattr(core, "audit", None)
+            if audit is not None and hasattr(audit, "emit"):
+                audit.emit("auto_patch_awaiting_approval", task_id=task.id,
+                           files=files[:5], diff_count=len(diffs or []))
+        except Exception:
+            logger.debug("[自主补丁] 审计写入失败", exc_info=True)
 
     def _pick_auto_candidate(self, core: Any) -> Any | None:
         open_status = {"awaiting_approval", "planned", "approved_pending_apply"}
