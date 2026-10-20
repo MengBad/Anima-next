@@ -168,12 +168,36 @@ curl -H "Authorization: Bearer <token>" http://127.0.0.1:8088/api/modules/status
 | `llm.LLMClient` + `llm.handler.LLMHandler` | 配了 LLM 即接线 | 重试 / 熔断 / `fallback_models` / 413 再编码 |
 | `tools.create_default_registry(core)` | `cli.py:385` | **唯一**工具注册入口；`core` 必传（不传则 core 依赖类工具整体缺席） |
 | Skills / SelfCode / 记忆 / Heartbeat | `AnimaCore.start` | Heartbeat 另受 `autonomy.enabled` 约束 |
-| `runtime.recovery_module` → `bootstrap.recover_all` → `recovery.recover_run` + `persistence.WorkflowRunStore` | `AnimaCore.start` | `data/workflow_runs/*.json` |
+| `runtime.recovery_module` → `bootstrap.recover_all` → `recovery.recover_run` + `persistence.WorkflowRunStore` | `AnimaCore.start` | ⚠️ **consumer-only**：恢复链通且每次启动都跑，但**无 producer 造 run** ⇒ 恒空转。见下方专项说明 |
 | `core.paths.set_data_dir` | `anima_core.py:499`（**唯一接线点**） | 其余 `Paths` / `child()` 未用（见 §3.3） |
 | `core` 下绝大多数子系统 | gateway / event_bus / audit / persistence / health_history / approvals / backup / evaluation / config_service / config_drift / intents / workflows / tasks / permissions | — |
 | `capability.*` 受治理层 | `tools/__init__.py`（resolver / governance.gateway / health / audit sink / ops.observer / lifecycle） | 代码已接线，但**模式默认 OFF** → 走 legacy 路径（见 §3.2） |
 | `tools/builtin/reminder.py` | `create_default_registry(core)`（P2-2） | 复用 `cognitive.debt` 债账本，不另起存储 |
 | `tools/builtin/honor.py` | `create_default_registry(core)`（P2-4） | P2-4 修复：改走真实 OneBot 通道（原实现调不存在的 `get_gateway`，恒失效） |
+
+#### ⚠️ 专项：「执行面是死的」是误读 —— recovery 与 production 是两件事
+
+> 2026-10-21 实证订正。这张表曾让人（含本人在内）得出「`data/workflow_runs`
+> 是空的 ⇒ 执行面死了 ⇒ Dot 化要从零造」的结论。**这个推论是错的，且会导致
+> 严重高估工作量。**
+
+| 面 | 代码路径 | 产物 | 真实状态 |
+|---|---|---|---|
+| **`runtime/` 恢复面** | `anima_core.py:255` 每启动 `restore()` → `recovery_module:55` → `recover_all()` | `data/workflow_runs` | **链路通、恒空转**。`bootstrap.py:60` 目录不存在时直接返回空（不是错误）。它是**只读 consumer** |
+| **`runtime/` 生产面** | `runtime/orchestrator:256 start_run` ← `run_plan` | 同上 | **零驱动**。`run_plan` 只被 runtime 包内 3 个模块引用，这 3 个都未被 `cli/core` 装配 |
+| **`anima/agent/` 面** | `anima_core.py:61` 无条件装配 `OwnerAgent`；`commands.py:274` / `handler.py:1046` 驱动 | **`data/agent_tasks.json`** | ✅ **活的，全套现成**（规划/执行/沙箱/媒体+文本交付/持久化） |
+
+**三条结论（按此判读，别再混为一谈）**：
+
+1. **`runtime/` 是 consumer-only** —— 恢复是现成的，缺的是 producer；造第一条
+   run 需先装配 orchestrator+planning+workflow 三件套，**不便宜**。
+2. **想让 Agent 干活，走 `anima/agent/`，不要碰 `runtime/`** —— 它不在
+   `docs/RUNTIME_SURFACE_STATUS.md` §3.1「不新增功能」的管辖面内，且能力齐全。
+3. **`data/workflow_runs` 空 ≠ 没有执行能力** —— 它只是没被那条路走到。
+   判定 Agent 面是否活，看 **`data/agent_tasks.json`**，不是 workflow_runs。
+
+> 实证（2026-10-21）：6 次 Agent 任务全部跑通完整链路（30–70s），文本产物
+> 送达私聊，`agent_tasks.json` 正常落盘 —— 而 `workflow_runs` 始终为空。
 
 **默认 ON 的能力开关（关掉就是主动退化，不是"更安全"）**
 

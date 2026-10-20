@@ -610,10 +610,30 @@ class ConversationConfig(BaseModel):
 
 
 class ReplySplitConfig(BaseModel):
-    """拟人分段发送 + 拟真延迟（参考 astrbot_plugin_splitter）。"""
+    """拟人分段发送 + 拟真延迟（参考 astrbot_plugin_splitter）。
+
+    🔴 2026-10-21 澄清（字段名有误导性，已实证订正）：
+    **本配置决定「切成几条」，不决定「总共能发多少字」—— 分段永不丢内容。**
+
+    曾有人（含本人在内）据此算出「主回复带宽 = max_segments × max_segment_len
+    = 2 × 90 = 180 字」，进而主张为 Dot 化单独放宽分段。**该结论是错的。**
+
+    实测（`reply_splitter.split_text` 走真实默认配置）：
+    * 450 字 → 2 段（275+175），丢失 0
+    * 950 字 → 2 段（581+369），丢失 0
+    * 3000 字 → 2 段（1920+1080），丢失 0
+
+    原因：`reply_splitter.py:215-216` 会把切不动的剩余内容**全部合并进最后一段**，
+    `max_segment_len` 只在切分时当**目标段长**用，不是硬上限 ⇒ 长回复被压成
+    少数几条长消息，而不是被砍短。
+
+    **真正的上限在 guardrail（`guardrail.py:1106`）：闲聊 420 字 / 实质提问 900 字，
+    且在截断前会吸附句读边界。** 排查带宽问题该看那里，不是这里。
+    """
     enabled: bool = True
     max_segments: int = 2
     min_segment_len: int = 40
+    #: ⚠️ 不是硬上限 —— 见类 docstring。切不动的剩余会合并进最后一段，不截断。
     max_segment_len: int = 90
     trigger_threshold: int = 150      # 低于此字数不分段（避免短回复被切成多条）
     tail_merge_threshold: int = 15    # 尾段低于此字数合并到前段

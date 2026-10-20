@@ -20,16 +20,16 @@
 | 状态 | 条数 | 条目 |
 |---|---|---|
 | `FIXED` | 31 | D-01/02/03/04/05/06/07/08/09/10/11/13/15/18/19/20/21/23/24/25/26/27/28/**32/34/35/36/37/38/39/40** |
-| `VERIFIED-NON-ISSUE`（实测证伪） | 2 | D-12（数据轮转）、D-22（context 预算=0） |
+| `VERIFIED-NON-ISSUE`（实测证伪） | 4 | D-12（数据轮转）、D-22（context 预算=0）、**D-42（180 字带宽）**、**D-43（执行面是死的）** |
 | `DECIDED`（口径裁定，非代码改动） | 1 | D-14 |
 | `DEFERRED`（显式挂起，含重启前置条件） | 1 | D-16 |
 | `CLOSED-AS-UNDERSTOOD`（归真后判定"不改逻辑"） | 1 | D-17（游离物：环境级阻塞、零影响、处置已定）·（D-27 经 **owner 显式授权**改判 `FIXED`：抬至 11000，见下） |
 | `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 0 | ——（D-21 已于 09-18 部署窗口执行，见下） |
 | `PARTIALLY-CLOSED` | 1 | **D-33**（复读：已改判——真病灶是 D-35 假债闭环；本轮改为只检测不重生成） |
-| `OPEN` | 0 | ——（D-37 已于 2026-10-20 修复） |
+| `OPEN` | 1 | **D-41**（`propose_agenda` 只认 group_id ⇒ 主动产出只能发群；2026-10-21 登记） |
 | `NEEDS-OWNER` | 0 | ——（D-07 已于 2026-10-17 完成外置 ⇒ 改判 `FIXED`） |
 | `SEALED` | 3 | D-29（接线断言）、D-30（数值 trait 通道）、D-31（`bored` 死枚举） |
-| **合计** | **40** | |
+| **合计** | **43** | |
 
 > 🔴 **2026-10-18 自主批次更新**（owner「123全修」）：新增 **D-32 / D-33 / D-34** 三张工单，
 > 均一轮内 `FIXED`（代码 + 判据 + 全量回归 + 生产部署）。三者共用同一类病因 ——
@@ -797,6 +797,75 @@
   成功路径与 `read_file` 一致、**路径穿越仍抛错**、清单只读且有限、文案含"改用写入工具先产出"）。
 - **部署验收**：`_backup_r7_20261020_053058`，MainPID `3465785`，NRestarts 0、Traceback 0；
   parity `17854d46aa36` 本地 == 生产；实跑缺文件回执列出 **40** 个可用文件、成功路径照旧读取（1051 字）。
+
+---
+
+## D-41 · `propose_agenda` 只认 `group_id` ⇒ 主动产出无处可去，只能发群 —— `OPEN`（Dot 化真障碍）
+
+- **来源**：2026-10-21 Dot 化调研。owner 取向：QQ 私聊 = 给 owner 干活/交付的面，
+  群聊 = 它的社交生活（维持现有克制）。
+- **证据**：
+  * `anima_core.py:205` `propose_agenda(group_id, ...)` —— **签名第一参数就叫 group_id**，
+    `AgendaItem(group_id, ...)`；消费端 `autonomy.py:1188-1213` → `_speak(agenda_item.group_id)`
+    → `autonomy.py:1936` 硬编码 `OutboundMsg("group", ...)`。
+  * 心跳 28 个子系统，**唯一**出站口就是这条群路径；全文件无 `OutboundMsg("private", ...)`。
+  * 后果：给 owner 的产出只有 `tasks.create()` 建待办（`autonomy.py:800` 健康告警、
+    `:929` 自治自检），**只在 WebUI 等人来取，从不推送 QQ** ⇒ 每天在写，没人看。
+- **已澄清（不是这条，别混淆）**：
+  * ❌ 不是「审批门挡住了自主性」—— `handler.py:1059` 的草稿+approve 是**刻意安全设计**
+    （09-28 人视角审计修的：任务 ID 与 approve 语法曾发回群、全体可见）。**不该拆。**
+  * ❌ 不是「私聊带宽不够」—— 实测带宽充足（见 D-42）。
+  * ✅ **能发私聊**：`onebot11.py:1277 send_private_msg` 的 `reply_id` 可空，天然支持非引用式；
+    且已有先例 `handler.py:376`、`:2095`、`owner_agent.py:264-283`（"群里留摘要 + 私聊发完整产物"）。
+    ⇒ **能力齐备，只缺接线。**
+- **验收口径**（将来做时按此判）：
+  1. 心跳存在一条到 `permissions.owners[0]` 的私聊出站，且 `owners` 为空时 fail-closed 不伪造发送；
+  2. 新增私聊产出**自建节流**（现有私聊路径不经过群侧冷却/占比/日预算，不建会绕过整套防刷屏纪律）；
+  3. 群侧行为零变化（主动发言仍只发群、冷却与预算不受影响）。
+- **刻意不做（本轮）**：不扩 `propose_agenda` 签名（改动大且要重做消费端门控）；
+  不动 `handler.py:1059` 审批门；不碰 `runtime/`（违反 RUNTIME_SURFACE_STATUS §3.1）。
+
+---
+
+## D-42 · 「回复带宽 = max_segments × max_segment_len = 180 字」—— `VERIFIED-NON-ISSUE`（实测证伪）
+
+- **来源**：2026-10-21 Dot 化调研中，有调研员据 `config.py:616-617` 字段名
+  （`max_segments=2` / `max_segment_len=90`）推得此结论，并据此主张"为 Dot 化单独放宽分段参数"。
+- **证据（真实默认配置 + 真实代码实测，`reply_splitter.split_text`）**：
+  | 输入 | 分段 | 丢失 |
+  |---|---|---|
+  | 450 字 | 2 段（275+175） | **0** |
+  | 950 字 | 2 段（581+369） | **0** |
+  | 3000 字 | 2 段（1920+1080） | **0** |
+  3000 字时单段 1920 字 —— 远超 90，证明 `max_segment_len` 不是硬上限。
+- **根因**：`reply_splitter.py:215-216` 把切不动的剩余内容**全部合并进最后一段**；
+  `max_segment_len` 只在切分时当**目标段长**。分段器决定"切成几条"，不决定"总共发多少"。
+- **真正的上限**：`guardrail.py:1106` —— 闲聊 420 / 实质提问 900，且截断前吸附句读边界。
+  实测判据函数：owner 的实质提问（"帮我分析…"/"为什么…"/"总结一下…"）**全部走 900 档**。
+- **判据**：`config.py` `ReplySplitConfig` docstring 已加澄清说明 + 实证数据；
+  `tests/test_file_tool_attribution.py::test_success_path_unchanged` 式成功路径锁（分段未改）。
+- **处置**：**只归真，不改逻辑**（与 D-27 同款）。已撤回"独立分段参数"这一轮提案。
+
+---
+
+## D-43 · 「执行面是死的」误读 —— `VERIFIED-NON-ISSUE`（文档误导，已订正）
+
+- **来源**：2026-10-21 Dot 化调研。本人据 `docs/RUNTIME_SURFACE_STATUS.md` §2
+  （四个产物目录全不存在）得出"执行面零驱动 ⇒ Dot 化要从零造"，**该推论错误**。
+- **证据（实测订正）**：
+  | 面 | 状态 |
+  |---|---|
+  | `runtime/` 恢复面 | 链路通、恒空转。`anima_core.py:255` 每启动 `restore()` → `recovery_module:55`；`bootstrap.py:60` 目录不存在直接返回空。**是现成 consumer** |
+  | `runtime/` 生产面 | 零驱动。`start_run` 唯一入口 `run_plan`，只被 runtime 包内 3 个未装配模块引用 |
+  | **`anima/agent/` 面** | ✅ **活的**。`anima_core.py:61` 无条件装配 `OwnerAgent`，规划/执行/沙箱/媒体+文本交付/持久化全套现成 |
+- **实证（6 次 Agent 任务，2026-10-21）**：全部跑通完整链路（30–70s），文本产物送达私聊，
+  `agent_tasks.json` 正常落盘 —— 而 `data/workflow_runs` 始终为空。
+  ⇒ **`workflow_runs` 空 ≠ 没有执行能力**，它只是没被那条路走到。
+- **判据**：判定 Agent 面是否活，看 **`data/agent_tasks.json`**，不是 `workflow_runs`。
+- **处置**：**只归真，不改逻辑**。`MAINTENANCE.md` §3.1 已把 recovery 标为
+  ⚠️ **consumer-only** 并加专项说明（含"走 `anima/agent/` 不要碰 `runtime/`"的指引）。
+  另订正 `RUNTIME_SURFACE_STATUS.md` §3.1「无 producer、无 consumer」—— consumer 其实是有的
+  （该偏差不影响其 C-1 裁定结论）。
 
 ---
 
