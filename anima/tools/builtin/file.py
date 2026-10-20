@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+logger = logging.getLogger("anima.tools.builtin.file")
 
 
 def write_file(filename: str, content: str, data_dir: str = "data") -> str:
@@ -80,6 +83,26 @@ def list_workspace_files(data_dir: str = "data", limit: int = 40) -> list[str]:
     return [name for _m, name in rows[:limit]]
 
 
+def count_workspace_files(data_dir: str = "data") -> int:
+    """工作区文件总数（供截断提示用）。
+
+    🔴 2026-10-21（B1 实证）：`list_workspace_files` 只返回最近修改的
+    ``limit`` 个，而 D-37 的回执把它当**完整清单**交给模型 ⇒ 模型拿到
+    残缺清单后误判「文件不存在」（实证：health_history.json 因修改时间
+    不在最新 40 名内被截掉，模型据此判定它不在工作区 —— 而它确实存在）。
+    有了总数，回执才能说清「清单是残缺的」，而不是假装这是全貌。
+    """
+    base = Path(data_dir).resolve()
+    n = 0
+    try:
+        for p in base.rglob("*"):
+            if p.is_file():
+                n += 1
+    except OSError:
+        return 0
+    return n
+
+
 def make_read_file_tool(core=None):
     """创建绑定 core 配置的文件读取 handler（只读）。
 
@@ -96,12 +119,35 @@ def make_read_file_tool(core=None):
             return read_file(filename, data_dir, max_bytes)
         except FileNotFoundError:
             available = list_workspace_files(data_dir)
+            total = count_workspace_files(data_dir)
+            # 🔴 截断必须说出口：否则模型把残缺清单当全貌（B1 实证）。
+            truncated = total > len(available)
+            scope = (
+                f"（工作区共 {total} 个文件，下面只列出最近修改的 {len(available)} 个，"
+                f"**未列出的不等于不存在**）"
+                if truncated else ""
+            )
             hint = ("；".join(available) if available else "（工作区为空，还没有任何文件）")
             return (
-                f"文件不存在: {filename}。当前工作区可用的文件有：{hint}"
+                f"文件不存在: {filename}。当前工作区可用的文件有：{hint}{scope}"
                 "。请先确认要读的文件名；若目标内容尚未生成，应改用写入工具先产出。"
+                "注意：上面清单可能被截断，未出现在清单中的文件也可能存在。"
             )
-        except ValueError:
-            # 非法路径 / 文件过大：这类是调用方的错，如实抛出以便上层判定失败
-            raise
+        except ValueError as exc:
+            # 🔴 2026-10-21（B1 实证）：「过大」与「不存在」此前同为裸 ValueError ⇒
+            # 模型把「读不了」误解成「不存在」，该误解还被验收器固化成失败理由
+            # （实证：912KB 的 health_history.json 超 200KB 上限，任务 2 次重规划后
+            #  失败，失败理由写成「文件根本不存在」）。
+            # 现在：路径非法仍是调用方的错，如实抛出；**过大**则给可操作回执。
+            if "过大" not in str(exc):
+                raise
+            # 原始细节只进日志（可排障），**绝不进返回值**（模型可见 ⇒ 可能出站）。
+            logger.warning("文件过大拒读: %s（%s）", filename, exc)
+            # 走既有白名单机制（D1 口径）：原因码之外不夹带任何内部细节。
+            from anima.tools import TOOL_REASON_FILE_TOO_LARGE, tool_unavailable
+            return (
+                tool_unavailable(TOOL_REASON_FILE_TOO_LARGE)
+                + "。该文件确实存在，只是超过单次读取上限；"
+                "不要用「文件不存在」来解释这次失败。"
+            )
     return _read

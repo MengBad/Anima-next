@@ -72,6 +72,12 @@ TOOL_REASON_X_SLOW = "X 搜索耗时超出本次预算，可稍后再试或换�
 #: 原实现直接 `return f"X 搜索失败：{e}"` —— 与本文件白名单机制自相矛盾
 #: （异常文本进了模型可见串）。改为走白名单，行为性、可对外。
 TOOL_REASON_X_FAILED = "X 搜索暂时失败，可稍后再试"
+#: 🔴 2026-10-21（B1 实证）：文件**过大**读不了（不是不存在、不是路径非法）。
+#: 实证：912KB 的 health_history.json 超过 200KB 上限，原实现抛裸 ValueError，
+#: 模型把「读不了」误判成「不存在」，该误判还被验收器固化成失败理由
+#: （任务 2 次重规划后失败，理由写「文件根本不存在」）。
+#: 措辞刻意**不含**具体字节数/路径/异常名（那些进日志），只给行为性事实与可选项。
+TOOL_REASON_FILE_TOO_LARGE = "文件过大，超出单次读取上限，可改用其他工具分片读取"
 
 _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_DISABLED,
@@ -82,6 +88,7 @@ _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_NOT_LOGGED_IN,
     TOOL_REASON_X_SLOW,
     TOOL_REASON_X_FAILED,
+    TOOL_REASON_FILE_TOO_LARGE,
 })
 
 
