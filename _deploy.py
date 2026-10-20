@@ -70,10 +70,29 @@ from anima.tools import _tool_runtime_status
 root = Path({remote_root!r})
 cfg = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {{}}
 token = str((cfg.get("webui") or {{}}).get("token") or "")
+# 🔴 2026-10-21：D-07（2026-10-17）已把全部密钥外置到 `/opt/anima/.secrets`
+# （systemd EnvironmentFile），生产 config.yaml 里的 `webui.token` **现在是空的**。
+# 本探针仍在读 config.yaml ⇒ 读到空 ⇒ SystemExit ⇒ 整个 smoke 中断，
+# 连带 version.json 没写、doctor 没跑（2026-10-21 部署实锤）。
+# 修法：config.yaml 取不到时回退到 .secrets 的 ANIMA_WEBUI_TOKEN；仍取不到
+# **不中止 smoke**（其余探针仍有价值），只跳过 WebUI 相关探测并明确打印。
 if not token:
-    raise SystemExit("smoke: WebUI token missing")
+    try:
+        secrets_path = root / ".secrets"
+        for _line in secrets_path.read_text(encoding="utf-8").splitlines():
+            _line = _line.strip()
+            if _line.startswith("ANIMA_WEBUI_TOKEN="):
+                token = _line.split("=", 1)[1].strip().strip('"').strip("'")
+                break
+    except Exception:
+        token = ""
+webui_probe = bool(token)
+if not webui_probe:
+    print("smoke: SKIP WebUI 探测（config.yaml 与 .secrets 均无 token；其余探针继续）")
 
 def get(path):
+    if not webui_probe:
+        return {{}}
     request = urllib.request.Request(
         "http://127.0.0.1:8088" + path,
         headers={{"Authorization": "Bearer " + token}},

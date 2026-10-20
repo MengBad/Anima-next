@@ -254,6 +254,18 @@ class AutonomyConfig(BaseModel):
     morning_greeting_enabled: bool = True    # 晨间反思后 20% 概率向最近活跃群发早安
     morning_dream_share_enabled: bool = True  # 08:00 每天一次 10% 概率分享昨晚梦境
 
+    # —— owner 私聊交付（D-41，2026-10-21）——
+    # 🔴 背景：心跳里产出的「有用之物」（健康告警、自治自检待办）此前只
+    #    `tasks.create()` 落进 WebUI，**从不推送** —— 每天在写，没人看。
+    #    根因不是能力缺失（`send_private_msg` 的 reply_id 可空、三处私聊先例
+    #    都在），而是 `propose_agenda` 第一参数就叫 group_id ⇒ 主动产出只能发群。
+    # 🔴 纪律：本段**不走 agenda**（会被群侧冷却/占比/日预算误杀，那些闸门对
+    #    「给 owner 的简报」语义完全错误），而是直发 `permissions.owners[0]`；
+    #    并**自建节流**（日切一次 + 日期标记），因为私聊路径不经过群侧防刷屏纪律。
+    owner_digest_enabled: bool = True        # 每日一次向 owner 私聊交付待办摘要
+    owner_digest_hour: int = 9               # 交付时刻（本地时区整点后首个 tick）
+    owner_digest_max_items: int = 5          # 单条摘要最多列几条，防长文刷屏
+
 
 class DriftConfig(BaseModel):
     """人格漂移幅度上限（与 SelfLearning 对齐）。

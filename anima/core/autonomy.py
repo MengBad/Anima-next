@@ -827,6 +827,86 @@ class Heartbeat:
             logger.info("[health_alerts] 已生成 %d 条 owner 健康待办: %s",
                         len(made), [a.get("type") for a in made])
 
+    async def _owner_digest_tick(self, now: float) -> None:
+        """D-41：每日一次把 owner 待办推到私聊（此前只落 WebUI，从不推送）。
+
+        🔴 为什么单独开一段而**不复用 agenda**：
+        `propose_agenda(group_id, ...)` 的第一参数就是群 id，消费端会走群侧
+        的全局冷却/占比/日预算/群自治开关 —— 那些闸门是防群刷屏的，套在
+        「给 owner 的每日简报」上语义完全错误（何况 owner 私聊根本没有群）。
+
+        🔴 为什么自建节流：私聊路径**不经过**群侧那套防刷屏纪律
+        （`_pick_group` / 冷却 / 日预算全都只在群分支），不建就会绕过整套机制。
+
+        纪律：日切一次 + 日期标记（沿用 `_last_secret_gen_date` 的模式）；
+        fail-closed —— owners 为空时不伪造发送；任何异常只记日志。
+        内容**不新造**，只搬已经产出的待办（`data/owner_tasks.json`）。
+        """
+        cfg = getattr(self.core.config, "autonomy", None)
+        if not getattr(cfg, "owner_digest_enabled", True):
+            return
+        # 时刻门控：过了配置小时才发（不是整点触发，避免心跳抖动漏发）。
+        import datetime as _dt
+        try:
+            _now_dt = _dt.datetime.now(_BJ)
+        except Exception:
+            _now_dt = _dt.datetime.now()
+        if _now_dt.hour < int(getattr(cfg, "owner_digest_hour", 9)):
+            return
+        # 日切一次
+        _today = self._bj_date_str(now)
+        if getattr(self, "_last_owner_digest_date", "") == _today:
+            return
+
+        owners = getattr(getattr(self.core.config, "permissions", None), "owners", None) or []
+        if not owners:
+            # fail-closed：无 owner 就不发，绝不伪造目标（同 handler._flush_owner_notice）
+            logger.warning("[owner交付] permissions.owners 为空，跳过（不伪造发送）")
+            self._last_owner_digest_date = _today
+            return
+
+        tasks = getattr(self.core, "tasks", None)
+        if tasks is None or not hasattr(tasks, "list"):
+            return
+        pending = [t for t in tasks.list()
+                   if getattr(t, "status", "") in ("planned", "running", "awaiting_approval")]
+        if not pending:
+            # 没东西可推就不发 —— 宁可安静，不做「今日无异常」这类自我打卡。
+            self._last_owner_digest_date = _today
+            return
+
+        limit = max(1, int(getattr(cfg, "owner_digest_max_items", 5)))
+        rows = []
+        for t in pending[:limit]:
+            _req = str(getattr(t, "request", "") or "").strip().replace("\n", " ")
+            rows.append("· " + (_req[:60] + "…" if len(_req) > 60 else _req))
+        more = len(pending) - len(rows)
+        body = "本喵这边攒了 %d 件还等着处理的事喵：\n%s" % (len(pending), "\n".join(rows))
+        if more > 0:
+            body += "\n（还有 %d 件没列出来）" % more
+
+        try:
+            from anima.core.gateway import OutboundMsg
+            sent = False
+            for oid in owners:
+                try:
+                    await self.core.gateway.send(OutboundMsg("private", int(oid), body))
+                    sent = True
+                except Exception:
+                    logger.warning("[owner交付] 私聊发送失败 owner=%s", oid, exc_info=True)
+            if sent:
+                self._last_owner_digest_date = _today
+                logger.info("[owner交付] 已推送 %d 条待办给 owner", len(pending))
+                try:
+                    audit = getattr(self.core, "audit", None) or getattr(self.core, "auditor", None)
+                    if audit is not None and hasattr(audit, "emit"):
+                        audit.emit("owner_digest_delivered", count=len(pending),
+                                   listed=len(rows))
+                except Exception:
+                    logger.debug("owner 交付审计写入失败", exc_info=True)
+        except Exception:
+            logger.debug("[owner交付] 构造或发送失败（已隔离）", exc_info=True)
+
     async def _tick(self) -> None:
         # P1-4：主动优先级单一事实来源（core/proactive.py）。导入失败时回落 0.5，
         # 绝不因为拿不到注册表就让心跳挂掉。
@@ -1153,6 +1233,12 @@ class Heartbeat:
                     self._last_secret_gen_date = self._bj_date_str(now)
         except Exception:
             logger.debug("每日秘密生成失败（已隔离）", exc_info=True)
+
+        # D-41：owner 私聊交付（每日一次，把「已经在产出却没人看」的待办推出去）
+        try:
+            await self._owner_digest_tick(now)
+        except Exception:
+            logger.debug("owner 私聊交付失败（已隔离）", exc_info=True)
 
         # 议程消费（约定跟进 / calendar 等）
         # 注意：议程消费在 _circadian_gate 之前，必须单独做夜间静默检查，
