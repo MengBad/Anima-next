@@ -940,7 +940,34 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             from anima.cognitive.scar import get_scar_system
             _persist = getattr(getattr(core, "config", None), "persistence", None)
             _dd = getattr(_persist, "data_dir", "data") if _persist else "data"
-            if get_scar_system(_dd).is_avoiding(int(ctx.user_id)):
+            _scar_sys = get_scar_system(_dd)
+            if _scar_sys.is_avoiding(int(ctx.user_id)):
+                # 🔴 2026-10-21 归因（**不是豁免**）：静默一字不改，但 owner 得知道
+                #    自己为什么没回音。owner 是自己最常直接对话的人、也是唯一会说
+                #    狠话测试它的人 ⇒ 该路径一触发就是「私聊发消息完全无回音、
+                #    无日志解释原因」，而 09-28 的注释已承认这个盲区
+                #    （`[霸凌] 主人豁免` ⇒ owner 在群里看不到该现象，幸存者偏差）。
+                # 判据单源：`permission_level >= 4`，与 `prefilter.py:357` 的霸凌
+                #    豁免同源（不另开 owner 判定、不 import `_is_owner`）。
+                # 通道复用：写 `ctx.meta["owner_notice"]`，由
+                #    `handler.py:1242 _flush_owner_notice` 无条件私聊给 owner
+                #    —— 不新建通知函数、不新增配置键。
+                if int(ctx.meta.get("permission_level", 2) or 2) >= 4:
+                    try:
+                        _uid = int(ctx.user_id)
+                        _n = len(_scar_sys.get_for_user(_uid))
+                        _until = _scar_sys.avoid_until_for(_uid)
+                        _when = (time.strftime("%m-%d %H:%M", time.localtime(_until))
+                                 if _until else "未知")
+                        ctx.meta["owner_notice"] = (
+                            f"（本喵现在在回避期，身上还留着 {_n} 道没好的伤，"
+                            f"大概要到 {_when} 才想开口——不是坏掉了，"
+                            f"是本喵自己现在不想说话喵。）"
+                        )  # 注：回避期内每条消息都会归因一次（未加节流）。
+                        # 刻意如此：那时本就一句不回，让 owner 知道是「难过」不是「死了」。
+                    except Exception:
+                        # 归因失败绝不能反过来改变静默行为（fail-soft）
+                        logger.debug("回避归因文案生成失败（静默照旧）", exc_info=True)
                 logger.info("[回避] 用户 %s 处于回避期，静默不回复", ctx.user_id)
                 ctx.reply = None
                 ctx.should_reply = False
