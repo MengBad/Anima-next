@@ -1091,6 +1091,139 @@ class SelfCodeManager:
         _, summary = await self._collect_proposal(goal)
         return f"[selfcode] 目标：{goal[:120]}\n{summary}\n等待 Owner 在 WebUI 审批后安装。"
 
+    # ---- 2026-10-21：「没注意到」修复配套 ----------------------------------
+    #
+    # 背景（owner 原话：挂了 31 天「没注意到」）：SelfCode 无论**受理期拒绝**
+    # 还是**生成待审提案**，此前都只写任务队列/审计，**从不主动告知 owner**。
+    # 结果就是同一需求被重复受理 12+ 次（横跨 27 天）而无人知晓。
+
+    def _boundary_topic(self, goal: str) -> str:
+        """把 goal 归一成主题键，用于判定「同一需求又来了」。
+
+        与 autonomy._issue_topic_key 同思路：剥掉 URL/数字/标点，只留文本骨架。
+        ⚠️ 但**全等比较不够** —— 生产里同一需求的不同措辞差异很大
+        （「查历史快照并提取正文内容的工具」vs「查历史快照的工具」），
+        全等比会把它们当成两个需求 ⇒ 重复通知。真正的判重见
+        `_has_same_boundary_rejection`（它用字符二元组重叠度）。
+        """
+        import re as _re
+        t = str(goal or "").lower()
+        t = _re.sub(r"https?://\S+", "#url#", t)
+        t = _re.sub(r"\d+", "#", t)
+        t = _re.sub(r"[\s，。：:、（）()【】\[\]…\-—_/]+", "", t)
+        return t[:48]
+
+    @staticmethod
+    def _topic_similarity(a: str, b: str) -> float:
+        """两个主题键的相似度（字符二元组 Jaccard），范围 0..1。
+
+        短中文文本用词级切分不可靠（无分词器），字符二元组足够稳且确定。
+        """
+        if not a or not b:
+            return 0.0
+        if a == b:
+            return 1.0
+
+        def _grams(s: str) -> set[str]:
+            if len(s) < 2:
+                return {s}
+            return {s[i:i + 2] for i in range(len(s) - 1)}
+
+        ga, gb = _grams(a), _grams(b)
+        if not ga or not gb:
+            return 0.0
+        inter = len(ga & gb)
+        union = len(ga | gb)
+        return inter / union if union else 0.0
+
+    def _has_same_boundary_rejection(self, goal: str) -> bool:
+        """此前是否已有**同主题**的边界拒绝（只读判定）。
+
+        判据：与任一历史 selfcode+rejected 任务的主题相似度 ≥ 阈值。
+        阈值 0.55 取自生产样本实测：「查历史快照并提取正文内容的工具」与
+        「查历史快照的工具」≈0.62（应判重复），而「查历史快照」与
+        「本地日志分析」≈0.06（应判不同）。
+        保守取向：**宁可漏判重复（多发一次通知），也不误判新需求为重复**
+        —— 后者会让真实需求被静默。
+        """
+        topic = self._boundary_topic(goal)
+        if not topic:
+            return False
+        tasks = getattr(self.core, "tasks", None)
+        if tasks is None or not hasattr(tasks, "list"):
+            return False
+        try:
+            for t in tasks.list():
+                if getattr(t, "kind", "") != "selfcode":
+                    continue
+                if getattr(t, "status", "") != "rejected":
+                    continue
+                _prev = self._boundary_topic(getattr(t, "request", "") or "")
+                if self._topic_similarity(topic, _prev) >= 0.55:
+                    return True
+        except Exception:
+            logger.debug("selfcode 重复主题判定失败（按首次处理）", exc_info=True)
+            return False
+        return False
+
+    async def _notify_owner_boundary_rejection(self, goal: str, boundary: str) -> None:
+        """把「这个需求它做不到、但你可以这样做」私聊告知 owner。
+
+        fail-closed：无 gateway / owners 为空 / 发送失败 ⇒ 静默，绝不影响受理。
+        """
+        owners = list(getattr(getattr(self.core.config, "permissions", None), "owners", []) or [])
+        gateway = getattr(self.core, "gateway", None)
+        if not owners or gateway is None:
+            return
+        try:
+            from anima.core.gateway import OutboundMsg
+        except Exception:
+            return
+        _goal = str(goal or "").strip().replace("\n", " ")
+        body = (
+            f"本喵收到一个想做的活，但这个活本喵现在做不了喵。\n"
+            f"需求：{_goal[:90]}{'…' if len(_goal) > 90 else ''}\n"
+            f"原因：{str(boundary)[:120]}\n"
+            f"（SelfCode 沙箱禁网，需要联网抓取的工具在生成阶段就会被静态校验拒掉）\n"
+            f"—— 如果确实要，可以让本喵用现成的联网工具试，不必走自建工具。"
+        )
+        for oid in owners:
+            try:
+                await gateway.send(OutboundMsg("private", int(oid), body[:1500]))
+            except Exception:
+                logger.warning("selfcode 边界拒绝通知失败 owner=%s", oid, exc_info=True)
+
+    async def notify_owner_proposal_ready(self, task: Any) -> None:
+        """把「有候选等你审批」私聊告知 owner（生成成功后调用）。
+
+        与边界拒绝同理：提案此前只躺在任务队列里，owner 不去翻 WebUI 就永远
+        不知道（生产实证：一条提案挂 31 天）。fail-closed，不影响主流程。
+        """
+        if task is None or getattr(task, "status", "") != "awaiting_approval":
+            return
+        owners = list(getattr(getattr(self.core.config, "permissions", None), "owners", []) or [])
+        gateway = getattr(self.core, "gateway", None)
+        if not owners or gateway is None:
+            return
+        try:
+            from anima.core.gateway import OutboundMsg
+        except Exception:
+            return
+        tid = str(getattr(task, "id", ""))
+        _goal = str(getattr(task, "request", "") or "").strip().replace("\n", " ")
+        body = (
+            f"本喵写了个新工具，等你点头才能装喵：\n"
+            f"任务：{tid}\n"
+            f"内容：{_goal[:90]}{'…' if len(_goal) > 90 else ''}\n"
+            f"看详情：!anima iterate status\n"
+            f"批准安装：!anima iterate approve {tid}"
+        )
+        for oid in owners:
+            try:
+                await gateway.send(OutboundMsg("private", int(oid), body[:1500]))
+            except Exception:
+                logger.warning("selfcode 提案通知失败 owner=%s", oid, exc_info=True)
+
     async def create_engineering_task(self, goal: str, creator: int):
         """生成工程候选并写入任务队列；此阶段绝不安装能力。"""
         if self.cfg is None or not self.cfg.enabled:
@@ -1101,6 +1234,13 @@ class SelfCodeManager:
         # 必然被静态校验拒绝的代码再失败（生产曾这样重复 15 次）。
         boundary = network_egress_boundary(goal)
         if boundary:
+            # 🔴 2026-10-21：受理期拒绝此前**只写审计、不发消息** ⇒ owner 完全
+            # 不知道发生过（生产实证：同一需求被重复受理 12+ 次、横跨 27 天，
+            # owner 一直「没注意到」）。这里补两条：
+            #   ① 拒绝时私聊告知 owner（一次就够，按主题去重，不逐次刷屏）；
+            #   ② 提示可行替代路径（现有 fetch_url / x_search 等能联网的工具），
+            #      而不是让同一目标被反复受理。
+            _dup = self._has_same_boundary_rejection(goal)
             task = self.core.tasks.create(
                 goal, creator,
                 ["能力边界预检（无网络出口）", "受理阶段拒绝，不生成候选"],
@@ -1112,9 +1252,17 @@ class SelfCodeManager:
                 if getattr(self.core, "audit", None):
                     self.core.audit.emit(
                         "selfcode_rejected_boundary", task_id=task.id, reason="no_network_egress",
+                        duplicate=bool(_dup),
                     )
             except Exception:
                 pass
+            if not _dup:
+                # 只在**该主题首次**被拒时告知 —— 同一需求反复被拒是噪音，
+                # 首次那条才是 owner 需要知道的信息。
+                try:
+                    await self._notify_owner_boundary_rejection(goal, boundary)
+                except Exception:
+                    logger.debug("selfcode 边界拒绝通知失败（不影响受理结果）", exc_info=True)
             return self.core.tasks.get(task.id) or task
 
         task = self.core.tasks.create(
@@ -1181,6 +1329,13 @@ class SelfCodeManager:
             item = self.core.tasks.set_proposal(task.id, proposal, evidence=summary)
             self._audit("selfcode_proposed", task_id=task.id,
                         candidates=[candidate["file"] for candidate in proposal["candidates"]])
+            # 🔴 2026-10-21：提案生成后主动私聊告知 owner —— 此前只落任务队列，
+            # owner 不去翻 WebUI 就永远不知道（生产实证：一条提案挂了 31 天，
+            # owner 反馈「没注意到」）。fail-closed，不影响提案本身已落库。
+            try:
+                await self.notify_owner_proposal_ready(item)
+            except Exception:
+                logger.debug("selfcode 提案通知失败（提案已落库）", exc_info=True)
             return item
         self.core.tasks.set_status(task.id, "failed", summary)
         return self.core.tasks.get(task.id)
