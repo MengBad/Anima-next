@@ -27,9 +27,9 @@
 | `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 0 | ——（D-21 已于 09-18 部署窗口执行，见下） |
 | `PARTIALLY-CLOSED` | 1 | **D-33**（复读：已改判——真病灶是 D-35 假债闭环；本轮改为只检测不重生成） |
 | `OPEN` | 1 | **D-41**（`propose_agenda` 只认 group_id ⇒ 主动产出只能发群；2026-10-21 登记） |
-| `NEEDS-OWNER` | 0 | ——（D-07 已于 2026-10-17 完成外置 ⇒ 改判 `FIXED`） |
+| `NEEDS-OWNER` | 1 | **D-44**（Dot 化四缺口 G1/G2/G3/G5；路线见 `reports/2026-10-21_dots_plan.md`，**未授权实施**） |
 | `SEALED` | 3 | D-29（接线断言）、D-30（数值 trait 通道）、D-31（`bored` 死枚举） |
-| **合计** | **43** | |
+| **合计** | **44** | |
 
 > 🔴 **2026-10-18 自主批次更新**（owner「123全修」）：新增 **D-32 / D-33 / D-34** 三张工单，
 > 均一轮内 `FIXED`（代码 + 判据 + 全量回归 + 生产部署）。三者共用同一类病因 ——
@@ -866,6 +866,25 @@
   ⚠️ **consumer-only** 并加专项说明（含"走 `anima/agent/` 不要碰 `runtime/`"的指引）。
   另订正 `RUNTIME_SURFACE_STATUS.md` §3.1「无 producer、无 consumer」—— consumer 其实是有的
   （该偏差不影响其 C-1 裁定结论）。
+
+---
+
+## D-44 · Dot 化的四个缺口（路线已定，**未授权实施**）—— `NEEDS-OWNER`
+
+- **来源**：2026-10-21 owner 要求「给个 Dot 计划书」。产出
+  [`reports/2026-10-21_dots_plan.md`](reports/2026-10-21_dots_plan.md)（v1）。
+  本条只登记**缺口与状态**，不重复计划正文。
+- **四个缺口（按阻塞排序，均有实测证据）**：
+  | # | 缺口 | 证据 |
+  |---|---|---|
+  | **G1** | **无自主触发（Dot 分界线）** | 全仓仅 `anima/llm/commands.py:274` 一处 `core.agent.submit()`，由 QQ 命令触发；心跳 `autonomy._tick` 28 个子系统**无一处提交任务** |
+  | G2 | 无整任务预算 | `executor.py:48 MAX_STEPS=20` × `:50 STEP_TIMEOUT=180s` ⇒ 理论最坏 60 分钟无上限（同 10-19 出站 LLM 缺整轮预算的教训） |
+  | G3 | 无自动续跑 | `state.py` 重启标 `interrupted` 但**刻意不重投**（`18051ef`），因缺幂等键与副作用分类 |
+  | G5 | 无长期目标对象 | `AgentTask` 只有 `request` 字符串，无 objective/constraints/success_criteria ⇒ 表达不了「持续推进一个目标」 |
+  | ~~G4~~ | ~~渠道单一~~ | `anima/channels/` 仅 `onebot11.py`（无 Channel 基类）。**已降级**：owner 明确不做网页壳 |
+- **计划分期**：P0 收紧预算（先装刹车）→ P1 自主触发（提议制，非直接执行）→ P2 目标对象化 → P3 自动续跑（视结果再定）。
+- **未决（需 owner 拍板）**：P0 是否立即做；P1 是否接受「提议制」而非 Dot 的直接执行。
+- **纪律**：计划书**不是授权书**；每阶段需单独授权，且先出 Slice Card。
 
 ---
 
