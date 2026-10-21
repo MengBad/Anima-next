@@ -42,6 +42,38 @@ logger = logging.getLogger("anima.llm.handler")
 # 单条回复附带「工具生图 / X 配图」的上限：避免一次拿几十张图刷屏 / QQ 段爆炸。
 # 超出部分丢弃（用户可再要「下一批」）。每轮工具下载的图已由 generation 阶段去重保序传入。
 MAX_GENERATED_IMAGES_PER_REPLY = 4
+#: 写文件产物贴回会话时的**总字数上限**（2026-10-21）。
+#: 超过则贴开头并说明「已保存到文件」—— 保证用户在 QQ 里至少能看到内容，
+#: 又不会因为一份长报告把消息撑爆（guardrail 另有 420/900 字硬限，二者叠加）。
+MAX_TEXT_ATTACH_CHARS = 600
+
+
+def _format_text_attachments(files: list, budget: int) -> str:
+    """把 write_file 产物格式化成可贴进会话的文本块。
+
+    只贴内容，**不回服务器绝对路径**（用户打不开，也属内部细节）。
+    多文件/超预算时截断并如实说明，绝不假装完整。
+    """
+    chunks: list[str] = []
+    used = 0
+    for f in files or []:
+        if not isinstance(f, dict):
+            continue
+        name = str(f.get("name") or "输出.txt")
+        body = str(f.get("content") or "").strip()
+        if not body:
+            continue
+        room = budget - used
+        if room <= 0:
+            chunks.append("（还有更多内容已保存到文件里啦）")
+            break
+        if len(body) > room:
+            chunks.append(f"【{name}】\n{body[:room]}…\n（全文已保存到文件里）")
+            used = budget
+        else:
+            chunks.append(f"【{name}】\n{body}")
+            used += len(body)
+    return "\n\n".join(chunks)
 
 # ── 社交疲劳 gate 的罐头回复（第 14 个兜底出口，2026-09-21 补守护）────────────
 # 触发：同群 5 分钟内被 @ 超过 `autonomy.fatigue_mention_hard`（默认 8）且发言者非 owner。
@@ -2454,6 +2486,16 @@ def _build_reply_segments(ctx, detail_type, user_id, group_id, core,
     # 单条回复附带图片上限 MAX_GENERATED_IMAGES_PER_REPLY，避免刷屏 / QQ 段爆炸。
     _gen_seen = set()
     _gen_paths: list[str] = []
+    # 🔴 2026-10-21：把 write_file 的产物**内容贴回会话**。
+    # 此前 write_file 只回服务器路径 ⇒ 用户在 QQ 里打不开，对话层只能说
+    # 「写在文件里啦，自己去看」，用户什么也拿不到（owner 实测提出）。
+    # 边界：单次最多贴 MAX_TEXT_ATTACH_CHARS 字，超出则贴开头并说明已保存；
+    #       只在**本轮真有写文件**时生效，不影响任何常规回复。
+    _txt_files = getattr(ctx, "generated_text_files", None) or []
+    if _txt_files and getattr(ctx, "reply", None):
+        _pend = _format_text_attachments(_txt_files, MAX_TEXT_ATTACH_CHARS)
+        if _pend:
+            ctx.reply = f"{ctx.reply}\n\n{_pend}"
     _ctx_gen = getattr(ctx, "generated_image_paths", None) or []
     logger.debug("[IMGDBG] build_reply_segments 读取 ctx.generated_image_paths=%d 条", len(_ctx_gen))
     for image_path in _ctx_gen:

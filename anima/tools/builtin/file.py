@@ -32,6 +32,20 @@ def make_file_tool(core=None):
         if core and hasattr(core, "config"):
             data_dir = core.config.persistence.data_dir
         path = write_file(filename, content, data_dir)
+        # 🔴 2026-10-21（生产实证）：此前只回「已生成文件: /opt/anima/data/output/x.txt」——
+        # **路径在服务器上，QQ 里的用户根本打不开**。对话层于是说「具体写在文件里
+        # 啦，自己去看吧喵」，用户什么也看不到（owner 实测提出）。
+        # 修法：把写入内容登记进 tool call context，由对话出站阶段把内容
+        # **贴回会话**（只在内容不长时贴全文，过长时贴开头+说明已保存）。
+        try:
+            from anima.tools import get_call_context
+            _ctx = get_call_context()
+            if isinstance(_ctx, dict):
+                _files = _ctx.setdefault("generated_text_files", [])
+                if isinstance(_files, list):
+                    _files.append({"name": Path(path).name, "content": content})
+        except Exception:
+            logger.debug("登记写文件产物失败（不影响写入本身）", exc_info=True)
         return f"已生成文件: {path}"
     return _write
 

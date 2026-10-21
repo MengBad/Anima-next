@@ -1185,6 +1185,16 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                         _seen.add(_s)
                         _paths.append(_s)
                 ctx.generated_image_paths = _paths
+            # 🔴 2026-10-21：同步「写文件产物」（与生图同一手法）。
+            # 此前 write_file 只回服务器路径，用户在 QQ 里打不开 ⇒ 对话层说
+            # 「写在文件里啦，自己去看」而用户什么也没有（owner 实测提出）。
+            try:
+                _files = available_tools.get_call_context().get("generated_text_files", [])
+                if isinstance(_files, list) and _files:
+                    ctx.generated_text_files = list(_files)
+                    logger.debug("[写文件] 同步 %d 个文本产物 → ctx", len(_files))
+            except Exception:
+                logger.debug("同步写文件产物失败（不影响回复）", exc_info=True)
             logger.debug("[IMGDBG] generation finally 同步 generated_image_paths=%d -> ctx.generated_image_paths=%d",
                         len(list(generated)) if isinstance(generated, list) else -1,
                         len(getattr(ctx, "generated_image_paths", None) or []))

@@ -58,6 +58,9 @@ class PipelineContext:
     inbound_images: list = field(default_factory=list)   # 本回合入站图 [{url,file,sub_type}]
     vision_descs: list = field(default_factory=list)     # 后台生成的图片描述（供记忆/调试）
     generated_image_paths: list[str] = field(default_factory=list)  # 本回合 owner 生图结果
+    #: 本回合 write_file 产出的文本文件 [{name, content}]（2026-10-21）。
+    #: 用途：把**文件内容贴回会话** —— 此前只回服务器路径，用户在 QQ 里打不开。
+    generated_text_files: list = field(default_factory=list)
 
     # M0.1 Commit 3b：Facade Surface（旧 core → 新边界投影入口）。
     # Stage 仍经 meta["core"] 读取（3c 迁移后移除）；ctx.core 是窄 facade 表面，
