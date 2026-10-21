@@ -212,8 +212,11 @@ async def test_disabled_means_no_action():
 
 
 async def test_max_items_truncates_and_reports_remainder():
+    # 用**不同主题**构造，验证「条目上限 + 还有 N 件」逻辑本身
     cfg = _Cfg(owners=(1,), max_items=2)
-    tasks = _TaskStore([_Task(f"待办{i}") for i in range(5)])
+    tasks = _TaskStore([_Task(t) for t in (
+        "应回却空：A", "工具空转：B", "QQ 出站失败：C", "身份泄漏：D", "B站链接失败：E",
+    )])
     sent = []
     auto = _make_autonomy(cfg, tasks, sent)
 
@@ -221,5 +224,31 @@ async def test_max_items_truncates_and_reports_remainder():
 
     assert len(sent) == 1
     text = sent[0].message
-    assert "5" in text, "应给出待办总数"
+    assert "5" in text, f"应给出主题总数：{text!r}"
     assert "还有 3 件" in text, f"应给出剩余数量提示：{text!r}"
+
+
+async def test_same_topic_merged_into_one_line():
+    """🔴 2026-10-21：同主题多条（计数不同）必须合并，不得占满推送。
+
+    生产实证：09-17 的 3 张「回复质量退化 3/18 · 4/23 · 4/24」在首次推送里
+    占了 3/5 内容，噪音盖住真待办。
+    """
+    cfg = _Cfg(owners=(1,), max_items=5)
+    tasks = _TaskStore([
+        _Task("回复质量退化：工具失败 3/18，不可用回复 0"),
+        _Task("回复质量退化：工具失败 4/23，不可用回复 0"),
+        _Task("回复质量退化：工具失败 4/24，不可用回复 0"),
+        _Task("QQ 出站失败"),
+    ])
+    sent = []
+    auto = _make_autonomy(cfg, tasks, sent)
+
+    await auto._owner_digest_tick(now=0.0)
+
+    assert len(sent) == 1
+    text = sent[0].message
+    assert "回复质量退化" in text
+    assert "同主题共 3 条" in text, f"应合并并标数量：{text!r}"
+    # 合并后总主题数为 2（退化 1 组 + 出站 1 条），不是 4
+    assert "攒了 2 件" in text, f"应按主题计数而非条目计数：{text!r}"

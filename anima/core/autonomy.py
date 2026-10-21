@@ -503,6 +503,51 @@ def _drive_gate_ok(drive) -> bool:
         return False
     return float(drive.get("approach", 0.0)) > float(drive.get("avoid", 0.0))
 
+
+#: 自治自检议题标题 → `_FAULT_RULES` 的 signal key。
+#: 🔴 **只允许映射到规则表里真实存在的键** —— `healed_fault_tickets` 会做
+#:    `if any(sig not in thresholds): continue`，映射到表外的键等于永远不自愈
+#:    （这正是 2026-10-21 那批 34 天僵尸单的成因之一）。
+#: 不在本表内的议题（如「回复质量退化」——它的 tool_failures 指标不属 `_FAULT_RULES`）
+#: 一律**不建单**，只在日志留痕；WebUI 侧 `observation/engineering_loop` 仍会消费。
+_ISSUE_SIGNAL_MAP: tuple[tuple[str, str], ...] = (
+    ("应回却空", "empty_should_reply"),
+    ("工具空转", "tool_spins"),
+    ("ReAct 频繁触顶", "react_max_rounds"),
+    ("QQ 出站失败", "outbound_failures"),
+    ("身份泄漏", "identity_leaks"),
+    ("B 站主页链接处理失败", "space_link_fail"),
+)
+
+
+def _issue_signal_key(title: str) -> str:
+    """把 DevIssue 标题映射为 `_FAULT_RULES` 的 signal key；无法映射返回 ""。
+
+    fail-closed：映射不到就返回空 ⇒ 调用方据此**不建单**，避免再造僵尸。
+    """
+    t = str(title or "")
+    for needle, key in _ISSUE_SIGNAL_MAP:
+        if needle in t:
+            return key
+    return ""
+
+
+def _issue_topic_key(text: str) -> str:
+    """议题主题键：剥掉标题里的具体计数，使「同一病灶」判为同一主题。
+
+    背景：`回复质量退化：工具失败 3/18` 与 `4/23` 是同一件事，但旧去重
+    用全等比较（`request == issue.title`）⇒ 计数一变就判成新单 ⇒
+    09-17 六小时内连开 3 张（生产实证，躺 34 天）。
+    """
+    import re as _re
+    t = str(text or "")
+    # 去掉「数字/数字」与孤立数字、各类空白与标点尾巴
+    t = _re.sub(r"\d+\s*/\s*\d+", "#", t)
+    t = _re.sub(r"\d+", "#", t)
+    t = _re.sub(r"[\s，。：:、（）()【】\[\]…\-—]+", "", t)
+    return t[:40]
+
+
 class Heartbeat:
     """自主心跳引擎。"""
 
@@ -876,12 +921,22 @@ class Heartbeat:
             return
 
         limit = max(1, int(getattr(cfg, "owner_digest_max_items", 5)))
+        # 🔴 2026-10-21：推送前按**主题**合并同病灶多条 —— 否则「回复质量退化」
+        # 那种带计数的标题会让同一件事在白名单里重复出现 3 次（生产实证：
+        # 09-17 的 3 张僵尸单在首次推送里占了 3/5 的内容，噪音盖住真待办）。
+        _groups: dict[str, list] = {}
+        for t in pending:
+            _k = _issue_topic_key(str(getattr(t, "request", "") or ""))
+            _groups.setdefault(_k, []).append(t)
         rows = []
-        for t in pending[:limit]:
-            _req = str(getattr(t, "request", "") or "").strip().replace("\n", " ")
-            rows.append("· " + (_req[:60] + "…" if len(_req) > 60 else _req))
-        more = len(pending) - len(rows)
-        body = "本喵这边攒了 %d 件还等着处理的事喵：\n%s" % (len(pending), "\n".join(rows))
+        for _k, _items in list(_groups.items())[:limit]:
+            _req = str(getattr(_items[0], "request", "") or "").strip().replace("\n", " ")
+            _line = "· " + (_req[:60] + "…" if len(_req) > 60 else _req)
+            if len(_items) > 1:
+                _line += "（同主题共 %d 条，此处合并）" % len(_items)
+            rows.append(_line)
+        more = len(_groups) - len(rows)
+        body = "本喵这边攒了 %d 件还等着处理的事喵：\n%s" % (len(_groups), "\n".join(rows))
         if more > 0:
             body += "\n（还有 %d 件没列出来）" % more
 
@@ -1016,19 +1071,48 @@ class Heartbeat:
                 rq = getattr(self.core, "reply_quality", None)
                 rep = rq.report() if rq is not None and hasattr(rq, "report") else None
                 for issue in collect_self_monitor_issues(reply_quality_report=rep):
-                    _dup = False
                     tasks = getattr(self.core, "tasks", None)
-                    if tasks is not None and hasattr(tasks, "list"):
-                        for t in tasks.list():
-                            if getattr(t, "status", "") in ("planned", "running", "awaiting_approval")                                     and getattr(t, "request", "") == issue.title:
-                                _dup = True
-                                break
+                    if tasks is None:
+                        continue
+                    # 🔴 2026-10-21 修复（生产实证 34 天僵尸单）：
+                    #   此前对所有 DevIssue 一律 `tasks.create(kind="diagnostic")`。
+                    #   但自愈机制 `healed_fault_tickets` 要求 proposal 里有
+                    #   `date` + `signals`，且 **signal 必须在 `_FAULT_RULES` 规则表内**
+                    #   （否则 `sig not in thresholds` ⇒ 直接跳过）。
+                    #   而「回复质量退化」这类议题**根本不在规则表内** ⇒ 建出来就
+                    #   **永远无法自愈关闭** ⇒ 一旦开出即终身挂在 owner 待办里。
+                    #   实证：09-17 6 小时内连开 3 张（标题带计数，全等去重失效），
+                    #   躺到 10-21 首次 owner 推送时才被发现，每天污染推送内容。
+                    #   ⇒ 改为**只对可自愈的规则信号建单**；其余仅记日志
+                    #   （信号不丢：WebUI 侧 engineering_loop 仍在消费同一函数）。
+                    _sig = _issue_signal_key(issue.title)
+                    if not _sig:
+                        logger.info("[自治自检] 非可自愈信号，仅记录不建单：%s", issue.title)
+                        continue
+                    # 去重按**主题**判（标题含计数，全等比较会漏判）
+                    _topic = _issue_topic_key(issue.title)
+                    _dup = False
+                    for t in tasks.list():
+                        if getattr(t, "status", "") not in ("planned", "running", "awaiting_approval"):
+                            continue
+                        if _issue_topic_key(getattr(t, "request", "") or "") == _topic:
+                            _dup = True
+                            break
                     if _dup:
                         continue
                     owner = int((getattr(self.core.config.permissions, "owners", None) or [0])[0])
-                    if tasks is not None:
-                        tasks.create(issue.title, owner, [issue.detail])
-                        logger.warning("[自治自检] 生成 owner 待办：%s", issue.title)
+                    _task = tasks.create(issue.title, owner, [issue.detail])
+                    # 登记自愈判定所需元数据（date + signals 均在 _FAULT_RULES 内）
+                    try:
+                        tasks.set_proposal(_task.id, {
+                            "date": self._bj_date_str(time.time()),
+                            "signals": [_sig],
+                            "signal": _sig,
+                            "source": "self_monitor",
+                        }, evidence="自治自检建单：登记自愈判定所需元数据")
+                    except Exception:
+                        logger.debug("[自治自检] 补元数据失败（不影响建单）", exc_info=True)
+                    logger.warning("[自治自检] 生成 owner 待办：%s", issue.title)
         except Exception:
             logger.debug("自治工程自检失败（已隔离）", exc_info=True)
 
