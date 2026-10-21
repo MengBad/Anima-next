@@ -48,17 +48,57 @@ def test_store_create_and_persist():
     assert s2.get(t.id).request == "帮我做X"
 
 
-def test_store_restart_recovery_marks_executing_failed():
+def test_store_restart_recovery_marks_interrupted_not_failed():
+    """🔴 2026-10-21 语义变更：重启打断 → `interrupted`，不再判 `failed`。
+
+    旧行为（`failed`）的两个问题：
+    1. **它不是任务失败** —— 任务本身没问题，是被重启打断的；
+    2. **静默无通知** —— 用户只看到「没收到结果」，不知道是被打断。
+
+    新行为保留旧测试关心的那件事（**避免幽灵执行**）：
+    `interrupted` 不是 `executing`，没有任何执行器会认领它；
+    同时保留 progress（current_step / 已完成的 step.result）以便重跑。
+    """
     p = _Mem()
     s = AgentTaskStore(p)
     t = s.create("做X", 1)
     t.status = "executing"
     t.steps = [Step(0, "a"), Step(1, "b")]
+    t.steps[0].status = "done"
+    t.steps[0].result = "第一步的产物"
+    t.current_step = 1
     s.save(t)
-    # 模拟重启：新加载
-    s2 = AgentTaskStore(p)
+
+    s2 = AgentTaskStore(p)          # 模拟重启
     loaded = s2.get(t.id)
-    assert loaded.status == "failed"  # 崩溃中任务标记为 failed，避免幽灵执行
+
+    assert loaded.status == "interrupted", "重启打断应标 interrupted 而非 failed"
+    assert loaded.status != "failed", "不是任务本身失败，不该判 failed"
+    assert loaded.status != "executing", "绝不能留在 executing（否则幽灵执行）"
+
+    # 进度必须保留，否则「可重跑」是空话
+    assert loaded.current_step == 1, "current_step 必须保留"
+    assert loaded.steps[0].status == "done"
+    assert loaded.steps[0].result == "第一步的产物", "已完成步骤的产物不得丢失"
+
+    # 必须登记，供启动后私聊告知 owner
+    assert t.id in s2.interrupted_on_load, "应登记到 interrupted_on_load 供通知"
+
+
+def test_interrupted_tasks_are_listed_for_notification_only_once():
+    """再次加载（未再被打断）不应重复登记 —— 防每次重启都重报同一批。"""
+    p = _Mem()
+    s = AgentTaskStore(p)
+    t = s.create("做Y", 1)
+    t.status = "executing"
+    s.save(t)
+
+    s2 = AgentTaskStore(p)
+    assert t.id in s2.interrupted_on_load
+    assert s2.get(t.id).status == "interrupted"
+
+    s3 = AgentTaskStore(p)          # 第二次加载：已是 interrupted，不该再登记
+    assert s3.interrupted_on_load == [], "已标记过的任务不应重复通知"
 
 
 def test_store_create_dedups_recent_planning():

@@ -92,6 +92,53 @@ class OwnerAgent:
         except Exception:
             logger.exception("Agent 进度推送失败（已隔离）")
 
+    async def notify_interrupted_on_startup(self) -> int:
+        """启动后把「被重启打断」的任务私聊告知 owner（2026-10-21）。
+
+        🔴 为什么需要：此前重启时在跑的 Agent 任务被静默判 `failed` ——
+        用户只知道「我没收到结果」，不知道「它被重启打断了」。现在状态改
+        `interrupted`（进度保留、可重跑），但仍需**主动说一声**，否则依然是
+        个黑洞：任务躺在列表里没人知道。
+
+        fail-closed：gateway 未就绪 / 无 interrupted / 发送失败 ⇒ 静默返回 0，
+        绝不因通知问题影响启动。返回成功通知的条数。
+        """
+        ids = list(getattr(self.store, "interrupted_on_load", []) or [])
+        if not ids:
+            return 0
+        gateway = getattr(self.core, "gateway", None)
+        if not gateway:
+            logger.info("[agent] 有 %d 个任务被重启打断，但 gateway 未就绪（下次再报）", len(ids))
+            return 0
+        try:
+            from anima.llm.handler import OutboundMsg
+        except Exception:
+            return 0
+        sent = 0
+        for tid in ids:
+            task = self.store.get(tid)
+            if task is None:
+                continue
+            done = sum(1 for s in (task.steps or []) if getattr(s, "status", "") == "done")
+            total = len(task.steps or [])
+            _req = str(getattr(task, "request", "") or "").strip().replace("\n", " ")
+            body = (
+                f"本喵有个活干到一半被重启打断了喵。\n"
+                f"任务：{tid}\n"
+                f"内容：{_req[:80]}{'…' if len(_req) > 80 else ''}\n"
+                f"进度：已完成 {done}/{total} 步（进度保留着，没有丢）\n"
+                f"重跑：!anima agent approve {tid}"
+            )
+            try:
+                await gateway.send(OutboundMsg("private", int(task.creator), body[:1500]))
+                sent += 1
+            except Exception:
+                logger.warning("[agent] 重启打断通知失败 task=%s", tid, exc_info=True)
+        if sent:
+            self.auditor.emit("agent_tasks_interrupted", count=sent, task_ids=ids[:5])
+            logger.warning("[agent] 已告知 owner %d 个任务被重启打断", sent)
+        return sent
+
     async def _deliver_media(self, task: AgentTask) -> None:
         """把 Agent 任务产出的受控媒体（生图/改图）发到**请求所在会话**。
 

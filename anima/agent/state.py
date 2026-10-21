@@ -38,7 +38,10 @@ class AgentTask:
     id: str
     request: str
     creator: int
-    status: str = "planning"       # planning|executing|completed|failed|cancelled
+    status: str = "planning"       # planning|executing|completed|failed|cancelled|interrupted
+    #: `interrupted`（2026-10-21 新增）：进程重启打断了正在执行的任务。
+    #: 与 `failed` 的区别 ——**它不是任务本身的失败**，进度与已完成步骤都保留，
+    #: 可经 approve 重跑。此前这类一律判 `failed` 且静默无通知。
     steps: list[Step] = field(default_factory=list)
     current_step: int = 0
     context: dict = field(default_factory=dict)
@@ -89,18 +92,35 @@ class AgentTaskStore:
         self.persistence = persistence
         self.max_kept = max_kept
         self.items: dict[str, AgentTask] = {}
+        #: 本次进程启动时被判定「重启打断」的任务 id（供上层推送/审计用）。
+        self.interrupted_on_load: list[str] = []
         for raw in (persistence.read_json("agent_tasks.json", []) or []):
             try:
                 task = _task_from(raw)
-                # 重启恢复：崩溃时正在执行的任务标记为 failed，等待人工重跑
+                # 🔴 2026-10-21 改造（Dots 分界线）：重启时不再把在跑任务判成 failed。
+                #
+                #   原实现 `task.status = "failed"` + `error="进程重启，执行中断"`：
+                #   一个跑了 3 小时的任务，重启即判死，且**静默无通知** ——
+                #   用户只知道"我没收到结果"，不知道"它被重启打断了"。
+                #   这也与 executor.py:12 的设计意图相悖（那里注释写的是
+                #   「逐步持久化，进程重启可从 current_step 续跑」）。
+                #
+                #   现在：标 `interrupted`（新状态），**保留 current_step 与已完成的
+                #   step.result**，并在 `interrupted_on_load` 里登记，供上层私聊告知
+                #   owner「有任务被打断了，要不要重跑」。
+                #
+                #   ⚠️ 刻意**不自动重跑**：重投需要幂等键与副作用分类（发消息类操作
+                #   重跑 = 重复发消息；run_python 改过的文件重跑不会撤销）。
+                #   那属独立 slice，须先出设计稿。本步只消除"静默判死"这个信息黑洞。
                 if task.status == "executing":
-                    task.status = "failed"
-                    task.error = task.error or "进程重启，执行中断"
+                    task.status = "interrupted"
+                    task.error = task.error or "进程重启，执行中断（进度已保留，可重跑）"
                     task.updated_at = time.time()
+                    self.interrupted_on_load.append(task.id)
                 self.items[task.id] = task
             except (TypeError, ValueError, KeyError):
                 continue
-        if any(t.status == "failed" and "进程重启" in (t.error or "") for t in self.items.values()):
+        if self.interrupted_on_load:
             self._save()
 
     def _save(self) -> None:

@@ -285,6 +285,27 @@ class AnimaCore:
         if self._auto_start_heartbeat and self.heartbeat:
             await self.heartbeat.start()
 
+        # 🔴 2026-10-21：重启打断的 Agent 任务要主动告知 owner。
+        # 状态已在 AgentTaskStore.__init__ 改为 `interrupted`（进度保留、可重跑），
+        # 但**只改状态没人知道** ⇒ 依然是个黑洞（用户只看到「没收到结果」）。
+        # 必须延迟发送：启动瞬间 QQ WS 可能尚未连上，立刻发会失败。
+        # fail-soft：任何异常只记日志，绝不影响启动。
+        if getattr(self, "agent", None) is not None \
+                and getattr(self.agent, "store", None) is not None \
+                and getattr(self.agent.store, "interrupted_on_load", None):
+            async def _notify_interrupted() -> None:
+                await asyncio.sleep(20)   # 等 NapCat WS 建连（含重连退避）
+                try:
+                    await self.agent.notify_interrupted_on_startup()
+                except Exception:
+                    logger.exception("重启打断通知失败（已隔离）")
+
+            try:
+                from anima.core.autonomy import _launch_bg
+                _launch_bg(_notify_interrupted(), "agent_interrupted_notice")
+            except Exception:
+                logger.exception("重启打断通知调度失败（已隔离）")
+
         # 到这里 WebUI、认知模块和心跳均已完成装配；若本次是配置变更后的
         # 候选启动，写入健康点。下一次启动若仍看见 attempting，就会恢复备份。
         try:
