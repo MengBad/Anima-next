@@ -68,6 +68,23 @@ class ParsedCommand:
 _MAX_LINES = 14
 
 
+def _health_topic_key(text: str) -> str:
+    """把 health_alerts 标题归一成主题键（剥掉计数与标点）。
+
+    🔴 2026-10-22：`detect_alerts` 的消息带具体计数
+    （「窗口内检测到 9 次权限漂移事件」），数字一变标题就不同 ⇒ 全等去重失效。
+    归一后「同一病灶不同计数」判为同一主题。
+
+    示例：`[health_alerts] 窗口内检测到 9 次权限漂移事件（安全关注）`
+      与 `[health_alerts] 窗口内检测到 3 次权限漂移事件（安全关注）` ⇒ 同键。
+    """
+    import re as _re
+    t = str(text or "")
+    t = _re.sub(r"\d+", "#", t)
+    t = _re.sub(r"[\s，。：:、（）()【】\[\]…\-—_]+", "", t)
+    return t[:64]
+
+
 def _flatten_readonly(obj: Any, prefix: str = "", depth: int = 0) -> list[str]:
     """把只读聚合结果压成「键 = 值 / 键: N 项」行，容忍结构漂移。
 
@@ -299,16 +316,39 @@ class HumanAIControlSurface:
                 rec = collect_stability(root, window_days=window_days, audit=audit)
             # 只对 warn 级异常生成待办；info 级仅出现在 stability_summary 的 alerts 供观测。
             made: list[dict[str, Any]] = []
+            # 🔴 2026-10-22：**同主题去重**。此前每次 tick（6h 冷却）无条件
+            # `tasks.create()` ⇒ 生产实证 9 条 `planned` 全是同一件事
+            # （「权限漂移」计数从 3 递增到 9），owner 待办列表被同一病灶刷满，
+            # 真正的待办被淹（owner 连续两天收到「9 次权限漂移（同主题共 7 条）」）。
+            # 判据：消息里的数字归一后比对**未关闭**的同 kind 待办；
+            # 已有同主题在办 ⇒ 不重复建单，只记日志（信号不丢，观测面仍可见）。
+            _open = {"planned", "running", "awaiting_approval"}
+            try:
+                _existing = {
+                    _health_topic_key(str(getattr(t, "request", "") or ""))
+                    for t in tasks.list()
+                    if getattr(t, "status", "") in _open
+                    and getattr(t, "kind", "") == "diagnostic"
+                }
+            except Exception:
+                _existing = set()
             for a in detect_alerts(rec):
                 if a.get("severity") != "warn":
                     continue
+                _req = f"[health_alerts] {a['message']}"
+                _topic = _health_topic_key(_req)
+                if _topic and _topic in _existing:
+                    logger.info("[health_alerts] 同主题已在办，跳过重复建单：%s", _req[:60])
+                    continue
                 try:
                     tasks.create(
-                        request=f"[health_alerts] {a['message']}",
+                        request=_req,
                         creator=int(owner_id or 0),
                         plan=[f"类型={a['type']}", f"值={a.get('value')}", "核查根因并处置"],
                         kind="diagnostic",
                     )
+                    if _topic:
+                        _existing.add(_topic)
                     made.append(a)
                 except Exception:
                     continue
