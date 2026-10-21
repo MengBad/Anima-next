@@ -266,6 +266,16 @@ class AutonomyConfig(BaseModel):
     owner_digest_hour: int = 9               # 交付时刻（本地时区整点后首个 tick）
     owner_digest_max_items: int = 5          # 单条摘要最多列几条，防长文刷屏
 
+    # —— P1 自主触发（2026-10-21）——
+    # 🔴 语义：它自己发现该干的活（承诺到期 / 健康异常），**先私聊报备再执行**。
+    #    owner 已明确否掉「提议制」（不批就不动），要求直接执行；折中为报备制：
+    #    立刻说一声 → 马上开跑不等批准 → 随时 `!anima agent cancel <id>` 叫停。
+    # 🔴 默认 **False**：这是「它自己启动任务、花 token、可能改文件」的能力，
+    #    必须 owner 显式开启才生效（与 danger.* 同哲学：默认关，显式开）。
+    #    开启前请确认：整任务预算（task_agent.total_budget_sec）已生效。
+    auto_trigger_enabled: bool = False       # 总开关（默认关，需显式开启）
+    auto_trigger_daily_max: int = 3          # 每日自主启动上限
+
 
 class DriftConfig(BaseModel):
     """人格漂移幅度上限（与 SelfLearning 对齐）。

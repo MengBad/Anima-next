@@ -872,6 +872,141 @@ class Heartbeat:
             logger.info("[health_alerts] 已生成 %d 条 owner 健康待办: %s",
                         len(made), [a.get("type") for a in made])
 
+    async def _auto_trigger_tick(self, now: float) -> None:
+        """P1 自主触发：自己发现该干的活，**先报备再执行**。
+
+        ## 为什么是「报备」而不是「提议」（owner 明确拍板）
+
+        计划书原设计是提议制（只建待办等你批），**owner 已否掉**，要求直接执行。
+        但直接执行 = 它会自己启动任务、花 token、可能改文件/联网/发消息。
+        折中为 **报备制**：立刻私聊说一声 → **马上开跑不等批准** → 可随时 cancel。
+        「报备」只增加一条消息，消除的是「它在你背后动了一周你不知道」。
+
+        ## 三道安全闸（fail-closed，任一不过就不启动）
+
+        1. `autonomy.auto_trigger_enabled` 总开关（默认 **False**，需显式开启）
+        2. `AutoTriggerGate`：每日上限 / 静默时段 / 熔断冷却
+        3. 主题去重：与当日已触发主题相似 ⇒ 跳过
+
+        ## 纪律
+
+        * 触发源只读，绝不改它们的存储；
+        * 状态独立落 `data/auto_trigger.json`，不污染 owner_tasks；
+        * 报备发送失败**不阻断执行**（记日志 + 审计），因为「没报备」比「不干活」危害小；
+        * 任何异常只记日志，绝不拖垮心跳。
+        """
+        cfg = getattr(self.core.config, "autonomy", None)
+        if not getattr(cfg, "auto_trigger_enabled", False):
+            return    # 默认关；开启后才会自主启动任务
+        agent = getattr(self.core, "agent", None)
+        if agent is None or not hasattr(agent, "submit"):
+            return
+
+        try:
+            import datetime as _dt
+            _hour = _dt.datetime.now(_BJ).hour
+            from anima.agent.auto_trigger import (
+                AutoTriggerGate, AutoTriggerState, collect_triggers,
+                dedupe_against, DEFAULT_DAILY_MAX, FAIL_STREAK_TRIP,
+                COOLDOWN_AFTER_TRIP_SEC, TOPIC_DEDUP_THRESHOLD,
+            )
+        except Exception:
+            logger.debug("自主触发模块导入失败（已隔离）", exc_info=True)
+            return
+
+        _dd = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
+        state = AutoTriggerState(self.core.persistence)
+        state.roll_day(self._bj_date_str(now))
+
+        _sleep = None
+        if getattr(cfg, "sleep_enabled", True):
+            _sleep = (int(getattr(cfg, "sleep_start_hour", 1)),
+                      int(getattr(cfg, "sleep_end_hour", 5)))
+        _quiet = None
+        if getattr(cfg, "quiet_hours_enabled", False):
+            _quiet = (int(getattr(cfg, "quiet_hours_start_hour", 23)),
+                      int(getattr(cfg, "quiet_hours_end_hour", 7)))
+        gate = AutoTriggerGate(
+            daily_max=int(getattr(cfg, "auto_trigger_daily_max", DEFAULT_DAILY_MAX)),
+            quiet_hours=_quiet, sleep_hours=_sleep,
+        )
+
+        blocked = gate.blocked_reason(hour=_hour, state=state, now=now)
+        if blocked:
+            logger.debug("[自主触发] 跳过：%s", blocked)
+            return
+
+        # 熔断中（连续无产出）⇒ 不启动
+        if state.fail_streak >= FAIL_STREAK_TRIP:
+            state.cooldown_until = now + COOLDOWN_AFTER_TRIP_SEC
+            state.fail_streak = 0
+            state.save()
+            logger.warning("[自主触发] 连续 %d 次无产出，熔断 %d 小时",
+                           FAIL_STREAK_TRIP, COOLDOWN_AFTER_TRIP_SEC // 3600)
+            return
+
+        decisions = collect_triggers(self.core, now=now)
+        if not decisions:
+            return
+
+        # 取第一条通过去重的（一次 tick 只启动一个，防同日爆量）
+        picked = None
+        for d in decisions:
+            if dedupe_against(state.topics_today, d.request):
+                logger.debug("[自主触发] 主题重复跳过：%s", d.request[:60])
+                continue
+            picked = d
+            break
+        if picked is None:
+            return
+
+        # ---- 先报备 ----
+        owners = list(getattr(getattr(self.core.config, "permissions", None), "owners", []) or [])
+        if not owners:
+            logger.warning("[自主触发] permissions.owners 为空，跳过（不伪造目标）")
+            return
+
+        # ---- 再执行（报备失败也照跑，只记日志）----
+        task = None
+        try:
+            task = await agent.submit(
+                picked.request, int(owners[0]), auto_run=True,
+                session={"detail_type": "private", "target_id": int(owners[0])},
+            )
+        except Exception:
+            logger.exception("[自主触发] 提交任务失败（已隔离）")
+            return
+
+        try:
+            from anima.core.gateway import OutboundMsg
+            _body = (
+                f"本喵自己去干个活喵：\n"
+                f"做什么：{picked.request[:90]}{'…' if len(picked.request) > 90 else ''}\n"
+                f"为什么：{picked.reason[:90]}\n"
+                f"任务：{task.id}\n"
+                f"（不用回，本喵自己会做完汇报；想叫停就发 !anima agent cancel {task.id}）"
+            )
+            for oid in owners:
+                try:
+                    await self.core.gateway.send(OutboundMsg("private", int(oid), _body[:1500]))
+                except Exception:
+                    logger.warning("[自主触发] 报备发送失败 owner=%s（任务照跑）", oid, exc_info=True)
+            # 计数 + 主题记忆（报备成败都算已启动，避免重复启动同一件事）
+            state.count_today += 1
+            state.topics_today.append(picked.request)
+            state.save()
+            logger.warning("[自主触发] 启动任务 %s（源=%s，今日 %d/%d）",
+                           task.id, picked.source, state.count_today, gate.daily_max)
+            try:
+                audit = getattr(self.core, "audit", None)
+                if audit is not None and hasattr(audit, "emit"):
+                    audit.emit("auto_trigger_started", task_id=task.id, source=picked.source,
+                               count_today=state.count_today, daily_max=gate.daily_max)
+            except Exception:
+                logger.debug("[自主触发] 审计写入失败", exc_info=True)
+        except Exception:
+            logger.debug("[自主触发] 报备流程异常（任务已启动）", exc_info=True)
+
     async def _owner_digest_tick(self, now: float) -> None:
         """D-41：每日一次把 owner 待办推到私聊（此前只落 WebUI，从不推送）。
 
@@ -1323,6 +1458,15 @@ class Heartbeat:
             await self._owner_digest_tick(now)
         except Exception:
             logger.debug("owner 私聊交付失败（已隔离）", exc_info=True)
+
+        # 🔴 P1 自主触发（2026-10-21）：它自己发现该干的活，**先报备再执行**。
+        # owner 明确否掉「提议制」（不批就不动），要求直接执行；这里按确认的
+        # 折中实现：立刻私聊报备（做什么/为什么/几步）→ 马上开跑（不等批准）
+        # → 随时可 `!anima agent cancel <id>` 叫停 → 完成后推结果。
+        try:
+            await self._auto_trigger_tick(now)
+        except Exception:
+            logger.debug("自主触发调度失败（已隔离）", exc_info=True)
 
         # 议程消费（约定跟进 / calendar 等）
         # 注意：议程消费在 _circadian_gate 之前，必须单独做夜间静默检查，
