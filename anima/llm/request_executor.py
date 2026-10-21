@@ -10,6 +10,7 @@
 - ignore   : 别再理那两人/别理X          → 忽略名单（群内，最近发言者或显式 qq）
 - query    : 还记得吗/我之前说的/帮我查   → 回取口头要求存储
 - do_task  : 有个问题/帮我修/帮我看看     → 建 Owner 任务，等 approve 执行
+- stop     : 停/别做了/取消（2026-10-21）→ 取消本人在跑的多步 Agent 任务
 - chat     : 其它                         → 走正常回复，不误动作
 
 仅 owner 或被@ 的入站触发；未知意图一律回落到正常聊天。
@@ -18,11 +19,17 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import threading
 import time
 from pathlib import Path
 from typing import Any, Callable
+
+#: 🔴 2026-10-21：本模块此前**没有 logger**，`_stop` 的异常分支引用它会抛
+#: NameError（把「取消失败」变成「代码崩溃」）。由测试
+#: `test_stop_never_lies_when_cancel_fails` 抓出。
+logger = logging.getLogger("anima.llm.request_executor")
 
 _CQ = re.compile(r"\[CQ:[^\]]+\]", re.I)
 _TIME = re.compile(r"(\d{1,2})\s*[:：]\s*(\d{1,2})")
@@ -34,6 +41,13 @@ _TRIGGER = {
     "ignore": ("别再理", "不要理", "别理", "冷落", "别鸟", "别再搭"),
     "query": ("还记得吗", "你还记得", "我上次说的", "我之前说的", "我们的关系"),  # 通用"帮我查"交还带工具的流水线
     "do_task": ("有个问题", "帮我修", "帮我查下代码", "看下日志"),  # 通用"帮我看看/帮我做"交还流水线
+    # 🔴 2026-10-21：自然语言叫停。owner 原话「能不能不用命令」——
+    #   既然启动是自然语言，叫停也必须能自然语言，否则等于承诺做不到。
+    #   词表刻意**窄**（只收明确的停止说法）。实测踩过的误伤：
+    #   「今天好累想停下来歇会」含「停下」⇒ 曾误判为叫停。
+    #   故**去掉裸「停下」**，只保留带宾语/语气明确的说法。
+    "stop": ("别做了", "不要做了", "别干了", "取消任务", "先别做",
+             "停手", "算了别做", "停一下别做", "别做了吧"),
 }
 
 
@@ -147,6 +161,8 @@ class RequestExecutor:
                 return await self._remind(text, group_id)
             if intent == "do_task":
                 return await self._do_task(text, user_id)
+            if intent == "stop":
+                return await self._stop(user_id)
         except Exception as e:  # 执行器隔离：失败回落到正常回复，不阻塞主线
             return f"（执行失败喵，已记下你的要求——{str(e)[:80]}）"
         return None
@@ -234,3 +250,47 @@ class RequestExecutor:
         req = _strip_trigger(text).strip() or text
         _task, reply = await handle_owner_problem(self.core, req, int(user_id))
         return reply
+
+    async def _stop(self, user_id: int) -> str:
+        """自然语言叫停：取消**本人**所有在跑的多步 Agent 任务。
+
+        🔴 2026-10-21（owner：「能不能不用命令 !anima，用自然语言」）：
+        启动能自然语言，叫停也必须能 —— 否则报备里承诺的「说停就行」是空话。
+
+        边界：
+        * 只取消 `creator == 本人` 且在跑（running/executing/planning）的任务，
+          **不碰别人的任务**（即便同群、即便 owner 是群主）；
+        * 没有在跑的任务 ⇒ 如实说「没有在跑的活」，不假装取消成功；
+        * 异常只报「没能停下」，绝不谎报已取消。
+        """
+        agent = getattr(self.core, "agent", None)
+        if agent is None:
+            return "本喵现在没有在办的活喵，不用停～"
+        store = getattr(agent, "store", None)
+        if store is None or not hasattr(store, "list"):
+            return "本喵现在没有在办的活喵，不用停～"
+        running_states = {"running", "executing", "planning"}
+        try:
+            mine = [
+                t for t in store.list()
+                if int(getattr(t, "creator", 0) or 0) == int(user_id)
+                and str(getattr(t, "status", "")) in running_states
+            ]
+        except Exception:
+            logger.debug("stop：任务列表读取失败", exc_info=True)
+            return "本喵看了一下，没找到正在办的事。"
+        if not mine:
+            return "本喵现在没有在办的活喵，不用停～"
+        cancelled = 0
+        for t in mine:
+            try:
+                agent.cancel(t.id)
+                cancelled += 1
+            except Exception:
+                logger.warning("stop：取消任务失败 task=%s",
+                               getattr(t, "id", "?"), exc_info=True)
+        if cancelled <= 0:
+            return "本喵试着停，但没停下来——可以再说一次。"
+        if cancelled == 1:
+            return "好喵，停下了。"
+        return f"好喵，都停下了（{cancelled} 件）。"

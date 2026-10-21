@@ -1045,21 +1045,45 @@ class LLMHandler(AnimaCommandsMixin):
         from anima.agent.intent import is_agent_task
         if (self._is_owner(int(user_id)) and is_agent_task(text, 4)
                 and getattr(self.core, "agent", None) is not None):
-            # 审计 B2 / B0-asym：主人多步任务只建草稿 + 审批，群聊与私聊同策略；
-            # 09-26：把请求所在会话记进任务 —— 产物（生图等）交付回这里。
-            # 🔴 09-28 人视角审计 P0-1：草稿回执**只走私聊 owner，群里零回执**。
-            # 此前群聊分支把任务 ID 与「!anima agent approve …」语法直接发回群
-            # （09-26 19:16–19:17 生产实证，全体群成员可见）。判据＝**群里其他人
-            # 能不能据这一条推断出它不是人**。消息仍被消费（不再落回对话管线）。
+            # 🔴 2026-10-21 自然语言闭环（owner 原话：「能不能不用命令 !anima 而是用自然语言」）：
+            #   **私聊**下 owner 用人话提的多步任务 → **直接执行**，回执用自然语言讲清
+            #   「在做 / 做完汇报 / 想停就说停」，**不出现任何命令语法**。
+            #
+            #   为什么只放开私聊、群聊仍走草稿：
+            #   09-28 人视角审计 P0-1 的判据是「群里其他人能不能据这条推断出它不是人」。
+            #   群里出现「已创建 Agent 草稿 xxx」本身就是破绽 ⇒ 群聊策略保持原样。
+            #   私聊只有 owner 一人、无旁观者 ⇒ 放开是安全的。
+            #
+            #   安全边界不动：仍是 owner-only（`_is_owner`）、仍受工具权限门与
+            #   `security.require_approval_for_danger` 约束。
             target_id = int(group_id) if detail_type == "group" else int(user_id)
+            if detail_type == "private":
+                task = await self.core.agent.submit(
+                    text, int(user_id), auto_run=True,
+                    session={"detail_type": "private", "target_id": target_id},
+                )
+                try:
+                    await self.core.gateway.send(OutboundMsg(
+                        "private", int(user_id),
+                        "好喵，这就去办～做完本喵跟你汇报。\n"
+                        "（中途想让它停，直接说「停」就行）",
+                    ))
+                except Exception:
+                    logger.debug("[agent] 私聊启动回执发送失败（已隔离）", exc_info=True)
+                logger.info("[agent] owner 私聊自然语言任务已启动 task=%s", task.id)
+                return
+            # —— 群聊路径：保持既有策略（只建草稿 + 私聊回执，群里零痕迹）——
+            # 🔴 回执**不再**要求 owner 回复命令（owner 要求自然语言闭环）。
+            #    但也**不得**承诺一个未实现的「说开始就执行」—— 如实说明：
+            #    任务已记下，但群里不会自动开跑，需要到私聊再说一次。
             task = self.core.agent.store.create(
                 text, int(user_id),
                 session={"detail_type": detail_type, "target_id": target_id},
             )
             await self._agent_control_notice(
                 int(user_id),
-                f"已创建 Agent 草稿 {task.id}，"
-                f"回复「!anima agent approve {task.id}」后执行。",
+                f"已记下这个多步任务（{task.id}）。"
+                f"群里本喵不会自动开跑 —— 到私聊跟本喵说一次，本喵就去办。",
             )
             return
 

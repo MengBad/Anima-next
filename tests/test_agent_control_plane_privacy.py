@@ -161,7 +161,13 @@ async def test_auto_routed_draft_notice_never_reaches_group():
     private = [m for m in _sends(handler) if m.detail_type == "private"]
     assert len(private) == 1
     assert private[0].target_id == OWNER
-    assert "已创建 Agent 草稿" in private[0].message
+    # 🔴 2026-10-21：文案改为自然语言（owner 要求不用命令），但核心守护不变：
+    #   ① 群里零痕迹（上一行已锁）；② 私聊回执**不得再要求 owner 回复命令**。
+    msg = private[0].message
+    assert "多步任务" in msg or "记下" in msg, f"回执应说明已记下任务：{msg!r}"
+    assert "!anima agent approve" not in msg, (
+        f"不得把命令语法塞回给 owner（owner 要求自然语言闭环）：{msg!r}"
+    )
 
 
 @pytest.mark.asyncio
