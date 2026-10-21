@@ -77,6 +77,9 @@ class OwnerAgent:
             max_replans=getattr(_cfg, "max_replans", None),
             parallel_steps=bool(getattr(_cfg, "parallel_steps", True)),
             max_parallel=getattr(_cfg, "max_parallel", None),
+            # 🔴 2026-10-21 P0-1：整任务总预算（默认 300s）。此前无上限，
+            # 理论最坏 20×180s=60min；自主触发（P1）前必须先有刹车。
+            total_budget_sec=getattr(_cfg, "total_budget_sec", None),
         )
 
     async def _notify(self, task: AgentTask, message: str) -> None:

@@ -573,7 +573,12 @@ def test_task_agent_config_defaults():
     assert cfg.task_agent.verify_steps is True
     assert cfg.task_agent.max_replans == 2
     assert cfg.task_agent.parallel_steps is True
-    assert cfg.task_agent.max_parallel == 4
+    # 🔴 2026-10-21 P0-2：默认由 4 降到 2。生产机 2 核/3.9G，owner 沙箱单实例
+    # memory_mb=512 ⇒ 4 并发 ≈ 2G 叠加主进程/NapCat/向量库会 OOM；
+    # 且 run_python 是 CPU 密集，2 核上并行无收益。
+    assert cfg.task_agent.max_parallel == 2
+    # 🔴 2026-10-21 P0-1：整任务总预算（此前完全没有上限，理论最坏 20×180s=60min）
+    assert cfg.task_agent.total_budget_sec == 300.0
 
 
 def test_owner_agent_passes_config_through():

@@ -751,11 +751,22 @@ class TaskAgentConfig(BaseModel):
     - ``max_replans``：失败重规划次数上限（0 = 关闭重规划）。
     - ``parallel_steps``：允许 planner 标记的 ``parallel_group`` 内部并发执行。
       只并发「显式指定工具」的步骤，ReAct 步骤永远串行。
+    - ``total_budget_sec``：**整任务总预算**（2026-10-21 P0-1 新增）。
+      此前只有单步 180s 超时、`MAX_STEPS=20` ⇒ **理论最坏 60 分钟无上限**，
+      与 2026-10-19 出站 LLM「无整轮预算、等 100 秒才吐兜底」是同一类教训。
+      生产实证：现有 6 次 Agent 任务实测 30–70s ⇒ 默认 300s 留 4 倍余量。
+      超预算即中止，**已完成步骤的产物保留**（不丢已有产出）。
+    - ``max_parallel`` 默认由 4 降到 **2**（2026-10-21 P0-2）：生产机 2 核/3.9G，
+      owner 沙箱单实例 `memory_mb=512`，4 并发 ≈ 2G 叠加主进程/NapCat/向量库
+      会触发 OOM；且 `run_python` 是 CPU 密集，2 核上并行无收益。
     """
     verify_steps: bool = True
     max_replans: int = 2
     parallel_steps: bool = True
-    max_parallel: int = 4
+    #: ⚠️ 2 核机上的务实上限。调大前请先确认内存有余量（沙箱 512MB/实例）。
+    max_parallel: int = 2
+    #: 整任务总预算（秒）。0 = 不限制（不推荐，仅用于排障）。
+    total_budget_sec: float = 300.0
 
 
 class OwnerBrowserConfig(BaseModel):

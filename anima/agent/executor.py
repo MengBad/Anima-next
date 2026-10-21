@@ -52,6 +52,10 @@ class AgentExecutor:
     MAX_PARALLEL = 4
     VERIFY_TIMEOUT = 60
     VERIFY_OUTPUT_CHARS = 1200
+    #: 整任务总预算默认值（秒）。🔴 2026-10-21 P0-1：此前**完全没有**整任务上限，
+    #: 只有单步 180s + MAX_STEPS=20 ⇒ 理论最坏 60 分钟。生产实证 6 次任务实测
+    #: 30–70s，取 300s 留 4 倍余量。可用 `task_agent.total_budget_sec` 覆盖。
+    DEFAULT_TOTAL_BUDGET_SEC = 300.0
     # 09-26：产出「受控媒体」（图片）的工具。这些工具把产物路径写进 task-local
     # call context（`generated_image_paths`），而 Agent 路径**不经过**对话 pipeline
     # 的出站段构造 ⇒ 必须由本执行器显式回收，否则产物变孤儿文件。
@@ -64,7 +68,8 @@ class AgentExecutor:
                  auditor: AgentAuditor | None = None,
                  notify: Optional[Callable[[AgentTask, str], Any]] = None,
                  *, verify_steps: bool = True, max_replans: int | None = None,
-                 parallel_steps: bool = True, max_parallel: int | None = None):
+                 parallel_steps: bool = True, max_parallel: int | None = None,
+                 total_budget_sec: float | None = None):
         self.core = core
         self.store = store
         self.planner = planner or TaskPlanner(getattr(core, "llm", None))
@@ -74,6 +79,11 @@ class AgentExecutor:
         self.max_replans = self.MAX_REPLANS if max_replans is None else max(0, int(max_replans))
         self.parallel_steps = bool(parallel_steps)
         self.max_parallel = self.MAX_PARALLEL if max_parallel is None else max(1, int(max_parallel))
+        #: 整任务总预算（秒）。0/None ⇒ 不限制。
+        #: 🔴 2026-10-21 P0-1：此前只有单步超时、无整任务上限（理论最坏 20×180s）。
+        #: 自主触发（P1）一旦上线，无上限 = 失控放大器，故先装刹车再给油门。
+        self.total_budget_sec = float(
+            self.DEFAULT_TOTAL_BUDGET_SEC if total_budget_sec is None else total_budget_sec)
         self._cancel: dict[str, bool] = {}
         self._fail_streak = 0
         self._pause_until = 0.0
@@ -219,6 +229,14 @@ class AgentExecutor:
         failed = False
         executed = 0
         idx = task.current_step
+        #: 整任务预算起点。🔴 2026-10-21 P0-1：每步都检查，超预算即中止，
+        #: **已完成步骤的产物保留**（不因超时丢掉已产出的东西）。
+        _task_started = time.monotonic()
+
+        def _over_budget() -> bool:
+            if self.total_budget_sec <= 0:
+                return False
+            return (time.monotonic() - _task_started) > self.total_budget_sec
 
         while idx < len(task.steps) and executed < self.MAX_STEPS:
             if self._is_cancelled(task):
@@ -226,6 +244,33 @@ class AgentExecutor:
                 self.store.save(task)
                 await self._notify(task, "[已取消] 主人终止了任务")
                 return "任务已取消。"
+
+            # 🔴 P0-1 整任务预算检查（放在每步开头，粒度足够且不打断在跑的步骤）
+            if _over_budget():
+                _elapsed = time.monotonic() - _task_started
+                _done = sum(1 for s in task.steps if s.status == "done")
+                task.status = "failed"
+                task.error = (
+                    f"超出整任务预算（{_elapsed:.0f}s > {self.total_budget_sec:.0f}s）；"
+                    f"已完成 {_done}/{len(task.steps)} 步，产物保留"
+                )
+                self.store.save(task)
+                logger.warning("[agent] 任务 %s 超整任务预算：%s", task.id, task.error)
+                await self._notify(
+                    task,
+                    f"[超时中止] 本喵算了算，这个活已经花了 {_elapsed:.0f} 秒、"
+                    f"超过 {self.total_budget_sec:.0f} 秒的上限了，先停一下喵。\n"
+                    f"已完成 {_done}/{len(task.steps)} 步，已经做出来的东西都留着。",
+                )
+                if self.auditor:
+                    try:
+                        self.auditor.emit("agent_task_budget_exceeded", task_id=task.id,
+                                          elapsed_sec=round(_elapsed, 1),
+                                          budget_sec=self.total_budget_sec,
+                                          steps_done=_done)
+                    except Exception:
+                        logger.debug("预算超限审计失败", exc_info=True)
+                return f"任务超出整任务预算已中止（{_elapsed:.0f}s）。"
 
             batch = self._collect_batch(task, idx)
             total = len(task.steps)
