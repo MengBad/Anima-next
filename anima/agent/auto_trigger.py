@@ -180,11 +180,54 @@ def dedupe_against(topics: list[str], candidate: str) -> bool:
 # 触发源采集（只读）
 # ---------------------------------------------------------------------------
 
+def is_followable_debt_text(text: str) -> bool:
+    """这条「承诺」值不值得**自动启动一个任务**去跟进。
+
+    🔴 2026-10-21 生产实证（首次自主触发的第一个任务就是废的）：
+    报备内容为「跟进这个承诺并给出结果：本大爷这就帮你瞅瞅……」，
+    随后 Agent 检索不到任何可跟进事项，重规划后只能回「无法执行」。
+
+    根因：`debts.json` 里那条 `{status:pending, due_ts:None, fuzzy:True,
+    content:"本大爷这就帮你去瞅瞅……"}` —— 这是**随口应答的语气词**，
+    不是承诺。`check_due()` 对 `fuzzy=True` 的条目按「创建满 1 天」放行，
+    于是垃圾进了自动任务队列。
+
+    判据（保守，宁可漏掉真承诺也不自动启动无意义任务）：
+    1. 太短（< 8 字）⇒ 不足以构成可执行的跟进目标；
+    2. 纯语气/应答词（瞅瞅、看看、晚点、待会、马上、这就…）且无实义宾语；
+    3. 只有标点或重复字。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return False
+    # 剥掉标点与空白后计长度（「……」「！」不算实义）
+    import re as _re
+    core_chars = _re.sub(r"[\s，。：:、！？!?…\-—~～（）()\[\]【】\"'“”‘’]+", "", t)
+    if len(core_chars) < 8:
+        return False
+    # 纯语气词/应答（剥掉这些后几乎没有实义 → 不可跟进）
+    _FILLER = (
+        "本大爷", "本喵", "帮你", "给你", "这就", "马上", "立刻", "待会", "稍后",
+        "晚点", "去", "瞅瞅", "看看", "瞧瞧", "瞅一眼", "看一下", "说说", "聊聊",
+        "好的", "好哒", "行", "嗯", "哦", "啊", "吧", "呢", "喵", "呀", "啦",
+    )
+    residue = core_chars
+    for f in _FILLER:
+        residue = residue.replace(f, "")
+    if len(residue) < 4:
+        return False
+    return True
+
+
 def collect_debt_triggers(core: Any, now: Optional[float] = None) -> list[AutoTriggerDecision]:
     """承诺到期 → 自主跟进。
 
     **只读** `cognitive/debt.py::DebtManager.check_due()`；不改它的存储
     （`check_due` 自身会把超宽限的债置 expired —— 那是它既有语义）。
+
+    ⚠️ 必须过 `is_followable_debt_text` 质量闸：`debts.json` 里混有
+    「本大爷这就帮你去瞅瞅……」这类随口应答（生产实证），
+    不加闸就会自动启动一堆无意义任务。
     """
     out: list[AutoTriggerDecision] = []
     try:
@@ -200,6 +243,9 @@ def collect_debt_triggers(core: Any, now: Optional[float] = None) -> list[AutoTr
         # 字段名是 `content`（不是 text/hint）。
         text = str(getattr(d, "content", "") or "").strip()
         if not text:
+            continue
+        if not is_followable_debt_text(text):
+            logger.info("[自主触发] 跳过不可跟进的承诺（语气词/过短）：%s", text[:40])
             continue
         out.append(AutoTriggerDecision(
             source="debt_due",

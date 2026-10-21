@@ -344,3 +344,56 @@ async def test_no_trigger_means_no_action():
         at.collect_triggers = orig
 
     assert agent.submitted == [], "无触发源时不得启动"
+
+
+# ── 8. 承诺质量闸（2026-10-21 首次自主触发的生产实证）──────────────────
+
+
+def test_followable_debt_rejects_filler():
+    """🔴 生产实证：首次自主触发的第一个任务就是废的 ——
+    报备「跟进这个承诺：本大爷这就帮你去瞅瞅……」，
+    Agent 检索不到可跟进事项，重规划后只能回「无法执行」。
+    根因是 debts.json 里 `{due_ts:None, fuzzy:True, content:"本大爷这就帮你去瞅瞅……"}`
+    被 check_due 按「创建满 1 天」放行。
+    """
+    from anima.agent.auto_trigger import is_followable_debt_text as F
+
+    assert F("本大爷这就帮你去瞅瞅……") is False, "语气词不得触发自动任务"
+    assert F("这就去看看") is False
+    assert F("好的喵") is False
+    assert F("嗯") is False
+    assert F("") is False
+    assert F("……") is False
+
+
+def test_followable_debt_accepts_real_promises():
+    from anima.agent.auto_trigger import is_followable_debt_text as F
+
+    assert F("明天帮你查一下那个番剧的更新时间") is True
+    assert F("下周三提醒大家交作业") is True
+    assert F("帮你去群里问问有没有人有MC服务器") is True
+
+
+def test_debt_trigger_filters_filler_end_to_end(monkeypatch):
+    """端到端：即便 check_due 返回语气词债，也不得产出触发决策。"""
+    import types as _t
+    import anima.agent.auto_trigger as at
+
+    class _FakeMgr:
+        def check_due(self, now=None):
+            alpha = _t.SimpleNamespace(content="本大爷这就帮你去瞅瞅……")
+            beta = _t.SimpleNamespace(content="明天帮你查一下那个番剧的更新时间")
+            return [alpha, beta]
+
+    monkeypatch.setattr(
+        "anima.cognitive.debt.get_debt_manager",
+        lambda data_dir: _FakeMgr(),
+    )
+    core = _t.SimpleNamespace(
+        config=_t.SimpleNamespace(
+            persistence=_t.SimpleNamespace(data_dir="data"),
+        )
+    )
+    got = at.collect_debt_triggers(core)
+    assert len(got) == 1, f"只应保留真承诺，实得 {[g.request for g in got]}"
+    assert "番剧" in got[0].request
