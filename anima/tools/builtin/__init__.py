@@ -289,6 +289,27 @@ def register_all_builtin(registry, core=None) -> None:
         granted_scopes={"network": True},
         priority=3,  # P0-1：联网是记忆未命中后的次选
     ))
+    # 🔴 2026-10-22：链接可用性检查 + 失效回退（快照/摘要）。
+    # 这是 owner 反复提了 32 天、被 SelfCode 受理 12+ 次却每次都被
+    # `network_egress_boundary` 正确拒绝的需求 —— 因为 SelfCode 沙箱禁网。
+    # **正确落点是内置工具**（跑在主进程、有网络能力），与 web_search 同级。
+    from .link_check import tool_check_link
+    registry.register(Tool(
+        "check_link",
+        "检查一个网页链接是否还能打开。打不开时自动回退：① 查 Internet Archive "
+        "Wayback Machine 的历史快照并返回正文；② 都找不到就用搜索引擎搜摘要。"
+        "适用场景：群友发了链接但打不开/已删除/404/需要登录，用户问「这链接怎么了」"
+        "「里面写了啥」「帮我看看这个」时。直接传完整 URL。",
+        {
+            "url": {"type": "string",
+                    "description": "要检查的链接完整地址（http:// 或 https:// 开头）"},
+        },
+        tool_check_link,
+        required=["url"],
+        min_level=LEVEL_USER,
+        granted_scopes={"network": True},
+        priority=3,
+    ))
     registry.register(Tool(
         "x_search",
         "在 X（Twitter）上搜索内容并返回摘要。适用于需要 X 平台实时/专属信息，"
