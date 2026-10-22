@@ -293,6 +293,35 @@ class HumanAIControlSurface:
         except Exception:  # noqa: BLE001 - 聚合失败不阻断控制面
             return {"available": False, "reason": "stability 聚合异常"}
 
+    def _permission_drift_currently_resolved(self) -> bool:
+        """当前配置是否**已经不漂移**了（与基线一致）。
+
+        🔴 2026-10-23：用于把「历史审计计数」与「当前真实状态」分开。
+        历史 11 次漂移事件可能全部已被 `repin()` 解决；此时不该继续告警。
+
+        **fail-closed**：拿不到 monitor / 配置 / 抛异常 ⇒ 返回 **False**
+        （= 当作「仍在漂移」）⇒ 保守地仍然告警。宁可多报一条待办，
+        也绝不漏报真正的安全问题。
+        """
+        try:
+            from anima.core.config_drift import ConfigDriftMonitor
+            from pathlib import Path
+            cfg = getattr(self._core, "config", None)
+            if cfg is None:
+                return False
+            dd = getattr(cfg, "persistence", None)
+            root = getattr(dd, "data_dir", "data") if dd else "data"
+            # 必须传**绝对路径**：默认 _default_baseline_path 对相对 data_dir
+            # 会解析出错位（2026-10-22 实测踩过：写到了进程 cwd 下）。
+            base_path = Path(str(root)) / "config_drift_baseline.json"
+            mon = ConfigDriftMonitor(cfg, actor="health_check",
+                                     baseline_path=base_path)
+            diff = mon.check(cfg) or {}
+            return len(diff.get("items") or []) == 0
+        except Exception:
+            logger.debug("当前漂移状态查询失败 ⇒ 保守按「仍在漂移」处理", exc_info=True)
+            return False
+
     def health_alerts_to_owner(self, window_days: int = 7,
                                owner_id: int = 0) -> list[dict[str, Any]]:
         """P2-1：把 health_proof 异常信号转成 owner 待办（warn 级触发）。
@@ -332,8 +361,35 @@ class HumanAIControlSurface:
                 }
             except Exception:
                 _existing = set()
+            # 🔴 2026-10-23：**漂移告警必须先查「当前是否真的在漂移」**。
+            #   `detect_alerts(rec)` 数的是 **7 天窗口内的历史审计事件**，
+            #   而那些事件可能是**已解决**的。生产实证：基线过期导致
+            #   10-21 报了 9 次、10-22 报了 2 次；我用 `repin()` 修好基线后
+            #   真漂移已归零（10-23 = 0 次），但历史 11 条仍在 7d 窗口内
+            #   ⇒ 每 6 小时冷却就重建一张「11 次权限漂移」待办，
+            #   归档一次、重建一次，永远清不掉（owner 看着它反复出现）。
+            #
+            #   修法：对 permission_drift，先用 ConfigDriftMonitor.check()
+            #   查**当前**配置与基线的差异；若为 0 ⇒ 说明漂移已解决，
+            #   历史计数只是陈旧事件 ⇒ **不建单**（信号仍留在审计与观测面）。
+            #   fail-closed：查不到 monitor / 抛异常 ⇒ 保守地**仍然按原逻辑告警**
+            #   （宁可多报一条，也不漏报真正的安全问题）。
+            #   ⚠️ 这个查询**必须自带异常保护**：它若抛出，会中断整个 try 块
+            #   ⇒ 所有告警（含其他类型）全部丢失 —— 那才是最坏的结果
+            #   （由 test_query_failure_treated_as_still_drifting 抓出）。
+            try:
+                _drift_resolved = self._permission_drift_currently_resolved()
+            except Exception:
+                logger.debug("当前漂移状态查询异常 ⇒ 按「仍在漂移」处理", exc_info=True)
+                _drift_resolved = False
             for a in detect_alerts(rec):
                 if a.get("severity") != "warn":
+                    continue
+                if a.get("type") == "permission_drift" and _drift_resolved:
+                    logger.info(
+                        "[health_alerts] 权限漂移已解决（当前配置与基线一致），"
+                        "历史 %s 次事件视为陈旧，不再建单", a.get("value"),
+                    )
                     continue
                 _req = f"[health_alerts] {a['message']}"
                 _topic = _health_topic_key(_req)
