@@ -244,3 +244,59 @@ def test_goal_trigger_tables_stay_in_sync():
 def test_common_phrasings_hit_goal(text):
     """常见说法都要能命中（避免「盯着」vs「盯一下」这类漏判）。"""
     assert classify_request_intent(text) == "goal", f"{text!r} 应命中 goal"
+
+
+# ── 7. 任务启动后必须立即标记 Goal 已推进（防重复派生）─────────────────
+
+
+def test_goal_decision_carries_goal_id():
+    """决策必须带 goal_id —— 否则启动任务后无法回写，会重复派生。
+
+    生产实测（2026-10-23）：任务 b96b79c59e 四步全部 completed，
+    但 `goal.last_run_at` 仍为 0 ⇒ 下一个心跳会立刻重复派生同一目标。
+    根因：`mark_run()` 在心跳里**从未被调用**（设计稿写了，实现漏了）。
+    """
+    import time
+    from anima.core.autonomy import Heartbeat
+
+    st = _store()
+    g = st.create("整理群动态", 42, cadence_sec=3600)
+
+    hb = Heartbeat.__new__(Heartbeat)
+    hb.core = types.SimpleNamespace(persistence=st.persistence)
+    dec = hb._goal_decisions(time.time())
+
+    assert len(dec) == 1
+    assert dec[0].goal_id == g.id, "决策必须携带 goal_id"
+
+
+def test_mark_run_prevents_immediate_rederive():
+    """🔴 端到端语义：标记推进后，同一 cadence 周期内不得再派生。"""
+    import time
+    from anima.core.autonomy import Heartbeat
+
+    st = _store()
+    g = st.create("整理群动态", 42, cadence_sec=3600)
+    hb = Heartbeat.__new__(Heartbeat)
+    hb.core = types.SimpleNamespace(persistence=st.persistence)
+
+    assert len(hb._goal_decisions(time.time())) == 1, "前置：应立即到期"
+    st.mark_run(g.id, "task_x")
+    assert hb._goal_decisions(time.time()) == [], "标记推进后不得立即重复派生"
+
+
+def test_auto_trigger_marks_goal_after_submit_source_level():
+    """源码级契约：`_auto_trigger_tick` 必须在 submit 后调用 mark_run。
+
+    为什么用源码级：完整链路需要 agent/gateway 全套桩，成本高且易漏；
+    本次 bug 的性质是「漏了一次调用」，顺序/存在性检查即可锁定。
+    """
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._auto_trigger_tick)
+    i_submit = src.find("await agent.submit")
+    i_mark = src.find("mark_run")
+    assert i_submit > 0, "应有 submit 调用"
+    assert i_mark > 0, "提交后必须标记 Goal 推进（否则重复派生）"
+    assert i_submit < i_mark, "mark_run 必须在 submit 之后"

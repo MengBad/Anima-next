@@ -58,11 +58,17 @@ COOLDOWN_AFTER_TRIP_SEC = 6 * 3600
 @dataclass
 class AutoTriggerDecision:
     """一条自主触发决策（只读产物，供报备与审计）。"""
-    source: str                 # debt_due | health_alert
+    source: str                 # debt_due | health_alert | goal:<id>
     request: str                # 要交给 Agent 的请求文本
     reason: str                 # 为什么现在做（报备正文用）
     topic: str = ""             # 去重主题键
     dedupe_hit: bool = False    # 是否因去重被跳过
+    #: 关联的长期目标 id（仅 goal:* 源有值）。
+    #: 🔴 2026-10-23：任务启动 / 完成后要据此回写 Goal 进展
+    #: （`mark_run` / `add_note`），否则 Goal 不知道自己推进过
+    #: ⇒ 下次心跳立刻重复派生（生产实测踩过：任务 4 步全完成，
+    #:   但 goal.last_run 仍为 0）。
+    goal_id: str = ""
 
 
 def topic_key(text: str) -> str:

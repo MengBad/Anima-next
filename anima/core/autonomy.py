@@ -911,6 +911,7 @@ class Heartbeat:
                 request=f"推进这个长期目标并给出本次进展：{_req[:400]}",
                 reason=f"本喵在追的目标「{g.objective[:40]}」到推进时间了",
                 topic=topic_key(g.objective),
+                goal_id=g.id,
             ))
             # 一次 tick 只派生一个目标，防同日爆量
             break
@@ -1053,6 +1054,21 @@ class Heartbeat:
         except Exception:
             logger.exception("[自主触发] 提交任务失败（已隔离）")
             return
+
+        # 🔴 2026-10-23：任务一启动就 **标记 Goal 已推进**。
+        #   生产实测踩过：任务 4 步全部完成，但 `goal.last_run_at` 仍为 0
+        #   ⇒ Goal 不知道自己推进过 ⇒ 下一个心跳立刻重复派生同一个目标。
+        #   必须在**提交成功后立即**记，而不是等任务完成 —— 因为任务可能
+        #   跑很久、也可能中途失败，但「已经为它投入过一次」这个事实成立。
+        if getattr(picked, "goal_id", ""):
+            try:
+                from anima.agent.goal import GoalStore
+                _gs = GoalStore(self.core.persistence)
+                _gs.mark_run(picked.goal_id, task.id)
+                logger.info("[自主触发] 已标记目标 %s 推进（task=%s）",
+                            picked.goal_id, task.id)
+            except Exception:
+                logger.debug("[自主触发] 标记目标推进失败（不影响任务）", exc_info=True)
 
         try:
             from anima.core.gateway import OutboundMsg
