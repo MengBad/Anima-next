@@ -61,10 +61,24 @@ class _TaskStore:
         return list(self._items)
 
 
-def _make_autonomy(cfg, tasks, sent):
+class _Mem:
+    """内存版 PersistenceProvider（read_json/write_json），供跨重启测试用。"""
+
+    def __init__(self):
+        self.data = {}
+
+    def read_json(self, name, default=None):
+        return self.data.get(name, default)
+
+    def write_json(self, name, value):
+        self.data[name] = value
+
+
+def _make_autonomy(cfg, tasks, sent, mem=None):
     core = MagicMock()
     core.config = cfg
     core.tasks = tasks
+    core.persistence = mem if mem is not None else _Mem()
 
     async def _send(msg):
         sent.append(msg)
@@ -73,7 +87,6 @@ def _make_autonomy(cfg, tasks, sent):
     core.audit = None
     auto = Heartbeat.__new__(Heartbeat)
     auto.core = core
-    auto._last_owner_digest_date = ""
     auto._bj_date_str = lambda now: "2026-10-21"
     return auto
 
@@ -154,16 +167,19 @@ async def test_send_failure_is_isolated():
 
 async def test_digest_date_not_marked_when_send_fails():
     """发送失败不得标记当日已发 —— 否则当天永久丢失。"""
-    cfg = _Cfg(owners=(1,))
+    cfg = _Cfg(owners=(1,), hour=0)
     tasks = _TaskStore([_Task("待办A")])
-    auto = _make_autonomy(cfg, tasks, [])
+    mem = _Mem()
+    auto = _make_autonomy(cfg, tasks, [], mem=mem)
 
     async def _boom(msg):
         raise RuntimeError("boom")
 
     auto.core.gateway.send = _boom
     await auto._owner_digest_tick(now=0.0)
-    assert auto._last_owner_digest_date != "2026-10-21", "失败不应标记已发"
+
+    _mark = (mem.data.get("owner_digest_mark.json") or {}).get("last_date")
+    assert _mark != "2026-10-21", "失败不应标记已发（否则当天再也不会重试）"
 
 
 # ── 4. 无待办不发（不做自我打卡刷屏）────────────────────────────────────
@@ -252,3 +268,59 @@ async def test_same_topic_merged_into_one_line():
     assert "同主题共 3 条" in text, f"应合并并标数量：{text!r}"
     # 合并后总主题数为 2（退化 1 组 + 出站 1 条），不是 4
     assert "攒了 2 件" in text, f"应按主题计数而非条目计数：{text!r}"
+
+
+# ── 8. 跨重启不重复推送（2026-10-22 生产实证）─────────────────────────
+
+
+async def test_digest_mark_survives_restart():
+    """🔴 生产实证：09:00:29 推「攒了 2 件」，09:08:33（部署重启后）又推
+    「攒了 1 件」—— 8 分钟内两条同质推送，而 owner 什么都没做。
+
+    根因：`_last_owner_digest_date` 只存**内存** ⇒ 重启当天会再推一次。
+    重启是我们自己的运维动作，不该造成重复打扰。
+    """
+    cfg = _Cfg(owners=(1,), hour=0)
+    tasks = _TaskStore([_Task("待办A")])
+    mem = _Mem()
+    sent = []
+    auto = _make_autonomy(cfg, tasks, sent, mem=mem)
+
+    await auto._owner_digest_tick(now=0.0)
+    assert len(sent) == 1
+
+    # 模拟重启：全新 Heartbeat 实例，同一份持久化存储
+    auto2 = _make_autonomy(cfg, tasks, sent, mem=mem)
+    await auto2._owner_digest_tick(now=100.0)
+
+    assert len(sent) == 1, "重启后当天不得重复推送（标记必须持久化）"
+
+
+async def test_digest_mark_persisted_to_storage():
+    """标记必须真的写进持久化存储，而不只是内存变量。"""
+    cfg = _Cfg(owners=(1,), hour=0)
+    tasks = _TaskStore([_Task("待办A")])
+    mem = _Mem()
+    auto = _make_autonomy(cfg, tasks, [], mem=mem)
+
+    await auto._owner_digest_tick(now=0.0)
+
+    assert "owner_digest_mark.json" in mem.data, f"应落盘标记，实得 {list(mem.data)}"
+    assert mem.data["owner_digest_mark.json"].get("last_date") == "2026-10-21"
+
+
+async def test_digest_runs_again_on_next_day():
+    """跨天后应能再次推送（标记不能永久锁死）。"""
+    cfg = _Cfg(owners=(1,), hour=0)
+    tasks = _TaskStore([_Task("待办A")])
+    mem = _Mem()
+    sent = []
+    auto = _make_autonomy(cfg, tasks, sent, mem=mem)
+    auto._bj_date_str = lambda now: "2026-10-21"
+    await auto._owner_digest_tick(now=0.0)
+    assert len(sent) == 1
+
+    auto2 = _make_autonomy(cfg, tasks, sent, mem=mem)
+    auto2._bj_date_str = lambda now: "2026-10-22"     # 第二天
+    await auto2._owner_digest_tick(now=86400.0)
+    assert len(sent) == 2, "第二天应再推一次"

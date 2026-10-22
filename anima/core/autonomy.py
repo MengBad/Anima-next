@@ -1007,6 +1007,36 @@ class Heartbeat:
         except Exception:
             logger.debug("[自主触发] 报备流程异常（任务已启动）", exc_info=True)
 
+    #: owner 每日交付的**持久化**日期标记文件（2026-10-22）。
+    #: 此前标记只在内存 ⇒ 每次重启当天会再推一次。生产实证：09:00:29 推
+    #: 「攒了 2 件」，09:08:33（部署重启后）又推「攒了 1 件」—— 8 分钟内两条
+    #: 同质推送，而 owner 什么都没做。**重启是运维动作，不该造成重复打扰。**
+    _OWNER_DIGEST_MARK_FILE = "owner_digest_mark.json"
+
+    @property
+    def _owner_digest_mark(self) -> dict:
+        """读取持久化标记（懒加载，失败返回空 dict）。"""
+        if not hasattr(self, "_owner_digest_mark_cache"):
+            _d = {}
+            try:
+                _p = getattr(getattr(self.core, "persistence", None), "read_json", None)
+                if _p is not None:
+                    _d = _p(self._OWNER_DIGEST_MARK_FILE, {}) or {}
+            except Exception:
+                logger.debug("owner 交付标记读取失败（按未推送处理）", exc_info=True)
+            self._owner_digest_mark_cache = _d if isinstance(_d, dict) else {}
+        return self._owner_digest_mark_cache
+
+    def _owner_digest_mark_save(self, day: str) -> None:
+        """写入当日标记（内存 + 落盘），使「当天已推」跨重启成立。"""
+        self._owner_digest_mark_cache = {"last_date": str(day)}
+        try:
+            _w = getattr(getattr(self.core, "persistence", None), "write_json", None)
+            if _w is not None:
+                _w(self._OWNER_DIGEST_MARK_FILE, self._owner_digest_mark_cache)
+        except Exception:
+            logger.debug("owner 交付标记落盘失败（内存仍生效）", exc_info=True)
+
     async def _owner_digest_tick(self, now: float) -> None:
         """D-41：每日一次把 owner 待办推到私聊（此前只落 WebUI，从不推送）。
 
@@ -1034,15 +1064,20 @@ class Heartbeat:
         if _now_dt.hour < int(getattr(cfg, "owner_digest_hour", 9)):
             return
         # 日切一次
+        # 🔴 2026-10-22：**必须持久化**。此前 `_last_owner_digest_date` 只存内存 ⇒
+        # 每次重启当天就会再推一次。生产实证：09:00:29 推「攒了 2 件」，
+        # 09:08:33（我部署重启后）又推「攒了 1 件」——**8 分钟内两条同质推送**，
+        # 而 owner 什么都没做。重启是我们自己的运维动作，不该造成重复打扰。
         _today = self._bj_date_str(now)
-        if getattr(self, "_last_owner_digest_date", "") == _today:
+        _mark = self._owner_digest_mark
+        if _mark.get("last_date") == _today:
             return
 
         owners = getattr(getattr(self.core.config, "permissions", None), "owners", None) or []
         if not owners:
             # fail-closed：无 owner 就不发，绝不伪造目标（同 handler._flush_owner_notice）
             logger.warning("[owner交付] permissions.owners 为空，跳过（不伪造发送）")
-            self._last_owner_digest_date = _today
+            self._owner_digest_mark_save(_today)
             return
 
         tasks = getattr(self.core, "tasks", None)
@@ -1052,7 +1087,7 @@ class Heartbeat:
                    if getattr(t, "status", "") in ("planned", "running", "awaiting_approval")]
         if not pending:
             # 没东西可推就不发 —— 宁可安静，不做「今日无异常」这类自我打卡。
-            self._last_owner_digest_date = _today
+            self._owner_digest_mark_save(_today)
             return
 
         limit = max(1, int(getattr(cfg, "owner_digest_max_items", 5)))
@@ -1085,7 +1120,7 @@ class Heartbeat:
                 except Exception:
                     logger.warning("[owner交付] 私聊发送失败 owner=%s", oid, exc_info=True)
             if sent:
-                self._last_owner_digest_date = _today
+                self._owner_digest_mark_save(_today)
                 logger.info("[owner交付] 已推送 %d 条待办给 owner", len(pending))
                 try:
                     audit = getattr(self.core, "audit", None) or getattr(self.core, "auditor", None)
