@@ -139,3 +139,33 @@ def test_quarantine_uses_same_gate_as_collection():
     # 采集会接受的，清理绝不能清
     assert is_followable_debt_text("明天帮你查一下那个番剧的更新时间") is True
     assert is_followable_debt_text("本大爷这就帮你去瞅瞅……") is False
+
+
+# ── 7. 清理必须不受「启动任务」闸门约束（2026-10-23 实测踩坑）────────────
+
+
+def test_quarantine_call_precedes_gate_in_source():
+    """🔴 清理必须在 gate 判定**之前**调用。
+
+    第一版把它放在 gate 之后 ⇒ 凌晨 1–5 点（睡眠时段）gate 直接 return，
+    清理永远跑不到（部署后 100 秒内 0 次清理，实测）。
+
+    理由是职责不同：
+    * gate（睡眠/免打扰/每日上限）约束的是「**启动任务**」；
+    * 清7理是「**卫生维护**」，把垃圾移出队列，不该被这些闸门挡住。
+    但必须在 `auto_trigger_enabled` 检查之后 —— 总开关关闭时什么都不做。
+    """
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._auto_trigger_tick)
+    i_enabled = src.find("auto_trigger_enabled")
+    i_quar = src.find("quarantine_unfollowable_debts")
+    i_gate = src.find("gate.blocked_reason")
+
+    assert i_enabled > 0 and i_quar > 0 and i_gate > 0, "三个锚点都应存在"
+    assert i_enabled < i_quar, "清理必须在 auto_trigger_enabled 检查之后（默认关时不动）"
+    assert i_quar < i_gate, (
+        f"清理必须在 gate 判定之前（实测踩坑：睡眠时段 gate return 导致清理永不执行）"
+        f" enabled@{i_enabled} quarantine@{i_quar} gate@{i_gate}"
+    )

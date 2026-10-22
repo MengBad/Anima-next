@@ -918,6 +918,27 @@ class Heartbeat:
         state = AutoTriggerState(self.core.persistence)
         state.roll_day(self._bj_date_str(now))
 
+        # 🔴 2026-10-23：**清理必须放在闸门之前**。
+        #   第一版我把它放在 gate 之后 ⇒ 凌晨 1–5 点（睡眠时段）gate 直接 return，
+        #   清理永远跑不到（实测：部署后 100 秒内 0 次清理）。
+        #   清理是**卫生维护**（把不可跟进的到期承诺移出队列），
+        #   不是「自主启动任务」 ⇒ 不该受睡眠时段/免打扰/每日上限这些
+        #   针对**启动任务**的闸门约束。但也必须在 `auto_trigger_enabled`
+        #   之后 —— 总开关关闭时什么都不做（默认关的哲学不变）。
+        #
+        #   为什么需要清理：只跳过不清理 ⇒ 那条「本大爷这就帮你去瞅瞅……」
+        #   一直 pending ⇒ 心跳每 30 秒判定一次并打日志，18 小时重复数千次。
+        #   移出后垃圾不再进入任何后续判定 —— 一次清理，永久安静。
+        #   这是**写操作**，与只读采集分离（见 quarantine 函数文档）。
+        try:
+            from anima.agent.auto_trigger import quarantine_unfollowable_debts
+            _q = quarantine_unfollowable_debts(self.core, now=now)
+            if _q:
+                logger.warning("[自主触发] 已移出 %d 条不可跟进的承诺：%s",
+                               len(_q), _q[:3])
+        except Exception:
+            logger.debug("[自主触发] 承诺清理失败（不影响后续）", exc_info=True)
+
         _sleep = None
         if getattr(cfg, "sleep_enabled", True):
             _sleep = (int(getattr(cfg, "sleep_start_hour", 1)),
@@ -944,19 +965,6 @@ class Heartbeat:
             logger.warning("[自主触发] 连续 %d 次无产出，熔断 %d 小时",
                            FAIL_STREAK_TRIP, COOLDOWN_AFTER_TRIP_SEC // 3600)
             return
-
-        # 🔴 2026-10-23：先把「到期但不可跟进」的承诺**移出队列**再做采集。
-        #   只跳过不清理 ⇒ 那条「本大爷这就帮你去瞅瞅……」一直 pending，
-        #   心跳每 30 秒判定一次并打日志，18 小时重复数千次（生产实证）。
-        #   清理后垃圾不再进入任何后续判定 —— 一次清理，永久安静。
-        #   注意：这是**写操作**，与只读采集分离（见 quarantine 函数文档）。
-        try:
-            from anima.agent.auto_trigger import quarantine_unfollowable_debts
-            _q = quarantine_unfollowable_debts(self.core, now=now)
-            if _q:
-                logger.info("[自主触发] 已移出 %d 条不可跟进的承诺", len(_q))
-        except Exception:
-            logger.debug("[自主触发] 承诺清理失败（不影响采集）", exc_info=True)
 
         decisions = collect_triggers(self.core, now=now)
         if not decisions:
