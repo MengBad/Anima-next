@@ -219,6 +219,60 @@ def is_followable_debt_text(text: str) -> bool:
     return True
 
 
+def quarantine_unfollowable_debts(core: Any, now: Optional[float] = None) -> list[str]:
+    """把「到期但不可跟进」的承诺**一次性移出队列**（返回被清理的 debt id）。
+
+    🔴 为什么需要（2026-10-23 生产实证）：
+    质量闸只能「每次跳过」，**不会把垃圾从队列里拿掉**。结果那条
+    「本大爷这就帮你去瞅瞅……」（语气词，不是承诺）一直 `pending`，
+    ⇒ 心跳**每 30 秒**判定一次并打一条 INFO 日志。18 小时里重复了数千次，
+    自主触发实际没产出任何价值，只产生了日志噪音。
+
+    **与 `collect_debt_triggers` 的分工**：
+    - `collect_debt_triggers`：**只读**采集（保持既有契约）；
+    - 本函数：**唯一的写操作**，只做一件事 —— 把判定为不可跟进的到期
+      承诺标 `cancelled`，使它们不再进入后续任何判定。
+
+    安全边界：
+    * 只处理 `check_due()` 返回的**到期**项，不动未到期的承诺；
+    * 状态写 `cancelled` 并记录理由（可追溯、可复核），**不删除数据**；
+    * 幂等：已 cancelled 的不会再出现在 check_due 里 ⇒ 不会重复清理；
+    * 任何异常只记日志，绝不拖垮心跳。
+    """
+    quarantined: list[str] = []
+    try:
+        from anima.cognitive.debt import get_debt_manager
+    except Exception:
+        logger.debug("quarantine：debt 模块导入失败", exc_info=True)
+        return quarantined
+    try:
+        dd = getattr(getattr(core, "config", None), "persistence", None)
+        data_dir = getattr(dd, "data_dir", "data") if dd else "data"
+        mgr = get_debt_manager(str(data_dir))
+        due = mgr.check_due(now=now) if now is not None else mgr.check_due()
+    except Exception:
+        logger.debug("quarantine：check_due 失败（跳过清理）", exc_info=True)
+        return quarantined
+
+    for d in due or []:
+        text = str(getattr(d, "content", "") or "").strip()
+        if not text or is_followable_debt_text(text):
+            continue
+        _did = str(getattr(d, "id", "") or "")
+        if not _did:
+            continue
+        try:
+            if mgr.cancel(_did):
+                quarantined.append(_did)
+                logger.warning(
+                    "[自主触发] 不可跟进的承诺已移出队列（语气词/过短，非真实承诺）："
+                    "%s | %s", _did, text[:40],
+                )
+        except Exception:
+            logger.debug("quarantine：取消失败 debt=%s", _did, exc_info=True)
+    return quarantined
+
+
 def collect_debt_triggers(core: Any, now: Optional[float] = None) -> list[AutoTriggerDecision]:
     """承诺到期 → 自主跟进。
 
@@ -228,6 +282,9 @@ def collect_debt_triggers(core: Any, now: Optional[float] = None) -> list[AutoTr
     ⚠️ 必须过 `is_followable_debt_text` 质量闸：`debts.json` 里混有
     「本大爷这就帮你去瞅瞅……」这类随口应答（生产实证），
     不加闸就会自动启动一堆无意义任务。
+
+    ⚠️ 注意：本函数**只跳过不清理**。把垃圾永久移出队列由
+    `quarantine_unfollowable_debts()` 负责（写操作，与这里分离）。
     """
     out: list[AutoTriggerDecision] = []
     try:

@@ -945,6 +945,19 @@ class Heartbeat:
                            FAIL_STREAK_TRIP, COOLDOWN_AFTER_TRIP_SEC // 3600)
             return
 
+        # 🔴 2026-10-23：先把「到期但不可跟进」的承诺**移出队列**再做采集。
+        #   只跳过不清理 ⇒ 那条「本大爷这就帮你去瞅瞅……」一直 pending，
+        #   心跳每 30 秒判定一次并打日志，18 小时重复数千次（生产实证）。
+        #   清理后垃圾不再进入任何后续判定 —— 一次清理，永久安静。
+        #   注意：这是**写操作**，与只读采集分离（见 quarantine 函数文档）。
+        try:
+            from anima.agent.auto_trigger import quarantine_unfollowable_debts
+            _q = quarantine_unfollowable_debts(self.core, now=now)
+            if _q:
+                logger.info("[自主触发] 已移出 %d 条不可跟进的承诺", len(_q))
+        except Exception:
+            logger.debug("[自主触发] 承诺清理失败（不影响采集）", exc_info=True)
+
         decisions = collect_triggers(self.core, now=now)
         if not decisions:
             return
