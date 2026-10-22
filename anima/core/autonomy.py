@@ -1065,6 +1065,17 @@ class Heartbeat:
                 from anima.agent.goal import GoalStore
                 _gs = GoalStore(self.core.persistence)
                 _gs.mark_run(picked.goal_id, task.id)
+                # 🔴 2026-10-23：把 goal_id 写进 task.context，供任务**完成时**
+                #   回写真实进展（`add_note`）。只 mark_run 不 add_note 的后果
+                #   生产实测过：目标永远停在旧进展，下次派生又拿旧上下文去跑，
+                #   等于「假装在推进」。这里用 context 而不是改 AgentTask
+                #   schema —— 避免动状态机字段。
+                try:
+                    task.context = dict(task.context or {})
+                    task.context["goal_id"] = picked.goal_id
+                    agent.store.save(task)
+                except Exception:
+                    logger.debug("[自主触发] 写入 goal_id 到任务失败", exc_info=True)
                 logger.info("[自主触发] 已标记目标 %s 推进（task=%s）",
                             picked.goal_id, task.id)
             except Exception:

@@ -300,3 +300,164 @@ def test_auto_trigger_marks_goal_after_submit_source_level():
     assert i_submit > 0, "应有 submit 调用"
     assert i_mark > 0, "提交后必须标记 Goal 推进（否则重复派生）"
     assert i_submit < i_mark, "mark_run 必须在 submit 之后"
+
+
+# ── 8. 进展必须来自任务真实产出（防「假装在推进」）─────────────────────
+
+
+class _FakeStep:
+    def __init__(self, index, result):
+        self.index = index
+        self.result = result
+
+
+class _FakeTask:
+    def __init__(self, steps=None, context=None, status="completed", tid="t1"):
+        self.id = tid
+        self.steps = steps or []
+        self.context = context or {}
+        self.status = status
+
+
+async def test_progress_recorded_from_real_step_result():
+    """🔴 进展必须取自 step.result 真实内容，不得来自注入的假数据。
+
+    生产实证：我第一次测试时往 goal.notes 塞了「群内讨论了 X 和 Y」
+    （自己编的占位符），它忠实照做，产出的 summary 与真实话题完全对不上。
+    **它没编造，是测试数据污染。**
+    """
+    from anima.agent.owner_agent import OwnerAgent
+
+    st = _store()
+    g = st.create("整理群动态", 42, cadence_sec=3600)
+
+    agent = OwnerAgent.__new__(OwnerAgent)
+    agent.core = types.SimpleNamespace(persistence=st.persistence)
+    agent.auditor = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    task = _FakeTask(
+        steps=[_FakeStep(0, "步骤一的真实产出内容，足够长以便被选中"),
+               _FakeStep(1, "步骤二的真实产出，这是最后一次有实质内容的结果")],
+        context={"goal_id": g.id},
+    )
+    await agent._record_goal_progress(task, "")
+
+    notes = GoalStore(st.persistence).get(g.id).notes
+    assert notes, "应有进展回写"
+    assert "步骤二的真实产出" in notes[-1], f"应取最后一条实质结果：{notes[-1]!r}"
+
+
+async def test_progress_skips_short_results():
+    """过短的步骤结果（空壳）不值得记，应回退到 result_text。"""
+    from anima.agent.owner_agent import OwnerAgent
+
+    st = _store()
+    g = st.create("整理群动态", 42, cadence_sec=3600)
+    agent = OwnerAgent.__new__(OwnerAgent)
+    agent.core = types.SimpleNamespace(persistence=st.persistence)
+    agent.auditor = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    task = _FakeTask(
+        steps=[_FakeStep(0, "已生成")],          # <20 字，属空壳
+        context={"goal_id": g.id},
+    )
+    await agent._record_goal_progress(task, "这是 result_text 的真实内容，足够长")
+
+    notes = GoalStore(st.persistence).get(g.id).notes
+    assert notes and "result_text" in notes[-1]
+
+
+async def test_progress_noop_without_goal_id():
+    """普通任务（无 goal_id）不得写任何 goal。"""
+    from anima.agent.owner_agent import OwnerAgent
+
+    st = _store()
+    st.create("某目标", 42)
+    agent = OwnerAgent.__new__(OwnerAgent)
+    agent.core = types.SimpleNamespace(persistence=st.persistence)
+    agent.auditor = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    task = _FakeTask(steps=[_FakeStep(0, "真实产出内容足够长足够长")], context={})
+    await agent._record_goal_progress(task, "")
+
+    assert all(not g.notes for g in GoalStore(st.persistence).items.values())
+
+
+async def test_progress_survives_missing_goal():
+    """goal_id 指向已删除的目标 ⇒ 静默跳过，不崩。"""
+    from anima.agent.owner_agent import OwnerAgent
+
+    st = _store()
+    agent = OwnerAgent.__new__(OwnerAgent)
+    agent.core = types.SimpleNamespace(persistence=st.persistence)
+    agent.auditor = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    task = _FakeTask(steps=[_FakeStep(0, "真实产出内容足够长足够长")],
+                     context={"goal_id": "goal_does_not_exist"})
+    await agent._record_goal_progress(task, "")   # 不应抛出
+
+
+def test_goal_id_written_to_task_context_source_level():
+    """源码契约：启动任务后必须把 goal_id 写进 task.context。
+
+    否则任务完成时 `_record_goal_progress` 找不到 goal，进展回写永远不发生
+    （这正是「只 mark_run 不 add_note」的成因）。
+    """
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._auto_trigger_tick)
+    assert 'task.context["goal_id"]' in src, "必须把 goal_id 写进 task.context"
+
+
+# ── 9. 进展标注：区分「真推进」与「只是完成了步骤」─────────────────────
+
+
+def test_progress_marker_detects_real_output():
+    """有文件产出的 ⇒ 标「有进展」。"""
+    from anima.agent.owner_agent import OwnerAgent
+    assert OwnerAgent._goal_note_indicates_progress(
+        "已成功导出群聊记录并写入 output/group_dynamics.md") is True
+
+
+def test_progress_marker_detects_failure_statement():
+    """🔴 真实案例 b8620a16c0：拿不到数据，只做了「如实说明」。
+    状态机判 completed（它确实完成了自己规划的事），但**目标没被推进**。
+    必须标「未取得实质进展」，否则 owner 以为在推进。
+    """
+    from anima.agent.owner_agent import OwnerAgent
+    body = ("由于群消息接口未能成功导出目标时间段内的文本内容，"
+            "本次无法完成群动态的整理与归档")
+    assert OwnerAgent._goal_note_indicates_progress(body) is False
+
+
+def test_progress_marker_prefers_output_over_failure_words():
+    """同时出现产出与失败词 ⇒ 以**产出证据**为准（不误标未推进）。"""
+    from anima.agent.owner_agent import OwnerAgent
+    body = "部分消息无法获取，但已归档至 output/partial.md"
+    assert OwnerAgent._goal_note_indicates_progress(body) is True
+
+
+def test_progress_marker_empty_is_false():
+    from anima.agent.owner_agent import OwnerAgent
+    assert OwnerAgent._goal_note_indicates_progress("") is False
+
+
+async def test_note_carries_progress_tag():
+    """回写的进展必须带「有进展 / 未取得实质进展」标记。"""
+    from anima.agent.owner_agent import OwnerAgent
+
+    st = _store()
+    g = st.create("整理群动态", 42, cadence_sec=3600)
+    agent = OwnerAgent.__new__(OwnerAgent)
+    agent.core = types.SimpleNamespace(persistence=st.persistence)
+    agent.auditor = types.SimpleNamespace(emit=lambda *a, **k: None)
+
+    task = _FakeTask(
+        steps=[_FakeStep(0, "由于接口未能导出，本次无法完成群动态整理")],
+        context={"goal_id": g.id},
+    )
+    await agent._record_goal_progress(task, "")
+
+    note = GoalStore(st.persistence).get(g.id).notes[-1]
+    assert "未取得实质进展" in note, f"应标注未推进：{note!r}"

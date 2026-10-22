@@ -225,6 +225,16 @@ class OwnerAgent:
                 await self._deliver_text(task, result_text)
             except Exception:
                 logger.exception("Agent 文本交付异常（已隔离）")
+            # 🔴 2026-10-23 P2：长期目标推进完成后**回写真实进展**。
+            #   生产实测过只 mark_run 不 add_note 的后果：
+            #   目标永远停在旧进展，下次派生又拿旧上下文去跑 ⇒「假装在推进」。
+            #   而且我必须承认：第一次测试时目标里那条进展「群内讨论了 X 和 Y」
+            #   是**我在测试脚本里编的占位符**，它忠实照做了 ⇒ 产出对不上真实话题。
+            #   所以回写的必须是**任务真实产出**，不是我注入的假数据。
+            try:
+                await self._record_goal_progress(task, result_text)
+            except Exception:
+                logger.debug("Agent 目标进展回写异常（已隔离）", exc_info=True)
 
     #: 单条 QQ 消息的正文上限（`_notify` 用的是 1500，这里留余量）
     _TEXT_CHUNK = 1200
@@ -234,6 +244,95 @@ class OwnerAgent:
     _TEXT_GROUP_MAX = 700
     #: 单个步骤结果最多交付的字数
     _TEXT_STEP_MAX = 1000
+
+    @staticmethod
+    def _goal_note_indicates_progress(body: str) -> bool:
+        """本次推进是否**取得了实质进展**（用于进展标注，不用于改状态）。
+
+        🔴 为什么不用长度阈值：实测
+        `b8620a16c0`（没做成）total=203 字，
+        `b96b79c59e`（真做成）total=248 字 —— **数值几乎一样，分不出来**。
+
+        改用**结构化信号**：优先看有没有可验证的产出证据（写文件路径、
+        明确的产出物），其次才看是否出现「无法/未能」这类失败陈述。
+
+        取向：**宁可标成「有进展」也不误标「未取得实质进展」** ——
+        因为误标会打击它的正确工作，而漏标只是少一个提示。
+        真正需要 owner 注意的极端情况（完全没产出）已在上游被 body 为空拦掉。
+        """
+        t = str(body or "")
+        if not t:
+            return False
+        # 强硬证据：写出了文件 / 产出了结构化结果
+        import re as _re
+        if _re.search(r"(output/|\.md\b|\.txt\b|\.json\b|已写入|已归档|已生成|已保存)", t):
+            return True
+        # 明确失败陈述（且没有上面那些产出证据）⇒ 视为未取得实质进展
+        _fail_markers = (
+            "无法完成", "未能成功", "未能导出", "无法导出", "不可用",
+            "无法获取", "无法访问", "接口未能", "失败",
+        )
+        return not any(m in t for m in _fail_markers)
+
+    async def _record_goal_progress(self, task: AgentTask, result_text: str = "") -> None:
+        """把本次推进的**真实产出**回写到关联的长期目标（P2，2026-10-23）。
+
+        🔴 为什么必须做（生产实测）：
+        只 `mark_run()` 不 `add_note()` 的后果是 —— 目标永远停在旧进展，
+        下次派生时 Agent 拿的还是旧上下文 ⇒「假装在推进」。
+
+        🔴 为什么进展必须来自**任务真实产出**：
+        第一次测试时我往 goal 里塞了一条自己编的进展
+        （「群内讨论了 X 和 Y」），它忠实照做了，产出的 summary 与真实的
+        structured 话题完全对不上。**它没编造，是我的测试数据污染了它。**
+        所以这里只回写 step.result / result_text 的真实内容。
+
+        fail-closed：无 goal_id / 读不到 goal / 任何异常 ⇒ 静默返回，
+        绝不影响任务交付。
+        """
+        ctx = task.context if isinstance(task.context, dict) else {}
+        goal_id = str(ctx.get("goal_id") or "")
+        if not goal_id:
+            return
+        try:
+            from anima.agent.goal import GoalStore
+        except Exception:
+            return
+        persistence = getattr(self.core, "persistence", None)
+        if persistence is None:
+            return
+        try:
+            store = GoalStore(persistence)
+            if store.get(goal_id) is None:
+                return
+            # 取**最后一条有实质内容的步骤结果**作为本次进展
+            steps = sorted(getattr(task, "steps", []) or [],
+                           key=lambda s: getattr(s, "index", 0))
+            body = ""
+            for st in reversed(steps):
+                res = str(getattr(st, "result", "") or "").strip()
+                if len(res) >= 20:
+                    body = res
+                    break
+            if not body:
+                body = str(result_text or "").strip()
+            if not body:
+                store.add_note(goal_id, f"[{task.status}] 本次推进无产出")
+                return
+            # 🔴 2026-10-23：**如实标注本次是否取得实质进展**。
+            #   实测案例 b8620a16c0：拿不到群消息，重规划后只做了一步
+            #   「如实说明无法完成」，执行器视角它"完成了所有步骤" ⇒ 判 completed。
+            #   状态机没撒谎（它确实完成了自己规划的事），但**目标没被推进**。
+            #   ⇒ 不改状态判定（靠文本猜「做没做成」必然误判，误判比不判更糟），
+            #      而是在进展里**明确区分**这两种情况，让 owner 一眼看出。
+            _progressed = self._goal_note_indicates_progress(body)
+            _tag = "有进展" if _progressed else "未取得实质进展"
+            note = f"[{task.status}·{_tag}] {body[:280]}".replace("\n", " ")
+            store.add_note(goal_id, note)
+            logger.info("[agent] 目标 %s 进展已回写（task=%s, %s, %d 字）",
+                        goal_id, task.id, _tag, len(note))
+        except Exception:
+            logger.debug("目标进展回写失败（不影响任务）", exc_info=True)
 
     async def _deliver_text(self, task: AgentTask, result_text: str = "") -> None:
         """把 Agent 任务的**文本产物**发回请求所在会话（D-36）。
