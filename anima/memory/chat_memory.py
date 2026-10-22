@@ -288,6 +288,55 @@ class ChatMemory:
         if self._dirty >= 10 or (now - self._last_save) >= 60:
             self.save()
 
+    def get_group_history(self, group_id: int, *, hours: float = 24.0,
+                          limit: int = 200, now: Optional[float] = None) -> list[dict]:
+        """按时间正序返回**某群**在时间窗内的消息（跨用户聚合）。
+
+        🔴 2026-10-23（P2 后续）：这是给「整理群动态」这类**长期目标**用的。
+        在此之前 Agent 的 28 个工具里**没有任何一个能读群聊记录**
+        （`read_file` 只读 data 目录、`get_group_members` 只给成员列表），
+        所以「盯着群动态」这个最自然的长期目标**结构上做不成** ——
+        生产实证：Agent 两次如实报告「缺少读取聊天记录的 API 或工具」。
+
+        与 `get_context` 的区别（**不能混用**）：
+        - `get_context`：**单用户桶**、给对话注入用、会做翻旧账防护；
+        - `get_group_history`：**跨用户聚合 + 时间窗过滤 + 按时间排序**，
+          供「回顾群里发生了什么」用。
+
+        安全边界：
+        * 只读**指定群**，不跨群聚合（避免把别群内容带进来）；
+        * 时间窗默认 24h、条数默认 200，**都有硬上限**，防一次拉爆；
+        * 不返回 bot 自己的消息以外的私聊内容 —— 桶 key 已按 `group_{gid}_` 前缀过滤；
+        * 输出结构 `{time, name, role, content}`，**不含** message_id 等内部字段。
+        """
+        now = time.time() if now is None else float(now)
+        cutoff = now - max(0.0, float(hours)) * 3600.0
+        prefix = f"group_{int(group_id)}_"
+        rows: list[dict] = []
+        for key, od in self._store.items():
+            if not str(key).startswith(prefix):
+                continue
+            for _rid, entries in od.items():
+                for entry in entries or []:
+                    _t = entry.get("time") or entry.get("ts") or 0
+                    try:
+                        _t = float(_t)
+                    except (TypeError, ValueError):
+                        continue
+                    # 无时间戳的条目无法定位，跳过（不猜）
+                    if not _t or _t < cutoff:
+                        continue
+                    rows.append({
+                        "time": _t,
+                        "name": str(entry.get("name") or ("你" if entry.get("role") == "bot" else "?")),
+                        "role": str(entry.get("role") or "user"),
+                        "content": str(entry.get("content") or ""),
+                    })
+        rows.sort(key=lambda r: r["time"])
+        if limit is not None and int(limit) > 0:
+            rows = rows[-int(limit):]
+        return rows
+
     def get_context(self, chat_type: str, chat_id: int,
                     recent_rounds: int = 10,
                     user_id: Optional[int] = None,

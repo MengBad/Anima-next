@@ -263,16 +263,25 @@ class OwnerAgent:
         t = str(body or "")
         if not t:
             return False
-        # 强硬证据：写出了文件 / 产出了结构化结果
         import re as _re
-        if _re.search(r"(output/|\.md\b|\.txt\b|\.json\b|已写入|已归档|已生成|已保存)", t):
-            return True
-        # 明确失败陈述（且没有上面那些产出证据）⇒ 视为未取得实质进展
+        # 明确失败陈述（**优先判定**）。
+        # 🔴 2026-10-23 实测踩过：文本含「无法完成…**建议**由群成员提供导出文件」，
+        # 因为没命中旧的失败词表（只查「无法完成」不看上下文顺序），
+        # 被判成「有进展」—— 而它其实什么都没做成。**建议往往是失败后的补救**，
+        # 不是产出的证据。
         _fail_markers = (
             "无法完成", "未能成功", "未能导出", "无法导出", "不可用",
-            "无法获取", "无法访问", "接口未能", "失败",
+            "无法获取", "无法访问", "接口未能", "缺少", "无法读取", "失败",
         )
-        return not any(m in t for m in _fail_markers)
+        _has_fail = any(m in t for m in _fail_markers)
+        # 强硬证据：写出了文件 / 产出了结构化结果
+        _has_output = bool(_re.search(
+            r"(output/|\.md\b|\.txt\b|\.json\b|已写入|已归档|已生成|已保存)", t))
+        # 失败陈述优先：只要出现失败词且**没有**明确的文件产出，就判未推进。
+        # 这样「无法完成…建议…」不会被「建议」蒙过去。
+        if _has_fail and not _has_output:
+            return False
+        return True
 
     async def _record_goal_progress(self, task: AgentTask, result_text: str = "") -> None:
         """把本次推进的**真实产出**回写到关联的长期目标（P2，2026-10-23）。

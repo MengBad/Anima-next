@@ -534,6 +534,28 @@ def register_all_builtin(registry, core=None) -> None:
             {"group_id": {"type": "integer", "description": "群号（可选，默认用当前群）"}},
             make_get_group_info(core), required=[], min_level=LEVEL_USER,
         ))
+        # 🔴 2026-10-23：读取群聊历史 —— **补上「Agent 读不到群记录」这个结构性缺口**。
+        #   在此之前工具表里没有一个能拿到「群里最近说了什么」：
+        #   read_file 只读 data 目录、get_group_members 只给成员列表。
+        #   生产实证：Goal「整理一次群动态」连续两轮，Agent 都如实报告
+        #   「缺少读取历史聊天记录的 API 或工具」——它没找借口，是真读不到。
+        #   **仅 owner**：这是「读别人说过什么」的能力，不给普通成员。
+        from .group_history import make_read_group_history
+        registry.register(Tool(
+            "read_group_history",
+            "读取指定群最近一段时间内的聊天记录（谁说了什么，按时间正序）。"
+            "用于「总结群里最近聊了什么」「整理群动态」「这周讨论了什么」这类回顾任务。"
+            "只能读指定群、不能跨群；默认最近 24 小时、最多 100 条。",
+            {
+                "group_id": {"type": "integer", "description": "群号，如 727631526"},
+                "hours": {"type": "number",
+                          "description": "回溯小时数，默认 24，上限 72"},
+                "limit": {"type": "integer",
+                          "description": "最多返回多少条，默认 100，上限 200"},
+            },
+            make_read_group_history(core), required=["group_id"],
+            min_level=LEVEL_OWNER,
+        ))
         registry.register(Tool(
             "set_group_card",
             "修改某人的群名片。需要管理员权限。",
