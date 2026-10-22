@@ -40,6 +40,14 @@ _TRIGGER = {
     "remind": ("提醒我", "设个提醒", "定个闹钟", "几点提醒", "到点提醒", "叫我"),
     "ignore": ("别再理", "不要理", "别理", "冷落", "别鸟", "别再搭"),
     "query": ("还记得吗", "你还记得", "我上次说的", "我之前说的", "我们的关系"),  # 通用"帮我查"交还带工具的流水线
+    # 🔴 2026-10-23 P2：长期目标。**必须排在 do_task 之前**
+    #   `_TRIGGER` 是 dict，`classify_request_intent` 按插入顺序遍历命中即返回
+    #   ⇒ 若放在 do_task 之后，「帮我盯着 X」会被 do_task 抢走，退化成一次性任务。
+    #   边界：「帮我**盯着**」= goal（长期） / 「帮我**查一下**」= do_task（一次性）。
+    "goal": ("帮我盯着", "帮我盯", "持续关注", "一直盯着", "长期跟进", "长期",
+             "定期", "每周帮我", "每天帮我", "盯着", "盯一下", "盯一盯", "关注着",
+             # 查看类（否则「我的目标」会被判成 chat，走不到 goal 分支）
+             "我的目标", "在追什么", "追哪些", "目标列表", "有哪些目标"),
     "do_task": ("有个问题", "帮我修", "帮我查下代码", "看下日志"),  # 通用"帮我看看/帮我做"交还流水线
     # 🔴 2026-10-21：自然语言叫停。owner 原话「能不能不用命令」——
     #   既然启动是自然语言，叫停也必须能自然语言，否则等于承诺做不到。
@@ -161,6 +169,8 @@ class RequestExecutor:
                 return await self._remind(text, group_id)
             if intent == "do_task":
                 return await self._do_task(text, user_id)
+            if intent == "goal":
+                return await self._goal(text, user_id)
             if intent == "stop":
                 return await self._stop(user_id)
         except Exception as e:  # 执行器隔离：失败回落到正常回复，不阻塞主线
@@ -250,6 +260,60 @@ class RequestExecutor:
         req = _strip_trigger(text).strip() or text
         _task, reply = await handle_owner_problem(self.core, req, int(user_id))
         return reply
+
+    async def _goal(self, text: str, user_id: int) -> str:
+        """建立/查看长期目标（P2，2026-10-23）。
+
+        **owner-only**：长期目标会让它在后台持续花 token、派生任务，
+        只有 owner 能建立。非 owner 给**诚实指引**而不是静默失败
+        （沿用 `remind` 的既有处理哲学）。
+
+        支持的自然语言：
+          「帮我盯着 X」 / 「每周帮我整理 Y」 ⇒ 建立目标
+          「我的目标」 / 「你在追什么」       ⇒ 查看目标列表
+        """
+        # 查看请求：不含建立类触发词，只是问
+        from anima.agent.goal import GOAL_TRIGGERS, GoalStore, format_goal_list, parse_goal
+        t = str(text or "").strip()
+        _view_words = ("我的目标", "在追什么", "追哪些", "目标列表", "有哪些目标")
+        _is_view = any(w in t for w in _view_words) and not any(
+            w in t for w in ("帮我盯着", "帮我盯", "持续关注", "长期跟进"))
+
+        persistence = getattr(self.core, "persistence", None)
+        if persistence is None:
+            return "本喵这边暂时记不住长期目标（存储未就绪），稍后再试喵。"
+
+        store = GoalStore(persistence)
+
+        if _is_view:
+            return format_goal_list(store)
+
+        # 建立目标：owner-only
+        owners = list(getattr(getattr(self.core.config, "permissions", None),
+                              "owners", []) or [])
+        if int(user_id) not in [int(o) for o in owners]:
+            return ("长期目标只有主人能设喵 —— 它会在后台一直推进、"
+                    "持续花算力，不能随便交出去。")
+
+        if len(store.active()) >= 5:
+            return ("本喵现在追着 5 个目标了，再多就顾不过来喵。"
+                    "先完成或暂停一个再设新的吧。")
+
+        objective, constraints, criteria, cadence = parse_goal(t)
+        if not objective:
+            return "想让本喵盯什么？说清楚一点，比如「帮我盯着 X 群的动态」。"
+
+        g = store.create(objective, int(user_id),
+                         constraints=constraints,
+                         success_criteria=criteria,
+                         cadence_sec=cadence)
+        _cad = ("" if not cadence
+                else f"\n周期：每 {int(cadence // 3600)} 小时" if cadence < 86400
+                else f"\n周期：每 {int(cadence // 86400)} 天")
+        return (f"好喵，本喵记住了，会一直盯着：{objective[:70]}"
+                f"{_cad}\n"
+                f"目标号：{g.id}\n"
+                f"（想让它停就说「暂停目标 {g.id}」，或「我的目标」看看进展）")
 
     async def _stop(self, user_id: int) -> str:
         """自然语言叫停：取消**本人**所有在跑的多步 Agent 任务。

@@ -872,6 +872,50 @@ class Heartbeat:
             logger.info("[health_alerts] 已生成 %d 条 owner 健康待办: %s",
                         len(made), [a.get("type") for a in made])
 
+    def _goal_decisions(self, now: float) -> list:
+        """到期的长期目标 → 自主触发决策（P2，2026-10-23）。
+
+        把 Goal 转成 `AutoTriggerDecision`，使其复用 P1 既有的
+        去重 / 报备 / 执行管线 —— **不另起一套调度**。
+
+        关键：把上次进展（`notes` 最后一条）一起喂给 Agent，
+        否则每次推进都是「失忆的重来」，那不叫持续推进。
+
+        fail-closed：goals 文件损坏 / 读取异常 ⇒ 返回空列表，不崩。
+        """
+        out = []
+        try:
+            from anima.agent.auto_trigger import AutoTriggerDecision, topic_key
+            from anima.agent.goal import GoalStore
+        except Exception:
+            logger.debug("goal 模块导入失败", exc_info=True)
+            return out
+        try:
+            persistence = getattr(self.core, "persistence", None)
+            if persistence is None:
+                return out
+            store = GoalStore(persistence)
+        except Exception:
+            logger.debug("goals 读取失败（跳过该源）", exc_info=True)
+            return out
+
+        for g in store.active():
+            if not g.due(now=now):
+                continue
+            _last_note = (g.notes[-1] if g.notes else "")
+            _req = g.objective
+            if _last_note:
+                _req = f"{g.objective}\n（上次进展：{_last_note[:200]}）"
+            out.append(AutoTriggerDecision(
+                source=f"goal:{g.id}",
+                request=f"推进这个长期目标并给出本次进展：{_req[:400]}",
+                reason=f"本喵在追的目标「{g.objective[:40]}」到推进时间了",
+                topic=topic_key(g.objective),
+            ))
+            # 一次 tick 只派生一个目标，防同日爆量
+            break
+        return out
+
     async def _auto_trigger_tick(self, now: float) -> None:
         """P1 自主触发：自己发现该干的活，**先报备再执行**。
 
@@ -967,6 +1011,18 @@ class Heartbeat:
             return
 
         decisions = collect_triggers(self.core, now=now)
+
+        # 🔴 2026-10-23 P2：把 **Goal（长期目标）** 接成第三类触发源。
+        #   P1 建好了「闸门 + 报备 + 执行」的引擎，但两个原触发源
+        #   （承诺 pending=0、健康异常仅 info 级）都空了 ⇒ 引擎空转。
+        #   Goal 是**第一个真实数据源**（引擎与燃料的关系）。
+        #   这里只把到期 Goal 转成决策，后续去重/报备/执行完全复用既有管线
+        #   ⇒ 不重复实现一套调度。
+        try:
+            decisions.extend(self._goal_decisions(now))
+        except Exception:
+            logger.debug("[自主触发] Goal 决策收集失败（已隔离）", exc_info=True)
+
         if not decisions:
             return
 
