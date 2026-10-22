@@ -27,7 +27,7 @@
 | `CONFIRMED-PENDING-DEPLOY`（已确证，待部署窗口执行） | 0 | ——（D-21 已于 09-18 部署窗口执行，见下） |
 | `PARTIALLY-CLOSED` | 1 | **D-33**（复读：已改判——真病灶是 D-35 假债闭环；本轮改为只检测不重生成） |
 | `OPEN` | 1 | **D-41**（`propose_agenda` 只认 group_id ⇒ 主动产出只能发群；2026-10-21 登记） |
-| `NEEDS-OWNER` | 1 | **D-44**（Dot 化四缺口 G1/G2/G3/G5；路线见 `reports/2026-10-21_dots_plan.md`，**未授权实施**） |
+| `NEEDS-OWNER` | 0 | ——（D-44 的 G1/G2/G5 已于 2026-10-23 完成，改判 `FIXED`；G3 刻意保留） |
 | `SEALED` | 3 | D-29（接线断言）、D-30（数值 trait 通道）、D-31（`bored` 死枚举） |
 | **合计** | **44** | |
 
@@ -869,22 +869,30 @@
 
 ---
 
-## D-44 · Dot 化的四个缺口（路线已定，**未授权实施**）—— `NEEDS-OWNER`
+## D-44 · Dot 化的四个缺口 —— `FIXED`（G1/G2/G5 已完成；G3 保留）
 
 - **来源**：2026-10-21 owner 要求「给个 Dot 计划书」。产出
-  [`reports/2026-10-21_dots_plan.md`](reports/2026-10-21_dots_plan.md)（v1）。
-  本条只登记**缺口与状态**，不重复计划正文。
-- **四个缺口（按阻塞排序，均有实测证据）**：
-  | # | 缺口 | 证据 |
-  |---|---|---|
-  | **G1** | **无自主触发（Dot 分界线）** | 全仓仅 `anima/llm/commands.py:274` 一处 `core.agent.submit()`，由 QQ 命令触发；心跳 `autonomy._tick` 28 个子系统**无一处提交任务** |
-  | G2 | 无整任务预算 | `executor.py:48 MAX_STEPS=20` × `:50 STEP_TIMEOUT=180s` ⇒ 理论最坏 60 分钟无上限（同 10-19 出站 LLM 缺整轮预算的教训） |
-  | G3 | 无自动续跑 | `state.py` 重启标 `interrupted` 但**刻意不重投**（`18051ef`），因缺幂等键与副作用分类 |
-  | G5 | 无长期目标对象 | `AgentTask` 只有 `request` 字符串，无 objective/constraints/success_criteria ⇒ 表达不了「持续推进一个目标」 |
-  | ~~G4~~ | ~~渠道单一~~ | `anima/channels/` 仅 `onebot11.py`（无 Channel 基类）。**已降级**：owner 明确不做网页壳 |
-- **计划分期**：P0 收紧预算（先装刹车）→ P1 自主触发（提议制，非直接执行）→ P2 目标对象化 → P3 自动续跑（视结果再定）。
-- **未决（需 owner 拍板）**：P0 是否立即做；P1 是否接受「提议制」而非 Dot 的直接执行。
-- **纪律**：计划书**不是授权书**；每阶段需单独授权，且先出 Slice Card。
+  [`reports/2026-10-21_dots_plan.md`](reports/2026-10-21_dots_plan.md)（v1）
+  与 [`reports/2026-10-23_p2_goal_design.md`](reports/2026-10-23_p2_goal_design.md)。
+- **四个缺口与处置**：
+  | # | 缺口 | 状态 | 证据 |
+  |---|---|---|---|
+  | **G1** | **无自主触发（Dot 分界线）** | ✅ **FIXED** | P1 `efd6e02`（报备制：先私聊说一声 → 立刻开跑 → 可 cancel）+ P2 `d57cb80`（Goal 成为真实数据源）。生产实证 `c02e43f61d` 自主启动并完成 |
+  | G2 | 无整任务预算 | ✅ **FIXED** | P0 `5eb947c`：`task_agent.total_budget_sec=300s` + `max_parallel` 4→2。实测现有任务 30–70s，留 4 倍余量 |
+  | G3 | 无自动续跑 | ⏸ **保留（刻意）** | `18051ef` 重启标 `interrupted` + 进度保留 + 私聊告知，但**不自动重投** —— 需幂等键与副作用分类，风险高，等真有长任务需求再做 |
+  | G5 | 无长期目标对象 | ✅ **FIXED** | P2 `d57cb80`：`anima/agent/goal.py` Goal{objective,constraints,success_criteria,cadence,notes,task_ids,version}，独立 `data/goals.json` |
+  | ~~G4~~ | ~~渠道单一~~ | — | 已降级：owner 明确不做网页壳 |
+- **P2 生产实测（三轮，逐轮修缺）**：
+  1. 任务跑完但 `last_run_at=0` ⇒ 会重复派生 → `fb5ba45` 启动即 `mark_run`；
+  2. 只标记不回写 ⇒ 目标停在旧进展 → `604dd72` 回写**真实产出**；
+  3. 失败也判 `completed` ⇒ 状态不诚实 → `604dd72` 进展标注
+     `[completed·有进展]` / `[completed·未取得实质进展]`。
+     实测输出：`[completed·未取得实质进展] 当前环境无法获取群聊记录…`（如实）。
+- **一个必须记录的教训**：首轮产出的 `summary.txt` 写「群内围绕 X 和 Y」——
+  **X/Y 是测试脚本注入的占位符**，它忠实照做了。**它没编造，是测试数据污染**。
+  故回写强制取自 `step.result` 真实内容，禁止取注入值。
+- **未做（仍待 owner 定）**：G3 自动续跑。其余三缺口已具备。
+- **纪律**：计划书不是授权书；P3 若启动须先出设计稿。
 
 ---
 
