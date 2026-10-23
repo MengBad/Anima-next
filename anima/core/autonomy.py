@@ -1237,6 +1237,27 @@ class Heartbeat:
             logger.debug("[owner交付] 构造或发送失败（已隔离）", exc_info=True)
 
     async def _tick(self) -> None:
+        # 🔴 2026-10-23：**情感桥接放在 _tick 的无条件路径上**。
+        #   第二次踩坑：上一版把它放在「主动发言分支」里（`has_hook` 之后），
+        #   而那个分支只在**有接话点**时才执行 ⇒ 群里安静时桥接永不运行
+        #   （部署后等 90 秒，日志仍 0 条）。
+        #   喂料应该每 tick 无条件执行一次（幂等，重复调用不追加）。
+        try:
+            if bool(getattr(
+                    getattr(self.core.config, "autonomy", None),
+                    "emotion_bridge_enabled", False)):
+                _auth = getattr(self.core, "memory_authority", None)
+                if _auth is not None:
+                    from anima.constitution.emotion_bridge import hydrate_emotion_memory
+                    _dd = getattr(getattr(self.core.config, "persistence", None),
+                                  "data_dir", "data")
+                    _stats = hydrate_emotion_memory(_auth.engine, _dd)
+                    if _stats.get("semantic") or _stats.get("relations"):
+                        logger.info("[情感桥] 宪法记忆喂料：semantic+%d relations+%d",
+                                    _stats["semantic"], _stats["relations"])
+        except Exception:
+            logger.debug("[情感桥] 喂料失败（已隔离）", exc_info=True)
+
         # P1-4：主动优先级单一事实来源（core/proactive.py）。导入失败时回落 0.5，
         # 绝不因为拿不到注册表就让心跳挂掉。
         _pro_cfg = getattr(self.core.config, "proactive", None)
@@ -1780,29 +1801,8 @@ class Heartbeat:
         proactive_intent = None
         # T1.1: Constitution Drive 门（默认关，fail-closed）——主动表达须源于趋近 Drive 才开口，可 trace。
         drive_origin = None
-        # 🔴 2026-10-23：**情感桥接独立于 drive_gate 运行**。
-        #   第一版我把桥接放在 `_constitution_drive_snapshot()` 里，
-        #   而那个函数只在 `drive_gate=True` 时才被调用（下一行）⇒
-        #   生产 `drive_gate=false` ⇒ **桥接永远不执行**（部署后实测 0 条日志）。
-        #   职责要分清：
-        #     * `drive_gate` = **闸门**（是否让 Drive 压制主动发言）；
-        #     * `emotion_bridge` = **喂料**（让链首有真实情感数据）。
-        #   喂料不该被闸门挡住 —— 否则「打开闸门时才发现料是空的」，
-        #   而这两件事应当可以独立观测/独立开关。
-        try:
-            if bool(getattr(self.core.config.autonomy, "emotion_bridge_enabled", False)):
-                _auth = getattr(self.core, "memory_authority", None)
-                if _auth is not None:
-                    from anima.constitution.emotion_bridge import hydrate_emotion_memory
-                    _dd = getattr(getattr(self.core.config, "persistence", None),
-                                  "data_dir", "data")
-                    _stats = hydrate_emotion_memory(_auth.engine, _dd)
-                    if _stats.get("semantic") or _stats.get("relations"):
-                        logger.info("[情感桥] 宪法记忆喂料：semantic+%d relations+%d",
-                                    _stats["semantic"], _stats["relations"])
-        except Exception:
-            logger.debug("[情感桥] 喂料失败（已隔离）", exc_info=True)
-
+        # 注：情感喂料已在 `_tick` 开头无条件执行（见那里的说明）。
+        # 这里只做闸门判定 —— 职责分离：喂料归 tick，闸门归主动发言路径。
         if getattr(self.core.config.autonomy, "drive_gate", False):
             drive_origin = self._constitution_drive_snapshot(group_id)
             if drive_origin and not _drive_gate_ok(drive_origin):
