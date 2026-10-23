@@ -711,6 +711,23 @@ class LLMClient:
         except Exception:
             return 0
 
+    @staticmethod
+    def _estimate_has_images(messages: list[dict[str, Any]]) -> bool:
+        """请求体里是否含图片块（用于「目标模型不支持视觉」时判断是否需要剥离）。"""
+        try:
+            for msg in messages or []:
+                if not isinstance(msg, dict):
+                    continue
+                content = msg.get("content")
+                if not isinstance(content, list):
+                    continue
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "image_url":
+                        return True
+        except Exception:
+            return False
+        return False
+
     def _trim_messages(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
         """请求体过大时的降级裁剪：先剥离图片块（base64 是体积主因），
         再截断历史（保留 system + 末尾 N 条）。返回 (裁剪后消息, 是否发生裁剪)。"""
@@ -753,6 +770,57 @@ class LLMClient:
         except Exception:
             logger.debug("LLM 图片再压缩失败，将走剥离降级", exc_info=True)
             return messages, False
+
+    #: 🔴 2026-10-24：已知**不支持图片输入**的模型名特征（小写匹配）。
+    #:   生产实证：主模型 `gemini-3-flash` 正常，降级到异族兜底
+    #:   `DeepSeek-V4-Flash` 时上游返回
+    #:   `400 Model ... does not support image input`，且**不可重试**
+    #:   ⇒ 用户面直接拿到兜底话术（带图消息整轮丢失）。
+    #:   名单式判定是保守的：只把**确证不支持**的挡掉，未知模型按支持处理。
+    _NON_VISION_MODEL_HINTS = ("deepseek", "kimi", "qwen", "glm")
+
+    def _supports_vision(self, model: str) -> bool:
+        """该模型是否支持图片输入（保守判定：只挡确证不支持的）。"""
+        m = str(model or "").lower()
+        if not m:
+            return True
+        return not any(h in m for h in self._NON_VISION_MODEL_HINTS)
+
+    def _strip_message_images(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], bool]:
+        """把多模态消息里的图片**完全剥离**，退化为纯文本。
+
+        与 `_shrink_message_images`（压缩但保留视觉）不同：这里是
+        「目标模型根本不支持视觉」时的**唯一可行降级**。
+        返回 (新消息, 是否真的剥离了)。
+        """
+        changed = False
+        out: list[dict[str, Any]] = []
+        for msg in messages or []:
+            if not isinstance(msg, dict):
+                out.append(msg)
+                continue
+            content = msg.get("content")
+            if not isinstance(content, list):
+                out.append(msg)
+                continue
+            text_parts: list[str] = []
+            has_image = False
+            for part in content:
+                if isinstance(part, dict) and part.get("type") == "image_url":
+                    has_image = True
+                    continue
+                if isinstance(part, dict) and part.get("type") == "text":
+                    text_parts.append(str(part.get("text") or ""))
+                elif isinstance(part, str):
+                    text_parts.append(part)
+            if has_image:
+                changed = True
+                new_msg = dict(msg)
+                new_msg["content"] = "\n".join(t for t in text_parts if t) or "[图片]"
+                out.append(new_msg)
+            else:
+                out.append(msg)
+        return out, changed
 
     def _record_degradation(self, reason: str, before_bytes: int, after_bytes: int) -> None:
         self.degradation_count += 1
@@ -879,6 +947,22 @@ class LLMClient:
                 )
                 break
             payload["model"] = candidate
+            # 🔴 2026-10-24：切到**不支持图片输入**的候选模型时，先剥离图片。
+            #   生产实证：带图请求从 gemini 降级到 DeepSeek-V4-Flash 直接
+            #   `400 does not support image input`，且不可重试 ⇒ 整轮丢失。
+            #   剥离后请求合法，视觉理解降级为「用户发来一张图」的文本说明，
+            #   **总比整轮失败好**（fail-soft，不是 fail-open）。
+            if (position > 0 and not self._supports_vision(candidate)
+                    and self._estimate_has_images(payload.get("messages", []))):
+                before = self._estimate_bytes(payload)
+                stripped, strip_changed = self._strip_message_images(payload.get("messages", []))
+                if strip_changed:
+                    payload["messages"] = stripped
+                    after = self._estimate_bytes(payload)
+                    self._record_degradation("non_vision_model_strip_images", before, after)
+                    logger.warning(
+                        "候选模型 %s 不支持图片输入，已剥离 %d 字节图片降级为纯文本重试",
+                        candidate, before - after if before > after else 0)
             self._empty_completion = False  # 逐候选重置，避免上一位的降级污染本位的判定
             data = await self._try_post(payload, headers)
             if data is None and self.last_status == 413:
