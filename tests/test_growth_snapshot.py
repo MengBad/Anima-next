@@ -196,3 +196,41 @@ def test_growth_intent_recognized(text):
 def test_growth_does_not_steal_goal_intent(text):
     from anima.llm.request_executor import classify_request_intent
     assert classify_request_intent(text) == "goal"
+
+
+# ── 6. 成长快照不得依赖 memory_authority（2026-10-23 部署后踩坑）──────
+
+
+def test_snapshot_works_without_memory_authority(tmp_path):
+    """🔴 快照不需要 memory_authority —— 它能自己兜底。
+
+    实测踩坑：第一版把 growth 快照写在 `if _auth is not None:` 分支里
+    ⇒ `_auth` 为 None 时**永不记录**（部署后连 `data/growth/` 目录都没建出来）。
+    """
+    import types
+
+    core = types.SimpleNamespace(
+        persistence=None,
+        config=types.SimpleNamespace(
+            persistence=types.SimpleNamespace(data_dir=str(tmp_path))),
+        memory_authority=None,
+    )
+    snap = take_snapshot(core)
+    assert snap is not None, "没有 memory_authority 也必须能采集（有兜底）"
+    assert (tmp_path / "growth" / "snapshots.jsonl").exists()
+
+
+def test_growth_block_placed_outside_auth_guard_source_level():
+    """源码契约：growth 快照块必须在 `_auth is not None` 判定之外。"""
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._tick)
+    i_growth = src.find("growth_snapshot_enabled")
+    i_auth = src.find("_auth = getattr(self.core, \"memory_authority\", None)")
+    assert i_growth > 0, "应有成长快照块"
+    assert i_auth > 0, "应有 auth 判定"
+    assert i_growth < i_auth, (
+        f"成长快照必须在 auth 判定**之前**（实测：放在里面导致 auth=None 时永不记录）"
+        f" growth@{i_growth} auth@{i_auth}"
+    )

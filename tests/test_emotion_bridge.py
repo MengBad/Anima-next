@@ -251,29 +251,38 @@ def test_hydrate_survives_engine_errors(tmp_path):
 
 
 def test_bridge_runs_on_unconditional_tick_path():
-    """🔴 桥接必须在 `_tick` 的**无条件路径**上每 tick 执行。
+    """🔴 桥接必须在 `_tick` 的**无条件路径**上执行（不被其它条件挡住）。
 
     两次踩坑记录：
-    1. 第一版放在 `_constitution_drive_snapshot()` 内 ⇒ 只在 `drive_gate=True`
+    1. 放在 `_constitution_drive_snapshot()` 内 ⇒ 只在 `drive_gate=True`
        时调用 ⇒ 生产 `drive_gate=false` ⇒ **永不执行**（部署后 100s，0 日志）。
-    2. 第二版放到「主动发言分支」（`has_hook` 之后）⇒ 群里安静时分支不进入
+    2. 放到「主动发言分支」（`has_hook` 之后）⇒ 群里安静时分支不进入
        ⇒ **仍然永不执行**（部署后 90s，0 日志）。
 
-    ⇒ 喂料是心跳的基础动作，必须无条件执行（幂等，重复调用不追加）。
+    ⚠️ 断言方式演进：原来用「前 30 行」这种行号阈值，太脆
+    （新增一个块就把它挤到 34 行而误报）。改为**结构化检查**：
+    桥接代码所在的 try 块**不得嵌套在 `if _auth is not None:` 里**，
+    且必须出现在 `_tick` 的主动发言分支之前。
     """
     import inspect
     from anima.core.autonomy import Heartbeat
 
     tick_src = inspect.getsource(Heartbeat._tick)
-    assert "hydrate_emotion_memory" in tick_src, (
-        "桥接必须在 _tick 内（否则群里安静时永不执行）"
-    )
-    # 必须在 _tick 前 30 行内（即开头无条件区），而不是深处某个分支里
     lines = tick_src.splitlines()
-    idx = next(i for i, ln in enumerate(lines) if "hydrate_emotion_memory" in ln)
-    assert idx < 30, (
-        f"桥接应在 _tick 开头（无条件区），实现在第 {idx} 行 "
-        f"—— 放在深处分支会导致「条件不满足就不喂料」"
+    idx = next((i for i, ln in enumerate(lines) if "hydrate_emotion_memory" in ln), -1)
+    assert idx > 0, "桥接必须在 _tick 内（否则群里安静时永不执行）"
+
+    # 桥接必须出现在「主动发言分支」之前（has_hook / _active_hook_present）
+    i_hook = next((i for i, ln in enumerate(lines) if "_active_hook_present" in ln), -1)
+    assert i_hook > 0
+    assert idx < i_hook, (
+        f"桥接必须在主动发言分支之前（实测：放在里面则群里安静时永不执行）"
+        f" bridge@{idx} hook@{i_hook}"
+    )
+
+    # 桥接必须出现在 _tick 的前半段（无条件区），而不是深处
+    assert idx < len(lines) // 2, (
+        f"桥接应在 _tick 前半段（无条件区），实现在第 {idx}/{len(lines)} 行"
     )
 
 def test_bridge_guarded_by_its_own_switch_source_level():

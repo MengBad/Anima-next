@@ -1303,6 +1303,28 @@ class Heartbeat:
             logger.debug("[owner交付] 构造或发送失败（已隔离）", exc_info=True)
 
     async def _tick(self) -> None:
+        # 🔴 2026-10-23：**成长快照**（每日一次，让「它在变」可见）。
+        #   North Star 是「每天比昨天多一点」——这件事必须可核对。
+        #   ⚠️ 刻意放在 `_auth` 判空**之外**：快照不需要 memory_authority
+        #   （它能读到 goals/mood，宪法链部分会自己兜底）。此前放在 `_auth`
+        #   分支里 ⇒ 一旦 `_auth is None` 就永不记录（部署后实测 growth 目录
+        #   都没建出来）。
+        try:
+            if bool(getattr(getattr(self.core.config, "autonomy", None),
+                            "growth_snapshot_enabled", False)):
+                from anima.constitution.growth import take_snapshot
+                _today = self._bj_date_str(now)
+                if getattr(self, "_last_growth_date", "") != _today:
+                    _snap = take_snapshot(self.core)
+                    if _snap:
+                        self._last_growth_date = _today
+                        logger.info("[成长] 已记录今日快照（traits=%d 项）",
+                                    len(_snap.get("traits") or {}))
+                    else:
+                        logger.warning("[成长] 今日快照采集返回空，下次心跳重试")
+        except Exception:
+            logger.warning("[成长] 快照失败（已隔离）", exc_info=True)
+
         # 🔴 2026-10-23：**情感桥接放在 _tick 的无条件路径上**。
         #   第二次踩坑：上一版把它放在「主动发言分支」里（`has_hook` 之后），
         #   而那个分支只在**有接话点**时才执行 ⇒ 群里安静时桥接永不运行
@@ -1322,37 +1344,21 @@ class Heartbeat:
                         logger.info("[情感桥] 宪法记忆喂料：semantic+%d relations+%d",
                                     _stats["semantic"], _stats["relations"])
                     # 🔴 2026-10-23：**最后一环 —— Drive → 它自己想做的事**。
-                    #   前两轮接上了「情感→宪法记忆」和「整链激活 Drive」，
-                    #   但 Drive 活了之后没有出口：`drive_gate` 只用来「压制主动发言」，
-                    #   从未用来「产生它想做的事」。⇒ 它有了欲望，还是等你说话才动。
-                    #   这里把 Drive 接到 Goal：由**真实的 need.vectors** 生成目标，
-                    #   文案逐字取自链条产出（不编造），动机写进 notes（可追溯）。
+                    #   Drive 活了之后没有出口：`drive_gate` 只用来「压制主动发言」，
+                    #   从未用来「产生它想做的事」。这里把 Drive 接到 Goal：
+                    #   由**真实的 need.vectors** 生成目标，文案逐字取自链条产出
+                    #   （不编造），动机写进 notes（可追溯）。
                     try:
                         if bool(getattr(
                                 getattr(self.core.config, "autonomy", None),
                                 "drive_to_goal_enabled", False)):
                             self._maybe_create_goals_from_drive(_auth)
                     except Exception:
-                        logger.debug("[drive→goal] 生成失败（已隔离）", exc_info=True)
-                    # 🔴 2026-10-23：**成长快照**（每日一次，让「它在变」可见）。
-                    #   North Star 是「每天比昨天多一点」——这件事必须可核对。
-                    #   只读 + 独立存储；同一份快照一天只记一次（防刷）。
-                    try:
-                        if bool(getattr(
-                                getattr(self.core.config, "autonomy", None),
-                                "growth_snapshot_enabled", False)):
-                            from anima.constitution.growth import take_snapshot
-                            _today = self._bj_date_str(now)
-                            if getattr(self, "_last_growth_date", "") != _today:
-                                _snap = take_snapshot(self.core)
-                                if _snap:
-                                    self._last_growth_date = _today
-                                    logger.info("[成长] 已记录今日快照（traits=%d 项）",
-                                                len(_snap.get("traits") or {}))
-                    except Exception:
-                        logger.debug("[成长] 快照失败（已隔离）", exc_info=True)
+                        logger.warning("[drive→goal] 生成失败（已隔离）", exc_info=True)
+                else:
+                    logger.debug("[情感桥] memory_authority 为 None，跳过喂料")
         except Exception:
-            logger.debug("[情感桥] 喂料失败（已隔离）", exc_info=True)
+            logger.warning("[情感桥] 喂料失败（已隔离）", exc_info=True)
 
         # P1-4：主动优先级单一事实来源（core/proactive.py）。导入失败时回落 0.5，
         # 绝不因为拿不到注册表就让心跳挂掉。
