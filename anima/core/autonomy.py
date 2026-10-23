@@ -2719,12 +2719,21 @@ class Heartbeat:
                 )
                 if total_msgs >= 15:
                     # 群很活跃 → 社交欲上升
-                    desire_sys.add("想跟大家聊天", intensity=0.35, kind="chat")
+                    _d = desire_sys.add("想跟大家聊天", intensity=0.35, kind="chat")
+                    logger.info("[欲望] 群活跃(%d 条) → 社交欲 add 返回 %s (intensity=%s)",
+                                total_msgs,
+                                "new" if _d is not None else "None",
+                                getattr(_d, "intensity", "?"))
                 elif total_msgs <= 2:
                     # 群冷清 → 独处欲/好奇心上升
-                    desire_sys.add("想自己探索点新东西", intensity=0.3, kind="chat")
+                    _d = desire_sys.add("想自己探索点新东西", intensity=0.3, kind="chat")
+                    logger.info("[欲望] 群冷清(%d 条) → 探索欲 add 返回 %s",
+                                total_msgs, "new" if _d is not None else "None")
             except Exception:
-                logger.debug("S3 群活跃度欲望生成失败")
+                # 🔴 2026-10-23：原来用 debug ⇒ 失败完全不可见。
+                #   生产实测：群 25257 条消息、条件满足，但欲望从未产生，
+                #   而日志 0 条 —— 全部被这里吞掉。
+                logger.warning("S3 群活跃度欲望生成失败", exc_info=True)
 
             # 反刍（将近期经历沉淀为自我笔记）
             if self._rumination:
