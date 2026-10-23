@@ -59,6 +59,18 @@ MIN_DRIVE_INTENSITY = 0.5
 #: 单次最多产生几个目标（一次 tick 只产 1 个，防同 tick 爆量）。
 MAX_PER_CYCLE = 1
 
+#: 🔴 2026-10-23：**自主目标的默认节律**（秒）。
+#: cadence=0 会让目标「生成了但永远不推进」—— 生产实测踩过：
+#: `goal_15cd8a58 cadence=0.0` ⇒ `due()` 恒 False ⇒ **目标烂在库里**。
+#: 既然这目标来自内在驱动，就该按它自己的节律推进，
+#: 而不是等谁来手动点它（没人会点）。
+#: 按动机分档：关系类不宜过频（会把关心变成骚扰）。
+DEFAULT_CADENCE_BY_KIND = {
+    "social": 24 * 3600.0,      # 关系：每天一次
+    "curiosity": 12 * 3600.0,   # 好奇：半天一次（探索可稍密）
+    "desire": 24 * 3600.0,      # 欲望：每天一次
+}
+
 
 def _vector_to_objective(kind: str, item: str) -> Optional[tuple[str, str]]:
     """把一条 Need 向量转成 (objective, 动机说明)。无法转 ⇒ None。
@@ -187,8 +199,12 @@ def create_goals(core: Any, drive: dict, need_vectors: dict,
                 cand["objective"], int(owner),
                 constraints=[],
                 success_criteria=[],
-                cadence_sec=0.0,      # 0 = 不自动派生，由 owner 或手动推进
+                # 🔴 2026-10-23：给自主目标一个**真实节律**，否则它永不推进
+                #   （cadence=0 ⇒ due() 恒 False，生产实测目标烂在库里）。
+                cadence_sec=float(
+                    DEFAULT_CADENCE_BY_KIND.get(cand.get("kind"), 24 * 3600.0)),
             )
+
             # 动机写进 notes（可追溯「它为什么想做这件事」）
             store.add_note(g.id, f"[动机] {cand['motive']}")
             existing.add(key)

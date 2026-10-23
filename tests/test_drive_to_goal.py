@@ -261,3 +261,37 @@ def test_end_to_end_no_emotion_no_goal(tmp_path):
     hb.core = core
     hb._maybe_create_goals_from_drive(auth)
     assert GoalStore(P).list() == [], "无情感数据不该凭空产生目标"
+
+
+# ── 7. 自主目标必须有真实节律（否则永不推进）──────────────────────────
+
+
+def test_created_goal_has_real_cadence(tmp_path):
+    """🔴 生产实测踩过：`cadence_sec=0` ⇒ `due()` 恒 False ⇒ 目标烂在库里。
+
+    自主目标生成后必须能**自己推进**，而不是等谁来手动点它（没人会点）。
+    """
+    from anima.constitution.drive_to_goal import DEFAULT_CADENCE_BY_KIND
+
+    core = _core(tmp_path)
+    made = create_goals(core, _drive(), _vectors(), 42)
+    assert made
+    g = GoalStore(core.persistence).get(made[0]["goal_id"])
+    assert g.cadence_sec > 0, "自主目标必须有节律，否则永不推进"
+    assert g.cadence_sec == DEFAULT_CADENCE_BY_KIND["social"]
+
+
+def test_new_goal_is_due_immediately(tmp_path):
+    """新建的自主目标应立刻到期 —— 想做的事该尽快做第一次。"""
+    core = _core(tmp_path)
+    made = create_goals(core, _drive(), _vectors(), 42)
+    g = GoalStore(core.persistence).get(made[0]["goal_id"])
+    assert g.due() is True
+
+
+def test_social_cadence_is_not_too_frequent():
+    """🔴 关系类节律不能太密 —— 每天一次的关心会变成骚扰。"""
+    from anima.constitution.drive_to_goal import DEFAULT_CADENCE_BY_KIND
+    assert DEFAULT_CADENCE_BY_KIND["social"] >= 24 * 3600.0, (
+        "关系类目标的节律必须 ≥ 1 天，否则「关心」会变成骚扰"
+    )
