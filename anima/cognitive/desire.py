@@ -94,6 +94,15 @@ class Desire:
 class DesireSystem:
     """轻量欲望管理。"""
 
+    #: 🔴 2026-10-23：衰减**半衰期**（秒）。见 `decay()` 的说明 ——
+    #: 原来按「调用次数」衰减（每 60 秒 ×0.95），导致同一条 bug 出现两种相反症状：
+    #: 高频调用时一天内全灭（0.95^1440≈0.0485 < 门槛 0.3），
+    #: 低频调用时僵尸不灭（生产实证：0.95 挂了 41 天）。
+    #: 改为按**真实经过时间**做指数衰减，半衰期 24h。
+    _HALF_LIFE_SEC = 24 * 3600.0
+    #: 衰减下限：低于此值不再继续衰减（已是僵尸，留着也激活不了）。
+    _DECAY_FLOOR = 0.05
+
     def __init__(self, data_dir: str = "data", max_desires: int = 10, decay_rate: float = 0.95):
         self.desires: list[Desire] = []
         self.max_desires = max_desires
@@ -286,16 +295,45 @@ class DesireSystem:
             desire.intensity = 0.0
 
     def decay(self) -> None:
-        """衰减所有活跃欲望的 intensity。"""
-        now = time.time()
-        # 每分钟触发一次衰减
-        if now - self._last_decay < 60:
-            return
-        self._last_decay = now
+        """按**真实经过时间**衰减活跃欲望的 intensity（指数衰减）。
 
+        🔴 2026-10-23 修复一个真实的驱动断点：
+
+        原实现是「每 60 秒把 intensity ×= 0.95」—— 这是**按调用次数**衰减，
+        不是按时间。后果（实测）：
+          * 若 `get_active()` 被高频调用（同一个 60 秒窗口反复进入），
+            欲望在**一天内被衰减到 0.05 以下**（0.95^1440 ≈ 0.0485）；
+          * 而 `get_active(0.3)` 的门槛是 0.3 ⇒ **欲望永远无法激活**；
+          * 反过来若低频调用，欲望又**几乎不衰减**（生产实证：一条
+            「想跟大家聊天」强度 0.95 挂了 **41 天**没变）。
+        ⇒ 同一条 bug 造成两种相反的症状：要么全灭，要么僵尸不灭。
+
+        **正确做法**：按真实经过时间做指数衰减，与调用频率无关。
+        半衰期 24 小时 ⇒ 强烈欲望能活几天，弱欲望自然消退，
+        而「41 天不变」的僵尸不可能再出现。
+
+        保留行为：已 resolved 的不动；衰减到阈值以下的不再继续（避免无意义计算）。
+        """
+        now = time.time()
+        elapsed = now - float(self._last_decay or now)
+        # 🔴 2026-10-23：**极短间隔直接跳过**。
+        #   指数衰减在 elapsed≈0 时仍会乘一个 0.9999999 的因子，
+        #   而有些调用方依赖「强度恰好等于门槛」的精确值
+        #   （例：danger 主动追问存 0.55，`get_expressible` 门槛也是 0.55）；
+        #   这种无意义的微衰减会把 0.55 打成 0.5499999 ⇒ 判为未达门槛
+        #   （由 tests/test_danger.py 抓出）。1 秒以内的衰减没有语义。
+        if elapsed < 1.0:
+            self._last_decay = now
+            return
+        # 有界：一次最多按 7 天算（进程长期停机后不一次性抹平所有欲望；
+        # 也给 owner 一个「它还记得点什么」的余地）
+        elapsed = min(elapsed, 7 * 86400.0)
+        self._last_decay = now
+        # 半衰期 24h ⇒ 每小时衰减系数 ≈ 0.5^(1/24) ≈ 0.9715
+        factor = 0.5 ** (elapsed / self._HALF_LIFE_SEC)
         for d in self.desires:
-            if not d.resolved and d.intensity > 0.05:
-                d.intensity *= self.decay_rate
+            if not d.resolved and d.intensity > self._DECAY_FLOOR:
+                d.intensity = max(self._DECAY_FLOOR, d.intensity * factor)
 
     def expire_unfulfilled(self) -> list[str]:
         """S2: 检查超过 24h 未满足的欲望，返回“遗憾笔记”列表。
