@@ -1334,6 +1334,23 @@ class Heartbeat:
                             self._maybe_create_goals_from_drive(_auth)
                     except Exception:
                         logger.debug("[drive→goal] 生成失败（已隔离）", exc_info=True)
+                    # 🔴 2026-10-23：**成长快照**（每日一次，让「它在变」可见）。
+                    #   North Star 是「每天比昨天多一点」——这件事必须可核对。
+                    #   只读 + 独立存储；同一份快照一天只记一次（防刷）。
+                    try:
+                        if bool(getattr(
+                                getattr(self.core.config, "autonomy", None),
+                                "growth_snapshot_enabled", False)):
+                            from anima.constitution.growth import take_snapshot
+                            _today = self._bj_date_str(now)
+                            if getattr(self, "_last_growth_date", "") != _today:
+                                _snap = take_snapshot(self.core)
+                                if _snap:
+                                    self._last_growth_date = _today
+                                    logger.info("[成长] 已记录今日快照（traits=%d 项）",
+                                                len(_snap.get("traits") or {}))
+                    except Exception:
+                        logger.debug("[成长] 快照失败（已隔离）", exc_info=True)
         except Exception:
             logger.debug("[情感桥] 喂料失败（已隔离）", exc_info=True)
 

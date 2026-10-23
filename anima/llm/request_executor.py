@@ -48,6 +48,9 @@ _TRIGGER = {
              "定期", "每周帮我", "每天帮我", "盯着", "盯一下", "盯一盯", "关注着",
              # 查看类（否则「我的目标」会被判成 chat，走不到 goal 分支）
              "我的目标", "在追什么", "追哪些", "目标列表", "有哪些目标"),
+    # 🔴 2026-10-23：成长查询。让 owner 能直接问「你有什么变化」。
+    "growth": ("你有什么变化", "你最近变化", "你成长了", "你的成长",
+               "有什么进步", "你变了", "成长记录", "和昨天比"),
     "do_task": ("有个问题", "帮我修", "帮我查下代码", "看下日志"),  # 通用"帮我看看/帮我做"交还流水线
     # 🔴 2026-10-21：自然语言叫停。owner 原话「能不能不用命令」——
     #   既然启动是自然语言，叫停也必须能自然语言，否则等于承诺做不到。
@@ -171,6 +174,8 @@ class RequestExecutor:
                 return await self._do_task(text, user_id)
             if intent == "goal":
                 return await self._goal(text, user_id)
+            if intent == "growth":
+                return self._growth()
             if intent == "stop":
                 return await self._stop(user_id)
         except Exception as e:  # 执行器隔离：失败回落到正常回复，不阻塞主线
@@ -314,6 +319,21 @@ class RequestExecutor:
                 f"{_cad}\n"
                 f"目标号：{g.id}\n"
                 f"（想让它停就说「暂停目标 {g.id}」，或「我的目标」看看进展）")
+
+    def _growth(self) -> str:
+        """汇报成长（对比历史快照）。**没有变化就如实说没有。**
+
+        🔴 2026-10-23：North Star 是「每天比昨天多一点」，这件事必须可核对。
+        宁可说「和之前差不多」，也绝不为了好看而编造成长。
+        """
+        try:
+            from anima.constitution.growth import format_growth
+            _dd = getattr(getattr(getattr(self.core, "config", None), "persistence", None),
+                          "data_dir", "data")
+            return format_growth(_dd)
+        except Exception:
+            logger.debug("成长汇报失败", exc_info=True)
+            return "本喵现在翻不到成长记录喵，稍后再问一次？"
 
     async def _stop(self, user_id: int) -> str:
         """自然语言叫停：取消**本人**所有在跑的多步 Agent 任务。

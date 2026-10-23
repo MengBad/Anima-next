@@ -154,6 +154,13 @@ class AutonomyConfig(BaseModel):
     #: 🔴 人格保护：只读宪法链、只**新增** Goal、活跃上限 3、同主题去重。
     #: 默认 **False**：这是「它自己决定要做什么」的能力，需显式开启。
     drive_to_goal_enabled: bool = False
+    #: 🔴 2026-10-23：**成长快照**（让「它在成长」可见）。
+    #: RFC-0100 North Star：「每天比昨天多一点」。这件事必须**可核对**，
+    #: 否则无从谈起。开着它，每天存一份快照（traits/values/memory/goals/mood），
+    #: 并在问「你最近有变化吗」时对比出**只由真实差异驱动**的变化。
+    #: 🔴 只读 + 独立存储（data/growth/snapshots.jsonl），不污染任何既有文件。
+    #: 默认 **False**。
+    growth_snapshot_enabled: bool = False
 
     # —— 回复策略 ——
     # 群聊中仅当被 @、被回复或文本提到「哈基米」时回复；私聊始终回复。
