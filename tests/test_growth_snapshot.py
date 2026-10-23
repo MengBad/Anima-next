@@ -234,3 +234,51 @@ def test_growth_block_placed_outside_auth_guard_source_level():
         f"成长快照必须在 auth 判定**之前**（实测：放在里面导致 auth=None 时永不记录）"
         f" growth@{i_growth} auth@{i_auth}"
     )
+
+
+# ── 7. 快照块不得引用尚未赋值的局部变量（2026-10-23 生产实测）──────────
+
+
+def test_growth_block_does_not_reference_undefined_now():
+    """🔴 生产实测：`_bj_date_str(now)` 抛 `UnboundLocalError`
+    —— `now` 是 `_tick` 后面（第 1520 行）才赋值的局部变量。
+
+    表现：每 30 秒一条 WARNING「快照失败」，快照一条都没落盘
+    （这个异常一直存在，但此前用 logger.debug 记录、默认不输出 ⇒ 看不见）。
+    """
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._tick)
+    i_growth = src.find("growth_snapshot_enabled")
+    assert i_growth > 0
+
+    # 找到 growth 块（到下一个 try/except 边界即可，简单取 800 字窗口）
+    window = src[i_growth:i_growth + 800]
+    assert "_bj_date_str(now)" not in window, (
+        "🔴 快照块不得用 `now`（该处尚未赋值）—— 必须用 time.time()"
+    )
+    assert "time.time()" in window, "应改用 time.time() 取当前时间"
+
+
+def test_tick_does_not_reference_now_before_assignment():
+    """通用防护：`_tick` 中 growth/emotion 前置块不得引用 `now`。
+
+    这是本轮踩的坑的泛化 —— 「在函数开头用后面才赋值的局部变量」。
+    """
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._tick)
+    i_now_assign = src.find("\n        now = ")
+    assert i_now_assign > 0, "应存在 now 赋值"
+    head = src[:i_now_assign]
+    # 前半段（now 赋值之前）不得出现裸 `now`
+    for marker in ("growth_snapshot_enabled", "emotion_bridge_enabled"):
+        i = head.find(marker)
+        if i < 0:
+            continue
+        seg = head[i:i + 800]
+        assert "(now)" not in seg, (
+            f"🔴 {marker} 块在 now 赋值之前，不得使用 now"
+        )

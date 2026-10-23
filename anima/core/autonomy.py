@@ -1313,7 +1313,10 @@ class Heartbeat:
             if bool(getattr(getattr(self.core.config, "autonomy", None),
                             "growth_snapshot_enabled", False)):
                 from anima.constitution.growth import take_snapshot
-                _today = self._bj_date_str(now)
+                # 🔴 2026-10-23：**不要用 `now`** —— 它是 `_tick` 后面才赋值的
+                #   局部变量，在函数开头引用会 `UnboundLocalError`
+                #   （生产实测：每 30 秒一条「快照失败」，由改成 warning 后才看见）。
+                _today = self._bj_date_str(time.time())
                 if getattr(self, "_last_growth_date", "") != _today:
                     _snap = take_snapshot(self.core)
                     if _snap:
