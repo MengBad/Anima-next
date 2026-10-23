@@ -41,8 +41,14 @@ def derive_identity(memory: Memory) -> Identity:
             self_model.setdefault("relations", []).append(rec.content)
 
     # normalize trait weights to a 0..1 peak so Identity is comparable across sessions
+    # 🔴 2026-10-23：归一化便于跨会话比较，但会**抹掉绝对强度**。故额外保留
+    #   `peak_intensity`（归一化前的真实峰值）供 `derive_need` 计算 urgency ——
+    #   否则「只要有欲望 traits 就是 1.0」⇒ urgency 恒 1.0 ⇒ Drive 永真激活。
+    _peak_raw = 0.0
     if traits:
+        _peak_raw = round(max(traits.values()), 3)
         peak = max(traits.values()) or 1.0
         traits = {k: round(v / peak, 3) for k, v in traits.items()}
 
-    return Identity(traits=traits, values=values, self_model=self_model)
+    return Identity(traits=traits, values=values, self_model=self_model,
+                    peak_intensity=_peak_raw)

@@ -66,6 +66,13 @@ class Identity:
     traits: dict[str, float] = field(default_factory=dict)  # "curiosity": 0.8 ...
     values: list[str] = field(default_factory=list)  # what matters
     self_model: dict = field(default_factory=dict)  # narrative self
+    #: 🔴 2026-10-23：**归一化前的真实峰值**（0..1）。
+    #: `traits` 会被归一化成「峰值 =1.0」以便跨会话比较，但那样会**抹掉绝对强度**
+    #: —— 一条 0.1 的微弱欲望和一条 1.0 的强烈欲望都变成 traits=1.0
+    #: ⇒ `derive_need` 的 urgency 恒为 1.0 ⇒ Drive 永远激活、
+    #: 「最想要什么」失去区分度（生产实测确认）。
+    #: 保留原始峰值，让 urgency 能反映**真实强度**。
+    peak_intensity: float = 0.0
 
 
 # --------------------------------------------------------------------------

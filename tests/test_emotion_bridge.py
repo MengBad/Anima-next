@@ -293,3 +293,60 @@ def test_bridge_guarded_by_its_own_switch_source_level():
     src = inspect.getsource(Heartbeat)
     i = src.find("emotion_bridge_enabled")
     assert i > 0, "应有独立开关判定"
+
+
+# ── 9. 强度不得被归一化/平方压缩抹掉（2026-10-23）─────────────────────
+
+
+def test_peak_intensity_preserved_after_normalization():
+    """🔴 `traits` 被归一化成「峰值=1.0」，但 `peak_intensity` 必须保留**真实强度**。
+
+    否则：一条 0.1 的微弱欲望和一条 1.0 的强烈欲望都得到 traits=1.0
+    ⇒ urgency 恒 1.0 ⇒ Drive 永远激活、「最想要什么」失去区分度。
+    """
+    from anima.constitution.identity import derive_identity
+    from anima.constitution.state import Memory, MemoryRecord
+
+    for v in (0.1, 0.4, 1.0):
+        mem = Memory(semantic=[MemoryRecord(
+            kind="semantic", content={"social": v}, salience=1.0)])
+        ident = derive_identity(mem)
+        assert ident.traits["social"] == 1.0, "traits 应归一化为 1.0"
+        assert abs(ident.peak_intensity - v) < 1e-6, (
+            f"peak_intensity 应保留真实强度 {v}，实得 {ident.peak_intensity}"
+        )
+
+
+def test_urgency_reflects_real_strength():
+    """urgency 必须随真实欲望强度变化（不是恒 1.0）。"""
+    from anima.constitution.need import derive_need
+    from anima.constitution.state import Identity
+
+    weak = derive_need(Identity(traits={"social": 1.0}, peak_intensity=0.1))
+    strong = derive_need(Identity(traits={"social": 1.0}, peak_intensity=0.9))
+    assert weak.urgency < 0.3, f"微弱欲望不该激活，实得 {weak.urgency}"
+    assert strong.urgency > 0.8, f"强烈欲望应高，实得 {strong.urgency}"
+    assert weak.urgency != strong.urgency, "强弱必须可区分"
+
+
+def test_no_squared_compression_in_bridge(tmp_path):
+    """🔴 桥接的 salience **不能等于强度本身** —— 否则 `v * salience = v²`。
+
+    `derive_identity` 公式是 `traits[k] += v * salience`。若 salience 也取 v，
+    0.4 就成了 0.16，强度被平方压缩，传到 urgency 时严重失真。
+    """
+    from anima.constitution.emotion_bridge import hydrate_emotion_memory
+    from anima.constitution.identity import derive_identity
+    from anima.constitution.memory_engine import MemoryEngine
+
+    import json as _json
+    (tmp_path / "desires.json").write_text(
+        _json.dumps([{"content": "想跟大家聊天", "intensity": 0.4}],
+                    ensure_ascii=False), encoding="utf-8")
+
+    eng = MemoryEngine()
+    hydrate_emotion_memory(eng, tmp_path)
+    ident = derive_identity(eng.snapshot())
+    assert abs(ident.peak_intensity - 0.4) < 0.01, (
+        f"0.4 的欲望应传导为 peak≈0.40（不是 0.16），实得 {ident.peak_intensity}"
+    )

@@ -56,8 +56,15 @@ def derive_need(identity: Identity) -> Need:
                           else f"nurture: {_bond}")
     vectors[WantVector.SOCIAL] = social or ["be present for the user"]
 
-    # urgency peaks with the strongest trait (a strongly-shaped identity wants more now)
-    peak = max(identity.traits.values(), default=0.0)
+    # urgency 反映**真实强度**，不用归一化后的 traits。
+    # 🔴 2026-10-23：`traits` 经归一化（峰值恒 1.0）⇒ 用它算 urgency 会得到
+    #   恒定 1.0，一条 0.1 的微弱欲望与一条 1.0 的强烈欲望效果相同
+    #   ⇒ Drive 永远激活、「最想要什么」失去区分度（生产实测确认）。
+    #   改为优先用 `identity.peak_intensity`（归一化前的真实峰值）；
+    #   旧调用方没有该字段时退回 traits 峰值（保持向后兼容）。
+    peak = float(getattr(identity, "peak_intensity", 0.0) or 0.0)
+    if peak <= 0.0:
+        peak = max(identity.traits.values(), default=0.0)
     urgency = round(min(1.0, peak), 3)
 
     return Need(vectors=vectors, urgency=urgency)

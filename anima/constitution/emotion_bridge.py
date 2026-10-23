@@ -269,12 +269,14 @@ def hydrate_emotion_memory(engine: Any, data_dir: Any, core: Any = None) -> dict
             sig = json.dumps(content, sort_keys=True, ensure_ascii=False)
             if sig in existing:
                 continue
-            # salience 取该条最强的数值 trait（越强的状态越影响身份）
-            _vals = [v for k, v in content.items()
-                     if k != "value" and isinstance(v, (int, float))]
-            sal = round(min(1.0, max(_vals) if _vals else 0.3), 3)
+            # 🔴 2026-10-23：salience 固定为 1.0，**不再等于强度本身**。
+            #   `derive_identity` 的公式是 `traits[k] += v * salience`，
+            #   若 salience 也取强度 v，就变成 `v²`（0.5 → 0.25），
+            #   把真实强度做了**平方压缩** —— 欲望强度传到 urgency 时严重失真。
+            #   salience 的语义是「这条记忆有多重要」，不是「强度值」；
+            #   强度已经在 content 里了。
             engine._memory.semantic.append(
-                MemoryRecord(kind="semantic", content=content, salience=sal))
+                MemoryRecord(kind="semantic", content=content, salience=1.0))
             existing.add(sig)
             stats["semantic"] += 1
 
