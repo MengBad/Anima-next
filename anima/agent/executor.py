@@ -274,8 +274,15 @@ class AgentExecutor:
 
             batch = self._collect_batch(task, idx)
             total = len(task.steps)
+            # 🔴 2026-10-23：**步骤进度节流**。
+            #   生产实证：一个 23 秒的任务连推 6 条（报备 + 3 步 + 完成 + 产物），
+            #   在私聊里是刷屏。而「一个每 23 秒发 6 条消息的助理会被关掉」——
+            #   一旦关掉通知，前面做的所有主动交付都白费。
+            #   判据：**短任务静默跑完只报结果**；长任务才逐步报进度。
+            _notify_steps = self._should_notify_steps(task)
             for step in batch:
-                await self._notify(task, f"[{step.index + 1}/{total}] {step.description}…")
+                if _notify_steps:
+                    await self._notify(task, f"[{step.index + 1}/{total}] {step.description}…")
                 step.status = "running"
             self.store.save(task)
 
@@ -397,7 +404,18 @@ class AgentExecutor:
             self._fail_streak = 0
 
         if task.status == "completed":
-            await self._notify(task, "[完成] 任务已全部执行")
+            # 🔴 2026-10-23：`[完成] 任务已全部执行` 与随后的**产物交付**是重复的。
+            #   生产实证：23 秒任务的消息序列是
+            #     报备 → [1/3] → [2/3] → [3/3] → [完成] → 产物全文
+            #   最后一条 `[完成]` 夹在中间纯属噪音。
+            #   改为：**有步骤产出时不再单独发 `[完成]`**（产物交付本身就是完成信号）；
+            #   只有「跑完了但什么也没产出」时才发这一句（否则用户不知道结束了）。
+            _has_output = any(
+                len(str(getattr(s, "result", "") or "").strip()) >= 20
+                for s in (task.steps or [])
+            )
+            if not _has_output:
+                await self._notify(task, "[完成] 任务已全部执行（但没有可展示的产出）")
             return "\n".join(result_parts) or "（无步骤产出）"
         if task.status == "cancelled":
             return "任务已取消。"
@@ -519,6 +537,36 @@ class AgentExecutor:
             f"（{reason}），改为 {len(new_steps)} 步替代方案",
         )
         return True
+
+    #: 步骤进度推送的门槛：步数达到此值，或已耗时超过阈值，才逐步报进度。
+    #: 🔴 2026-10-23：低于门槛的任务**静默跑完只报结果**。
+    #: 依据：生产实测一个 23 秒 / 3 步的任务连推 6 条消息，私聊被刷屏；
+    #: 而「每 23 秒发 6 条的助理」会导致 owner 直接关掉通知 ——
+    #: 一旦关掉，所有主动交付的价值都归零。
+    NOTIFY_STEPS_MIN_COUNT = 5
+    NOTIFY_STEPS_MIN_ELAPSED_SEC = 60.0
+
+    def _should_notify_steps(self, task: AgentTask) -> bool:
+        """本次是否值得逐步推送进度（短任务静默）。
+
+        判据（任一满足即推）：
+          1. 计划步数 ≥ `NOTIFY_STEPS_MIN_COUNT`（活儿本身就长）；
+          2. 任务已耗时 ≥ `NOTIFY_STEPS_MIN_ELAPSED_SEC`（跑着跑着变长了）。
+
+        fail-closed 取向：**判定失败时倾向于不推**（宁可少一条消息，
+        也不要because判据崩了而刷屏）。
+        """
+        try:
+            total = len(getattr(task, "steps", []) or [])
+            if total >= self.NOTIFY_STEPS_MIN_COUNT:
+                return True
+            _start = getattr(task, "created_at", 0) or 0
+            if _start and (time.time() - float(_start)) >= self.NOTIFY_STEPS_MIN_ELAPSED_SEC:
+                return True
+            return False
+        except Exception:
+            logger.debug("进度推送判定失败 ⇒ 按「不推」处理", exc_info=True)
+            return False
 
     # ------------------------------------------------------------------
     # P2-1 并行批次
