@@ -138,6 +138,15 @@ class AutonomyConfig(BaseModel):
     ratio_max: float = 0.30
     token_budget_per_day: int = 0        # 0 = 不限额（LLM 用量全开；仍保留超时/重试/熔断/并发锁与群打扰控制）
 
+    #: 🔴 2026-10-23：**情感 → 宪法记忆桥接**（让「内在驱动」这条边活起来）。
+    #: 背景（生产实测）：宪法 Memory 全空 ⇒ identity.traits={} ⇒ need.urgency=0
+    #: ⇒ drive.activated 恒 False ⇒ 它从来没有任何内在驱动力可以驱动行动。
+    #: 开着它，会把**真实情感状态**（mood / desires / relation，只读）镜像成
+    #: 宪法记忆的 semantic/relation 记录，让 Identity→Need→Affect→Drive 整条链有料。
+    #: 🔴 人格保护：**只读不写** —— 绝不修改任何情感数据文件；人格数据所有权不变。
+    #: 默认 **False**：关闭时行为与改动前完全一致，便于对照与回退。
+    emotion_bridge_enabled: bool = False
+
     # —— 回复策略 ——
     # 群聊中仅当被 @、被回复或文本提到「哈基米」时回复；私聊始终回复。
     # 可被 permissions.group_policies[gid].reply_mode 覆盖：

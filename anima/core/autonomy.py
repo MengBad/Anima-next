@@ -2092,6 +2092,26 @@ class Heartbeat:
         try:
             _auth = getattr(self.core, "memory_authority", None)
             if _auth is not None:
+                # 🔴 2026-10-23：**情感 → 宪法记忆桥接**（把断掉的边接上）。
+                #   生产实测：宪法 Memory 全空（episodes/semantic/relations 全 0）
+                #   ⇒ identity.traits={} ⇒ need.urgency=0 ⇒ drive.activated 恒 False
+                #   ⇒ 它从来没有任何「内在驱动力」可以驱动行动。
+                #   而真实情感数据是充分的（mood/desires 10 条/relation 93 条）。
+                #   本桥接**只读**这些数据、镜像成 semantic/relation 记录，
+                #   绝不写回任何情感文件 ⇒ 人格数据所有权不变。
+                #   开关默认关（`autonomy.emotion_bridge_enabled`）：关闭时行为
+                #   与改动前完全一致。
+                try:
+                    if bool(getattr(getattr(self.core.config, "autonomy", None),
+                                    "emotion_bridge_enabled", False)):
+                        from anima.constitution.emotion_bridge import hydrate_emotion_memory
+                        hydrate_emotion_memory(
+                            _auth.engine,
+                            getattr(getattr(self.core.config, "persistence", None),
+                                    "data_dir", "data"),
+                        )
+                except Exception:
+                    logger.debug("情感→宪法记忆桥接失败（已隔离）", exc_info=True)
                 memory = _auth.snapshot_memory()
         except Exception:
             memory = None
