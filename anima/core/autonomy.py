@@ -1312,22 +1312,25 @@ class Heartbeat:
         try:
             if bool(getattr(getattr(self.core.config, "autonomy", None),
                             "growth_snapshot_enabled", False)):
-                from anima.constitution.growth import has_snapshot_today, take_snapshot
+                from anima.constitution.growth import take_snapshot
                 # 🔴 2026-10-23：**不要用 `now`** —— 它是 `_tick` 后面才赋值的
                 #   局部变量，在函数开头引用会 `UnboundLocalError`
                 #   （生产实测：每 30 秒一条「快照失败」，由改成 warning 后才看见）。
-                # 🔴 2026-10-23：去重**以文件为准**（`has_snapshot_today`），
-                #   不用内存属性 —— 内存标记重启即清零 ⇒ 每次部署都重复记当天快照，
-                #   「昨天 vs 今天」会退化成「几小时前 vs 现在」，成长失真。
-                _dd = getattr(getattr(self.core.config, "persistence", None),
-                              "data_dir", "data")
-                if not has_snapshot_today(_dd):
-                    _snap = take_snapshot(self.core)
-                    if _snap:
-                        logger.info("[成长] 已记录今日快照（traits=%d 项）",
-                                    len(_snap.get("traits") or {}))
-                    else:
-                        logger.warning("[成长] 今日快照采集返回空，下次心跳重试")
+                # 🔴 2026-10-23 二次修订：改为**每次心跳都 upsert（同日覆盖）**。
+                #   原来「今天记过就跳过」会把当天早些时候的**过时数据**凝固成终值
+                #   （生产实例：13:33 记下 episodes=0，而修好 hydrate 后真实值是 16）
+                #   ⇒ 明天的对比会把「修 bug 的跳变」误当成「一天的成长」。
+                #   upsert 让每日快照反映**当天最终状态**；同日不会产生多条。
+                _snap = take_snapshot(self.core)
+                _d = self._bj_date_str(time.time())
+                if _snap and getattr(self, "_growth_logged_day", "") != _d:
+                    self._growth_logged_day = _d
+                    _mem = _snap.get("memory") or {}
+                    logger.info("[成长] 今日快照已更新（traits=%d 项, episodes=%s）",
+                                len(_snap.get("traits") or {}),
+                                _mem.get("episodes", 0) if isinstance(_mem, dict) else 0)
+                elif not _snap:
+                    logger.warning("[成长] 快照采集返回空，下次心跳重试")
         except Exception:
             logger.warning("[成长] 快照失败（已隔离）", exc_info=True)
 

@@ -76,6 +76,35 @@ def has_snapshot_today(data_dir: Any, now: Optional[float] = None) -> bool:
         return False
 
 
+def upsert_today(data_dir: Any, snap: dict, now: Optional[float] = None) -> bool:
+    """把快照写入今天的位置：**同一天覆盖，不追加**。
+
+    🔴 为什么需要（2026-10-23）：原设计「一天只记一次，记过就跳过」会让
+    当天早些时候记下的**过时数据**凝固成终值。生产实例：
+    今天 13:33 记的快照是 `episodes=0`（当时 hydrate 还没修好），
+    而修好后真实值是 16 —— 若当天不允许更新，
+    明天的「成长对比」就会把「修 bug 带来的跳变」误当成「一天的成长」。
+
+    现在：同一天再次采集时**替换当日那条**，使每日快照反映当天最终状态。
+    """
+    now = time.time() if now is None else float(now)
+    p = _snapshot_path(data_dir)
+    try:
+        today = time.strftime("%Y-%m-%d", time.localtime(now))
+        rows = load_snapshots(data_dir, limit=MAX_SNAPSHOTS)
+        kept = [r for r in rows
+                if time.strftime("%Y-%m-%d", time.localtime(float(r.get("ts") or 0))) != today]
+        kept.append(snap)
+        kept = kept[-MAX_SNAPSHOTS:]
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in kept) + "\n",
+                     encoding="utf-8")
+        return True
+    except Exception:
+        logger.debug("成长快照 upsert 失败", exc_info=True)
+        return False
+
+
 def take_snapshot(core: Any) -> Optional[dict]:
     """采集一份成长快照（只读）。返回快照 dict；失败返回 None。
 
@@ -133,7 +162,12 @@ def take_snapshot(core: Any) -> Optional[dict]:
         except Exception:
             logger.debug("成长快照：mood 读取失败", exc_info=True)
 
-        _append_snapshot(data_dir, snap)
+        # 🔴 2026-10-23：改为 **upsert**（同日覆盖），不再追加。
+        #   原设计「一天只记一次、记过就跳过」会把当天早些时候的**过时数据**
+        #   凝固成终值（生产实例：今天 13:33 记的 episodes=0，而修好 hydrate 后
+        #   真实值是 16）⇒ 明天的对比会把「修 bug 的跳变」误当成「一天的成长」。
+        #   同日覆盖使每日快照反映**当天最终状态**。
+        upsert_today(data_dir, snap)
         return snap
     except Exception:
         logger.debug("成长快照采集失败（已隔离）", exc_info=True)

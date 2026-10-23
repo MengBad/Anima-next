@@ -340,13 +340,25 @@ def test_snapshot_dedup_survives_restart(tmp_path):
     assert n1 == n2, f"重启后不该重复记当天快照（{n1} → {n2}）"
 
 
-def test_no_in_memory_growth_mark_in_source():
-    """源码契约：不得再用内存属性 `_last_growth_date` 做去重。"""
+def test_tick_uses_upsert_not_skip_source_level():
+    """源码契约：`_tick` 必须**每次心跳都采集**（由 `take_snapshot` 内部 upsert），
+    不得用「今天记过就跳过」。
+
+    演进记录：
+    1. 最初用内存属性 `_last_growth_date` —— 重启即清零 ⇒ 重复记当天；
+    2. 改为 `has_snapshot_today` 文件判断 —— 抗重启，但**当天不再更新**；
+    3. 现状：**每次都采集 + 同日覆盖（upsert）** —— 因为「记过就跳过」会把
+       当天早些时候的过时数据凝固成终值（生产实例：13:33 记下 episodes=0，
+       修好 hydrate 后真实值是 16）⇒ 明天的对比会把「修 bug 的跳变」
+       误当成「一天的成长」。
+    """
     import inspect
     from anima.core.autonomy import Heartbeat
 
     src = inspect.getsource(Heartbeat._tick)
-    assert "_last_growth_date" not in src, (
-        "🔴 不得用内存属性去重（重启即清零，会重复记当天快照）"
+    assert "_last_growth_date" not in src, "不得再用内存属性去重（重启即清零）"
+    assert "take_snapshot" in src, "必须采集快照"
+    # 不应再出现「跳过当天」的分支
+    assert "has_snapshot_today" not in src, (
+        "不应再「当天记过就跳过」—— 会让过时数据凝固成终值（改用 upsert）"
     )
-    assert "has_snapshot_today" in src, "应改用基于文件的判断"
