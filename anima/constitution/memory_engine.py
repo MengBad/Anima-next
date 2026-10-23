@@ -74,10 +74,39 @@ class MemoryEngine:
                 from anima.memory.chat_memory import get_chat_memory
                 cm = get_chat_memory()
             gids = list(cm.group_recent_ids())
+            # 🔴 2026-10-23：**临时缓冲为空时回落到持久化历史**。
+            #   `_group_recent` 是「刚才那几分钟」的短时缓冲（15 分钟 TTL、
+            #   最多 32 条），只在**有真实消息进来**时才有内容。
+            #   夜间/群安静时它恒为空 ⇒ 生产日志长期 `群=0 条目=0 新增=0`
+            #   ⇒ `episodes` 永远是 0 ⇒ 成长快照的「记忆增长」维度一直是死的
+            #   （而 `_store` 里明明有 133 个群桶的持久化历史）。
+            #   回落后「回顾过去发生了什么」才能真正沉淀进宪法记忆。
+            _use_persistent = False
+            if not gids:
+                try:
+                    _all = sorted(
+                        {str(k).split("_")[1] for k in getattr(cm, "_store", {}) 
+                         if str(k).startswith("group_") and "_" in str(k)},
+                        key=lambda x: int(x) if str(x).isdigit() else 0,
+                    )
+                    gids = [int(x) for x in _all if str(x).isdigit()]
+                    _use_persistent = bool(gids)
+                    if _use_persistent:
+                        logger.debug("hydrate：短时缓冲为空，回落到持久化历史（%d 个群）",
+                                     len(gids))
+                except Exception:
+                    logger.debug("hydrate：持久化群列表读取失败", exc_info=True)
             collected = 0
             salience = min(max(min_salience, 0.2), max_salience)
             for gid in gids[:8]:
-                hist = cm.get_recent_group_context(gid, limit=8) or []
+                if _use_persistent:
+                    # 从持久化历史取（时间窗 24h，避免把上个月的事当「刚发生」）
+                    try:
+                        hist = cm.get_group_history(gid, hours=24.0, limit=8) or []
+                    except Exception:
+                        hist = []
+                else:
+                    hist = cm.get_recent_group_context(gid, limit=8) or []
                 entries_seen += len(hist)
                 for entry in hist:
                     if collected >= max_episodes:

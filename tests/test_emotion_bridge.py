@@ -350,3 +350,87 @@ def test_no_squared_compression_in_bridge(tmp_path):
     assert abs(ident.peak_intensity - 0.4) < 0.01, (
         f"0.4 的欲望应传导为 peak≈0.40（不是 0.16），实得 {ident.peak_intensity}"
     )
+
+
+# ── 10. hydrate 必须在短时缓冲为空时回落到持久化历史（2026-10-23）───
+
+
+class _OD:
+    def __init__(self, pairs):
+        self._pairs = pairs
+
+    def items(self):
+        return list(self._pairs)
+
+    def __len__(self):
+        return len(self._pairs)
+
+
+def _cm_with_history(now):
+    from anima.memory.chat_memory import ChatMemory
+    m = ChatMemory()
+    m._store.clear()
+    m._store["group_111_1"] = _OD([("r1", [
+        {"role": "user", "name": "小明",
+         "content": "今天聊了AI绘图，很有收获", "time": now - 3600}])])
+    m._store["group_111_2"] = _OD([("r2", [
+        {"role": "user", "name": "小红",
+         "content": "我也在试，效果不错", "time": now - 1800}])])
+    return m
+
+
+def test_hydrate_falls_back_to_persistent_history():
+    """🔴 生产实证：夜间/群安静时 `_group_recent`（15 分钟短时缓冲）为空
+    ⇒ 生产日志长期 `群=0 条目=0 新增=0` ⇒ `episodes` 永远是 0
+    ⇒ 成长快照的「记忆增长」维度一直是死的（而 `_store` 里有 133 个群桶）。
+
+    修法：短时缓冲为空时回落到持久化历史（24 小时时间窗）。
+    """
+    import time as _t
+    from anima.constitution.memory_engine import MemoryEngine
+
+    now = _t.time()
+    m = _cm_with_history(now)
+    # 确认短时缓冲确实是空的（这正是生产现场）
+    assert list(m.group_recent_ids()) == [], "前置：短时缓冲应为空"
+
+    eng = MemoryEngine()
+    added = eng.hydrate(m)
+    assert added == 2, f"应从持久化历史水合 2 条，实得 {added}"
+    assert len(eng.snapshot().episodes) == 2
+
+
+def test_hydrate_persistent_fallback_respects_time_window():
+    """回落时只取 24 小时内的（不把上个月的事当「刚发生」）。"""
+    import time as _t
+    from anima.constitution.memory_engine import MemoryEngine
+
+    now = _t.time()
+    m = _cm_with_history(now)
+    # 把两条都改成 3 天前
+    m._store["group_111_1"] = _OD([("r1", [
+        {"role": "user", "name": "小明", "content": "很久以前的事",
+         "time": now - 3 * 86400}])])
+    m._store["group_111_2"] = _OD([("r2", [
+        {"role": "user", "name": "小红", "content": "也很久以前",
+         "time": now - 3 * 86400}])])
+
+    eng = MemoryEngine()
+    assert eng.hydrate(m) == 0, "24 小时窗口外的不该水合"
+
+
+def test_hydrate_prefers_recent_buffer_when_present():
+    """短时缓冲有内容时仍优先用它（保持既有语义，不破坏线上行为）。"""
+    from anima.constitution.memory_engine import MemoryEngine
+
+    class _Fake:
+        def group_recent_ids(self):
+            return [999]
+
+        def get_recent_group_context(self, gid, limit=8):
+            return [{"role": "user", "content": "刚说的那句"}]
+
+        _store = {}
+
+    eng = MemoryEngine()
+    assert eng.hydrate(_Fake()) == 1
