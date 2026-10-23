@@ -204,3 +204,46 @@ def test_threshold_value_survives_short_interval(tmp_path):
     assert d.intensity >= 0.55, (
         f"20 次亚秒级调用后仍应 >=0.55，实得 {d.intensity}"
     )
+
+
+# ── 6. 衰减时钟必须持久化（僵尸欲望的真正机制）───────────────────────
+
+
+def test_decay_clock_persists_across_restart(tmp_path):
+    """🔴 `_last_decay` 原来只是内存属性 ⇒ 每次重启重置为「现在」
+    ⇒ elapsed=0 ⇒ **永不衰减**。这正是「强度 0.95 的欲望挂了 41 天」
+    的真正机制：不是衰减算法错，而是**衰减的时钟每次重启都归零**。
+    """
+    ds, d = _sys_with(tmp_path, intensity=1.0)
+    ds._last_decay = time.time() - 30 * 86400
+    ds.decay()
+    assert d.intensity <= ds._DECAY_FLOOR + 1e-6
+    ds._save_decay_state()
+
+    # 模拟重启：全新实例，从盘上恢复时钟
+    ds2 = DesireSystem(str(tmp_path))
+    elapsed = time.time() - ds2._last_decay
+    assert elapsed < 60, (
+        f"重启后时钟应从落盘状态恢复（elapsed 应≈0），实得 {elapsed:.0f}s"
+    )
+
+
+def test_decay_state_file_is_separate(tmp_path):
+    """衰减状态独立落盘，不污染 desires.json 的列表结构。"""
+    ds, _ = _sys_with(tmp_path)
+    ds.decay()
+    ds._save_decay_state()
+    assert (tmp_path / "desire_decay_state.json").exists()
+    # desires.json 仍是欲望列表（不是 dict 包裹状态）
+    raw = __import__("json").loads((tmp_path / "desires.json").read_text(encoding="utf-8")) \
+        if (tmp_path / "desires.json").exists() else []
+    assert isinstance(raw, list), "desires.json 必须仍是欲望列表"
+
+
+def test_restart_then_continue_decay(tmp_path):
+    """停机 2 天后重启，衰减应继续（而不是从零开始）。"""
+    ds, d = _sys_with(tmp_path, intensity=1.0)
+    ds._last_decay = time.time() - 2 * 86400
+    ds.decay()
+    # 2 天 = 2 个半衰期 ⇒ 1.0 × 0.25 = 0.25
+    assert 0.2 < d.intensity < 0.3, f"2 天应约 0.25，实得 {d.intensity}"

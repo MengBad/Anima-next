@@ -10,6 +10,7 @@
 """
 
 from __future__ import annotations
+import logging
 import time
 from typing import Optional
 
@@ -60,6 +61,9 @@ class Aspiration:
         return a
 
 
+logger = logging.getLogger("anima.cognitive.desire")
+
+
 def _normalise_group_id(value: object) -> Optional[int]:
     """将来源群号规范为正整数；私聊、缺失和非法值统一为 None。"""
     try:
@@ -103,12 +107,40 @@ class DesireSystem:
     #: 衰减下限：低于此值不再继续衰减（已是僵尸，留着也激活不了）。
     _DECAY_FLOOR = 0.05
 
+    #: 衰减状态落盘键（与 desires.json 分开，避免污染欲望列表结构）。
+    #: 🔴 2026-10-23：`_last_decay` 必须**持久化**。它原来只是内存属性，
+    #:   每次进程重启都重置为 `time.time()` ⇒ `elapsed=0` ⇒ **永不衰减**。
+    #:   这正是「强度 0.95 的欲望挂了 41 天」的真正机制：
+    #:   不是衰减算法错，而是**衰减的时钟每次重启都归零**。
+    _DECAY_STATE_PATH = "desire_decay_state.json"
+
+    def _load_decay_state(self) -> None:
+        try:
+            st = self._persist.read_json(self._DECAY_STATE_PATH, {}) or {}
+            ts = float(st.get("last_decay") or 0.0)
+            if ts > 0:
+                self._last_decay = ts
+        except Exception:
+            logger.debug("decay state 读取失败（按当前时间处理）", exc_info=True)
+
+    def _save_decay_state(self) -> None:
+        try:
+            self._persist.write_json(self._DECAY_STATE_PATH,
+                                     {"last_decay": float(self._last_decay)})
+        except Exception:
+            logger.debug("decay state 落盘失败", exc_info=True)
+
     def __init__(self, data_dir: str = "data", max_desires: int = 10, decay_rate: float = 0.95):
         self.desires: list[Desire] = []
         self.max_desires = max_desires
         self.decay_rate = decay_rate
-        self._last_decay = time.time()
         self._persist = PersistenceProvider(data_dir)
+        # 🔴 2026-10-23：`_last_decay` 必须从**落盘状态恢复**。
+        #   它原来只是内存属性，每次进程重启都重置为「现在」⇒ elapsed=0
+        #   ⇒ **永不衰减**。这正是「强度 0.95 的欲望挂了 41 天」的真正机制：
+        #   不是衰减算法错，而是**衰减的时钟每次重启都归零**。
+        self._last_decay = time.time()
+        self._load_decay_state()
         self._path = "desires.json"
         # D1: 长期目标
         self.aspirations: list[Aspiration] = []
@@ -334,6 +366,9 @@ class DesireSystem:
         for d in self.desires:
             if not d.resolved and d.intensity > self._DECAY_FLOOR:
                 d.intensity = max(self._DECAY_FLOOR, d.intensity * factor)
+        # 🔴 衰减后**立即落盘时钟**，否则重启又会归零（见 __init__ 的说明）。
+        self._save_decay_state()
+
 
     def expire_unfulfilled(self) -> list[str]:
         """S2: 检查超过 24h 未满足的欲望，返回“遗憾笔记”列表。
