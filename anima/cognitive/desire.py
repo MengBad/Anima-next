@@ -77,6 +77,9 @@ class Desire:
     __slots__ = (
         "content", "intensity", "created_at", "resolved", "kind", "goal", "acted",
         "source_group_id", "expression_scope",
+        # 🔴 2026-10-23：上次被相似内容提升的时刻（用于 `_BOOST_COOLDOWN_SEC`）。
+        #   不加冷却会让心跳每 30 秒 +0.1，必然撞满 1.0 并长期垄断。
+        "last_boost",
     )
     def __init__(self, content: str, intensity: float = 0.6, kind: str = "chat",
                  goal: Optional[str] = None, acted: bool = False,
@@ -93,6 +96,8 @@ class Desire:
         scope = expression_scope if expression_scope in EXPRESSION_SCOPES else "internal"
         # 群作用域必须有明确来源群；绝不能把缺失群号降级成全局表达。
         self.expression_scope = "internal" if scope == "group" and self.source_group_id is None else scope
+        # 0 表示「从未被提升过」，首次相似 add 会立即生效一次。
+        self.last_boost = 0.0
 
 
 class DesireSystem:
@@ -118,6 +123,14 @@ class DesireSystem:
     _HALF_LIFE_SEC = 24 * 3600.0
     #: 衰减下限：低于此值不再继续衰减（已是僵尸，留着也激活不了）。
     _DECAY_FLOOR = 0.05
+    #: 🔴 2026-10-23：相似欲望「提升强度」的**冷却时间**（秒）。
+    #: 此前 `add()` 对相似内容无条件 `+0.1` ⇒ 心跳每 30 秒调一次
+    #: `add("想跟大家聊天", 0.35)` 就把它无限推到 1.0
+    #: （生产实证：41 天前创建的欲望强度不降反升到 0.9997，
+    #:  且长期垄断「它想做什么」——归一化后 traits.social 恒为 1.0）。
+    #: 6 小时：一天最多提升 4 次，与 24h 半衰期（每天衰减一半）大致平衡，
+    #: 不会无限累积，也不会让「反复想到」的语义消失。
+    _BOOST_COOLDOWN_SEC = 6 * 3600.0
 
     #: 衰减状态落盘键（与 desires.json 分开，避免污染欲望列表结构）。
     #: 🔴 2026-10-23：`_last_decay` 必须**持久化**。它原来只是内存属性，
@@ -173,6 +186,11 @@ class DesireSystem:
                       expression_scope=item.get("expression_scope", "internal"))
             d.created_at = item.get("created_at", time.time())
             d.resolved = item.get("resolved", False)
+            # 提升冷却时间戳（旧数据没有 ⇒ 0，首次 add 会立即生效一次，可接受）
+            try:
+                d.last_boost = float(item.get("last_boost") or 0.0)
+            except (TypeError, ValueError):
+                d.last_boost = 0.0
             self.desires.append(d)
         # D1: 恢复 aspirations
         asp_data = self._persist.read_json(self._aspirations_path, [])
@@ -191,6 +209,8 @@ class DesireSystem:
                 "acted": d.acted,
                 "source_group_id": d.source_group_id,
                 "expression_scope": d.expression_scope,
+                # 提升冷却时间戳（跨重启保留，否则重启后又可以立刻 +0.1）
+                "last_boost": float(getattr(d, "last_boost", 0.0) or 0.0),
             }
             for d in self.desires
         ]
@@ -262,21 +282,35 @@ class DesireSystem:
         """添加一个新欲望。
         - chat 类：内容与已有欲望相似（子串匹配）则不重复，仅提升 intensity。
         - self_improvement 类：按 goal 去重，避免重复生成同一自升级目标。
+
+        🔴 2026-10-23：相似欲望的提升**有冷却**（见 `_BOOST_COOLDOWN_SEC`）。
+        此前无条件 `+0.1` ⇒ 心跳每 30 秒调一次 `add("想跟大家聊天", 0.35)`
+        就把它无限推到 1.0（生产实证：41 天前创建的欲望强度不降反升到 0.9997，
+        且**长期垄断「它想做什么」** —— 因为归一化后 traits.social 恒为 1.0）。
+        「反复想到会变强」的语义保留，但必须与衰减速率匹配。
         """
         goal = goal if goal is not None else content
         source_group_id = _normalise_group_id(source_group_id)
         expression_scope = expression_scope if expression_scope in EXPRESSION_SCOPES else "internal"
         if expression_scope == "group" and source_group_id is None:
             expression_scope = "internal"
+        _now = time.time()
         for d in self.desires:
             if (d.kind == kind and d.expression_scope == expression_scope
                     and d.source_group_id == source_group_id):
                 if kind == "self_improvement":
                     if d.goal == goal:
-                        d.intensity = min(1.0, d.intensity + 0.1)
+                        # 同样受冷却保护：避免每 tick 累加
+                        if _now - float(getattr(d, "last_boost", 0.0) or 0.0) >= self._BOOST_COOLDOWN_SEC:
+                            d.intensity = min(1.0, d.intensity + 0.1)
+                            d.last_boost = _now
                         return d
                 elif self._similar(d.content, content):
-                    d.intensity = min(1.0, d.intensity + 0.1)
+                    # 🔴 冷却：同一欲望在冷却期内不重复提升。
+                    #   否则心跳每 30 秒 +0.1 ⇒ 必然撞到 1.0 上限并长期垄断。
+                    if _now - float(getattr(d, "last_boost", 0.0) or 0.0) >= self._BOOST_COOLDOWN_SEC:
+                        d.intensity = min(1.0, d.intensity + 0.1)
+                        d.last_boost = _now
                     return d
 
         desire = Desire(

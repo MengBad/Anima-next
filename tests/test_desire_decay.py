@@ -247,3 +247,68 @@ def test_restart_then_continue_decay(tmp_path):
     ds.decay()
     # 2 天 = 2 个半衰期 ⇒ 1.0 × 0.25 = 0.25
     assert 0.2 < d.intensity < 0.3, f"2 天应约 0.25，实得 {d.intensity}"
+
+
+# ── 7. 相似欲望提升必须有冷却（防无限累积到 1.0）──────────────────────
+
+
+def test_similar_desire_boost_has_cooldown(tmp_path):
+    """🔴 生产实证：41 天前创建的「想跟大家聊天」强度**不降反升到 0.9997**。
+
+    原因：`add()` 对相似内容无条件 `+0.1`，而心跳每 30 秒调一次
+    `add("想跟大家聊天", 0.35)` ⇒ 必然撞到 1.0 上限并长期垄断
+    「它想做什么」（归一化后 `traits.social` 恒为 1.0）。
+    """
+    ds = DesireSystem(str(tmp_path))
+    ds.desires = []
+    d = ds.add("想跟大家聊天", intensity=0.35)
+    assert d is not None
+    # 首次相似 add 会提升一次（last_boost=0 ⇒ 视为冷却已过），这是设计
+    ds.add("想跟大家聊天", intensity=0.35)
+    v1 = d.intensity
+    assert v1 > 0.35, "首次相似 add 应提升一次"
+
+    # 连续 100 次（模拟心跳高频调用）—— 冷却期内不该再提升
+    for _ in range(100):
+        ds.add("想跟大家聊天", intensity=0.35)
+    assert d.intensity == pytest.approx(v1, abs=1e-6), (
+        f"冷却期内不该重复提升：{v1} → {d.intensity}（否则心跳会把强度推到 1.0）"
+    )
+
+
+def test_boost_works_after_cooldown(tmp_path):
+    """冷却结束后仍可提升（保留「反复想到会变强」的语义）。"""
+    ds = DesireSystem(str(tmp_path))
+    ds.desires = []
+    d = ds.add("想跟大家聊天", intensity=0.35)
+    d.last_boost = time.time() - DesireSystem._BOOST_COOLDOWN_SEC - 1
+    ds.add("想跟大家聊天", intensity=0.35)
+    assert d.intensity > 0.35, f"冷却后应能提升，实得 {d.intensity}"
+
+
+def test_steady_state_stays_in_activatable_range(tmp_path):
+    """平衡态应落在可激活区间（0.3~0.5），不饱和到 1.0。
+
+    模拟：每 6 小时 +0.1（冷却 6h），半衰期 24h ⇒ 稳定在约 0.40。
+    若饱和到 1.0，就失去「最想要什么」的区分度。
+    """
+    ds = DesireSystem(str(tmp_path))
+    ds.desires = []
+    d = ds.add("想跟大家聊天", intensity=0.35)
+    for day in range(1, 9):
+        for _ in range(4):
+            d.last_boost = time.time() - DesireSystem._BOOST_COOLDOWN_SEC - 1
+            ds.add("想跟大家聊天", intensity=0.35)
+        d.intensity = max(DesireSystem._DECAY_FLOOR, d.intensity * 0.5)
+    assert 0.3 <= d.intensity <= 0.55, (
+        f"平衡态应在 0.3~0.55，实得 {d.intensity}（饱和=失去区分度）"
+    )
+
+
+def test_cold_group_decays_to_floor(tmp_path):
+    """群冷清（无 add 输入）⇒ 3 天内自然清零。"""
+    ds, d = _sys_with(tmp_path, intensity=0.35)
+    for _ in range(5):
+        ds._last_decay = time.time() - 86400
+        ds.decay()
+    assert d.intensity <= DesireSystem._DECAY_FLOOR + 1e-6
