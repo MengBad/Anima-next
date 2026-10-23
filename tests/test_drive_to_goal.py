@@ -295,3 +295,68 @@ def test_social_cadence_is_not_too_frequent():
     assert DEFAULT_CADENCE_BY_KIND["social"] >= 24 * 3600.0, (
         "关系类目标的节律必须 ≥ 1 天，否则「关心」会变成骚扰"
     )
+
+
+# ── 8. 人格身份不得丢失（2026-10-23 生产实测）──────────────────────────
+
+
+def test_owner_identified_by_label_not_uid(tmp_path):
+    """🔴 生产实证：目标曾写成「维系和 **1562290139** 的关系」——
+    那其实是**主人本人**（relation.json 里 tags 含「主人」、trust 0.95、
+    互动 876 次），但早先只取 bond/depth/stage ⇒ 它把自己和主人的关系
+    写成了一串陌生号码。**连「你是谁」都没认出来 = 人格丢失。**
+    """
+    from anima.constitution.emotion_bridge import build_emotion_relation_records
+
+    (tmp_path / "relation.json").write_text(json.dumps({
+        "1562290139": {"depth": 0.95, "stage": "CLOSE",
+                       "tags": ["开发者", "主人", "MTF"]},
+    }, ensure_ascii=False), encoding="utf-8")
+
+    recs = build_emotion_relation_records(tmp_path, owner_ids=["1562290139"])
+    assert recs, "应有关系记录"
+    r = recs[0]
+    assert r["is_owner"] is True, "必须识别出 owner"
+    assert r["label"] == "主人", f"必须有可读称呼，实得 {r.get('label')!r}"
+    assert "主人" in r["tags"], "身份标签必须保留（人格数据）"
+
+
+def test_social_vector_carries_label():
+    """SOCIAL 向量必须带人物身份，否则目标文案退化成一串号码。"""
+    from anima.constitution.need import derive_need
+    from anima.constitution.state import Identity
+
+    ident = Identity(
+        traits={"social": 1.0}, values=[],
+        self_model={"relations": [
+            {"bond": "1562290139", "label": "主人", "depth": 0.95},
+            {"bond": "992934160", "depth": 0.5},
+        ]},
+    )
+    vec = derive_need(ident).vectors
+    from anima.constitution.state import WantVector
+    social = vec[WantVector.SOCIAL]
+    assert any("主人(1562290139)" in s for s in social), (
+        f"owner 的 SOCIAL 向量应带称呼：{social[:3]}"
+    )
+
+
+def test_goal_objective_uses_label():
+    """目标文案用称呼，uid 仅作追溯附注。"""
+    cands = build_goals_from_drive(
+        _drive(), {"social": ["nurture: 主人(1562290139)"]})
+    assert cands
+    obj = cands[0]["objective"]
+    assert "主人" in obj, f"目标应用称呼而非裸 uid：{obj}"
+    assert "1562290139" in obj, "uid 应保留（可追溯）"
+
+
+def test_relation_without_tags_still_works(tmp_path):
+    """没有 tags 的普通关系照常处理（不误判为 owner）。"""
+    from anima.constitution.emotion_bridge import build_emotion_relation_records
+    (tmp_path / "relation.json").write_text(json.dumps({
+        "555": {"depth": 0.8, "stage": "FRIEND"},
+    }), encoding="utf-8")
+    recs = build_emotion_relation_records(tmp_path, owner_ids=["1562290139"])
+    assert len(recs) == 1
+    assert recs[0]["is_owner"] is False

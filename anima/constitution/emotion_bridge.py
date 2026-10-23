@@ -175,13 +175,24 @@ def build_emotion_semantic_records(data_dir: Any) -> list[dict]:
     return out
 
 
-def build_emotion_relation_records(data_dir: Any) -> list[dict]:
-    """把真实关系状态转成 **relation** 记录内容。只读，不写。"""
+def build_emotion_relation_records(data_dir: Any, *,
+                                   owner_ids: Optional[list] = None) -> list[dict]:
+    """把真实关系状态转成 **relation** 记录内容。只读，不写。
+
+    🔴 2026-10-23：**必须带上身份标签，否则人格会丢失**。
+    生产实证：目标写成「维系和 **1562290139** 的关系」——那其实是**主人本人**
+    （`relation.json` 里 `tags` 明确含「主人」，`trust 0.95`、互动 876 次），
+    但早先只取 bond/depth/stage ⇒ 它把自己和主人的关系写成了一串陌生号码。
+    **它连「你是谁」都没认出来，这直接违背「人格不丢失」。**
+
+    现在额外带上：`tags`（身份标签）、`label`（人格化的称呼）、`is_owner`。
+    """
     root = Path(str(data_dir))
     out: list[dict] = []
     raw = _read_json(root / "relation.json")
     if not isinstance(raw, dict):
         return out
+    _owners = {str(x) for x in (owner_ids or [])}
     for uid, info in list(raw.items())[:200]:
         if not isinstance(info, dict):
             continue
@@ -192,15 +203,26 @@ def build_emotion_relation_records(data_dir: Any) -> list[dict]:
         if depth < MIN_RELATION_DEPTH:
             continue
         stage = str(info.get("stage") or "")
-        out.append({
+        tags = [str(t) for t in (info.get("tags") or []) if str(t).strip()][:8]
+        _is_owner = str(uid) in _owners or ("主人" in tags)
+        rec = {
             "bond": str(uid),
             "depth": round(min(1.0, depth), 3),
             "stage": stage,
-        })
+            # 身份标签（含「主人」这类称呼）—— 人格数据，必须保留
+            "tags": tags,
+            "is_owner": bool(_is_owner),
+        }
+        # 人格化称呼：优先主人，其次 tags 里第一个称呼类标签
+        if _is_owner:
+            rec["label"] = "主人"
+        elif tags:
+            rec["label"] = tags[0]
+        out.append(rec)
     return out
 
 
-def hydrate_emotion_memory(engine: Any, data_dir: Any) -> dict:
+def hydrate_emotion_memory(engine: Any, data_dir: Any, core: Any = None) -> dict:
     """把情感状态沉淀进宪法 Memory（**仅追加，绝不修改既有记录**）。
 
     返回统计：`{"semantic": n, "relations": m, "skipped": bool}`。
@@ -216,7 +238,18 @@ def hydrate_emotion_memory(engine: Any, data_dir: Any) -> dict:
         from anima.constitution.state import MemoryRecord
 
         sem = build_emotion_semantic_records(data_dir)
-        rel = build_emotion_relation_records(data_dir)
+        # 🔴 2026-10-23：**必须传 owner_ids**，否则关系记录里认不出「主人」，
+        #   生成的目标会退化成「维系和 1562290139 的关系」（人格丢失）。
+        #   owner_ids 由调用方从 config.permissions.owners 给出；省略时
+        #   退化为「看 tags 里有没有『主人』」—— 仍能识别，只是不如显式可靠。
+        _owners: list = []
+        try:
+            _cfg = getattr(core, "config", None) if core is not None else None
+            _owners = list(getattr(getattr(_cfg, "permissions", None),
+                                   "owners", []) or [])
+        except Exception:
+            _owners = []
+        rel = build_emotion_relation_records(data_dir, owner_ids=_owners)
 
         # 已存在的记录签名（用于幂等）
         existing: set[str] = set()

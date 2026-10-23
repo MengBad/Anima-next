@@ -1345,7 +1345,7 @@ class Heartbeat:
                     from anima.constitution.emotion_bridge import hydrate_emotion_memory
                     _dd = getattr(getattr(self.core.config, "persistence", None),
                                   "data_dir", "data")
-                    _stats = hydrate_emotion_memory(_auth.engine, _dd)
+                    _stats = hydrate_emotion_memory(_auth.engine, _dd, core=self.core)
                     if _stats.get("semantic") or _stats.get("relations"):
                         logger.info("[情感桥] 宪法记忆喂料：semantic+%d relations+%d",
                                     _stats["semantic"], _stats["relations"])
@@ -2240,6 +2240,7 @@ class Heartbeat:
                             _auth.engine,
                             getattr(getattr(self.core.config, "persistence", None),
                                     "data_dir", "data"),
+                            core=self.core,
                         )
                 except Exception:
                     logger.debug("情感→宪法记忆桥接失败（已隔离）", exc_info=True)

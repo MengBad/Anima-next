@@ -92,7 +92,7 @@ def take_snapshot(core: Any) -> Optional[dict]:
             from anima.constitution.identity import derive_identity
             auth = getattr(core, "memory_authority", None)
             if auth is not None:
-                hydrate_emotion_memory(auth.engine, data_dir)
+                hydrate_emotion_memory(auth.engine, data_dir, core=core)
                 mem = auth.snapshot_memory()
                 ident = derive_identity(mem)
                 snap["traits"] = {k: round(float(v), 3)

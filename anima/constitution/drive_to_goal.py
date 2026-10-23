@@ -47,6 +47,7 @@ Dots 的目标是**你交给它的**。这里的目标是**它自己的**——
 from __future__ import annotations
 
 import logging
+import re as _re
 import time
 from typing import Any, Optional
 
@@ -85,6 +86,15 @@ def _vector_to_objective(kind: str, item: str) -> Optional[tuple[str, str]]:
         target = s[len("nurture:"):].strip()
         if not target:
             return None
+        # 🔴 2026-10-23：向量形如 `nurture: 主人(1562290139)`。
+        #   拆出**人影称呼**用于文案，uid 仅作追溯附注 —— 早期只显示 uid，
+        #   生成的目标成了「维系和 1562290139 的关系」，而那是主人本人
+        #   ⇒ **人格丢失**。这里优先用称呼，uid 放括号里保留可追溯性。
+        _m = _re.match(r"^(.+?)\s*\((\d{5,})\)\s*$", target)
+        if _m:
+            who, uid = _m.group(1).strip(), _m.group(2)
+            return (f"维系和{who}的关系：主动关心一下 ta 最近怎么样（{uid}）",
+                    f"它想维系和{who}的关系（来自关系记忆 depth 排序）")
         return (f"维系和 {target} 的关系：主动关心一下 ta 最近怎么样",
                 f"它想维系这段关系（来自关系记忆 depth 排序）")
 

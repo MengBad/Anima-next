@@ -43,7 +43,17 @@ def derive_need(identity: Identity) -> Need:
     social: list[str] = []
     for rel in identity.self_model.get("relations", []):
         if isinstance(rel, dict) and "bond" in rel:
-            social.append(f"nurture: {rel['bond']}")
+            # 🔴 2026-10-23：**带上人物身份**，否则人格会丢失。
+            #   生产实证：早先只写 `nurture: 1562290139` ⇒ 生成的目标成了
+            #   「维系和 1562290139 的关系」—— 那其实是**主人本人**
+            #   （relation.json 里 tags 含「主人」、trust 0.95、互动 876 次）。
+            #   它把自己和主人的关系写成了一串陌生号码 —— 人格丢失。
+            #   现在写 `nurture: 主人(1562290139)`：身份可读，且仍能追溯到 uid。
+            _label = str(rel.get("label") or "").strip()
+            _bond = str(rel["bond"])
+            social.append(f"nurture: {_label}({_bond})"
+                          if _label and _label != _bond
+                          else f"nurture: {_bond}")
     vectors[WantVector.SOCIAL] = social or ["be present for the user"]
 
     # urgency peaks with the strongest trait (a strongly-shaped identity wants more now)
