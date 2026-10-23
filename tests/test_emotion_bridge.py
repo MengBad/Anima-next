@@ -245,3 +245,45 @@ def test_hydrate_survives_engine_errors(tmp_path):
 
     stats = hydrate_emotion_memory(_Bad(), tmp_path)
     assert stats["skipped"] is True, "异常必须被隔离，不得抛出"
+
+
+# ── 8. 桥接必须独立于 drive_gate（2026-10-23 部署后实测踩坑）───────────
+
+
+def test_bridge_runs_independent_of_drive_gate_source_level():
+    """🔴 桥接是「喂料」，不该被 `drive_gate` 这个「闸门」挡住。
+
+    实测踩坑：第一版把桥接放在 `_constitution_drive_snapshot()` 里，
+    而它只在 `drive_gate=True` 时才被调用 ⇒ 生产 `drive_gate=false`
+    ⇒ **桥接永远不执行**（部署后 100 秒，日志 0 条）。
+
+    职责必须分清：
+      * `drive_gate`      = 闸门：是否让 Drive 压制主动发言；
+      * `emotion_bridge`  = 喂料：让链首有真实情感数据。
+    喂料不该被闸门挡住，两者应能独立开关与独立观测。
+    """
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    # 找到包含 drive_gate 判定的那个方法（主动发言路径）
+    src = inspect.getsource(Heartbeat)
+    i_gate = src.find('if getattr(self.core.config.autonomy, "drive_gate", False):')
+    assert i_gate > 0, "应存在 drive_gate 判定"
+
+    # 桥接调用必须出现在该判定**之前**（即不被它挡住）
+    i_bridge = src.find("hydrate_emotion_memory")
+    assert i_bridge > 0, "应存在桥接调用"
+    assert i_bridge < i_gate, (
+        f"桥接必须在 drive_gate 判定之前（实测：放在里面导致永不执行）"
+        f" bridge@{i_bridge} gate@{i_gate}"
+    )
+
+
+def test_bridge_guarded_by_its_own_switch_source_level():
+    """桥接只受自己的开关控制，不受 drive_gate 影响。"""
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat)
+    i = src.find("emotion_bridge_enabled")
+    assert i > 0, "应有独立开关判定"
