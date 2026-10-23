@@ -312,3 +312,51 @@ def test_cold_group_decays_to_floor(tmp_path):
         ds._last_decay = time.time() - 86400
         ds.decay()
     assert d.intensity <= DesireSystem._DECAY_FLOOR + 1e-6
+
+
+# ── 8. restore 不得把已衰减的欲望拉回 0.1（2026-10-23 实测）─────────────
+
+
+def test_restore_preserves_decayed_intensity(tmp_path):
+    """🔴 `Desire.__init__` 原来 `max(0.1, ...)` ⇒ `restore()` 把文件里
+    已衰减到 0.06 的欲望**重新拉回 0.1**（实测：文件 0.06 → restore 后 0.1）
+    ⇒ 每次重启都把僵尸欲望复活一次，**永远无法真正消退**。
+
+    这也解释了「衰减到 0.1 就停住不再下降」的现象。
+    """
+    import json
+
+    ds, d = _sys_with(tmp_path, intensity=0.5)
+    ds.persist()
+
+    raw = json.loads((tmp_path / "desires.json").read_text(encoding="utf-8"))
+    raw[0]["intensity"] = 0.06
+    (tmp_path / "desires.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    ds2 = DesireSystem(str(tmp_path))
+    ds2.restore()
+    assert abs(ds2.desires[0].intensity - 0.06) < 1e-6, (
+        f"restore 应保留 0.06，实得 {ds2.desires[0].intensity}（被拉回 0.1 = 僵尸复活）"
+    )
+
+
+def test_restore_clamps_below_floor(tmp_path):
+    """低于下限的值仍归到 0.05（统一下限，可接受）。"""
+    import json
+
+    ds, d = _sys_with(tmp_path, intensity=0.5)
+    ds.persist()
+    raw = json.loads((tmp_path / "desires.json").read_text(encoding="utf-8"))
+    raw[0]["intensity"] = 0.02
+    (tmp_path / "desires.json").write_text(
+        json.dumps(raw, ensure_ascii=False), encoding="utf-8")
+
+    ds2 = DesireSystem(str(tmp_path))
+    ds2.restore()
+    assert ds2.desires[0].intensity == pytest.approx(DesireSystem._DECAY_FLOOR)
+
+
+def test_floor_and_ctor_lower_bound_are_consistent():
+    """约束下限与衰减下限必须一致，否则会出现「衰减到 floor 又被拉回」的死循环。"""
+    assert Desire("x", intensity=0.0).intensity == DesireSystem._DECAY_FLOOR

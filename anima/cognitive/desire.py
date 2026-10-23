@@ -86,7 +86,12 @@ class Desire:
                  source_group_id: Optional[int] = None,
                  expression_scope: str = "internal"):
         self.content = content
-        self.intensity = max(0.1, min(1.0, intensity))
+        # 🔴 2026-10-23：下限从 0.1 降到与 `_DECAY_FLOOR` 一致的 0.05。
+        #   原来 `max(0.1, ...)` 会让 `restore()` 把文件里已衰减到 0.05 的欲望
+        #   **重新拉回 0.1**（实测：文件 0.06 → restore 后 0.1）
+        #   ⇒ 每次重启都把僵尸欲望复活一次，永远无法真正消退。
+        #   这也解释了为什么「衰减到 0.1 就停住不再下降」。
+        self.intensity = max(0.05, min(1.0, intensity))
         self.created_at = time.time()
         self.resolved = False
         self.kind = kind
