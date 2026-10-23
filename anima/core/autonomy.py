@@ -872,6 +872,72 @@ class Heartbeat:
             logger.info("[health_alerts] 已生成 %d 条 owner 健康待办: %s",
                         len(made), [a.get("type") for a in made])
 
+    def _maybe_create_goals_from_drive(self, auth) -> None:
+        """由内在驱动生成目标（P2 最后一环，2026-10-23）。
+
+        链路（全部用**真实数据**，不编造）：:
+
+            MemoryAuthority（已由 emotion_bridge 喂入真实情感）
+              → derive_identity → derive_need → derive_affect → derive_drive
+              → build_goals_from_drive(need.vectors)   ← 文案逐字取自向量
+              → GoalStore.create
+
+        Drive **未激活** ⇒ 不产生目标（RFC-0100 §1.7 的激活条件：
+        Need 只有被 Affect 充上电才成为 Drive，没电就不该凭空行动）。
+
+        fail-closed：任何异常只记日志，不影响心跳。
+        """
+        try:
+            from anima.constitution.affect import derive_affect
+            from anima.constitution.drive import derive_drive
+            from anima.constitution.drive_to_goal import create_goals
+            from anima.constitution.identity import derive_identity
+            from anima.constitution.need import derive_need
+            from anima.constitution.state import Perception
+
+            # 情绪作为 Perception 输入（真实 mood，不是编的）
+            arousal, valence = 0.2, 0.1
+            try:
+                from anima.cognitive.mood import get_mood_system
+                _dd = getattr(getattr(self.core.config, "persistence", None),
+                              "data_dir", "data")
+                _m = get_mood_system(_dd).get_state()
+                arousal = float(getattr(_m, "arousal", arousal))
+                valence = float(getattr(_m, "valence", valence))
+            except Exception:
+                logger.debug("[drive→goal] mood 读取失败，用默认", exc_info=True)
+
+            memory = auth.snapshot_memory()
+            ident = derive_identity(memory)
+            need = derive_need(ident)
+            perception = Perception(signals={
+                "novelty": max(0.0, min(1.0, float(arousal))),
+                "threat": max(0.0, -float(valence)),
+            })
+            aff = derive_affect(need, perception)
+            drive = derive_drive(aff)
+            drive_dict = {
+                "activated": bool(drive.activated),
+                "orientation": {k.value: float(v)
+                                for k, v in drive.orientation.items()},
+            }
+            if not drive.activated:
+                logger.debug("[drive→goal] Drive 未激活（urgency=%.3f），不产生目标",
+                             aff.urgency)
+                return
+            vectors = {k.value: list(v) for k, v in need.vectors.items()}
+
+            owners = list(getattr(getattr(self.core.config, "permissions", None),
+                                  "owners", []) or [])
+            if not owners:
+                return
+            made = create_goals(self.core, drive_dict, vectors, int(owners[0]))
+            if made:
+                logger.info("[drive→goal] 由内在驱动产生 %d 个目标：%s",
+                            len(made), [m["objective"][:30] for m in made])
+        except Exception:
+            logger.debug("[drive→goal] 异常（已隔离）", exc_info=True)
+
     def _goal_decisions(self, now: float) -> list:
         """到期的长期目标 → 自主触发决策（P2，2026-10-23）。
 
@@ -1255,6 +1321,19 @@ class Heartbeat:
                     if _stats.get("semantic") or _stats.get("relations"):
                         logger.info("[情感桥] 宪法记忆喂料：semantic+%d relations+%d",
                                     _stats["semantic"], _stats["relations"])
+                    # 🔴 2026-10-23：**最后一环 —— Drive → 它自己想做的事**。
+                    #   前两轮接上了「情感→宪法记忆」和「整链激活 Drive」，
+                    #   但 Drive 活了之后没有出口：`drive_gate` 只用来「压制主动发言」，
+                    #   从未用来「产生它想做的事」。⇒ 它有了欲望，还是等你说话才动。
+                    #   这里把 Drive 接到 Goal：由**真实的 need.vectors** 生成目标，
+                    #   文案逐字取自链条产出（不编造），动机写进 notes（可追溯）。
+                    try:
+                        if bool(getattr(
+                                getattr(self.core.config, "autonomy", None),
+                                "drive_to_goal_enabled", False)):
+                            self._maybe_create_goals_from_drive(_auth)
+                    except Exception:
+                        logger.debug("[drive→goal] 生成失败（已隔离）", exc_info=True)
         except Exception:
             logger.debug("[情感桥] 喂料失败（已隔离）", exc_info=True)
 

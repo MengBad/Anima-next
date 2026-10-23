@@ -146,6 +146,14 @@ class AutonomyConfig(BaseModel):
     #: 🔴 人格保护：**只读不写** —— 绝不修改任何情感数据文件；人格数据所有权不变。
     #: 默认 **False**：关闭时行为与改动前完全一致，便于对照与回退。
     emotion_bridge_enabled: bool = False
+    #: 🔴 2026-10-23：**内在驱动 → 目标**（P2 最后一环）。
+    #: 前两环接上后，Drive 已能激活（生产实测 activated=True），但**没有出口**：
+    #: `drive_gate` 只用于「压制主动发言」，从未用来「产生它想做的事」。
+    #: 开着它，会由**真实的 need.vectors**（nurture/explore/pursue 条目）
+    #: 生成 Goal —— 文案逐字取自链条产出，动机写进 notes 可追溯。
+    #: 🔴 人格保护：只读宪法链、只**新增** Goal、活跃上限 3、同主题去重。
+    #: 默认 **False**：这是「它自己决定要做什么」的能力，需显式开启。
+    drive_to_goal_enabled: bool = False
 
     # —— 回复策略 ——
     # 群聊中仅当被 @、被回复或文本提到「哈基米」时回复；私聊始终回复。
