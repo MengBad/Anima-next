@@ -253,12 +253,19 @@ def test_growth_block_does_not_reference_undefined_now():
     i_growth = src.find("growth_snapshot_enabled")
     assert i_growth > 0
 
-    # 找到 growth 块（到下一个 try/except 边界即可，简单取 800 字窗口）
+    # 找到 growth 块（取一个窗口检查）
     window = src[i_growth:i_growth + 800]
+    # 核心约束：不得引用未赋值的 `now`（这是生产踩过的 UnboundLocalError）
     assert "_bj_date_str(now)" not in window, (
-        "🔴 快照块不得用 `now`（该处尚未赋值）—— 必须用 time.time()"
+        "🔴 快照块不得用 `now`（该处尚未赋值）"
     )
-    assert "time.time()" in window, "应改用 time.time() 取当前时间"
+    assert "(now)" not in window, (
+        "🔴 快照块不得以 now 为参数（该处 now 尚未赋值）"
+    )
+    # 时间来源必须是自取的：time.time() 或 has_snapshot_today（内部取时）
+    assert ("time.time()" in window or "has_snapshot_today" in window), (
+        "应自行取时（time.time() 或 has_snapshot_today）"
+    )
 
 
 def test_tick_does_not_reference_now_before_assignment():
@@ -282,3 +289,64 @@ def test_tick_does_not_reference_now_before_assignment():
         assert "(now)" not in seg, (
             f"🔴 {marker} 块在 now 赋值之前，不得使用 now"
         )
+
+
+# ── 8. 去重以文件为准（抗重启）────────────────────────────────────────
+
+
+def test_has_snapshot_today_empty(tmp_path):
+    from anima.constitution.growth import has_snapshot_today
+    assert has_snapshot_today(tmp_path) is False
+
+
+def test_has_snapshot_today_after_record(tmp_path):
+    from anima.constitution.growth import has_snapshot_today
+    _append_snapshot(tmp_path, {"ts": time.time(), "traits": {}})
+    assert has_snapshot_today(tmp_path) is True
+
+
+def test_has_snapshot_today_next_day_is_false(tmp_path):
+    from anima.constitution.growth import has_snapshot_today
+    _append_snapshot(tmp_path, {"ts": time.time(), "traits": {}})
+    assert has_snapshot_today(tmp_path, time.time() + 86400) is False
+
+
+def test_snapshot_dedup_survives_restart(tmp_path):
+    """🔴 去重必须抗重启 —— 内存标记重启即清零，会重复记当天快照。
+
+    生产实证（同类问题踩过两次）：
+    * owner 日报：`_last_owner_digest_date` 内存标记 ⇒ 部署后当天又推一次；
+    * 成长快照：原用 `_last_growth_date` 内存属性，同样会在重启后重复记录
+      ⇒「昨天 vs 今天」退化成「几小时前 vs 现在」，成长失真。
+
+    修法：直接读 jsonl 最后一条的日期判断，**无需额外标记文件**。
+    """
+    from anima.constitution.growth import has_snapshot_today, take_snapshot
+    import types
+
+    core = types.SimpleNamespace(
+        persistence=None,
+        config=types.SimpleNamespace(
+            persistence=types.SimpleNamespace(data_dir=str(tmp_path))),
+        memory_authority=None,
+    )
+    take_snapshot(core)
+    n1 = len(load_snapshots(tmp_path))
+    # 模拟「重启」：全新的判断调用（无任何内存状态）
+    assert has_snapshot_today(tmp_path) is True, "重启后应知道今天已记录"
+    if not has_snapshot_today(tmp_path):
+        take_snapshot(core)
+    n2 = len(load_snapshots(tmp_path))
+    assert n1 == n2, f"重启后不该重复记当天快照（{n1} → {n2}）"
+
+
+def test_no_in_memory_growth_mark_in_source():
+    """源码契约：不得再用内存属性 `_last_growth_date` 做去重。"""
+    import inspect
+    from anima.core.autonomy import Heartbeat
+
+    src = inspect.getsource(Heartbeat._tick)
+    assert "_last_growth_date" not in src, (
+        "🔴 不得用内存属性去重（重启即清零，会重复记当天快照）"
+    )
+    assert "has_snapshot_today" in src, "应改用基于文件的判断"

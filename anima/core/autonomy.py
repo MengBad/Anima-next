@@ -1312,15 +1312,18 @@ class Heartbeat:
         try:
             if bool(getattr(getattr(self.core.config, "autonomy", None),
                             "growth_snapshot_enabled", False)):
-                from anima.constitution.growth import take_snapshot
+                from anima.constitution.growth import has_snapshot_today, take_snapshot
                 # 🔴 2026-10-23：**不要用 `now`** —— 它是 `_tick` 后面才赋值的
                 #   局部变量，在函数开头引用会 `UnboundLocalError`
                 #   （生产实测：每 30 秒一条「快照失败」，由改成 warning 后才看见）。
-                _today = self._bj_date_str(time.time())
-                if getattr(self, "_last_growth_date", "") != _today:
+                # 🔴 2026-10-23：去重**以文件为准**（`has_snapshot_today`），
+                #   不用内存属性 —— 内存标记重启即清零 ⇒ 每次部署都重复记当天快照，
+                #   「昨天 vs 今天」会退化成「几小时前 vs 现在」，成长失真。
+                _dd = getattr(getattr(self.core.config, "persistence", None),
+                              "data_dir", "data")
+                if not has_snapshot_today(_dd):
                     _snap = take_snapshot(self.core)
                     if _snap:
-                        self._last_growth_date = _today
                         logger.info("[成长] 已记录今日快照（traits=%d 项）",
                                     len(_snap.get("traits") or {}))
                     else:

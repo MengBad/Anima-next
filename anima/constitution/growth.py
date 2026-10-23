@@ -51,6 +51,31 @@ def _snapshot_path(data_dir: Any) -> Path:
     return Path(str(data_dir)) / "growth" / "snapshots.jsonl"
 
 
+def has_snapshot_today(data_dir: Any, now: Optional[float] = None) -> bool:
+    """今天是否已经记录过快照（**以文件为准**，抗重启）。
+
+    🔴 2026-10-23：此前用内存属性 `_last_growth_date` 去重 ——
+    **重启即清零** ⇒ 每次部署/重启都会重复记一份当天快照，
+    「昨天 vs 今天」的对比就会变成「几小时前 vs 现在」，成长失真。
+    （同一个坑在 owner 日报上踩过一次：`owner_digest_mark.json`。）
+    这里直接读 jsonl 的最后一条 ts 判断同一天，**无需额外标记文件**。
+    """
+    now = time.time() if now is None else float(now)
+    try:
+        snaps = load_snapshots(data_dir, limit=1)
+        if not snaps:
+            return False
+        last_ts = float(snaps[-1].get("ts") or 0)
+        if last_ts <= 0:
+            return False
+        # 用本地日期比较（快照按天记，跨零点算新的一天）
+        return time.strftime("%Y-%m-%d", time.localtime(last_ts)) == \
+            time.strftime("%Y-%m-%d", time.localtime(now))
+    except Exception:
+        logger.debug("判断今日快照失败 ⇒ 按「未记录」处理", exc_info=True)
+        return False
+
+
 def take_snapshot(core: Any) -> Optional[dict]:
     """采集一份成长快照（只读）。返回快照 dict；失败返回 None。
 
