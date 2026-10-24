@@ -324,3 +324,90 @@ def test_stored_note_only_blocks_the_same_tweet(tmp_path):
 
     assert picked is not None
     assert picked.title != tweets[0].title
+
+
+# ── 活跃时段限制（2026-10-24）─────────────────────────────────────────
+
+
+def test_explore_allowed_hours_defined():
+    """时段常量必须存在且在合理范围（不能全天开放）。"""
+    from anima.cognitive.exploration import EXPLORE_ALLOWED_HOURS
+
+    lo, hi = EXPLORE_ALLOWED_HOURS
+    assert 0 <= lo < hi <= 24
+    assert (hi - lo) <= 18, "不应接近全天（那就失去了时段限制的意义）"
+
+
+@pytest.mark.asyncio
+async def test_maybe_run_skips_outside_allowed_hours(tmp_path, monkeypatch):
+    """🔴 生产实证：`daily_limit=3` + 1h 间隔 + 心跳每 30s 检查
+    ⇒ 凌晨 00:00/01:01/02:01 **连跑三次吃光当天配额**，
+    之后 22 小时完全空转（那时分享还没开 ⇒ 永远不分享）。
+
+    修法：非强制调用只在活跃时段运行。
+    （用 patch 常量而非替换 datetime —— 后者会波及 `_reset_day`。）
+    """
+    import types
+    import anima.cognitive.exploration as ex
+    from anima.cognitive.exploration import ExplorationManager
+
+    cfg = types.SimpleNamespace(
+        enabled=True, interval_sec=3600, daily_limit=3,
+        min_desire_intensity=0.4, sources=["bilibili_popular"],
+        novelty_window_sec=604800, max_notes=200,
+        share_enabled=False, daily_share_limit=1, share_min_score=0.75,
+        share_groups=[], proxy="",
+    )
+    core = types.SimpleNamespace(
+        config=types.SimpleNamespace(
+            persistence=types.SimpleNamespace(data_dir=str(tmp_path)),
+            exploration=cfg),
+        propose_agenda=lambda *a, **k: None,
+    )
+    m = ExplorationManager(core, cfg)
+    ran = {"v": False}
+
+    async def _pick():
+        ran["v"] = True
+        return None, "t"
+
+    m._pick_topic = _pick
+    # 允许时段设成一个不含当前小时的区间（当前小时必落在 [h, h+1) 之外）
+    h = ex.datetime.now(ex._BJ).hour
+    monkeypatch.setattr(ex, "EXPLORE_ALLOWED_HOURS", (h + 1 if h < 23 else 0, h + 2 if h < 22 else 1))
+    out = await m.maybe_run()
+    assert out is None
+    assert ran["v"] is False, "非活跃时段不得进入探索流程"
+
+
+@pytest.mark.asyncio
+async def test_force_bypasses_hour_gate(tmp_path, monkeypatch):
+    """`force=True`（手动触发）不受时段限制。"""
+    import types
+    import anima.cognitive.exploration as ex
+    from anima.cognitive.exploration import ExplorationManager
+
+    cfg = types.SimpleNamespace(
+        enabled=True, interval_sec=3600, daily_limit=3,
+        min_desire_intensity=0.4, sources=[], novelty_window_sec=604800,
+        max_notes=200, share_enabled=False, daily_share_limit=1,
+        share_min_score=0.75, share_groups=[], proxy="",
+    )
+    core = types.SimpleNamespace(
+        config=types.SimpleNamespace(
+            persistence=types.SimpleNamespace(data_dir=str(tmp_path)),
+            exploration=cfg),
+        propose_agenda=lambda *a, **k: None,
+    )
+    m = ExplorationManager(core, cfg)
+    ran = {"v": False}
+
+    async def _pick():
+        ran["v"] = True
+        return None, "t"
+
+    m._pick_topic = _pick
+    h = ex.datetime.now(ex._BJ).hour
+    monkeypatch.setattr(ex, "EXPLORE_ALLOWED_HOURS", (h + 1 if h < 23 else 0, h + 2 if h < 22 else 1))
+    await m.maybe_run(force=True)
+    assert ran["v"] is True, "force=True 必须绕过时段限制"

@@ -32,6 +32,12 @@ logger = logging.getLogger("anima.exploration")
 _BJ = timezone(timedelta(hours=8))
 _CURIOSITY_WORDS = ("想了解", "想知道", "好奇", "想查", "研究", "学习", "怎么", "如何", "为什么")
 _SAFE_FEED_HOSTS = frozenset({"feeds.bbci.co.uk"})
+#: 🔴 2026-10-24：**允许探索的时段**（本地小时，左闭右开）。
+#: 见 `maybe_run()`：不加时段限制时，心跳每 30 秒检查 + 1 小时间隔
+#: ⇒ 凌晨 00:00/01:01/02:01 连跑三次吃光 `daily_limit`，
+#: 白天（用户活跃时）反而完全不探索、也不分享。
+EXPLORE_ALLOWED_HOURS = (8, 23)
+
 _BILIBILI_POPULAR = "https://api.bilibili.com/x/web-interface/popular?pn=1&ps=20"
 _BILIBILI_SEARCH = "https://api.bilibili.com/x/web-interface/search/type"
 _WIKIPEDIA_SEARCH = "https://zh.wikipedia.org/w/api.php"
@@ -192,6 +198,23 @@ class ExplorationManager:
             return None
         self._reset_day()
         now = time.time()
+        # 🔴 2026-10-24：**只在活跃时段探索**。
+        #   生产实证：`daily_limit=3` + `interval_sec=3600`，而心跳每 30 秒检查
+        #   ⇒ 凌晨 00:00 / 01:01 / 02:01 **连跑三次把当天配额吃光**，
+        #   剩下的 22 小时完全空转；而那时分享还没开（share_enabled 刚打开），
+        #   结果就是「白天用户活跃时反而什么都不做、也永远不会分享」。
+        #
+        #   修法：非强制调用只允许在 `EXPLORE_ALLOWED_HOURS` 内运行。
+        #   配额自然落在白天 ⇒ 探索与分享都在用户可能看到的时候发生。
+        #   `force=True`（手动/测试）不受此限。
+        if not force:
+            _hour = datetime.now(_BJ).hour
+            if not (EXPLORE_ALLOWED_HOURS[0] <= _hour < EXPLORE_ALLOWED_HOURS[1]):
+                logger.debug(
+                    "exploration 跳过：不在活跃时段（%d 点，允许 %d–%d 点）",
+                    _hour, EXPLORE_ALLOWED_HOURS[0], EXPLORE_ALLOWED_HOURS[1],
+                )
+                return None
         interval = max(300, int(getattr(self.config, "interval_sec", 3600) or 3600))
         # daily_limit 语义与 image_generation.daily_limit 保持一致：0 = 不限制。
         # 不能写 `getattr(...) or 3`——0 是 falsy，会被静默吞成 3，
