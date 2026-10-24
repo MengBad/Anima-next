@@ -754,11 +754,28 @@ class ExplorationManager:
         if int(self.state.get("shared_today", 0) or 0) >= limit:
             return
         threshold = float(getattr(self.config, "share_min_score", 0.75) or 0.75)
+        allowlist = {int(value) for value in (getattr(self.config, "share_groups", []) or []) if str(value).isdigit()}
         group_id = getattr(desire, "source_group_id", None)
         scope = str(getattr(desire, "expression_scope", "internal") or "internal")
+
+        # 🔴 2026-10-24：**让「自己好奇」产生的探索也能分享**。
+        #   生产实证：`explored_today=3`、笔记 164 条（有 0.765 分的好内容），
+        #   但 `shared_today=0` —— 因为 `_make_curiosity_desire()` 生成的欲望
+        #   一律 `expression_scope="internal"` 且**没有 source_group_id**
+        #   （见本文件 `desire_system.add(..., expression_scope="internal")`），
+        #   而下面的老判定要求「必须有 group_id 且 scope ∈ {group, global}」
+        #   ⇒ **分享条件永不可达**，整条「探索→分享」链等于死代码。
+        #
+        #   修法（**不猜目标群**）：只有当 owner 在 `share_groups` 里**显式指定**
+        #   了目标群时，才对「无来源群」的好奇探索使用 `share_groups[0]`。
+        #   没配 allowlist ⇒ 维持原行为（不分享）—— 绝不凭空选一个群。
+        if not group_id and scope == "internal" and allowlist:
+            group_id = min(allowlist)      # 确定性选择（不随集合顺序漂移）
+            scope = "global"               # 视为「可分享到指定群」
+            logger.info("[探索] 无来源群的好奇探索，按 share_groups 分享到群 %s", group_id)
+
         if not group_id or scope not in {"group", "global"} or note.value_score < threshold:
             return
-        allowlist = {int(value) for value in (getattr(self.config, "share_groups", []) or []) if str(value).isdigit()}
         if allowlist and int(group_id) not in allowlist:
             return
         intent = (

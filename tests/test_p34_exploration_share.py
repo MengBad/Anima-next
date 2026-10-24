@@ -329,3 +329,93 @@ def test_share_agenda_text_is_not_news_anchor_style(tmp_path):
     text = core.agendas[0][1]
     assert "测试标题" in text
     assert "新闻播报" in text  # 提示词内嵌的负向约束仍在
+
+
+# ── 无来源群的好奇探索：仅在 share_groups 显式指定时才分享（2026-10-24）──
+
+
+def _mk_manager(tmp_path, *, share_enabled=True, share_groups=None,
+                daily_share_limit=1, share_min_score=0.75):
+    """构造只用于 _maybe_share 的最小 manager。"""
+    import types
+    from anima.cognitive.exploration import ExplorationManager
+
+    cfg = types.SimpleNamespace(
+        share_enabled=share_enabled,
+        daily_share_limit=daily_share_limit,
+        share_min_score=share_min_score,
+        share_groups=list(share_groups or []),
+        sources=["bilibili_popular"],
+    )
+    proposed = []
+
+    core = types.SimpleNamespace(
+        config=types.SimpleNamespace(persistence=types.SimpleNamespace(data_dir=str(tmp_path)),
+                                     exploration=cfg),
+        propose_agenda=lambda gid, intent, **kw: proposed.append((gid, intent, kw)),
+    )
+    m = ExplorationManager(core, cfg)
+    return m, proposed
+
+
+def _note(score=0.9, title="有意思的事", summary="摘要"):
+    from anima.cognitive.exploration import ExplorationNote
+    return ExplorationNote(
+        id="n1", topic="t", title=title, summary=summary,
+        source="bilibili_popular", url="https://example.com", value_score=score,
+    )
+
+
+def _desire(group_id=None, scope="internal"):
+    import types
+    return types.SimpleNamespace(source_group_id=group_id, expression_scope=scope)
+
+
+def test_internal_curiosity_not_shared_without_allowlist(tmp_path):
+    """🔴 没配 share_groups ⇒ **绝不凭空选群**，维持原行为（不分享）。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=None)
+    m._maybe_share(_note(), _desire())
+    assert proposed == [], "没有显式目标群时不得分享"
+
+
+def test_internal_curiosity_shared_when_allowlist_set(tmp_path):
+    """🔴 生产实证的修复：`_make_curiosity_desire()` 生成的欲望一律
+    `expression_scope="internal"` 且无 source_group_id
+    ⇒ 老判定下「探索→分享」链**永不可达**（shared_today 恒 0、164 条笔记全未分享）。
+
+    修法：owner 在 `share_groups` 显式指定目标群时，用它作落点。
+    """
+    m, proposed = _mk_manager(tmp_path, share_groups=[727631526])
+    m._maybe_share(_note(score=0.9), _desire())
+    assert len(proposed) == 1
+    assert proposed[0][0] == 727631526
+
+
+def test_allowlist_choice_is_deterministic(tmp_path):
+    """多个候选群时取最小值（不随 set 迭代顺序漂移）。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=[999, 111, 555])
+    m._maybe_share(_note(), _desire())
+    assert proposed[0][0] == 111
+
+
+def test_below_threshold_still_blocked(tmp_path):
+    """分数不够仍不分享（阈值语义不变）。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=[111], share_min_score=0.9)
+    m._maybe_share(_note(score=0.5), _desire())
+    assert proposed == []
+
+
+def test_daily_limit_still_applies(tmp_path):
+    """每日上限语义不变。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=[111], daily_share_limit=1)
+    m._maybe_share(_note(), _desire())
+    m._maybe_share(_note(), _desire())
+    assert len(proposed) == 1, "超过每日上限不得再分享"
+
+
+def test_explicit_group_desire_unaffected(tmp_path):
+    """有来源群的欲望走原路径（不受新分支影响）。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=[111])
+    m._maybe_share(_note(), _desire(group_id=777, scope="group"))
+    # 777 不在 allowlist ⇒ 不分享（原语义）
+    assert proposed == []
