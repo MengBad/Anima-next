@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -115,6 +116,51 @@ class AgentExecutor:
     # ------------------------------------------------------------------
     # P0（09-26）：受控媒体回收与交付自检
     # ------------------------------------------------------------------
+
+    #: 🔴 2026-10-25：**「声称做了」的措辞**（用于编造检测）。
+    #:
+    #: 生产实证（10-24 14:06）：某步输出
+    #: 「本喵已经帮你抽好今日运势和猪猪啦，快来看看你今天能抽到什么好运喵~」
+    #: 而该步 **`tools_called` 为空** —— 它什么都没调用，纯属编造。
+    #: 更糟的是**前一步刚说**「并未有明确指定具体的抽卡任务」，自相矛盾。
+    #:
+    #: 设计取向：只匹配**明确的完成态断言**（已经…了 / 已为你…），
+    #: 不匹配「我查一下」「让我看看」这类**意图表述** —— 后者不算编造。
+    _FAKE_ACTION_RE = re.compile(
+        r"(?:已经|已)(?:帮你|为你|给|替)?[^。！？\n]{0,12}?(?:抽好|抽完|查好|查到|查到|生成|做好|办好|发送|发出|发出|发好|记录好)"
+        r"|已经帮你[^。！？\n]{0,10}?(?:了|好啦|完了)"
+        r"|(?:帮你|为你)(?:抽|查|整理|生成|做好)好了"
+    )
+
+    #: 「这步本该动工具」的措辞（步骤描述侧）。
+    _ACTION_STEP_HINT_RE = re.compile(
+        r"(?:发送|发出|推送|抽卡|抽取|查询|检索|抓取|下载|上传|写入|写文件|记录|执行|调用)"
+    )
+
+    def _looks_like_fake_action(self, step: Step) -> bool:
+        """该步是否**声称做了操作、却没有任何工具调用**。
+
+        判据（必须同时满足，宁少勿错）：
+          1. 该步 `tools_called` 为空（真没动工具）；
+          2. 该步**描述**看起来该动工具（发送/查询/抽卡/写入…）；
+          3. 该步**结果**用了完成态断言（「已经帮你抽好了」）。
+
+        ⇒ 三者齐备才判可疑。任何一项不满足都不拦 —— 正常纯文本步骤
+        （如「整理并汇报」）不该被误判。
+        """
+        try:
+            if getattr(step, "tools_called", None):
+                return False
+            desc = str(getattr(step, "description", "") or "")
+            body = str(getattr(step, "result", "") or "")
+            if not desc or not body:
+                return False
+            if not self._ACTION_STEP_HINT_RE.search(desc):
+                return False
+            return bool(self._FAKE_ACTION_RE.search(body))
+        except Exception:
+            logger.debug("编造检测异常（按不拦处理）", exc_info=True)
+            return False
 
     def _record_tools(self, task: AgentTask, names: list[Any]) -> None:
         """记录本任务真正调用过的工具名（供媒体交付自检使用）。"""
@@ -357,6 +403,34 @@ class AgentExecutor:
                     break
                 task.current_step = step.index + 1
                 self.store.save(task)
+                # 🔴 2026-10-25：**编造检测**（不阻断执行，只如实标注）。
+                #   生产实证：某步声称「已经帮你抽好了」，但 tools_called 为空。
+                #   这里把结果改成**带警示前缀**的文本，让下游交付/汇报无法再说谎。
+                #   不做成「失败」：任务整体可能仍有价值，且擅自判失败会丢掉
+                #   其他步骤的真实产出（比说谎更糟）。
+                try:
+                    if self._looks_like_fake_action(step):
+                        step.result = (
+                            "⚠️【未实际执行】本步声称已完成某个操作，但**没有任何工具调用记录**"
+                            "（可能是模型自行编造的结果，不可信）。\n原输出："
+                            + str(step.result or "")[:1500]
+                        )
+                        step.verified = False
+                        if self.auditor:
+                            try:
+                                self.auditor.emit(
+                                    "agent_step_fabricated", task_id=task.id,
+                                    step_index=step.index,
+                                    step_desc=str(step.description)[:80],
+                                )
+                            except Exception:
+                                logger.debug("编造审计失败", exc_info=True)
+                        logger.warning(
+                            "[编造检测] 步骤 %d 声称做了操作但无工具调用：%s",
+                            step.index + 1, str(step.description)[:60],
+                        )
+                except Exception:
+                    logger.debug("编造检测失败（已隔离）", exc_info=True)
                 result_parts.append(f"步骤{step.index + 1}: {step.description} ✓")
                 executed += 1
                 idx = task.current_step
@@ -672,7 +746,22 @@ class AgentExecutor:
         loop = ReActLoop(llm, tools, max_rounds=6, permission_level=LEVEL_OWNER)
         messages = [
             {"role": "system", "content": (
-                "你是 Anima 的执行代理，只完成当前这一个小步骤，用工具取得结果即可，不要闲聊。"
+                "你是哈基米（一只 QQ 群里的猫娘，男孩子的那种），正在做一件具体的事。"
+                "用工具取得结果即可，不要闲聊。\n"
+                # 🔴 2026-10-25：**步骤输出会直接交付给用户**，所以必须守住人格。
+                #   生产实证（10-24 11:44）：某目标推进任务的三个步骤分别输出
+                #     「主人最近在忙什么呢？…记得歇一歇喵~」
+                #     「主人最近在忙什么呀？注意到您辛苦啦，记得多喝水…」  ← 突变「您」
+                #     「主人～最近过得怎么样呀？…」                          ← 客服腔
+                #   原因是本 system prompt 只说「你是 Anima 的执行代理」——
+                #   **完全没有哈基米人格**，模型于是退回默认的助手腔。
+                "写作要求（会被原样发给用户看）：\n"
+                "- 自称「本喵」或「我」，**绝不用「本大爷 / 老子 / 老娘」**；\n"
+                "- 对聊天对象用「你」或名字，**不用「您」** —— 那是客服腔，不是猫娘；\n"
+                "- 语气软、口语化，可以困/好奇/黏人/小脾气，**不要居高临下、不要客套**；\n"
+                "- **说短**：能一句话说完就别两句（群里真人平均 14 个字）；\n"
+                "- 只说这一次的结果，**不要重复前面的步骤说过的话**；\n"
+                "- 没有真正调用工具取得的数据，**绝不声称已经完成**（不许编造结果）。"
             )},
             {"role": "user", "content": f"任务背景：{task.request}\n当前步骤：{step.description}"},
         ]
@@ -683,8 +772,16 @@ class AgentExecutor:
             # 判定「到底有没有走生图这条路」。`tool_trace` 在 run() 开头重置，异常
             # 路径下也能读到已发生的部分轨迹。
             try:
-                self._record_tools(task, [
+                _names = [
                     t.get("name") for t in (getattr(loop, "tool_trace", None) or [])
-                ])
+                ]
+                self._record_tools(task, _names)
+                # 🔴 2026-10-25：同时回填到 **step**，供「编造检测」使用。
+                #   `_record_tools` 只记到 task.context，粒度太粗 ——
+                #   无法判断「**哪一步**没有真正调用工具」。
+                try:
+                    step.tools_called = [str(n) for n in _names if n]
+                except Exception:
+                    logger.debug("回填 step.tools_called 失败（已隔离）", exc_info=True)
             except Exception:
                 logger.exception("记录 Agent 工具轨迹失败（已隔离）")

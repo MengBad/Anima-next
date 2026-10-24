@@ -31,6 +31,11 @@ class Step:
     verified: bool = False
     attempts: int = 0
     origin: str = "plan"           # plan | replan（便于审计区分重规划产出）
+    #: 🔴 2026-10-25：本步实际调用过的工具名（ReAct / 显式工具分支回填）。
+    #: 用途：识别「**声称做了、其实什么都没做**」的编造步骤。
+    #: 生产实证（10-24 14:06）：某步声称「本喵已经帮你抽好今日运势和猪猪啦」，
+    #: 但该步**没有任何工具调用**，而前一步刚说「未发现明确的抽卡任务」。
+    tools_called: list[str] = field(default_factory=list)
 
 
 @dataclass

@@ -214,8 +214,12 @@ def test_private_session_gets_all_chunks_directly():
     gw = _FakeGateway()
     a = _agent(gateway=gw)
     # 每步上限 1000 字 ⇒ 要跨分片就必须**多步**（单步永远 ≤1000 < 1200 一片）
-    seg = "这一句内容是用于测试的正文。" * 80          # ≈ 1200 字/步，会被 1000 截
-    task = _task(steps=[(0, "第一步", seg), (1, "第二步", seg), (2, "第三步", seg)],
+    # 🔴 2026-10-25：三步内容必须**各不相同**，否则会被「重复步骤去重」合并成
+    #   一条（那是新加的正确行为）；本测试验证的是**分片能力**，不是去重。
+    seg1 = "第一段内容用于测试正文。" * 80
+    seg2 = "第二段内容用于测试正文。" * 80
+    seg3 = "第三段内容用于测试正文。" * 80
+    task = _task(steps=[(0, "第一步", seg1), (1, "第二步", seg2), (2, "第三步", seg3)],
                  context={"session": {"detail_type": "private", "target_id": 1562290139}})
     asyncio.run(a._deliver_text(task, ""))
     assert all(dt == "private" for dt, _t in gw.sent)

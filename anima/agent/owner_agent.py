@@ -368,17 +368,67 @@ class OwnerAgent:
             return
 
         steps = sorted(getattr(task, "steps", []) or [], key=lambda s: getattr(s, "index", 0))
+        # 🔴 2026-10-25：**保留步骤标题（溯源必需），但去掉内容重复的步骤**。
+        #   生产实证（10-24 11:44，目标推进任务）用户收到：
+        #     【步骤1】主人最近在忙什么呢？…记得歇一歇喵~
+        #     【步骤2】主人最近在忙什么呀？注意到您辛苦啦…
+        #     【步骤3】主人～最近过得怎么样呀？…
+        #   **同一个意思说三遍**，第 2 步还变成「您」的客服腔 ——
+        #   用户看到的是完整草稿过程，不是一条能看的回复。
+        #
+        #   但**步骤标题不能删**：它是溯源锚点（`test_completed_text_task_is_delivered`
+        #   明确要求「【步骤2】」存在；`_deliver_text` 的 docstring 也写明
+        #   「交付步骤结果而不是 result_list 清单」）。
+        #   ⇒ 正确做法：**内容高度重复的步骤只保留一条**（保留最后一条，
+        #      它通常是定稿），不重复的照常全发。
         blocks: list[str] = []
         used = 0
+        _kept_texts: list[str] = []
+
+        def _similar(a: str, b: str) -> bool:
+            """粗判两段结果是否在说同一件事（字符二元组 Jaccard）。
+
+            阈值 **0.85**（刻意高于项目其它主题去重用的 0.55）：
+            这里要合并的是「**同一个意思原样说了三遍**」（生产实证：三步都是
+            「主人最近在忙什么…注意休息」，几乎逐字重合），不是「主题相近」。
+            用 0.55 会把「第一段内容用于测试正文」和「第二段…」这种只差两个字的
+            模板文本误合并（实测被测试抓出：三步只剩一步，分片能力丢失）。
+            ⇒ 宁可少合并，也不要吞掉真实的多步产物。
+            """
+            _clean = lambda s: "".join(ch for ch in s if ch.isalnum() or ch.isspace())
+            sa, sb = _clean(a), _clean(b)
+            if not sa or not sb:
+                return False
+            ga = {sa[i:i + 2] for i in range(len(sa) - 1)} or {sa}
+            gb = {sb[i:i + 2] for i in range(len(sb) - 1)} or {sb}
+            if not ga or not gb:
+                return False
+            return len(ga & gb) / len(ga | gb) >= 0.85
+
+        _rows: list[tuple[str, str]] = []
         for st in steps:
             res = str(getattr(st, "result", "") or "").strip()
             # 太短的是"已生成图片 / 见上一步"这类空壳，不值得单独发。
             if len(res) < _MIN_STEP_RESULT_CHARS:
                 continue
-            head = "【步骤%d】%s" % (
-                int(getattr(st, "index", 0)) + 1,
-                str(getattr(st, "description", "") or "")[:40],
-            )
+            _rows.append((str(getattr(st, "description", "") or ""), res))
+
+        # 反序去重：从最后一步往前，保留与"已保留集合"都不重复的步骤
+        _keep_idx: list[int] = []
+        for i in range(len(_rows) - 1, -1, -1):
+            _desc, _text = _rows[i]
+            if any(_similar(_text, _rows[j][1]) for j in _keep_idx):
+                logger.info(
+                    "文本交付去重：步骤「%s」与后续步骤内容重复，已省略",
+                    _desc[:24] or f"#{i + 1}",
+                )
+                continue
+            _keep_idx.append(i)
+        _keep_idx.sort()
+
+        for i in _keep_idx:
+            _desc, res = _rows[i]
+            head = "【步骤%d】%s" % (i + 1, _desc[:40])
             block = head + "\n" + res[:self._TEXT_STEP_MAX]
             blocks.append(block)
             used += len(block)
