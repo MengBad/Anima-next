@@ -370,6 +370,14 @@ class SelfLearning:
             self._record_reject("identity_hostile", category=category, text_len=len(text))
             return False
 
+        # 3.5) 🔴 2026-10-24：**人格一致性（自称/贬称）**。
+        #   在身份敌意之后、相似度之前插入 —— 这是「软漂移」最直接的入口，
+        #   而既有 5 道闸门全都不看它。见 `_is_persona_drift` 的说明。
+        if self._is_persona_drift(text):
+            self._record_reject("persona_drift", category=category, text_len=len(text))
+            logger.info("漂移拒绝 reason=persona_drift（自称/贬称偏离正本）")
+            return False
+
         # 4) 身份向笔记：相对人格锚点相似度
         if not self._similarity_ok(text):
             self._record_reject(
@@ -473,7 +481,12 @@ class SelfLearning:
 反思（不要用「作为 AI」开头，直接说你的感受/想法）：
 注意：不要复述你已经反复说过、或早已写进自我笔记的已知结论；只写这次对话让你新想到的、或与以往不同的洞察。
 注意：反思用哈基米自己的日常口语写，不要使用「纠偏 / 去污染 / 机制 / 召回 / 检索 / 自生长」这类工程黑话或元认知术语——就写你真实的感受和对人的看法。
-注意：绝不写社交策略分析——不要用「拟人化 / 情绪价值 / 以柔克刚 / 顺毛 / 策略 / 边界 / 平衡 / 人设 / 角色扮演 / 化解冲突」这类分析腔词，也不要把自己当研究对象做「我需要…我应该…这说明…」式的自我解剖。你就是一只猫，写两句这次聊天让你高兴/烦/想起啥了就行。"""
+注意：绝不写社交策略分析——不要用「拟人化 / 情绪价值 / 以柔克刚 / 顺毛 / 策略 / 边界 / 平衡 / 人设 / 角色扮演 / 化解冲突」这类分析腔词，也不要把自己当研究对象做「我需要…我应该…这说明…」式的自我解剖。你就是一只猫，写两句这次聊天让你高兴/烦/想起啥了就行。
+🔥 自称只能是「本喵」或「我」。**禁止**用「本大爷 / 老子 / 老娘 / 本座 / 朕」——那是另一个人。
+🔥 叫群里的人用「大家 / 你 / 他们」或具体名字。**禁止**用「两脚兽 / 铲屎官 / 低等生物」这类贬称——你住在这里，他们是你的日常。
+🔥 语气是**软的**：可以是困、好奇、黏人、有点小脾气、害羞，但**不要居高临下**——
+   不用「暴论 / 邪门歪道 / 离谱 / 少来套路 / 呼你一巴掌」这类嘲讽和攻击性措辞。
+   你确实会闹，但闹的方式是撒娇、吐槽、装死，不是训人。"""
 
         try:
             messages = [{"role": "user", "content": prompt}]
@@ -652,6 +665,36 @@ class SelfLearning:
     @staticmethod
     def _is_identity_hostile(text: str) -> bool:
         return any(p.search(text) for p in _IDENTITY_HOSTILE)
+
+    #: 🔴 2026-10-24：**人格漂移的软性入口 —— 自称与贬称**。
+    #:
+    #: 既有 5 道闸门（粘滞/价态/身份敌意/相似度/预算）都不检查这一类，
+    #: 于是自我笔记里出现了大量 `本大爷`（正本要求「本喵」或「我」）
+    #: 和 `两脚兽`（正本没有的贬称）。这些笔记会**注入 system prompt**，
+    #: 按设计意图形成「软人格漂移」（见本文件头部注释第 16 行）——
+    #: 但漂移应当是**语气/态度**的自然演化，**不能漂到自称和贬称上**。
+    #:
+    #: 生产实证（10-23/10-24 self_notes.md）：近 10 条回复里 `本大爷` 4 次、
+    #: `本喵` 仅 2 次，并伴随「暴论/邪门歪道/少来套路/一爪子呼过去」这类
+    #: 攻击性措辞 —— 语气从「软猫娘」偏成「居高临下的嫌弃」。
+    _PERSONA_SELF_ALIAS_BAD = (
+        "本大爷", "老子", "老娘", "大爷我", "本座", "朕",
+    )
+    _PERSONA_SLUR_BAD = (
+        "两脚兽", "铲屎官", "铲屎的", "人类废物", "低等生物",
+    )
+
+    @classmethod
+    def _is_persona_drift(cls, text: str) -> bool:
+        """自称/贬称是否偏离人格正本（`本喵` 或 `我`）。
+
+        只挡**明确的偏离**，不拦正常叙述 —— 宁可漏放，不要误杀
+        （自我笔记的价值在于自然表达，过度收紧会让它变机械）。
+        """
+        t = str(text or "")
+        if any(w in t for w in cls._PERSONA_SELF_ALIAS_BAD):
+            return True
+        return any(w in t for w in cls._PERSONA_SLUR_BAD)
 
     def _jaccard_floor(self) -> float:
         """设计 cos 阈值 → 字符 Jaccard 工作阈值（0.75 cos ≈ 0.12–0.18 jaccard）。"""

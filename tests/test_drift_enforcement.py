@@ -129,3 +129,57 @@ def test_reject_reason_delta_max(tmp_path):
     sl = _sl(tmp_path)
     assert sl.check_drift(0.11, "general") is False
     assert sl.last_reject["reason"] == "delta_max"
+
+
+# ── 人格一致性闸门：自称/贬称（2026-10-24）───────────────────────────
+
+
+def test_persona_drift_blocks_wrong_self_alias():
+    """🔴 生产实证：self_notes.md 里出现大量「本大爷」（正本要求「本喵」或「我」），
+    这些笔记注入 system prompt 后，近 10 条回复里「本大爷」出现 4 次。
+
+    既有 5 道闸门（粘滞/价态/身份敌意/相似度/预算）全都不检查自称。
+    """
+    from anima.cognitive.learning import SelfLearning
+
+    for bad in ("本大爷今天不想理人", "老子才不在乎", "老娘说了算", "朕已阅"):
+        assert SelfLearning._is_persona_drift(bad) is True, f"应拦截：{bad}"
+
+
+def test_persona_drift_blocks_slurs():
+    """「两脚兽」这类贬称正本里没有，也是漂移。"""
+    from anima.cognitive.learning import SelfLearning
+
+    for bad in ("那群两脚兽又刷屏了", "铲屎的今天没来", "低等生物懂什么"):
+        assert SelfLearning._is_persona_drift(bad) is True, f"应拦截：{bad}"
+
+
+def test_persona_drift_allows_normal_notes():
+    """正常自我笔记必须放行 —— 宁可漏放，不要误杀。"""
+    from anima.cognitive.learning import SelfLearning
+
+    for ok in (
+        "今天本喵又在群里打滚了，大家笑得很开心",
+        "人类真是有意思，本喵看不懂",
+        "我趴在键盘上睡了一下午",
+        "主人今天好像有点累",
+    ):
+        assert SelfLearning._is_persona_drift(ok) is False, f"不该拦：{ok}"
+
+
+def test_persona_drift_empty_and_none():
+    from anima.cognitive.learning import SelfLearning
+    assert SelfLearning._is_persona_drift("") is False
+    assert SelfLearning._is_persona_drift(None) is False
+
+
+def test_reflection_prompt_states_persona_constraints():
+    """反思 prompt 必须明确禁止自称漂移与贬称（从源头约束）。"""
+    import inspect
+    from anima.cognitive.learning import SelfLearning
+
+    src = inspect.getsource(SelfLearning.ruminate)
+    assert "本喵" in src, "必须明确自称"
+    assert "本大爷" in src, "必须点名禁止"
+    assert "两脚兽" in src, "必须点名禁止贬称"
+    assert "不要居高临下" in src or "语气是" in src, "必须有语气约束"
