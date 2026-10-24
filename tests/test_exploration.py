@@ -101,9 +101,16 @@ async def test_group_curiosity_can_only_create_agenda_when_share_is_enabled(tmp_
     manager = ExplorationManager(core, core.config.exploration)
 
     async def collect(topic):
+        # 🔴 2026-10-24：评分公式现在**反映内容价值**（旧公式与内容无关，
+        #   导致「无欲望时恒为 0.600、有欲望时恒为 0.765」）。
+        #   本测试验证的是「有群来源 + 分享开启 ⇒ 能分享」这条路径，
+        #   所以样例必须给**足够的信息量**（否则新公式正确地判定它不值得分享，
+        #   测试就会因为「数据太弱」而失败——那不是路径问题）。
         return [ExplorationSourceItem(
             source="BBC 中文", title="测试新闻", url="https://www.bbc.com/zhongwen/articles/test",
-            summary="公开新闻摘要",
+            summary=("报道称，2024 年当地选举进入倒计时，因为颱风假议题发酵，"
+                     "所以选情出现变化；然而民调仍有不确定性，需要继续观察。" * 2),
+            popularity=50000,
         )]
 
     monkeypatch.setattr(manager, "_collect", collect)
@@ -411,3 +418,166 @@ async def test_force_bypasses_hour_gate(tmp_path, monkeypatch):
     monkeypatch.setattr(ex, "EXPLORE_ALLOWED_HOURS", (h + 1 if h < 23 else 0, h + 2 if h < 22 else 1))
     await m.maybe_run(force=True)
     assert ran["v"] is True, "force=True 必须绕过时段限制"
+
+
+# ── 价值评分必须反映内容质量（2026-10-24）─────────────────────────────
+
+
+def _mgr():
+    from anima.cognitive.exploration import ExplorationManager
+    return ExplorationManager.__new__(ExplorationManager)
+
+
+def _item(src="B站热门", pop=0, summary=""):
+    from anima.cognitive.exploration import ExplorationSourceItem
+    return ExplorationSourceItem(source=src, title="t", url="u",
+                                 summary=summary, popularity=pop)
+
+
+def test_score_is_not_constant_without_desire():
+    """🔴 生产实证：旧公式在「无欲望」时**恒为 0.600**（0.5+0+0.1），
+    低于阈值 0.75 ⇒ 永不分享；有欲望时恒为 0.765 ⇒ 总是分享。
+    ⇒ `share_min_score` 实际在判「有没有欲望」，而不是「内容好不好」。
+
+    新公式必须让不同内容得到**不同分数**。
+    """
+    m = _mgr()
+    bare = m._value_score(_item("B站搜索", 0, ""), "", 0.0)
+    rich = m._value_score(
+        _item("B站热门", 100000,
+              "这是一个有具体信息123的摘要，因为这样所以那样，然而更复杂。"),
+        "这是一个有具体信息123的摘要，因为这样所以那样，然而更复杂。", 0.0)
+    assert rich > bare, f"内容丰富应得更高分：{rich} vs {bare}"
+    assert abs(rich - bare) > 0.2, "差距应显著（不得再是恒定值）"
+
+
+def test_score_rewards_popularity():
+    m = _mgr()
+    low = m._value_score(_item(pop=10), "摘要", 0.0)
+    high = m._value_score(_item(pop=500000), "摘要", 0.0)
+    assert high > low, f"热度高应得更高分：{high} vs {low}"
+
+
+def test_score_rewards_summary_quality():
+    m = _mgr()
+    empty = m._value_score(_item(), "", 0.0)
+    good = m._value_score(
+        _item(), "含数字2024的摘要，因为有因果所以有信息量，然而仍有不确定性。" * 2, 0.0)
+    assert good > empty, f"摘要质量高应得更高分：{good} vs {empty}"
+
+
+def test_score_rewards_source_weight():
+    m = _mgr()
+    hot = m._value_score(_item("B站热门"), "摘要", 0.0)
+    weak = m._value_score(_item("X 时间线"), "摘要", 0.0)
+    assert hot > weak, "热门/主流来源应更高"
+
+
+def test_score_bounds():
+    """分数必须落在 0–1。"""
+    m = _mgr()
+    for pop in (0, 1, 10_000, 10_000_000):
+        for s in ("", "短", "长" * 2000):
+            v = m._value_score(_item(pop=pop), s, 1.0)
+            assert 0.0 <= v <= 1.0, f"越界：{v}"
+
+
+def test_desire_is_not_dominant():
+    """🔴 欲望强度不得主导评分（旧公式里它占 0.3，导致分数只反映欲望）。
+
+    新公式里欲望 ≤0.10 —— 没有欲望的高质量内容也应能超过分享阈值。
+    """
+    m = _mgr()
+    no_desire = m._value_score(
+        _item("B站热门", 200000,
+              "内容丰富含数字123，因为所以然而，足够长的一段摘要用来测试。" * 2),
+        "内容丰富含数字123，因为所以然而，足够长的一段摘要用来测试。" * 2, 0.0)
+    assert no_desire >= 0.75, (
+        f"无欲望但高质量的内容也应可分享，实得 {no_desire}"
+    )
+
+
+# ── 价值分由模型自己判断（2026-10-24，owner 指出的方向）────────────────
+
+
+def test_parse_score_variants():
+    """从模型输出里取 `SCORE: 0.xx`。"""
+    M = ExplorationManager
+    assert M._parse_score("笔记…\nSCORE: 0.82") == 0.82
+    assert M._parse_score("SCORE：0.5") == 0.5          # 全角冒号
+    assert M._parse_score("SCORE: 1.0") == 1.0
+    assert M._parse_score("SCORE: 0.0") == 0.0
+    assert M._parse_score("没有分数") is None
+    assert M._parse_score("") is None
+
+
+def test_parse_score_clamps_out_of_range():
+    """越界值钳制（模型偶尔写 1.5）。"""
+    assert ExplorationManager._parse_score("SCORE: 1.5") == 1.0
+
+
+def test_score_line_stripped_from_summary():
+    """笔记正文不得残留协议字段（SCORE 行必须被剥掉）。"""
+    from anima.cognitive.exploration import _SCORE_LINE
+    s = "这是笔记正文。\nSCORE: 0.82"
+    assert _SCORE_LINE.sub("", s).strip() == "这是笔记正文。"
+
+
+@pytest.mark.asyncio
+async def test_store_note_prefers_llm_score(tmp_path, monkeypatch):
+    """🔴 owner 指出的方向：评分该由 Anima 自己判断，不该硬编码公式。
+
+    旧公式 `0.5 + intensity*0.3 + (0.1 if summary)` 与内容无关：
+    无欲望恒 0.600、有欲望恒 0.765 ⇒ 分享阈值实际在判「有没有欲望」。
+    现在优先用模型在**同一次调用**里顺手给出的分数（零额外成本）。
+    """
+    core = make_core(tmp_path, share_enabled=False)
+    manager = ExplorationManager(core, core.config.exploration)
+    item = ExplorationSourceItem(source="BBC 中文", title="t", url="u", summary="s")
+
+    note = manager._store_note("topic", item, "摘要", None, llm_score=0.93)
+    assert note.value_score == 0.93, f"应采用模型自评分，实得 {note.value_score}"
+
+
+def test_store_note_falls_back_to_heuristic(tmp_path):
+    """模型没给分（None）⇒ 用启发式兜底，不得崩。"""
+    core = make_core(tmp_path, share_enabled=False)
+    manager = ExplorationManager(core, core.config.exploration)
+    item = ExplorationSourceItem(source="B站热门", title="t", url="u",
+                                 summary="含数字123的摘要，因为所以然而。", popularity=100000)
+
+    note = manager._store_note("topic", item, "含数字123的摘要，因为所以然而。", None,
+                               llm_score=None)
+    assert 0.0 < note.value_score <= 1.0
+
+
+@pytest.mark.asyncio
+async def test_summarize_returns_score_tuple(tmp_path, monkeypatch):
+    """`_summarize` 必须返回 (摘要, 分值)，且分值来自模型输出。"""
+    core = make_core(tmp_path, share_enabled=False)
+
+    class _LLM:
+        async def chat(self, messages, **kw):
+            return "这是一段知识笔记，说明发生了什么。\nSCORE: 0.88"
+
+    core.llm = _LLM()
+    manager = ExplorationManager(core, core.config.exploration)
+    item = ExplorationSourceItem(source="B站热门", title="t", url="u", summary="s")
+
+    summary, score = await manager._summarize("topic", item, [item])
+    assert score == 0.88
+    assert "SCORE" not in summary, "协议字段不得进入笔记正文"
+    assert "知识笔记" in summary
+
+
+@pytest.mark.asyncio
+async def test_summarize_without_llm_returns_no_score(tmp_path):
+    """没有 LLM ⇒ 分值为 None（交给启发式），不伪造分数。"""
+    core = make_core(tmp_path, share_enabled=False)
+    core.llm = None
+    manager = ExplorationManager(core, core.config.exploration)
+    item = ExplorationSourceItem(source="B站热门", title="t", url="u", summary="原摘要")
+
+    summary, score = await manager._summarize("topic", item, [item])
+    assert score is None
+    assert summary
