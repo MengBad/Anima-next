@@ -158,3 +158,65 @@ def test_fresh_flag_rendered():
 
 def test_max_results_bounded():
     assert 1 <= MAX_RESULTS <= 20, "单次返回条数应有界（防一次拉爆上下文）"
+
+
+# ── 7. bilibili_read 无字幕兜底（2026-10-24）──────────────────────────
+
+
+def test_meta_fallback_renders_useful_info():
+    """🔴 生产实证（7 天）：`bilibili_read` 调用 4+ 次、返回 50–68 字全是
+    「暂无可用字幕」—— 等于什么都没帮上。而 view 接口的简介/UP/播放/时长
+    一直拿得到，足够它说两句。
+    """
+    from anima.tools.builtin.bilibili import _render_meta_fallback
+
+    meta = {"up": "凌羽clover", "desc": "给自己的 AI 写了个插件。",
+            "duration": 157, "view": 263127, "like": 10020}
+    out = _render_meta_fallback("某视频", meta, "BV1d8pU6xEZX")
+
+    assert "凌羽clover" in out, "UP 应渲染"
+    assert "给自己的 AI 写了个插件" in out, "简介应渲染（这才是有用的部分）"
+    assert "26.3万" in out, "播放数应渲染"
+    assert "BV1d8pU6xEZX" in out, "链接应渲染"
+
+
+def test_meta_fallback_is_honest_about_not_watching():
+    """🔴 诚实边界：只有简介，**必须**明说没看内容。"""
+    from anima.tools.builtin.bilibili import _render_meta_fallback
+
+    out = _render_meta_fallback("某视频", {"desc": "简介"}, "BV1x")
+    assert "没看视频内容" in out, f"必须说明没看内容：{out[:120]}"
+    assert "只看了简介" in out, "必须给出可复述的诚实说法"
+    assert "别假装看过" in out, "必须明确禁止假装"
+
+
+def test_meta_fallback_not_judged_as_failure():
+    """兜底拿到简介 = **部分成功**，不该被判为失败（否则模型会说「读不了」）。"""
+    from anima.tools import tool_result_ok
+    from anima.tools.builtin.bilibili import _render_meta_fallback
+
+    out = _render_meta_fallback("某视频", {"desc": "简介内容"}, "BV1x")
+    assert tool_result_ok(out) is True
+
+
+def test_empty_meta_still_honest():
+    """连简介都没有时也要诚实（不能编内容）。"""
+    from anima.tools.builtin.bilibili import _render_meta_fallback
+
+    out = _render_meta_fallback("某视频", {}, "BV1x")
+    assert "某视频" in out
+    assert "没看视频内容" in out
+
+
+def test_plain_no_subtitle_is_judged_failure():
+    """🔴 纯「暂无可用字幕」文案（旧形态）必须被判为**失败**。
+
+    生产实证：`bilibili_read` 返回 50–68 字全是这类文案，而
+    `tool_result_ok` 判成 `ok=True` ⇒ 模型以为「读到了、只是没内容」，
+    而不是「这个视频读不了」。现在文案已换成兜底，但这条注册仍须保留
+    （防止将来回退到旧文案时又静默判成功）。
+    """
+    from anima.tools import tool_result_ok
+
+    old = "视频《XXX》暂无可用字幕，无法生成总结（可凭标题/封面和你的了解聊聊，别假装看过内容）。"
+    assert tool_result_ok(old) is False, "无字幕必须被判为失败"

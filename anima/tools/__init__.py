@@ -213,7 +213,16 @@ _TOOL_FAILURE_FAMILIES: "tuple[tuple[str, tuple[str, ...]], ...]" = (
 # 刻意**不**用裸 `失败` 作词尾匹配：那会把 web_search / agent_http 返回的**网页正文**
 # 中恰好以「失败」结尾的片段误判为失败。只收这两个精确词尾。
 _TOOL_FAILURE_SUFFIXES = ("信息失败", "列表失败")   # social.py:304 / social.py:164
-_TOOL_FAILURE_INFIXES = ("接口暂时不可用",)         # bilibili.py:233 部分结果 + 明确降级指示
+_TOOL_FAILURE_INFIXES = (
+    "接口暂时不可用",   # bilibili.py:233 部分结果 + 明确降级指示
+    # 🔴 2026-10-24：**B 站视频无字幕** —— 这是该工具最常见的「失败」形态，
+    #   却一直被 `tool_result_ok` 判成**成功**。
+    #   生产实证（7 天）：`bilibili_read` 调用 4+ 次，返回长度 50–68 字
+    #   （全是「暂无可用字幕，无法生成总结…」），`ok=True` ⇒
+    #   模型以为「读到了、只是没内容」，而不是「这个视频读不了」。
+    #   短语足够特异（只可能来自 `bilibili.py` 的字幕缺失分支），不误伤网页正文。
+    "暂无可用字幕",
+)
 
 
 def _has_internal_marker(text: str) -> bool:

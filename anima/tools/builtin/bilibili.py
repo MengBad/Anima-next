@@ -43,6 +43,54 @@ def make_subscribe_bilibili_live(core):
     return _subscribe_bilibili_live
 
 
+def _fmt_num(n) -> str:
+    """播放/点赞数格式化。"""
+    try:
+        v = int(n or 0)
+    except (TypeError, ValueError):
+        return "?"
+    if v >= 100_000_000:
+        return f"{v / 100_000_000:.1f}亿"
+    if v >= 10_000:
+        return f"{v / 10_000:.1f}万"
+    return str(v)
+
+
+def _render_meta_fallback(title: str, meta: dict, bvid: str) -> str:
+    """无字幕时的兜底：用**标题 + UP + 简介 + 数据**给模型可用信息。
+
+    🔴 2026-10-24：生产实证（7 天）`bilibili_read` 调用 4+ 次、
+    返回 50–68 字全是「暂无可用字幕」—— 等于什么都没帮上；
+    而 view 接口的简介/UP/播放/时长**一直拿得到**，足够说两句。
+
+    ⚠️ **诚实边界（最重要）**：这里只有**简介**，没有视频内容。
+    文案明确写「本喵没看内容」，模型据此说话，绝不许假装看过。
+    """
+    lines = [f"视频《{title}》" + (f"（UP：{meta['up']}）" if meta.get("up") else "")]
+    _d = meta.get("desc") or ""
+    if _d.strip():
+        lines.append(f"简介：{_d.strip()[:400]}")
+    _bits = []
+    if meta.get("tname"):
+        _bits.append(f"分区：{meta['tname']}")
+    if meta.get("duration"):
+        lines_dur = int(meta["duration"]) if str(meta["duration"]).isdigit() else 0
+        if lines_dur > 0:
+            _bits.append(f"时长：{lines_dur // 60}分{lines_dur % 60}秒")
+    if meta.get("view") is not None:
+        _bits.append(f"播放：{_fmt_num(meta['view'])}")
+    if meta.get("like") is not None:
+        _bits.append(f"点赞：{_fmt_num(meta['like'])}")
+    if _bits:
+        lines.append("数据：" + "｜".join(_bits))
+    lines.append(f"链接：https://www.bilibili.com/video/{bvid}")
+    lines.append(
+        "⚠️ 本喵**只读到标题和简介，没看视频内容**（这期没有字幕可用）。"
+        "谈的时候必须说清「只看了简介」，别假装看过视频本身。"
+    )
+    return "\n".join(lines)
+
+
 def make_bilibili_read(core):
     """创建 bilibili_read 工具 handler（需要 core）。"""
 
@@ -261,6 +309,9 @@ def make_bilibili_read(core):
             except Exception:
                 logger.exception("space 链接遥测记录失败")
 
+        # 🔴 2026-10-24：view 接口的元数据（UP/简介/播放/时长），用于**无字幕兜底**。
+        _view_meta: dict = {}
+
         bv = await _resolve(text)
         if not bv:
             if "space.bilibili.com" in text.lower() or "bilibili.com/space" in text.lower():
@@ -309,6 +360,21 @@ def make_bilibili_read(core):
                     return title, [], f"view code={payload.get('code')}"
                 data = payload.get("data") or {}
                 title = str(data.get("title") or title)
+                # 🔴 2026-10-24：把**元数据**留下来，供「无字幕时兜底」使用。
+                #   生产实证（7 天）：`bilibili_read` 调用 4+ 次，返回长度 50–68 字
+                #   —— 全是「暂无可用字幕」，等于什么也没帮上。
+                #   而 view 接口的简介/UP/播放/时长**一直拿得到**，
+                #   足够它说两句（且必须诚实标注「只看了简介、没看内容」）。
+                try:
+                    _view_meta["up"] = str((data.get("owner") or {}).get("name") or "")
+                    _view_meta["desc"] = str(data.get("desc") or "")[:600]
+                    _view_meta["tname"] = str(data.get("tname") or "")
+                    _view_meta["duration"] = data.get("duration")
+                    _stat = data.get("stat") or {}
+                    _view_meta["view"] = _stat.get("view")
+                    _view_meta["like"] = _stat.get("like")
+                except Exception:
+                    logger.debug("B 站元数据提取失败", exc_info=True)
                 pages = data.get("pages") or []
                 cid = None
                 if pages and isinstance(pages[0], dict):
@@ -418,8 +484,12 @@ def make_bilibili_read(core):
                 return f"读取 B 站视频失败：{err or '无法获取标题'}（bvid={bv}）"
 
             if not subs:
-                return (f"视频《{title}》暂无可用字幕，无法生成总结"
-                        f"（可凭标题/封面和你的了解聊聊，别假装看过内容）。")
+                # 🔴 2026-10-24：**无字幕时回落到元数据**，而不是只回一句「没字幕」。
+                #   生产实证（7 天）：该工具调用 4+ 次、返回 50–68 字，全是
+                #   「暂无可用字幕」—— 等于什么都没帮上，而 view 接口的
+                #   简介/UP/播放/时长一直拿得到，足够它说两句。
+                #   ⚠️ 但**必须诚实**：只看了简介，不许声称看过视频内容。
+                return _render_meta_fallback(title, _view_meta, bv)
             target = None
             for s in subs:
                 if str(s.get("lan", "")).startswith("zh"):
