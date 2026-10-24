@@ -161,6 +161,14 @@ class AutonomyConfig(BaseModel):
     #: 🔴 只读 + 独立存储（data/growth/snapshots.jsonl），不污染任何既有文件。
     #: 默认 **False**。
     growth_snapshot_enabled: bool = False
+    #: 🔴 2026-10-24：**B 站兴趣**（它自己去刷一轮并分享）。
+    #: 与 `bilibili_discover`（能力）/ `bilibili_read`（深读）配套：
+    #: 本开关控制的是**动机** —— 什么时候该去刷、刷完怎么分享。
+    #: 闸门：每天最多 1 次 · 距上次 ≥22h · 仅 8–23 点 · 分享落点**私聊**。
+    #: 🔴 诚实约束：候选只有元数据（标题/UP/播放），**没看内容**，
+    #: 所以分享文案强制标注「只看了标题和简介」，绝不许假装看过。
+    #: 默认 **False**（自主打扰类能力需显式开启）。
+    bilibili_interest_enabled: bool = False
 
     # —— 回复策略 ——
     # 群聊中仅当被 @、被回复或文本提到「哈基米」时回复；私聊始终回复。

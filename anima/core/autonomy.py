@@ -1105,6 +1105,27 @@ class Heartbeat:
         except Exception:
             logger.debug("[自主触发] Goal 决策收集失败（已隔离）", exc_info=True)
 
+        # 🔴 2026-10-24：**B 站兴趣**作为第四类触发源（它自己去刷并分享）。
+        #   与 Goal 的区别：Goal 是「它想做的事」，这里是「它看到想分享的东西」。
+        #   因为搜索是 async 而 `collect_triggers` 是同步的，所以单独 await。
+        #   闸门：每日 1 次 + 22h 间隔 + 仅 8–23 点 + 总开关默认关。
+        #   分享落点是**私聊**（群里刷屏会招人烦）。
+        try:
+            if bool(getattr(getattr(self.core.config, "autonomy", None),
+                            "bilibili_interest_enabled", False)):
+                from anima.agent.bilibili_interest import build_request
+                _bi = await build_request(self.core, now=now)
+                if _bi:
+                    from anima.agent.auto_trigger import AutoTriggerDecision
+                    decisions.append(AutoTriggerDecision(
+                        source="bilibili_interest",
+                        request=_bi["request"],
+                        reason=_bi["reason"],
+                        topic=_bi["topic"],
+                    ))
+        except Exception:
+            logger.warning("[B站兴趣] 决策收集失败（已隔离）", exc_info=True)
+
         if not decisions:
             return
 
@@ -1161,6 +1182,20 @@ class Heartbeat:
                             picked.goal_id, task.id)
             except Exception:
                 logger.debug("[自主触发] 标记目标推进失败（不影响任务）", exc_info=True)
+
+        # 🔴 2026-10-24：B 站兴趣触发成功后**立刻记状态**（22h 间隔的依据）。
+        #   与 Goal 的 mark_run 同理：提交即算「刷过一轮」，
+        #   否则下次心跳会立刻再刷一次。
+        if getattr(picked, "source", "") == "bilibili_interest":
+            try:
+                from anima.agent.bilibili_interest import load_state, save_state
+                _st = load_state(self.core.persistence)
+                _st["last_run_at"] = time.time()
+                _st["last_topic"] = str(getattr(picked, "topic", "") or "")
+                save_state(self.core.persistence, _st)
+                logger.info("[B站兴趣] 已记本轮（22h 内不再刷）")
+            except Exception:
+                logger.warning("[B站兴趣] 状态落盘失败", exc_info=True)
 
         try:
             from anima.core.gateway import OutboundMsg
