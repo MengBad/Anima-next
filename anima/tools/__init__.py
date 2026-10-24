@@ -78,6 +78,13 @@ TOOL_REASON_X_FAILED = "X 搜索暂时失败，可稍后再试"
 #: （任务 2 次重规划后失败，理由写「文件根本不存在」）。
 #: 措辞刻意**不含**具体字节数/路径/异常名（那些进日志），只给行为性事实与可选项。
 TOOL_REASON_FILE_TOO_LARGE = "文件过大，超出单次读取上限，可改用其他工具分片读取"
+#: 🔴 2026-10-24：B 站搜索失败的三类可保留原因。
+#: 措辞**不含**异常文本 / 状态码 / 内部细节（那些进日志），只给行为性事实，
+#: 使模型能选择「换个关键词再试」还是「告诉用户稍后再来」，且不会把
+#: 内部异常细节带进用户可见的回复（D1 规则）。
+TOOL_REASON_BILI_SEARCH_FAILED = "B 站搜索暂时失败，可稍后再试或换个关键词"
+TOOL_REASON_BILI_RISK = "B 站搜索触发风控，稍后自动恢复"
+TOOL_REASON_BILI_NO_RESULT = "B 站没有搜到相关视频，可换个关键词"
 
 _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_DISABLED,
@@ -89,6 +96,9 @@ _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_SLOW,
     TOOL_REASON_X_FAILED,
     TOOL_REASON_FILE_TOO_LARGE,
+    TOOL_REASON_BILI_SEARCH_FAILED,
+    TOOL_REASON_BILI_RISK,
+    TOOL_REASON_BILI_NO_RESULT,
 })
 
 

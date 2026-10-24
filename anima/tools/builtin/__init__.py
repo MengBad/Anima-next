@@ -447,6 +447,32 @@ def register_all_builtin(registry, core=None) -> None:
             make_bilibili_read(core), required=["bvid"], min_level=LEVEL_USER,
         ))
 
+        # 🔴 2026-10-24：B 站**发现**（搜索 + 元数据清单）。
+        #   参考 dsh-bili-scroll 的「每日刷一轮」思路，但生产实测推翻了它的前提：
+        #   view/player 接口 OK 而**字幕条数恒为 0**（B 站多数视频无 CC 字幕）
+        #   ⇒ 靠读字幕判断在无字幕视频上整条链失效。
+        #   故改用**元数据**（标题/UP/播放/时长/新鲜度）—— 接口稳定、免登录。
+        #   ⚠️ 拿不到字幕就**绝不允许声称看过内容**（文案里已强制标注）。
+        #   不做：视频下载/转发、本地 Whisper 转写、自动去 B 站发评论。
+        from .bilibili_discover import MAX_RESULTS as MAX_DISCOVER_RESULTS
+        from .bilibili_discover import make_bilibili_discover
+        registry.register(Tool(
+            "bilibili_discover",
+            "搜 B 站视频，返回候选清单（标题/UP主/播放量/时长/链接）。"
+            "用于「最近 B 站有什么新东西」「帮我看看某某话题」这类**发现**需求。"
+            "⚠️ 只返回元数据：拿不到字幕、也没看内容 —— "
+            "谈的时候必须说清「只看了标题/数据」，绝不能假装看过视频内容。"
+            "若需要真正理解某个视频内容，改用 bilibili_read（它也无字幕时会如实说明）。",
+            {
+                "keyword": {"type": "string", "description": "搜索关键词"},
+                "limit": {"type": "integer",
+                          "description": f"返回条数，默认 {MAX_DISCOVER_RESULTS}，上限 {MAX_DISCOVER_RESULTS}"},
+                "days": {"type": "number",
+                         "description": "只要最近几天的，默认 7 天，上限 30"},
+            },
+            make_bilibili_discover(core), required=["keyword"], min_level=LEVEL_USER,
+        ))
+
         registry.register(Tool(
             "self_code",
             "用 agentic coder（Claude Code CLI）把自然语言目标编程成待 Owner 审批的运行时能力。"
