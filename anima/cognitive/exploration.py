@@ -889,7 +889,17 @@ class ExplorationManager:
         system.persist()
 
     def _maybe_share(self, note: ExplorationNote, desire: Any) -> None:
-        if not bool(getattr(self.config, "share_enabled", False)) or desire is None:
+        # 🔴 2026-10-24：**`desire is None` 不再直接挡掉分享**。
+        #   生产实证：164 条笔记 0 条分享的**真正原因**在这里 ——
+        #   `_pick_topic()` 在没有好奇欲望时返回 `(None, 话题)`（第 289-290 行），
+        #   而 `_generate_curiosity_desire()` 有 **12 小时冷却**，
+        #   ⇒ 一天里大部分探索都是 `desire=None` ⇒ 被这一行直接挡掉。
+        #   评分公式只是**第二层**原因（无欲望 ⇒ 恒定 0.600 < 阈值）。
+        #
+        #   现在：`desire=None` 时，只要 owner 配了 `share_groups`（显式目标群），
+        #   且内容分数达到阈值，就允许分享 —— 内容质量由模型自评分把关，
+        #   不再依赖「有没有欲望」这个与内容无关的条件。
+        if not bool(getattr(self.config, "share_enabled", False)):
             return
         # fail-closed：同上，daily_share_limit=0 表示当天完全不分享，不能被 `or 1` 吞成 1。
         raw_share_limit = getattr(self.config, "daily_share_limit", 1)
@@ -900,8 +910,8 @@ class ExplorationManager:
             return
         threshold = float(getattr(self.config, "share_min_score", 0.75) or 0.75)
         allowlist = {int(value) for value in (getattr(self.config, "share_groups", []) or []) if str(value).isdigit()}
-        group_id = getattr(desire, "source_group_id", None)
-        scope = str(getattr(desire, "expression_scope", "internal") or "internal")
+        group_id = getattr(desire, "source_group_id", None) if desire is not None else None
+        scope = str(getattr(desire, "expression_scope", "internal") or "internal") if desire is not None else "internal"
 
         # 🔴 2026-10-24：**让「自己好奇」产生的探索也能分享**。
         #   生产实证：`explored_today=3`、笔记 164 条（有 0.765 分的好内容），

@@ -419,3 +419,44 @@ def test_explicit_group_desire_unaffected(tmp_path):
     m._maybe_share(_note(), _desire(group_id=777, scope="group"))
     # 777 不在 allowlist ⇒ 不分享（原语义）
     assert proposed == []
+
+
+# ── desire=None 也可分享（2026-10-24，164 条 0 分享的真正原因）──────────
+
+
+def test_share_when_desire_is_none_but_allowlist_set(tmp_path):
+    """🔴 生产实证：164 条笔记 0 条分享的**真正原因**不是评分，是这里 ——
+
+    `_pick_topic()` 在没有好奇欲望时返回 `(None, 话题)`，
+    而 `_generate_curiosity_desire()` 有 **12 小时冷却**
+    ⇒ 一天里大部分探索 `desire=None` ⇒ 被 `if desire is None: return` 直接挡掉。
+
+    修法：desire=None 时，只要 owner 配了 `share_groups` 且分数够，就允许分享。
+    内容质量由**模型自评分**把关，不再依赖「有没有欲望」这个与内容无关的条件。
+    """
+    m, proposed = _mk_manager(tmp_path, share_groups=[727631526])
+    note = _note(score=0.85)
+    m._maybe_share(note, None)          # desire 为 None
+    assert len(proposed) == 1, "有显式目标群时，desire=None 也应能分享"
+    assert proposed[0][0] == 727631526
+
+
+def test_no_share_when_desire_none_and_no_allowlist(tmp_path):
+    """没配 allowlist ⇒ 仍不分享（绝不凭空选群）。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=None)
+    m._maybe_share(_note(score=0.95), None)
+    assert proposed == []
+
+
+def test_desire_none_still_respects_threshold(tmp_path):
+    """desire=None 时阈值仍然生效（质量把关不能松）。"""
+    m, proposed = _mk_manager(tmp_path, share_groups=[111], share_min_score=0.9)
+    m._maybe_share(_note(score=0.6), None)
+    assert proposed == [], "分数不够仍不得分享"
+
+
+def test_desire_none_still_respects_daily_limit(tmp_path):
+    m, proposed = _mk_manager(tmp_path, share_groups=[111], daily_share_limit=1)
+    m._maybe_share(_note(score=0.95), None)
+    m._maybe_share(_note(score=0.95), None)
+    assert len(proposed) == 1, "每日上限仍生效"
