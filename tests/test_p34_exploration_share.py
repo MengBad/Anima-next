@@ -260,7 +260,9 @@ async def test_zero_exploration_daily_limit_means_unlimited(tmp_path, monkeypatc
     monkeypatch.setattr(manager, "_pick_topic", pick_topic)
     monkeypatch.setattr(manager, "_collect", collect)
 
-    await manager.maybe_run()
+    # 🔴 2026-10-24：用 force=True —— 本测试验证的是**配额语义**，
+    #   不该被「活跃时段」闸门（8–23 点）挡住；否则凌晨跑测试会假失败。
+    await manager.maybe_run(force=True)
     assert called, "daily_limit=0 应视为不限制，配额不得拦截"
 
 

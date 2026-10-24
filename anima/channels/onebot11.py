@@ -611,6 +611,30 @@ def parse_onebot_event(raw: dict, *, known_self_id: "int | None" = None) -> dict
             event["rich_blocks"] = rich_blocks[:8]
             summaries = [format_rich_card_summary(item) for item in rich_blocks]
             event["text"] = (event["text"] + "\n" + "\n".join(summaries)).strip()
+            # 🔴 2026-10-24：**卡片解析结果的可观测性**。
+            #   生产实证：QQ 小程序段（`segs=["json(['data']"]`）确实进来了，
+            #   但回复只出现「又甩这种链接过来」—— 无法判断是「解析成功但没注入」
+            #   还是「解析失败」，因为**此前没有任何日志**。
+            #   这里只记**结构化字段存在性与长度**，不记原始 JSON / URL
+            #   （隐私 + 体积；原文按设计不落日志）。
+            try:
+                logger.info(
+                    "[卡片解析] user=%s blocks=%d %s | text_len=%d",
+                    raw.get("user_id"), len(rich_blocks),
+                    [
+                        {
+                            "t": b.get("type"),
+                            "title": bool(b.get("title")),
+                            "url": bool(b.get("url")),
+                            "desc": bool(b.get("desc")),
+                            "app": (b.get("app") or "")[:24],
+                        }
+                        for b in rich_blocks[:3]
+                    ],
+                    len(event.get("text") or ""),
+                )
+            except Exception:
+                logger.debug("卡片解析日志失败", exc_info=True)
         if forward_ids:
             event["forward_ids"] = forward_ids[:3]
 
