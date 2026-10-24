@@ -130,12 +130,26 @@ class AutoTriggerState:
         except Exception:
             logger.debug("auto_trigger 状态落盘失败", exc_info=True)
 
-    def roll_day(self, today: str) -> None:
-        """日切：重置当日计数与主题（跨天不累积）。"""
+    def roll_day(self, today: str) -> bool:
+        """日切：重置当日计数与主题（跨天不累积）。返回**是否真的跨天了**。
+
+        🔴 2026-10-24：原实现只改内存**不落盘**。
+        而 `_auto_trigger_tick` 里 `save()` 只在「熔断」或「实际触发」时调用
+        ⇒ 跨天后若当天一直没触发（例：目标 11:42 才到期，或整夜无触发源），
+        内存里已重置为今天、文件里却仍是昨天
+        ⇒ **一旦重启，就从文件读回昨天的 day 与 count_today**，
+        跨天重置失效，当天配额凭空少一次。
+
+        （生产实证：10-24 早上文件仍记 `day=2026-10-23, count_today=1`。）
+
+        现在由调用方在返回 True 时落盘一次（每天仅一次，开销可接受）。
+        """
         if self.day != today:
             self.day = today
             self.count_today = 0
             self.topics_today = []
+            return True
+        return False
 
 
 @dataclass

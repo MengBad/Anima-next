@@ -1008,9 +1008,17 @@ class Heartbeat:
         """
         cfg = getattr(self.core.config, "autonomy", None)
         if not getattr(cfg, "auto_trigger_enabled", False):
+            # 🔴 2026-10-24：原来是**静默 return**，而 debug 级日志默认不可见
+            #   ⇒ 「为什么今天没触发」完全无法归因（今天已因这类盲区吃三次亏）。
+            #   这里按天节流打一条 debug：不开关时本就不该跑，不该刷屏。
+            _td = self._bj_date_str(now) if self._bj_date_str else ""
+            if getattr(self, "_autotrig_off_logged_day", "") != _td:
+                self._autotrig_off_logged_day = _td
+                logger.debug("[自主触发] 总开关 auto_trigger_enabled 未开启，今日不再尝试")
             return    # 默认关；开启后才会自主启动任务
         agent = getattr(self.core, "agent", None)
         if agent is None or not hasattr(agent, "submit"):
+            logger.debug("[自主触发] core.agent 不可用，跳过", exc_info=False)
             return
 
         try:
@@ -1027,7 +1035,14 @@ class Heartbeat:
 
         _dd = getattr(getattr(self.core.config, "persistence", None), "data_dir", "data")
         state = AutoTriggerState(self.core.persistence)
-        state.roll_day(self._bj_date_str(now))
+        # 🔴 2026-10-24：跨天重置**必须立刻落盘**。
+        #   原实现 roll_day 只改内存，而 save() 只在熔断/实际触发时调用
+        #   ⇒ 当天若一直没触发，文件里仍是昨天 ⇒ 重启后跨天重置失效、
+        #   当天配额凭空少一次（生产实证：10-24 早上文件仍记 10-23 / count=1）。
+        if state.roll_day(self._bj_date_str(now)):
+            state.save()
+            logger.info("[自主触发] 日切：%s 的配额与主题已重置（并落盘）",
+                        self._bj_date_str(now))
 
         # 🔴 2026-10-23：**清理必须放在闸门之前**。
         #   第一版我把它放在 gate 之后 ⇒ 凌晨 1–5 点（睡眠时段）gate 直接 return，
