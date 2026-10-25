@@ -77,6 +77,18 @@ class _Cfg:
 
     crossgroup = Cross()
 
+    # 🔴 2026-10-25：必须提供与**生产一致的系统预算**。
+    #   `cognition_stage` 读的是 `core.config.context`（见 cognition.py:464），
+    #   **不是** `core.config` 本身 —— 第一次补在 _Cfg 上没生效
+    #   （实测仍落默认 6000，crossgroup 等片段被裁 ⇒ 假失败）。
+    #   生产实测：`system_token_budget=16000`、`dropped=` 为空、`overflow<0`
+    #   —— 生产从未丢过片段。测试桩与生产配置脱节会把「桩太小」误报成回归。
+    class Context:
+        input_token_budget = 20000
+        system_token_budget = 16000
+
+    context = Context()
+
 
 class _Core:
     config = _Cfg()
@@ -171,3 +183,4 @@ async def test_realtime_tool_guidance_keeps_one_system_message(monkeypatch):
     assert _REALTIME_TOOL_GUIDANCE in content
     assert content.find(_REALTIME_TOOL_GUIDANCE) < content.find(_IDENTITY_LOCK_HEADING)
     assert ctx.system_prompt == content
+
