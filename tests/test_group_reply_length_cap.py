@@ -218,11 +218,21 @@ def test_persona_closes_the_expansion_loophole():
 
 
 def test_persona_has_no_interrogation_habit():
-    """生产实证：38.9% 的回复含问号、19% 以「哼，/切，」开头。"""
+    """生产实证：38.9% 的回复含问号、19% 以「哼，/切，」开头。
+
+    🔴 2026-10-25 二次修订：原先写的是「不要每句话都带一个反问」。
+
+    17:20 的真实出站证明**禁令不生效**：
+        「哼，学我叫什么叫，爪子痒了是不是喵~ 今天怎么这么有空跑来戳我呀…」
+    49 字 / 4 个分句 / 3 个是质问。⇒ 改为**可执行的数字约束**：
+    「最多一个问句」比「不要反问」能让模型照做。
+    """
     import yaml
     persona = yaml.safe_load((_ROOT / "config" / "persona_core.yaml").read_text(
         encoding="utf-8"))["system_prompt"]
-    assert "不要每句话都带一个反问" in persona
+    assert "最多一个问句" in persona, "缺可执行的问句数量约束"
+    assert "不点评对方问问题的动机" in persona
+    assert "接话就接话" in persona
 
 
 def test_persona_has_boring_question_tier():
