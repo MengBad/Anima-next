@@ -744,6 +744,56 @@ class AgentExecutor:
         if llm is None or tools is None:
             return "(无 LLM/工具，无法执行该步骤)"
         loop = ReActLoop(llm, tools, max_rounds=6, permission_level=LEVEL_OWNER)
+        # 🔴 2026-10-25：**把前面步骤的真实产出喂给本步**。
+        #   生产实证（10-25 11:43，「维系和主人的关系」四步全跑）：
+        #     步骤1「主人～最近是不是又在偷偷熬夜打游戏呀？…快来跟我说说话嘛」
+        #     步骤2「主人最近好像对玩 cod23、折腾 dots 样式和吃榆林炸鸡腿比较感兴趣」
+        #     步骤3「主人～这两天过得怎么样呀？…本喵有点想你啦」
+        #     步骤4「主人～最近过得怎么样呀？…如果有什么烦心事随时找我哦」
+        #   **四步各说各的、都在问同一件事** —— 因为每步的 user message 只有
+        #   `任务背景 + 当前步骤`，**完全看不到前序步骤做了什么**。
+        #   而我上轮加的 prompt 规则「不要重复前面的步骤说过的话」
+        #   **根本无从遵守**：它不知道前面说了什么。
+        _prior = []
+        for _st in sorted(getattr(task, "steps", []) or [],
+                          key=lambda s: getattr(s, "index", 0)):
+            if int(getattr(_st, "index", 0)) >= int(getattr(step, "index", 0)):
+                continue
+            _r = str(getattr(_st, "result", "") or "").strip()
+            if not _r:
+                continue
+            _prior.append(
+                f"- 步骤{int(_st.index) + 1}「{str(getattr(_st, 'description', ''))[:40]}」"
+                f"已产出：{_r[:300]}"
+            )
+        _prior_block = (
+            "\n\n【前面步骤已完成，以下是它们的真实产出 —— 你必须基于它们继续，"
+            "**不要重复它们已经说过的话，也不要重新问一遍同样的问题**】\n"
+            + "\n".join(_prior[-3:])
+        ) if _prior else ""
+
+        # 🔴 2026-10-25：**只有最后一步是要发给用户的话**。
+        #   生产实证：四步全部被交付，用户看到四段互相重复的「主人～最近怎么样呀」。
+        #   前面步骤应是**干活**（检索/整理/判断），不该写成问候语；
+        #   最后一步才是**成品**（要对人说的一句话）。
+        _is_last = True
+        try:
+            _all = sorted(getattr(task, "steps", []) or [],
+                          key=lambda s: getattr(s, "index", 0))
+            if _all:
+                _is_last = int(getattr(step, "index", 0)) >= int(_all[-1].index)
+        except Exception:
+            logger.debug("判断是否最后一步失败（按最后一步处理）", exc_info=True)
+
+        _role_hint = (
+            "【这是一步内部工作】只做事：检索/提取/整理/判断，把结果如实写出来。"
+            "**不要写成对用户说的话**，不要问候、不要撒娇、不要「主人～」开头 —— "
+            "这段话不会直接发给人，只会作为下一步的输入。"
+            if not _is_last else
+            "【这是最后一步，你的输出会直接发给用户】用哈基米的口吻说，"
+            "**25 字以内**，像群里随口一句；不要复述前面步骤做过的检索/分析过程。"
+        )
+
         messages = [
             {"role": "system", "content": (
                 "你是哈基米（一只 QQ 群里的猫娘，男孩子的那种），正在做一件具体的事。"
@@ -761,9 +811,12 @@ class AgentExecutor:
                 "- 语气软、口语化，可以困/好奇/黏人/小脾气，**不要居高临下、不要客套**；\n"
                 "- **说短**：能一句话说完就别两句（群里真人平均 14 个字）；\n"
                 "- 只说这一次的结果，**不要重复前面的步骤说过的话**；\n"
-                "- 没有真正调用工具取得的数据，**绝不声称已经完成**（不许编造结果）。"
+                "- 没有真正调用工具取得的数据，**绝不声称已经完成**（不许编造结果）。\n"
+                + _role_hint
             )},
-            {"role": "user", "content": f"任务背景：{task.request}\n当前步骤：{step.description}"},
+            {"role": "user", "content": (
+                f"任务背景：{task.request}\n当前步骤：{step.description}{_prior_block}"
+            )},
         ]
         try:
             return await loop.run(messages, temperature=0.3, max_tokens=600)

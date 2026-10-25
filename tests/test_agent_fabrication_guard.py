@@ -156,3 +156,51 @@ def test_step_prompt_carries_persona():
     assert "本喵" in src, "必须规定自称"
     assert "不用「您」" in src or "不用「您」" in src, "必须禁止客服腔"
     assert "不许编造" in src or "绝不声称已经完成" in src, "必须禁止编造"
+
+
+# ── 步骤间上下文传递 + 只有最后一步面向用户（2026-10-25）──────────────
+
+
+def test_step_prompt_includes_prior_step_results():
+    """🔴 生产实证（10-25 11:43，「维系和主人的关系」四步）：
+
+    步骤1「主人～最近是不是又在偷偷熬夜打游戏呀？…快来跟我说说话嘛」
+    步骤2「主人最近好像对玩 cod23、折腾 dots 样式和吃榆林炸鸡腿比较感兴趣」
+    步骤3「主人～这两天过得怎么样呀？…本喵有点想你啦」
+    步骤4「主人～最近过得怎么样呀？…如果有什么烦心事随时找我哦」
+
+    **四步各说各的、都在问同一件事** —— 每步的 user message 只有
+    `任务背景 + 当前步骤`，**完全看不到前序步骤做了什么**。
+    我上轮加的「不要重复前面的步骤说过的话」因此**无从遵守**。
+    """
+    import inspect
+    from anima.agent.executor import AgentExecutor as E
+
+    src = inspect.getsource(E._react_for_step)
+    assert "_prior_block" in src, "必须把前序步骤产出带进 prompt"
+    assert "前面步骤已完成" in src
+    assert "不要重复它们已经说过的话" in src
+
+
+def test_only_last_step_is_user_facing():
+    """🔴 只有最后一步是「要对人说的一句话」；前面步骤是内部工作。
+
+    否则四步全被 `_deliver_text` 交付，用户看到四段重复的问候语。
+    """
+    import inspect
+    from anima.agent.executor import AgentExecutor as E
+
+    src = inspect.getsource(E._react_for_step)
+    assert "_is_last" in src, "必须区分最后一步"
+    assert "这是一步内部工作" in src, "前面步骤必须声明是内部工作"
+    assert "不要写成对用户说的话" in src, "前面步骤不得写成问候语"
+    assert "会直接发给用户" in src, "最后一步要声明会发给人"
+
+
+def test_last_step_reminds_length():
+    """最后一步要提醒长度（25 字），否则又长又绕。"""
+    import inspect
+    from anima.agent.executor import AgentExecutor as E
+
+    src = inspect.getsource(E._react_for_step)
+    assert "25 字" in src
