@@ -13,11 +13,12 @@
 
 2026-10-25 从 `G:/Anima`（冻结分支）原样拷贝，理由：
 
-1. **先落测试再接线**。上游 1179 行**零测试覆盖**
-   （`relational_sheaf` / `void_calculus` / `social_field` /
-   `computation_spine` 全部 0 个测试文件引用）。
+1. **先落测试再接线**。上游两模块**零测试覆盖**
+   （`relational_sheaf` 1179 行 / `void_calculus` 546 行 /
+   `social_field` / `computation_spine` 全部 0 个测试文件引用）。
    直接接线等于往生产加一块没人拦得住的代码。
-   ⇒ 本包当前只被 `tests/test_relational_sheaf.py` 引用（46 项契约测试）。
+   ⇒ 本包当前只被测试引用：
+   `tests/test_relational_sheaf.py`（48 项）+ `tests/test_void_calculus.py`（59 项）。
 
 2. **接线点是明确的，但现在不该接**：
    `anima/pipeline/stages/cognition.py:450` 现在是
@@ -25,25 +26,50 @@
    sheaf 要接进来必须改成**群级**视角（`ctx.group_id`），
    那是一次注入语义变更，需要先有真实样本证明「现在的单用户视角确实不够」。
 
-3. **零依赖**：本模块只用 `math` + `typing`，不依赖 AstrBot / aiohttp / sqlite
+3. **零依赖**：只用 `math` / `typing` / `dataclasses`，不依赖 AstrBot / aiohttp
    ⇒ 迁移成本低，什么时候接都行。
+
+## ⚠️ 迁移时**已修一处上游缺陷**（void_calculus）
+
+写契约测试时抓出 `_should_create_void` 的错误：
+
+```python
+if surprise < self._detection_threshold:      # ← 硬门槛
+    return False
+...
+effective_threshold = detection_threshold - ghost_bonus   # ← 被降低过的门槛
+return surprise > effective_threshold         # ← 但上面已经拒掉了
+```
+
+前一道门把后一道门的输入锁死 ⇒ **`ghost_bonus` 是死代码**。
+文档承诺「旧伤（残影）附近更敏感」，实测残影 0/1/5/50 个时结果**完全相同**。
+
+**修复**：删掉硬门槛，只用 `effective_threshold` 判定。
+行为变更仅限「有残影且 surprise 略低于 detection_threshold」那一段 ——
+正是文档本来承诺要生效的那一段。
+
+**这是本次迁移唯一的代码改动**，
+`test_copy_differs_from_upstream_only_by_known_fix` 钉死「差异不许超出这一处」。
 
 ## 接线的下一步（不是现在做）
 
 ```
 ① 观察：真实群聊里，bot 是否因为「只看当前说话人」而误判场面
    （比如 A 在调侃它、B 在帮它说话，它却按对 A 的关系回所有人）
-② 若有实证，再在 cognition.py 增一条 group-level 片段：
-   add_system_fragment("group_sheaf", ..., 78)
-③ H¹ 读数进成长快照，让「群关系是不是在闹别扭」可核对
+② 观察：是否有「被 @ 没回 / 说话没人接 / 话题被岔开」的真实样本
+   —— 那是 void_calculus 的适用面，现在系统完全没有这个维度
+③ 有实证后再接线：
+   · 群级 sheaf → cognition.py 新增 add_system_fragment("group_sheaf", ..., 78)
+   · H¹ 读数 / 虚空压力 → 进成长快照，让「群关系是否在闹别扭」可核对
 ```
 
 ## 纪律
 
-- **不要**把本包 import 进任何生产路径，除非有上述观察实证。
-- `tests/test_relational_sheaf.py` 的 `test_source_has_no_astrbot_dependency`
-  与 `test_source_has_no_io` 是迁移前的硬前提判据 —— 改动本包前先跑它们。
+- **不要**把本包 import 进任何生产路径，除非有上述观察实证
+  （`test_inert_by_default` 会失败，强制你先读这里）。
+- 改动本包前先跑两个测试文件的「迁移前置判据」组
+  （无 astrbot / 无 I/O / 副本差异不超已知范围）。
 """
 from __future__ import annotations
 
-__all__ = ["relational_sheaf"]
+__all__ = ["relational_sheaf", "void_calculus"]
