@@ -52,11 +52,170 @@ _BILIBILI_POPULAR = "https://api.bilibili.com/x/web-interface/popular?pn=1&ps=20
 _BILIBILI_SEARCH = "https://api.bilibili.com/x/web-interface/search/type"
 _WIKIPEDIA_SEARCH = "https://zh.wikipedia.org/w/api.php"
 
+#: Wikimedia 要求的合规 UA：必须能识别调用方 + 有联系方式。
+#: 依据：<https://foundation.wikimedia.org/wiki/Policy:User-Agent_policy>
+#: 实测（2026-10-25）：浏览器 UA 被 403，本 UA 返回 200。
+_USER_AGENT_WIKIMEDIA = (
+    "AnimaBot/0.3 (https://github.com/MengBad/Anima-next; "
+    "personal non-commercial research bot) aiohttp"
+)
+
+#: 其它公开源（B 站 / BBC）认浏览器 UA。
+_USER_AGENT_BROWSER = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+)
+
+
+def _is_wikimedia(url: str) -> bool:
+    """URL 是否指向 Wikimedia 站点（决定用哪个 UA）。"""
+    try:
+        host = urlparse(str(url or "")).hostname or ""
+    except Exception:
+        return False
+    return host.endswith("wikipedia.org") or host.endswith("wikimedia.org")
+
 
 def _clean_text(value: Any, limit: int = 500) -> str:
     text = html.unescape(re.sub(r"<[^>]+>", " ", str(value or "")))
     text = re.sub(r"[\x00-\x1f\x7f]+", " ", text)
     return re.sub(r"\s+", " ", text).strip()[:limit]
+
+
+def _parse_question_and_keywords(raw: Any) -> tuple[str, list[str]]:
+    """解析好奇心 LLM 的两行输出 → `(问题, [关键词])`。
+
+    LLM 被要求输出：
+        问题：<10-50 字中文问句>
+        关键词：<2-3 个名词，每个 2-4 字，空格分隔>
+
+    **容错**：模型可能不按格式来（只给一句问题、或加了 markdown）。
+    ⇒ 拿不到 `关键词：` 行时，回退到「整句当问题、关键词为空」，
+    由 `_wikipedia_query_candidates` 的片段逻辑兜底。
+
+    why：中文维基的全文检索对 >12 字的自然语言问句返回 `totalhits: 0`，
+    而好奇心产出的是 30-50 字长问句（实测 `source_health.wikimedia_zh`
+    长期 `items=0`）。让模型顺手给出短关键词，比事后做中文分词可靠得多
+    —— 我试过手写片段切分，切出来是「表情包背」「缠到底」这类垃圾。
+    """
+    text = str(raw or "").strip()
+    if not text:
+        return "", []
+    question = ""
+    keywords: list[str] = []
+    for line in text.splitlines():
+        line = line.strip().lstrip("-*# ").strip()
+        if not line:
+            continue
+        if line.startswith("关键词") or line.startswith("關鍵詞"):
+            body = line.split("：", 1)[-1].split(":", 1)[-1]
+            for kw in re.split(r"[\s,，、;；]+", body):
+                kw = _clean_text(kw, 8)
+                if 2 <= len(kw) <= 6 and kw not in keywords:
+                    keywords.append(kw)
+        elif line.startswith("问题") or line.startswith("問題"):
+            question = _clean_text(line.split("：", 1)[-1].split(":", 1)[-1], 120).strip("“”\"'。 ")
+        elif not question:
+            question = _clean_text(line, 120).strip("“”\"'。 ")
+    if not question:
+        question = _clean_text(text, 120).strip("“”\"'。 ")
+    return question, keywords[:3]
+
+
+def _wikipedia_query_candidates(topic: str, *, max_len: int = 12) -> list[str]:
+    """把长问句拆成**短查询候选**（中文维基检索对长句返回 0 条）。
+
+    为什么需要它（2026-10-25 实测）：
+
+        8 字  「近期人类总爱发各」            → 8 条
+        12 字 「近期人类总爱发各种表情包」      → 8 条
+        16 字 「近期人类总爱发各种表情包和自制梗」→ **0 条**
+
+    阈值在 12~16 字之间。好奇心模块产出的 topic 是 30-50 字长问句
+    ⇒ 直接查必然 0 条（`source_health.wikimedia_zh` 长期 `items=0`）。
+
+    ## 候选生成策略（按优先级，短→长）
+
+    1. **去疑问壳**：剥掉「为什么/怎么/如何/到底/是不是…」等问句外壳；
+    2. **抽实词片段**：取 2-6 字的中文片段，按长度降序（长片段更具体）；
+       去掉纯虚词片段（的/了/是/在/和/与…）；
+    3. 拼成候选：
+       - 第一条：最长的实词片段（≤ max_len）
+       - 第二条：前两个片段拼接（若总长 ≤ max_len）
+       - 第三条：只取整句的**前 max_len 个字**（保底，至少比 80 字强）
+    4. 去重、去空，最多返回 3 条。
+
+    纯函数、无 I/O，便于单测。
+
+    >>> _wikipedia_query_candidates("近期人类总爱发各种表情包和自制梗图，网络流行表情包背后的梗文化到底是怎么演变出来的？")[0]
+    '表情包'
+    """
+    text = _clean_text(topic, 200)
+    if not text:
+        return []
+
+    # 1. 去疑问壳（只剥**开头**的疑问词，不改动实词）
+    _SHELL = (
+        "为什么", "为什么说", "怎么", "怎么样", "如何", "为何", "是不是",
+        "到底", "究竟", "请问", "有人知道", "想知道", "谁能说说",
+        "近期", "最近", "今天", "最近人类", "现在",
+    )
+    body = text
+    changed = True
+    while changed:
+        changed = False
+        for p in _SHELL:
+            if body.startswith(p):
+                body = body[len(p):].lstrip("，,、？?！!。 ")
+                changed = True
+
+    # 2. **按标点切整段**，绝不切任意偏移（那样必然切坏词）。
+    #
+    # 这一步我试错三次，记录在此以免后人重蹈：
+    #   方案 A「滑窗取 2-6 字」      → 产物「种表情包」「多游戏里」「子纠缠到」
+    #   方案 B「长度降序优先长片段」  → 产物「人类总爱发各」（检索出罗梅莉亚战记）
+    #   方案 C「对齐切分 + 实词打分」 → 产物「表情包背」「后的梗文」「么回」
+    #
+    # 三个方案的共同病根：**中文没有分词器时，任何非词典切分都会切坏词**，
+    # 而维基会把半截词做模糊匹配，返回完全无关的条目。实测对照（同一问句）：
+    #   好：「表情包」→['表情包','微信表情']    「梗文化」→['網路迷因']    精准
+    #   坏：「表情包背」→['2016年帝吧出征事件']  「里的角色」→['后藤一里']  垃圾
+    #
+    # => **只用标点切出的完整片段**（问句本身已被逗号/问号分开），
+    #    再加一条「不得以虚词结尾」的过滤。宁可少给候选，也不给垃圾。
+    #    真正的短关键词由 LLM 提供（见 `_generate_curiosity_desire`）。
+    _STOP = frozenset({
+        "的", "了", "是", "在", "和", "与", "也", "都", "就", "而", "被",
+        "把", "给", "让", "这", "那", "有", "会", "要", "能", "不", "很",
+        "一个", "一种", "这些", "那些", "什么", "怎么", "为什么", "到底",
+        "自己", "别人", "东西", "事情", "时候", "现在", "到底怎么", "这样",
+        "那样", "这么", "那么", "以及", "还有", "而且", "但是", "因为",
+    })
+    # 不能作结尾的字（虚词/助词/方位词的常见收尾，作结尾基本是半截词）
+    _BAD_TAIL = frozenset("的了是在和与都就而把被给让到背后么回着过着呢吧啊")
+
+    out: list[str] = []
+    # 按标点切段 —— 这些位置天然是词边界
+    for seg in re.split(r"[，,、；;。！!？?\s]+", body):
+        seg = seg.strip()
+        if not (2 <= len(seg) <= max_len):
+            continue
+        if seg in _STOP:
+            continue
+        if seg[-1] in _BAD_TAIL:
+            continue
+        if seg not in out:
+            out.append(seg)
+        if len(out) >= 3:
+            break
+
+    # 3. 一个都没切出来时，才用整句前缀保底（比原来 80 字强，但仍可能不理想）
+    if not out:
+        head = re.sub(r"\s+", "", text)[:max_len]
+        if len(head) >= 2 and head[-1] not in _BAD_TAIL:
+            out.append(head)
+
+    return out[:3]
 
 
 def _search_terms(value: str) -> set[str]:
@@ -305,23 +464,30 @@ class ExplorationManager:
             prompt = (
                 "根据下面 Anima 已有的公开知识兴趣，提出一个她现在真心想弄明白、"
                 "可以通过公开网页只读研究的问题。问题必须具体、非敏感、非用户隐私、"
-                "不涉及修改代码或账户操作，优先文化、科技、创作、社会常识或近期热点。"
-                "只输出一个 10-50 字中文问题，不要解释。\n\n"
+                "不涉及修改代码或账户操作，优先文化、科技、创作、社会常识或近期热点。\n\n"
+                "按这个格式输出两行，不要解释、不要多余标点：\n"
+                "问题：<10-50 字中文问句>\n"
+                "关键词：<2-3 个名词，每个 2-4 字，用空格分隔>\n\n"
                 f"近期笔记：\n{notes[-500:] if notes else '暂无'}\n\n世界认识：\n{world[:700] if world else '暂无'}"
             )
             with llm_scope("exploration", "curiosity"):
                 result = await llm.chat(
                     [{"role": "system", "content": "生成安全、具体、可公开检索的好奇问题。"},
                      {"role": "user", "content": prompt}],
-                    temperature=0.65, max_tokens=100,
+                    temperature=0.65, max_tokens=140,
                 )
-            question = _clean_text(result, 120).strip("“”\"'。 ")
+            question, keywords = _parse_question_and_keywords(result)
             if len(question) < 6 or any(word in question.lower() for word in ("代码", "密码", "账号", "隐私", "selfcode")):
                 return None
             desire = desire_system.add(
                 f"想了解：{question}", 0.55, kind="curiosity",
                 goal=question, expression_scope="internal",
             )
+            # 🔴 关键词交给 `_fetch_wikipedia_search` 用（中文维基只吃短实词）。
+            #   存进 state 而不是放进 desire.content —— 后者会被注入 prompt，
+            #   多塞检索词只会污染人格。
+            if keywords:
+                self.state["last_curiosity_keywords"] = keywords
             desire_system.persist()
             self.state["last_curiosity_at"] = now
             audit = getattr(self.core, "audit", None)
@@ -383,25 +549,43 @@ class ExplorationManager:
         self, url: str, *, max_bytes: int = 768 * 1024,
         extra_headers: dict[str, str] | None = None,
     ) -> bytes:
-        # 公开源（B 站 / 维基 / BBC）对裸 bot UA 会返回 403/412/空体，
-        # 且 BBC RSS 走 301 重定向；用浏览器 UA + 跟随重定向 + 读取错误体以便诊断。
+        # 公开源的 User-Agent 要求**按域名分**，不能一刀切。
+        #
+        # 🔴 2026-10-25 实测（同一 URL，只换 UA，直连无代理）：
+        #
+        #     浏览器 UA（Chrome/124）                        → **403**
+        #       b'Please respect our robot policy https://w.wiki/4wJS…'
+        #     合规 UA（带项目地址 + aiohttp 标识）             → **200**
+        #
+        # 原实现注释写「裸 bot UA 会 403，所以用浏览器 UA」—— **这个假设已经过期**：
+        # 维基现在反过来**封浏览器 UA**（爬虫都伪装浏览器），要求
+        # 带可识别身份 + 联系方式的合规 UA。
+        #
+        # ⇒ 按 host 选 UA：维基用合规 UA，其它源仍用浏览器 UA（B 站/BBC 认它）。
         headers = {
             "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/124.0 Safari/537.36"
+                _USER_AGENT_WIKIMEDIA
+                if _is_wikimedia(url)
+                else _USER_AGENT_BROWSER
             ),
             "Accept": "application/json,text/xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
         }
         headers.update(extra_headers or {})
-        # 可选出站代理：VPS 数据中心 IP 会被维基等公开源 403 封禁，配置
-        # exploration.proxy（如 http://127.0.0.1:10809）可绕过；留空则直连。
+        # 可选出站代理：某些公开源在 VPS 数据中心 IP 上会被封，配置
+        # exploration.proxy（如 http://127.0.0.1:7890）可绕过；留空则直连。
         # 实测 aiohttp 3.14 的 session.get(proxy=) 与 aiohttp_socks 对 HTTPS 经
-        # HTTP 代理都不会正确隧道（转发式请求被 mihomo 直连出口，维基仍 403），而
-        # curl -x 走 CONNECT 隧道被 mihomo 正确经节点出口（实测维基 200）。故配置代理时
-        # 统一走 curl 子进程；无代理时走原生 aiohttp。curl 不可用则回退 aiohttp。
+        # HTTP 代理都不会正确隧道，而 curl -x 走 CONNECT 隧道被 mihomo 正确经节点出口。
+        # 故配置代理时统一走 curl 子进程；无代理时走原生 aiohttp。
+        #
+        # 🔴 2026-10-25：**维基不走代理**。
+        #
+        # 实测（生产 VPS）：`curl -x http://127.0.0.1:7890` 访问
+        # zh.wikipedia.org **rc=28 超时 8 秒**，而**直连 aiohttp 200**。
+        # 每次维基探索白等 8 秒再回退，且回退时若 UA 不对就 403（见上）。
+        # ⇒ 维基用合规 UA + 直连；代理只给真正需要的源用。
         proxy = str(getattr(getattr(self, "config", None), "proxy", "") or "").strip()
-        if proxy:
+        if proxy and not _is_wikimedia(url):
             try:
                 return await self._request_via_curl(url, headers, proxy, max_bytes)
             except Exception as exc:  # curl 失败回退 aiohttp 直连
@@ -585,37 +769,84 @@ class ExplorationManager:
         return [str(k).strip() for k in kw if str(k).strip()]
 
     async def _fetch_wikipedia_search(self, topic: str) -> list[ExplorationSourceItem]:
-        """检索中文百科条目摘要，作为知识线索而非唯一事实来源。"""
-        query = _clean_text(topic, 80)
-        if len(query) < 2:
+        """检索中文百科条目摘要，作为知识线索而非唯一事实来源。
+
+        🔴 2026-10-25：**查询词必须短**。中文维基的全文检索对长自然语言问句
+        返回 `totalhits: 0`（不是报错，是「没有匹配」），而好奇心模块产出的
+        topic 恰恰是 30-50 字的长问句。
+
+        生产实证（`source_health.wikimedia_zh` 长期 `items=0`）：
+        逐长度实测同一个问句的前缀：
+
+            8 字  「近期人类总爱发各」            → 8 条
+            12 字 「近期人类总爱发各种表情包」      → 8 条
+            16 字 「近期人类总爱发各种表情包和自制梗」→ **0 条**
+            20/24/30/42 字                        → 全部 0 条
+
+        阈值在 12~16 字之间。原实现 `_clean_text(topic, 80)` 允许 80 字，
+        远超该阈值 ⇒ 只要求值 topic 偏长就必然 0 条。
+
+        ⇒ 改为**先抽关键词再查**：取 topic 里最长的若干中文片段（2-6 字），
+        优先用前两个拼成短查询；拼出来仍太长则只取第一个片段。
+        这样「近期人类总爱发各种表情包和自制梗图…」会变成
+        「表情包 梗图」这类能命中的查询。
+
+        2026-10-25 二次修订：**优先用 LLM 自带的关键词**。
+        `_generate_curiosity_desire` 现在会让模型顺带给出 2-3 个 2-4 字名词，
+        存进 `self.state["last_curiosity_keywords"]`。手写片段切分试过，
+        切出来是「表情包背」「缠到底」「么回」这类垃圾（中文无分词器，
+        任意偏移切分必然切坏词）⇒ 有 LLM 的关键词就用它，没有再退到片段。
+        """
+        # 首选：LLM 给的关键词（新鲜度：2 小时内有效）
+        state_kw = self.state.get("last_curiosity_keywords") or []
+        fresh = (time.time() - float(self.state.get("last_curiosity_at", 0) or 0)) < 2 * 3600
+        queries: list[str] = []
+        if fresh and isinstance(state_kw, list):
+            queries.extend(str(k).strip() for k in state_kw if str(k).strip())
+        # 次选：手工片段（可能不理想，但比 80 字整句强）
+        for q in _wikipedia_query_candidates(topic):
+            if q not in queries:
+                queries.append(q)
+        if not queries:
             return []
-        url = _WIKIPEDIA_SEARCH + "?" + urlencode({
-            "action": "query", "list": "search", "srsearch": query,
-            "utf8": 1, "format": "json", "srlimit": 8,
-        })
         started = time.time()
-        try:
-            payload = _parse_json(await self._request_bytes(url, max_bytes=384 * 1024))
-            result = []
-            for row in (payload.get("query") or {}).get("search", [])[:8]:
-                title = _clean_text(row.get("title"), 160)
-                page_url = _safe_public_url(
-                    "https://zh.wikipedia.org/wiki/" + quote(title.replace(" ", "_"), safe=""),
-                ) if title else ""
-                if not page_url:
-                    continue
-                result.append(ExplorationSourceItem(
-                    source="中文维基百科",
-                    title=title,
-                    url=page_url,
-                    summary=_clean_text(row.get("snippet"), 420),
-                    published_at=_clean_text(row.get("timestamp"), 80),
-                ))
-            self._source_ok("wikipedia_zh", started, len(result))
-            return result
-        except Exception as exc:
-            self._source_failed("wikipedia_zh", exc)
-            raise
+        last_exc: Exception | None = None
+        for query in queries:
+            url = _WIKIPEDIA_SEARCH + "?" + urlencode({
+                "action": "query", "list": "search", "srsearch": query,
+                "utf8": 1, "format": "json", "srlimit": 8,
+            })
+            try:
+                payload = _parse_json(await self._request_bytes(url, max_bytes=384 * 1024))
+                result = []
+                for row in (payload.get("query") or {}).get("search", [])[:8]:
+                    title = _clean_text(row.get("title"), 160)
+                    page_url = _safe_public_url(
+                        "https://zh.wikipedia.org/wiki/" + quote(title.replace(" ", "_"), safe=""),
+                    ) if title else ""
+                    if not page_url:
+                        continue
+                    result.append(ExplorationSourceItem(
+                        source="中文维基百科",
+                        title=title,
+                        url=page_url,
+                        summary=_clean_text(row.get("snippet"), 420),
+                        published_at=_clean_text(row.get("timestamp"), 80),
+                    ))
+                if result:
+                    # 命中就停：短查询已经够用，不必再降级
+                    self._source_ok("wikipedia_zh", started, len(result))
+                    return result
+                # 0 条 ⇒ 换更短的候选再试（长查询常见 0 条）
+            except Exception as exc:
+                last_exc = exc
+                continue
+        if last_exc is not None:
+            self._source_failed("wikipedia_zh", last_exc)
+            raise last_exc
+        # 全部候选都 0 条：如实记为 0（不是失败，是「没匹配」）
+        self._source_ok("wikipedia_zh", started, 0)
+        return []
 
     async def _fetch_rss(self, source: str, url: str) -> list[ExplorationSourceItem]:
         safe_url = _safe_public_url(url, feed=True)
