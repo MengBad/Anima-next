@@ -39,7 +39,9 @@ _ROOT = pathlib.Path(__file__).resolve().parents[1]
 # ── 1. 纯函数 ────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("raw,expect", [
-    ("才不是什么量产的笨蛋模型呢~ (￣^￣)", "才不是什么量产的笨蛋模型呢"),
+    # 🔴 句尾单波浪号**保留** —— 那是人的打字习惯（生产 28% 出站带它），
+    #    不是装饰。此前误删导致 3 个既有测试失败。
+    ("才不是什么量产的笨蛋模型呢~ (￣^￣)", "才不是什么量产的笨蛋模型呢~"),
     ("好耶🐾", "好耶"),
     ("我超 这个也太离谱了吧 QAQ", "我超 这个也太离谱了吧"),
     ("笑死 (｡･ω･｡)", "笑死"),
@@ -48,6 +50,25 @@ def test_strips_decorations(raw, expect):
     got, hits = strip_kinetic_decorations(raw)
     assert got == expect, f"{raw!r} → {got!r}（期望 {expect!r}）"
     assert hits >= 1, "命中处数必须 > 0（否则日志锚失效）"
+
+
+@pytest.mark.parametrize("raw", [
+    "天呐这也太抽象了吧，蚌埠住了~",
+    "是这样的喵~",
+    "笑死~",
+    "普通的句子。",
+])
+def test_single_tilde_is_preserved(raw):
+    """🔴 回归：单波浪号是人的打字习惯，不是装饰。
+
+    生产实证：约 28% 的出站在句尾带 `~`。上一版规则把
+    `(?<=汉字)\\s*[~～]\\s*` 全部删掉 ⇒ 3 个既有测试（含
+    `test_casual_reply_writes_nothing`）立刻失败。
+    **把人的说话习惯当装饰清掉，比留下装饰更不像人。**
+    """
+    got, hits = strip_kinetic_decorations(raw)
+    assert got == raw, f"单波浪号被误删：{raw!r} → {got!r}"
+    assert hits == 0
 
 
 @pytest.mark.parametrize("raw", [
@@ -76,6 +97,20 @@ def test_action_descriptor_is_preserved():
 def test_no_double_space_after_strip():
     got, _ = strip_kinetic_decorations("好  🐾  的")
     assert "  " not in got
+
+
+def test_blank_line_structure_is_preserved():
+    """🔴 回归：`\\n\\n`（空行分段）是排版，不是装饰。
+
+    上一版规则里有 `\\s*\\n\\s*` → `\\n`，把编号列表的段落黏成一坨。
+    生产实测踩过：`test_still_detected_and_sampled` 要求
+    「样本必须是完整原文」，折叠换行直接把它改了。
+    **本函数只处理视觉装饰，不负责重排文本。**
+    """
+    raw = "A段\n\n1. 第一点\n\n2. 第二点"
+    got, hits = strip_kinetic_decorations(raw)
+    assert got == raw, f"换行结构被改了：{raw!r} → {got!r}"
+    assert hits == 0
 
 
 def test_empty_and_none_safe():
