@@ -79,6 +79,21 @@ def test_enabled_and_ask_injects_budget():
     assert "200" in got, f"注入文本未带预算数字：{got!r}"
 
 
+# ── 2b. 与人格「25 字」的分界必须写明（2026-10-25）──────────────────
+
+def test_budget_declares_scope_against_persona_limit():
+    """🔴 生产实证：同一份 system 里人格写「25 字」、本片段写「200 字」，
+    两个数字打架，模型挑宽松的 ⇒ 实测平均 58.5 字（正好在两者之间）。
+
+    真相是各有适用面（25 字管闲聊 / 200 字管求答），但 prompt 里没写分界。
+    ⇒ 本片段必须显式声明它只覆盖「求答」，且不得被读成放宽日常长度。
+    """
+    got = _answer_length_budget_fragment(_ctx(PROD_ASK), _core(True, 200))
+    assert "闲聊" in got, "必须点明这条不覆盖闲聊"
+    assert "人格" in got, "必须显式让人格规则优先"
+    assert "别把它当成放宽" in got, "必须禁止把它读成放宽日常长度的许可"
+
+
 @pytest.mark.parametrize("budget", [120, 200, 350])
 def test_budget_value_is_carried(budget):
     got = _answer_length_budget_fragment(_ctx(PROD_ASK), _core(True, budget))
