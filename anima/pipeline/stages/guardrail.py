@@ -18,6 +18,7 @@ from ._shared import (
     _derail_history,
     _DERAIL_HISTORY_MAX,
 )
+from anima.cognitive.intent_phrase import strip_kinetic_decorations
 from .generation import _strip_speaker_labels
 
 logger = logging.getLogger("anima.pipeline.stages")
@@ -839,6 +840,23 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
     """输出护栏 —— 过滤危险/机械回复。"""
     ctx.reply = _clean_transport_text(ctx.reply)
     ctx.reply = _strip_speaker_labels(ctx.reply)
+    # 🔴 2026-10-25：**emoji / 颜文字出站兜底**。
+    #
+    # 人格正本这回补了「不用 emoji，也不用符号画的表情」，但那是 prompt 层的
+    # 软约束 —— 本项目反复验证过「prompt 层约束会被无视」（时段词纠偏就是因为
+    # 模型不听 prompt 才做的第二道闸，见 `fix_period_words` 注释）。
+    #
+    # 生产实证（10-25 13:51）：出站实测
+    #   「才不是什么量产的笨蛋模型呢~ (￣^￣)」
+    # 那是颜文字，不是 emoji —— 光禁 emoji 拦不住，故两类都处理。
+    # 放在所有改写之前：先清掉装饰，后续规则（骨架/字数）才基于真实正文判断。
+    try:
+        _before = ctx.reply or ""
+        ctx.reply, _deco = strip_kinetic_decorations(_before)
+        if _deco:
+            logger.info("[装饰剥离] 出站含 emoji/颜文字 %d 处 → 已清", _deco)
+    except Exception:
+        logger.debug("装饰剥离失败（已隔离）", exc_info=True)
     # 时段词纠偏（见 `_PERIOD_WORD_WINDOWS` 注释）：模型不听 prompt 的第二道闸。
     # 放在所有改写之前 —— 后面几条分支可能整段替换，替换后就不需要再纠。
     try:

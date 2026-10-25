@@ -42,6 +42,42 @@ def _is_polluted(entry: dict) -> bool:
     return any(tok in text for tok in _POLLUTION_TOKENS)
 
 
+#: bot 历史发言里的**自称/贬称漂移词** → 中性替代。
+#:
+#: 🔴 2026-10-25：与 `persona_core.yaml` 第 2-3 行的禁令**必须保持一致**。
+#: 生产实证（`data/chat_memory.json`）：bot 条目含 本大爷 47 / 老子 4 / 两脚兽 7。
+#: 那些是**旧人格时代**留下的产物；`get_context` 会把 role=bot 映射成
+#: assistant 送进 messages ⇒ 模型读到「我以前就是这么说话的」，
+#: 与人格禁令正面冲突 ⇒ 跟示范走（这就是 54/214 条出站含漂移词的机制）。
+#:
+#: ⚠️ 只作用于**注入面**，不动存档（存档是原始对话记录，改它等于篡改历史）。
+#: ⚠️ 只作用于 **bot 条目**（user 条目是别人的原话，一个字都不能改）。
+_SELF_ALIAS_FIXES: tuple[tuple[str, str], ...] = (
+    ("本大爷", "本喵"),
+    ("老娘", "本喵"),
+    ("老子", "本喵"),
+    ("本座", "本喵"),
+    ("朕", "本喵"),
+    ("两脚兽", "大家"),
+    ("铲屎官", "大家"),
+    ("低等生物", "大家"),
+)
+
+
+def _neutralise_self_alias(text: str) -> str:
+    """把 bot 历史发言里的自称/贬称漂移词换成中性说法（仅注入用）。
+
+    幂等：替换后的词（本喵 / 大家）不在替换表里，重复调用无变化。
+    """
+    s = str(text or "")
+    if not s:
+        return s
+    for bad, good in _SELF_ALIAS_FIXES:
+        if bad in s:
+            s = s.replace(bad, good)
+    return s
+
+
 def _clean_transport_entry(entry: dict) -> dict:
     """剥离不应进入上下文的 CQ 媒体载荷，保留普通文字。"""
     cleaned = dict(entry)
@@ -362,6 +398,22 @@ class ChatMemory:
                 vd = entry.get("vision_desc")
                 if vd:
                     text = f"{text} [图片:{vd}]" if text else f"[图片:{vd}]"
+                # 🔴 2026-10-25：**注入时净化 bot 自己的历史发言（只改送出去的，不改存盘）**。
+                #
+                # 生产实证：`data/chat_memory.json` 里 bot 条目含
+                #   本大爷 47 处 / 老子 4 处 / 两脚兽 7 处
+                # 而这里把 `role=bot` 映射成 `assistant` 送进 messages ⇒
+                # **模型看到的是「我以前就是这么说话的」**。人格正本第 2-3 行
+                # 明令禁止这些自称/贬称，但历史消息里全是反例 ——
+                # 禁令与示范同时在场时，模型跟示范走（这就是 214 条出站里
+                # 54 条含漂移词的机制）。
+                #
+                # 为什么不改存档：那是**原始对话记录**，改它等于篡改历史
+                # （且 `_deliver_text` 之类审计会失去依据）。只在注入面净身。
+                #
+                # 只处理 bot 条目：user 条目是**别人的原话**，一个字都不能动。
+                if entry.get("role") == "bot":
+                    text = _neutralise_self_alias(text)
                 messages.append({
                     # OpenAI 兼容 Chat Completions 不认识 "bot"；存储层仍使用 bot
                     # 以兼容旧数据，但送给模型时必须映射为 assistant。
@@ -483,11 +535,20 @@ class ChatMemory:
                 if not excluded or m.get("message_id") != excluded]
         rows = rows[-max(0, limit):]
         if not annotate:
-            return [{"role": m["role"], "content": m["content"]} for m in rows]
+            # 与 `get_context` 同一净化点：bot 历史发言里的自称/贬称漂移词
+            # （本函数有 5 个消费者，是群语境的**主入口** —— 必须一起净）
+            return [
+                {"role": m["role"],
+                 "content": (_neutralise_self_alias(m["content"])
+                             if m["role"] == "assistant" else m["content"])}
+                for m in rows
+            ]
         annotated: list[dict] = []
         pending = 0
         for i, m in enumerate(rows):
             content = m["content"]
+            if m["role"] == "assistant":
+                content = _neutralise_self_alias(content)
             if m["role"] == "user":
                 if m.get("to_bot"):
                     # 纯媒体行（`media_only`，如「发了一张表情包」）**不算「已答」**：
@@ -646,9 +707,13 @@ class ChatMemory:
             for _, entries in list(od.items())[-recent_rounds:]:
                 for entry in entries:
                     label = entry["name"] if entry["role"] == "user" else "你"
+                    # 与 `get_context` 同一净化点（bot 历史发言里的自称/贬称漂移词）
+                    _text = str(entry["content"] or "")
+                    if entry["role"] == "bot":
+                        _text = _neutralise_self_alias(_text)
                     collected.append({
                         "role": "assistant" if entry["role"] == "bot" else entry["role"],
-                        "content": f"[{label}]: {entry['content']}",
+                        "content": f"[{label}]: {_text}",
                         "_t": entry.get("time", 0.0),
                     })
         collected.sort(key=lambda m: m.pop("_t"))

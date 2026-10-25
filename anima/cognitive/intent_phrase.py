@@ -110,6 +110,77 @@ def strip_emoji(text: str) -> str:
     return s
 
 
+#: 符号画的表情（颜文字）。生产实证（10-25 13:51 出站）：
+#:     「才不是什么量产的笨蛋模型呢~ (￣^￣)」
+#: 这是**颜文字**，不是 emoji —— `_EMOJI_RE` 拦不住（字符都在 CJK/符号区）。
+#: 判据：一对括号里**没有中日韩汉字/字母/数字**，只有符号与少量日文假名式符号。
+_KAOMOJI_FACE_RE = re.compile(
+    r"[（(][^（）()\u4e00-\u9fffA-Za-z0-9]{1,12}[）)]"
+)
+
+#: 常见无括号颜文字（`QAQ` / `ORZ` / `TAT` 等纯大写三连）
+_BARE_KAOMOJI_RE = re.compile(r"\b(?:[Qq][Aa][Qq]|[Oo][Rr][Zz]|[Tt][Aa][Tt])\b")
+
+#: 字符画线条/装饰（残留的 `~` 连打、`><`、`=ω=` 等）
+_DECOR_STREAK_RE = re.compile(r"[~～]{2,}|[><]{2,}|[=＝][^\s\u4e00-\u9fff]{0,4}[=＝]")
+
+
+def strip_kinetic_decorations(text: str) -> tuple[str, int]:
+    """剥离 emoji / 颜文字 / 装饰性符号，返回 `(清理后文本, 命中处数)`。
+
+    **与 `strip_emoji` 的区别**：本函数用于**出站护栏**，目标是把「人不会在
+    QQ 群里打的东西」清干净，且**保留正文完整**（不压句子、不截断）。
+
+    - 去 emoji（`_EMOJI_RE`）
+    - 去颜文字表情 `(￣^￣)` / `(｡･ω･｡)` / `QAQ` —— `strip_emoji` 只去括号动作，
+      拦不住这类**符号画的脸**
+    - 去装饰性连打 `~~` / `><` / `=ω=`
+    - **折叠**剥离后留下的多余空白与重复标点（`呢~ (￣^￣)` → `呢`）
+
+    幂等：清理后的文本再清一遍无变化。
+
+    >>> strip_kinetic_decorations("才不是笨蛋呢~ (￣^￣)")[0]
+    '才不是笨蛋呢'
+    >>> strip_kinetic_decorations("好耶🐾")[0]
+    '好耶'
+    """
+    raw = str(text or "")
+    if not raw:
+        return raw, 0
+
+    hits = 0
+    s = raw
+
+    # 🔴 必须**跑两遍**才幂等：第一遍删掉颜文字后可能把两段符号拼在一起，
+    #   形成新的可匹配模式（实测：`了~你A的呢~ ~` → 第一遍留 `…呢~`，
+    #   第二遍才被 `(?<=汉字)[~～]` 吃掉）。跑两遍后仍非幂等的只剩
+    #   病态字符串（括号失衡等），生产出站不会出现。
+    for _ in range(2):
+        changed = False
+        for pattern in (_EMOJI_RE, _KAOMOJI_FACE_RE, _BARE_KAOMOJI_RE,
+                        _DECOR_STREAK_RE):
+            s2 = pattern.sub("", s)
+            if s2 != s:
+                hits += len(pattern.findall(s)) or 1
+                s = s2
+                changed = True
+        # 折叠剥离后遗症：连续空白 → 单个空格；行尾多余空格 → 去；
+        # 句子中间的「 ~ 」尾巴（剥掉颜文字后常留下）→ 去。
+        s2 = re.sub(r"[ \t]{2,}", " ", s)
+        s2 = re.sub(r"\s*\n\s*", "\n", s2)
+        s2 = re.sub(r"(?<=[\u4e00-\u9fff])\s*[~～]\s*", "", s2)
+        s2 = s2.strip()
+        if s2 != s:
+            s = s2
+            changed = True
+        if not changed:
+            break
+
+    # 🔴 删装饰可能留下「呢」「了」这类只有语气词的残句 —— 那本来就是这个意思，
+    #   不额外处理；但**整体清空**时要如实反映（调用方据此决定是否重写）。
+    return s, hits
+
+
 def _first_clause(text: str) -> str:
     """取第一个分句。没有任何分句边界时返回原串。"""
     m = _CLAUSE_SPLIT_RE.search(text)
