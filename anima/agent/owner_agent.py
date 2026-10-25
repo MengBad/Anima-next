@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -514,16 +515,74 @@ class OwnerAgent:
         # 任务通知走 `gateway.send` 直发、**不进 chat_memory** ⇒ 对话层对任务结果
         # 完全无知，用户问"东西呢"时只能编。这里留一条**摘要**（不写全文，
         # 免得污染上下文）：既让下一轮知道"我交过什么"，也不撑大记忆。
+        #
+        # 🔴 2026-10-25：**摘要里绝不能带【步骤N】脚手架**。
+        #   生产实证（10-21～10-25，13 条）写进记忆的是：
+        #     （Agent 任务 e7dae7c2bc 已完成并交付 1936 字：【步骤1】读取文件 …）
+        #   而 `hydrate` 会把 chat_memory 里 role=bot 的条目当作
+        #   「**我自己说过的话**」喂回 prompt ⇒ 等于自己教自己用工程日志说话。
+        #   ⇒ 摘要改为：去脚手架后的**实质产物首句**，不带任务 id / 字数 / 步骤号。
         try:
             from anima.memory.chat_memory import get_chat_memory
-            note = "（Agent 任务 %s 已完成并交付 %d 字：%s…）" % (
-                task.id, len(body), body[:40].replace("\n", " "))
-            get_chat_memory().add(
-                detail_type, target, "bot", "Anima", note,
-                user_id=(int(task.creator) if detail_type == "group" else None),
-            )
+            _gist = self._delivery_gist(body)
+            if _gist:
+                note = "（我刚把一份东西交过去了：%s）" % _gist
+                get_chat_memory().add(
+                    detail_type, target, "bot", "Anima", note,
+                    user_id=(int(task.creator) if detail_type == "group" else None),
+                )
         except Exception:
             logger.debug("Agent 交付回写会话记忆失败（已隔离）", exc_info=True)
+
+    #: 交付摘要里最多留多少字（进 prompt 的记忆条目，越短越好）
+    _GIST_MAX_CHARS = 60
+
+    #: 步骤脚手架标记：`【步骤1】` / `【步骤 2】` / `步骤3:` / `Step 1:`
+    _STEP_SCAFFOLD_RE = re.compile(
+        r"(?:【\s*步骤\s*\d+\s*】|步骤\s*\d+\s*[:：]|Step\s*\d+\s*[:：])"
+    )
+
+    @classmethod
+    def _delivery_gist(cls, body: str) -> str:
+        """从交付正文里取一句「实质内容摘要」，剔掉步骤脚手架。
+
+        - 逐行去掉 `【步骤N】…` 这种标题行；
+        - 取**最后一段**实质文字的首句（末段通常是定稿，不是中间产物）；
+        - 压掉换行/多余空白，超长截断。
+
+        返回空串表示「没有可提炼的实质内容」（调用方就不再写记忆）。
+        """
+        text = str(body or "")
+        if not text.strip():
+            return ""
+        # 去掉行内的步骤标题前缀（标题与正文可能同行，如「【步骤1】分析… \\n 正文」）
+        cleaned_lines: list[str] = []
+        for line in text.splitlines():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if cls._STEP_SCAFFOLD_RE.fullmatch(stripped):
+                continue
+            stripped = cls._STEP_SCAFFOLD_RE.sub("", stripped).strip()
+            # 「【步骤1】分析主人最近的回复内容」这类**纯标题**（短且以动词开头）
+            # 无法可靠区分，一律保留 —— 但整体长度受 `_GIST_MAX_CHARS` 限制。
+            if stripped:
+                cleaned_lines.append(stripped)
+        if not cleaned_lines:
+            return ""
+        # 末段优先（定稿），但末段过短（<8 字，如「完成了」）时回退到最长段
+        tail = cleaned_lines[-1]
+        pick = tail if len(tail) >= 8 else max(cleaned_lines, key=len)
+        pick = re.sub(r"\s+", " ", pick).strip()
+        if len(pick) > cls._GIST_MAX_CHARS:
+            cut = pick[:cls._GIST_MAX_CHARS]
+            for sep in ("。", "！", "？", "，", "；", ".", "!", "?"):
+                idx = cut.rfind(sep)
+                if idx >= cls._GIST_MAX_CHARS // 2:
+                    cut = cut[:idx]
+                    break
+            pick = cut.rstrip("，、；,; ") + "…"
+        return pick
 
     async def approve(self, task_id: str) -> str:
         task = self.store.get(task_id)

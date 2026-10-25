@@ -15,6 +15,7 @@ import time
 from typing import Optional
 
 from anima.core.persistence import PersistenceProvider
+from anima.cognitive.intent_phrase import compress_intent
 
 
 EXPRESSION_SCOPES = frozenset({"internal", "group", "global"})
@@ -267,14 +268,22 @@ class DesireSystem:
         return [a for a in self.aspirations if not a.resolved]
 
     def aspiration_fragment(self) -> str:
-        """D1: 生成注入晨间/主动发言 prompt 的长期目标片段。"""
+        """D1: 生成注入晨间/主动发言 prompt 的长期目标片段。
+
+        🔴 2026-10-25：同样必须压缩 —— 长期目标也可能是模型写好的整句。
+        """
         active = self.get_active_aspirations()
         if not active:
             return ""
         lines = ["## 你最近的长期目标"]
         for a in active[:3]:
             pct = int(a.progress * 100)
-            lines.append(f"- {a.content}（进度 {pct}%）")
+            phrase = compress_intent(a.content) or str(a.content or "").strip()
+            if not phrase:
+                continue
+            lines.append(f"- {phrase}（进度 {pct}%）")
+        if len(lines) == 1:
+            return ""
         return "\n".join(lines)
 
     # ------------------------------------------------------------------
@@ -500,15 +509,45 @@ class DesireSystem:
         ]
 
     def prompt_fragment(self, group_id: Optional[int] = None) -> str:
-        """生成注入 prompt 的欲望文本片段。"""
+        """生成注入 prompt 的欲望文本片段。
+
+        🔴 2026-10-25：**注入前必须压成念头短语，不能原样贴整句**。
+
+        生产实证（`data/desires.json` → 每一轮 system）：此前这里直接把
+        `d.content` 拼进 prompt：
+
+            2. 喵呜~ 阿姨天天给你推什么奇奇怪怪的东西呀？快跟本喵讲讲嘛！🐾 (兴趣程度: 0.39)
+
+        模型看到的是一句**已经写好、可以直接发出去的话** —— 最省力的做法
+        就是改两个字发出去。后果（214 条真实出站实测）：
+
+        - 长度平均 58.5 字 / 中位 51（人格要求 25 字以内，达标率仅 26%）
+        - 最近 4 条全部是「问句 + 吐槽对方动机 + 喵」同一个形状
+        - emoji 🐾 出现在出站里 —— 人格正本里**没有任何 emoji**，只能来自这里
+
+        ⇒ 复读感的**结构性根源**不是语气词不够，是**给了台词**。
+        压缩规则见 `anima/cognitive/intent_phrase.py`（只删不改写，幂等）。
+        """
         active = self.get_active_for_context(group_id, 0.3)
         if not active:
             # D1: 没有短期欲望时，尝试显示长期目标
             return self.aspiration_fragment() or ""
 
         lines = ["## 你最近想聊的话题"]
-        for i, d in enumerate(active[:3]):
-            lines.append(f"{i+1}. {d.content} (兴趣程度: {d.intensity:.2f})")
+        shown = 0
+        for d in active:
+            if shown >= 3:
+                break
+            phrase = compress_intent(d.content)
+            if not phrase:
+                # 压不出意图的（纯动作描述等）不占位置 —— 宁可少列，
+                # 也不要把「（发了一张表情包：撒娇）」当话题喂进去。
+                continue
+            shown += 1
+            lines.append(f"{shown}. {phrase} (兴趣程度: {d.intensity:.2f})")
+        if shown == 0:
+            # 三条全是纯动作描述 ⇒ 这一节整体不注入（不留只有标题的空壳）
+            return self.aspiration_fragment() or ""
         # D1: 追加长期目标（如果有）
         asp_frag = self.aspiration_fragment()
         if asp_frag:

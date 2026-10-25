@@ -91,3 +91,9 @@ tmp_ux/
 # 本地 git 事故备份（对象库损坏留证目录，禁止上传）
 .git.broken-*/
 .git.corrupt-*/
+
+# 2026-10-25: 人格/提示词改动前的手工备份（含生产正本副本，不入库）
+_backup_persona_*/
+
+# 2026-10-25: 人格/提示词快照导出（含生产正本，不入库）
+_current_prompt_snapshot.txt

@@ -119,6 +119,7 @@ def take_snapshot(core: Any) -> Optional[dict]:
         try:
             from anima.constitution.emotion_bridge import hydrate_emotion_memory
             from anima.constitution.identity import derive_identity
+            from anima.cognitive.intent_phrase import compress_intents
             auth = getattr(core, "memory_authority", None)
             if auth is not None:
                 hydrate_emotion_memory(auth.engine, data_dir, core=core)
@@ -126,7 +127,14 @@ def take_snapshot(core: Any) -> Optional[dict]:
                 ident = derive_identity(mem)
                 snap["traits"] = {k: round(float(v), 3)
                                   for k, v in (ident.traits or {}).items()}
-                snap["values"] = list(ident.values or [])[:10]
+                # 🔴 2026-10-25：`values` 此前**原样**落的是欲望/情感记录的 `value` 字段，
+                #   而那字段存的是模型写好的整句台词，形如：
+                #     "主人是在说咱的毛色像吗？还是想看咱穿兽装呀喵？"
+                #   快照本该记「我在意什么」，结果记成「我打算说什么」——
+                #   既不可读，也会在下次对比时把「换了句台词」当成「价值观变了」。
+                #   ⇒ 压成念头短语再落盘（与 `desire.prompt_fragment` 同一压缩点）。
+                snap["values"] = compress_intents(
+                    [str(v) for v in (ident.values or [])], limit=10) or []
                 snap["memory"] = {
                     "episodes": len(mem.episodes),
                     "semantic": len(mem.semantic),
