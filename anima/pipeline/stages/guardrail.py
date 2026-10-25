@@ -1125,6 +1125,36 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
         _user_wants_substantive(ctx.text or "")
         or _user_asked_question(ctx.text or "")
     ) else 420
+
+    # 🔴 2026-10-25：**群聊另有更紧的硬上限**（`group_reply_max_chars`）。
+    #
+    # 生产实证（50 天 1422 条出站，从 backups 里的 episodes 快照合并统计）：
+    #   平均 102.4 字 / 中位 84 / p90 179 / ≤25 字仅 1.0%
+    #   89% 的回复含 2 个以上句子
+    # 而人格明令「群里 25 字以内、默认一句最多两句」。差异的**机制**是：
+    # 人格是 prompt 层软约束，模型可以不听；420/900 这两道闸太宽，拦不住 84 字。
+    #
+    # 参考另一份人格设定（DeepSeek 鲸鱼娘）实测示例平均 **11 字**，
+    # 我们是它的 9.3 倍 —— 差距不在语气词，在**篇幅本身**。
+    #
+    # ⇒ 群聊加一道真实生效的闸：默认 160 字（= 人格 25 字 × 6 的宽容带，
+    #    只砍明显的长文，不碰正常短回复）。私聊保持 420/900 不变。
+    #    `0` = 关闭该闸（回退到只有 420/900）。
+    # ⚠️ 这是**硬截断**，会切掉内容 —— 所以上限设得比人格宽松得多，
+    #    它的职责是「别让 300 字的分析报告上屏」，不是「把每句压到 25 字」。
+    try:
+        _gc_cfg = getattr(getattr(ctx, "core", None), "config", None)
+        _grm = int(getattr(
+            getattr(_gc_cfg, "conversation", None), "group_reply_max_chars", 0
+        ) or 0)
+    except Exception:
+        _grm = 0
+    if _grm > 0 and ctx.detail_type == "group" and len(ctx.reply) > _grm:
+        _before_len = len(ctx.reply)
+        ctx.reply = _truncate_at_boundary(ctx.reply, _grm)
+        logger.info("[群聊长度] 超上限截断 %d→%d 字（上限 %d）",
+                    _before_len, len(ctx.reply), _grm)
+
     if len(ctx.reply) > hard_limit:
         ctx.reply = _truncate_at_boundary(ctx.reply, hard_limit)
         logger.info("Guardrail: 超长回复截断至 %d 字", len(ctx.reply))
