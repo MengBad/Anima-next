@@ -424,9 +424,17 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
     today = _today_str()
     pending = [c for c in creds if str(c.get("last_sign") or "") != today]
     if not pending:
-        return {"ok": True,
-                "items": [{"ok": True, "email": c["email"], "points": None,
-                           "reason": "今日已签到"} for c in creds]}
+        # 短路路径也要记历史 —— 否则用户查「签到记录」永远是空的
+        # （实测踩过：工具秒回「今日已签到」但 rainyun_history 说「还没有记录」）。
+        items = []
+        for c in creds:
+            try:
+                record_result(core, uid, c["email"], True, "今日已签到")
+            except Exception:
+                pass
+            items.append({"ok": True, "email": c["email"], "points": None,
+                          "reason": "今日已签到"})
+        return {"ok": True, "items": items}
     creds = pending
 
     ok, ahead = _queue_acquire(uid)

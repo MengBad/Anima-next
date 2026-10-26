@@ -854,3 +854,18 @@ def fake_runner(monkeypatch, tmp_path):
     script.write_text("# fake\n", encoding="utf-8")
     monkeypatch.setattr(R, "_runner_paths", lambda core: (str(py), str(script)))
     return py, script
+
+
+def test_shortcut_path_records_history(core):
+    """🔴 实测踩过：短路返回「今日已签到」时没写历史，
+    用户查「签到记录」永远说「还没有签到记录」。
+    """
+    import asyncio
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+    R.mark_signed(core, "111", "a@example.com", R._today_str())
+
+    res = asyncio.run(R.run_sign_in(core, "111"))
+    assert res["ok"] is True
+
+    txt = R.history_summary(core, "111")
+    assert "a@example.com" in txt, f"短路路径没记历史：{txt}"
