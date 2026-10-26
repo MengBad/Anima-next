@@ -1556,6 +1556,19 @@ class Heartbeat:
             getattr(getattr(self.core.config, "permissions", None), "owners", None) or []))
         ok, fail = 0, 0
         for uid in list(vault.keys()):
+            # 🔴 批量签到也要排队：单 Chrome 峰值 1.2G，并发 2 个就爆内存。
+            #    如果用户此刻正在手动签（占了槽），这里等它跑完再继续，
+            #    而不是硬起第二个浏览器。
+            try:
+                from anima.tools.builtin.rainyun_account import queue_status
+                for _ in range(120):        # 最多等 10 分钟（5s × 120）
+                    q = queue_status()
+                    if not q["running"] or q["running"] == uid:
+                        break
+                    await asyncio.sleep(5)
+            except Exception:
+                pass
+
             try:
                 res = await run_sign_in(self.core, uid)
             except Exception:

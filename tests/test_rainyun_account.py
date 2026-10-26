@@ -491,3 +491,139 @@ def test_tools_work_with_real_core(tmp_path, monkeypatch):
 
     assert "me@example.com" in out, f"工具读不到自己绑定的账号：{out!r}"
     assert "还没绑定" not in out
+
+
+# ---------------------------------------------------------------------------
+# 10. 队列：必须串行（内存硬约束）
+# ---------------------------------------------------------------------------
+#
+# 实测依据：单个签到 Chrome 峰值 1197 MB / 12 进程，可用内存约 2.1 GB。
+# 并发 2 个 ⇒ 内存耗尽、SSH 连接被挤断、机器无响应。
+# ⇒ 队列**只能** 1 个槽，这条不是「优化」而是「不挂机的必要条件」。
+
+@pytest.fixture(autouse=True)
+def _clean_queue():
+    R.reset_queue_for_test()
+    yield
+    R.reset_queue_for_test()
+
+
+def test_only_one_slot():
+    """第二个请求必须排队，不能同时跑。"""
+    ok1, ahead1 = R._queue_acquire("111")
+    assert ok1 is True and ahead1 == 0
+
+    ok2, ahead2 = R._queue_acquire("222")
+    assert ok2 is False, "第二个用户也拿到了槽 —— 会同时起两个 Chrome"
+    assert ahead2 == 1
+
+    ok3, ahead3 = R._queue_acquire("333")
+    assert ok3 is False
+    assert ahead3 == 2
+
+
+def test_queue_is_fifo():
+    """释放后，先来的先跑。"""
+    R._queue_acquire("111")          # 占槽
+    R._queue_acquire("222")          # 排第 1
+    R._queue_acquire("333")          # 排第 2
+    R._queue_release("111")
+    q = R.queue_status()
+    assert q["running"] == "222", "没按 FIFO 提升"
+    assert q["waiting"] == ["333"]
+
+
+def test_same_user_cannot_queue_twice():
+    """同一用户重复请求不重复入队。"""
+    R._queue_acquire("111")
+    ok, ahead = R._queue_acquire("111")
+    assert ok is False
+    assert ahead == -1, "同一用户被当成新的排队者"
+    assert R.queue_status()["waiting"] == []
+
+
+def test_queue_full_rejects():
+    """队列满 ⇒ 立刻拒绝（让用户等 10 分钟才失败更糟）。"""
+    R._queue_acquire("111")
+    for i in range(R.MAX_QUEUE_WAITERS):
+        R._queue_acquire(f"w{i}")
+    ok, ahead = R._queue_acquire("extra")
+    assert ok is False
+    assert ahead == R.MAX_QUEUE_WAITERS
+
+
+def test_release_frees_slot():
+    R._queue_acquire("111")
+    R._queue_release("111")
+    assert R.queue_status()["running"] is None
+    ok, _ = R._queue_acquire("222")
+    assert ok is True
+
+
+def test_release_unknown_user_is_safe():
+    """释放没占过槽的用户不能破坏队列。"""
+    R._queue_acquire("111")
+    R._queue_release("999")
+    assert R.queue_status()["running"] == "111"
+
+
+def test_queue_status_shape():
+    q = R.queue_status()
+    assert set(q) == {"running", "waiting", "capacity"}
+    assert q["capacity"] == R.MAX_QUEUE_WAITERS
+
+
+# ---------------------------------------------------------------------------
+# 11. 并发实测：5 个请求，必须真的串行
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_concurrent_requests_are_serialised(core, monkeypatch):
+    """🔴 核心：5 个用户同时请求，同一时刻最多 1 个在执行。
+
+    用计数器记录「同时进行中的数量」，断言峰值 == 1。
+    这是「不挂机」的唯一保证。
+    """
+    import asyncio
+
+    # 绑定 5 个用户
+    for i in range(5):
+        assert R.bind_account(core, str(i), f"u{i}@example.com", "password123")["ok"]
+
+    concurrent = 0
+    peak = 0
+
+    async def _fake_run_one(_core, uid, _creds):
+        nonlocal concurrent, peak
+        concurrent += 1
+        peak = max(peak, concurrent)
+        await asyncio.sleep(0.05)
+        concurrent -= 1
+        return {"ok": True, "items": [{"email": "x", "ok": True, "reason": "签到成功"}]}
+
+    monkeypatch.setattr(R, "_run_one_user", _fake_run_one)
+
+    results = await asyncio.gather(
+        *[R.run_sign_in(core, str(i)) for i in range(5)]
+    )
+    assert peak == 1, f"并发峰值 {peak}，必须为 1（否则会起多个 Chrome）"
+    # 至少有一个成功，其余被队列拒绝（不是静默失败）
+    assert any(r.get("ok") for r in results)
+    rejected = [r for r in results if not r.get("ok")]
+    assert all("排队" in r.get("reason", "") or "人多" in r.get("reason", "")
+               for r in rejected), f"被拒的原因不对：{rejected}"
+
+
+@pytest.mark.asyncio
+async def test_queue_released_after_exception(core, monkeypatch):
+    """执行抛异常也必须释放槽位（否则队列永久卡死）。"""
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+
+    async def _boom(_core, uid, _creds):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(R, "_run_one_user", _boom)
+    with pytest.raises(RuntimeError):
+        await R.run_sign_in(core, "111")
+
+    assert R.queue_status()["running"] is None, "异常后槽位没释放 —— 队列卡死"

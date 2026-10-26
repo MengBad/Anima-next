@@ -405,13 +405,35 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
 
     🔴 密码通过**匿名管道（stdin）**传给 runner，不走命令行参数 ——
     命令行参数会被 `ps aux` 看到。
-    """
-    import asyncio
 
+    🔴 **必须经过队列**：单个 Chrome 实测峰值 1197 MB（12 进程），
+    本机可用内存约 2.1 GB ⇒ 同时开 2 个就把内存挤爆
+    （实测：并发 2 个签到，SSH 连接直接被挤断、机器无响应）。
+    所以本函数只做「入队」，真正执行在 `_run_one_user`。
+    """
     uid = str(user_id or "").strip()
+    if not uid:
+        return {"ok": False, "reason": "拿不到你的用户标识"}
     creds = get_credentials(core, uid)
     if not creds:
         return {"ok": False, "reason": "你还没绑定雨云账号"}
+
+    ok, ahead = _queue_acquire(uid)
+    if not ok:
+        if ahead < 0:
+            return {"ok": False, "reason": "你已经在排队了，等这条跑完"}
+        return {"ok": False,
+                "reason": f"现在排队人多（前面 {ahead} 个），过几分钟再试"}
+
+    try:
+        return await _run_one_user(core, uid, creds)
+    finally:
+        _queue_release(uid)
+
+
+async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
+    """真正执行签到（已被队列串行化，这里可以放心起浏览器）。"""
+    import asyncio
 
     py, script = _runner_paths(core)
     if not (os.path.exists(py) and os.path.exists(script)):
@@ -423,6 +445,7 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
             "user": c["email"],
             "pass": c["password"],
         }, ensure_ascii=False)
+        proc = None
         try:
             proc = await asyncio.create_subprocess_exec(
                 py, script,
@@ -434,12 +457,15 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
                 proc.communicate(payload.encode("utf-8")),
                 timeout=SIGN_TIMEOUT,
             )
-            code = proc.returncode
-            res = _parse_runner_output(out.decode("utf-8", "replace"), code)
+            res = _parse_runner_output(
+                out.decode("utf-8", "replace"), proc.returncode)
         except asyncio.TimeoutError:
+            # 🔴 超时必须 kill：否则 Chrome 挂着占 1.2G，槽位也永不释放
+            _kill_proc(proc)
             res = {"ok": False, "reason": "签到超时（验证码可能未通过）"}
         except Exception as exc:
             logger.warning("[雨云] runner 调用失败: %s", type(exc).__name__)
+            _kill_proc(proc)
             res = {"ok": False, "reason": "签到组件执行失败"}
 
         res["email"] = c["email"]
@@ -450,9 +476,95 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
                 mark_signed(core, uid, c["email"], _dt.now().strftime("%Y-%m-%d"))
             except Exception:
                 pass
+        # 同一用户多账号之间留间隔，让 Chrome 完全退出、内存回收
+        await asyncio.sleep(INTER_ACCOUNT_GAP)
 
     ok_any = any(r.get("ok") for r in results)
     return {"ok": ok_any, "items": results}
+
+
+def _kill_proc(proc) -> None:
+    """尽力 kill 一个子进程。失败只记日志（不能让清理抛异常）。"""
+    if proc is None:
+        return
+    try:
+        if proc.returncode is None:
+            proc.kill()
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
+# 全局单槽队列
+# ---------------------------------------------------------------------------
+#
+# 🔴 为什么必须串行（不是并发池）：
+#
+#   单个签到 Chrome 实测峰值 1197 MB / 12 个进程，
+#   本机可用内存约 2.1 GB。
+#   实测并发 2 个 ⇒ 内存耗尽，SSH 连接被挤断，机器无响应。
+#
+#   ⇒ 只能 1 个槽，没有调参空间。
+
+#: 队列最多允许多少个「等待中」的用户（不含正在跑的那个）。
+#: 超过就拒绝 —— 让用户等 10 分钟才被告知失败，比立刻说「人多」更糟。
+MAX_QUEUE_WAITERS = 3
+
+#: 同一用户多账号之间的间隔（秒）。让 Chrome 完全退出、内存回收。
+INTER_ACCOUNT_GAP = 3
+
+#: 当前正在跑的用户 id（None = 空闲）
+_running_uid: Optional[str] = None
+
+#: 等待队列（FIFO，存 user_id）
+_waiters: list[str] = []
+
+
+def _queue_acquire(uid: str) -> tuple[bool, int]:
+    """尝试占槽。返回 `(是否拿到槽, 前面还有几人)`。
+
+    - `(True, 0)`   → 拿到槽，可以跑
+    - `(False, n)`  → 没拿到，前面 n 人（n > 0）
+    - `(False, -1)` → 该用户已在队列里（不重复入队）
+    """
+    global _running_uid
+    if uid in _waiters or uid == _running_uid:
+        return (False, -1)
+    if _running_uid is None:
+        _running_uid = uid
+        return (True, 0)
+    if len(_waiters) >= MAX_QUEUE_WAITERS:
+        return (False, len(_waiters))
+    _waiters.append(uid)
+    return (False, len(_waiters))
+
+
+def _queue_release(uid: str) -> None:
+    """释放槽位；若有等待者，把下一个提升为运行中。"""
+    global _running_uid
+    try:
+        if uid in _waiters:
+            _waiters.remove(uid)
+        if _running_uid == uid:
+            _running_uid = _waiters.pop(0) if _waiters else None
+    except Exception:
+        logger.debug("[雨云] 队列释放异常（已隔离）", exc_info=True)
+
+
+def queue_status() -> dict:
+    """当前队列状态（供工具展示「前面还有几人」）。"""
+    return {
+        "running": _running_uid,
+        "waiting": list(_waiters),
+        "capacity": MAX_QUEUE_WAITERS,
+    }
+
+
+def reset_queue_for_test() -> None:
+    """仅测试用：清空队列状态。"""
+    global _running_uid
+    _running_uid = None
+    _waiters.clear()
 
 
 def _parse_runner_output(stdout: str, returncode: int) -> dict:
@@ -551,7 +663,12 @@ def register_rainyun_tools(registry, core=None) -> None:
     async def _sign() -> str:
         uid = _current_user_id()
         if not uid:
-            return "拿不到你的用户标识"
+            return "查询失败：拿不到你的用户标识"
+        q = queue_status()
+        if q["running"] and q["running"] != uid:
+            ahead = len(q["waiting"]) + 1
+            return (f"现在有人在签（前面还有 {ahead} 个），"
+                    f"等一会儿再说一次「签到」就行。")
         res = await run_sign_in(core, uid)
         if not res.get("ok"):
             items = res.get("items") or []
