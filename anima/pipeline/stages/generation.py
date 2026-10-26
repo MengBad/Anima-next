@@ -189,6 +189,52 @@ _IMAGE_SEMANTIC_GUIDANCE = (
     "不要用 run_python —— 它只能做像素/几何变换，无法理解画面内容做语义级修改。"
     "若本次消息既没附图、也没引用到任何图（没有原图），如实告诉用户需要先给一张图，不要凭空生成。"
 )
+
+#: 🔴 2026-10-26：**无图 + 要新图** ⇒ 必须引导调 generate_image。
+#:
+#: 生产事故（17:14:41）：「帮我生成吴语萌大头照」→ 它回「看本喵给你捏一个出来」
+#: 但**一次工具都没调**，出站无 image 段。
+#: 根因：`_image_guidance_kind` 旧实现 `if not has_image: return None`
+#: ⇒ 纯生图请求**完全没有引导** ⇒ 模型当普通聊天回。
+#:
+#: 17:09 那两次能出图是**模型自己想到了**（概率性），不是引导保证的。
+#: 有引导才能稳定。
+_IMAGE_GENERATE_GUIDANCE = (
+    "用户要求【从无到有画一张新图】（房间里没有现成的图）。"
+    "**必须调用 generate_image 工具**，不要只用文字答应。"
+    "prompt 写清楚：主体是谁、在做什么、什么风格。"
+    "用户没给参考图时，按你的理解画；画不出或工具失败就**如实说没画成**，"
+    "绝不能说「给你捏好了」却什么都不发。"
+)
+
+#: 生图意图判据（无图时用）。
+#: ⚠️ 只收「明确的生图动词 + 图类名词/具体对象」，避免误判。
+#:
+#: 三类形态（缺一个就会漏）：
+#:   A. 动词 + 图类名词：「生成…大头照」「来张壁纸」「捏一个头像」
+#:   B. 强生图动词 + 量词 + 具体对象：「画**个**猫」「画**一只**鲸鱼」
+#:      🔴 量词是必需的 —— 没有量词时「我不太会画画」「这个画风真好」
+#:      会命中（实测踩过），那是在**评论画风**不是在要图。
+#:   C. 「帮我/给我/替我」+ 生图动词 + 量词：「帮我画一个」
+_IMAGE_GENERATE_RE = re.compile(
+    # A. 动词 + 图类名词
+    r"(?:生成|画|捏|做|整|弄|来|出|拍|搞)"
+    r".{0,12}"
+    r"(?:图|照片|头像|壁纸|海报|插画|画像|大头照|证件照|表情包|封面|立绘)"
+    r"|"
+    # B. 强生图动词 + **量词** + 具体对象
+    #    量词必须有，否则「我不太会画画」也会命中。
+    # 🔴 **不含「生成」** —— 「生成一个总结/生成一份报告」里的「生成」是泛动词，
+    #    不是生图。实测：「生成一个总结」曾被判成生图请求（测试抓出）。
+    #    「生成」类请求走规则 A（必须配图类名词才算）。
+    r"(?:画|绘制|捏)"
+    r"(?:个|只|条|张|幅|一个|一只|一条|一张|一幅)"
+    r"[\u4e00-\u9fff]{1,12}"
+    r"|"
+    # C. 「帮我/给我/替我」+ 生图动词 + 量词（明确要图但没给对象）
+    r"(?:帮我|给我|替我)(?:画|生成|捏|做)(?:一张|一幅|一个|个|张|幅)",
+    re.I,
+)
 _IMAGE_PRESENT_GUIDANCE = (
     "用户消息附带了图片，你可以基于它回答问题。"
     "若用户明确要求改动这张图，按类型分流："
@@ -365,20 +411,39 @@ def _resolve_bullying_reply(recent_count: int, severity: int = 0, *,
 
 
 def _image_guidance_kind(text: str, has_image: bool) -> str | None:
-    """图片操作引导三态分流（2026-10-01）。
+    """图片操作引导分流（2026-10-01，2026-10-26 补 ``generate``）。
 
-    返回 ``"semantic" | "manip" | "present" | None``：
+    返回 ``"generate" | "semantic" | "manip" | "present" | None``：
 
+    - ``generate``：**无图 + 要新图** → 注入 generate_image 引导（2026-10-26 新增）
     - ``semantic``：语义级改图（需理解画面内容）→ 注入 edit_image 引导
     - ``manip``   ：像素/几何级处理 → 注入 run_python 引导
     - ``present`` ：有图但无操作意图 → 仅告知「有图」，不诱导改图
-    - ``None``    ：无图，无需任何引导
+    - ``None``    ：其余情况，无需引导
+
+    ## 🔴 2026-10-26 补 ``generate`` 的原因（生产事故）
+
+    旧实现开头就是 `if not has_image: return None` —— **无图时直接返回 None**，
+    也就是「纯生图请求完全没有引导」。实测：
+
+        「帮我生成吴语萌大头照」        → None
+        「帮我生成吴语萌在天上飞的图」   → None
+
+    后果（17:14:32 事故）：模型收不到任何「要调 generate_image」的提示，
+    把它当普通聊天 ⇒ 第一次 ReAct 就返回 content 而非 tool_calls ⇒
+    **一次工具都没调**，但嘴上说「看本喵给你捏一个出来」。
+
+    （17:09 那两次能出图，是因为模型自己想到了要调工具 —— 概率性的，
+     不是引导保证的。有引导才能稳定。）
 
     抽成纯函数以便直接契约测试（不依赖 core / ctx 构造）。
     """
-    if not has_image:
-        return None
     body = text or ""
+    if not has_image:
+        # 🔴 无图 + 生图意图 ⇒ 必须引导，否则模型可能只回文字
+        if _IMAGE_GENERATE_RE.search(body):
+            return "generate"
+        return None
     if _IMAGE_SEMANTIC_RE.search(body):
         return "semantic"
     if _IMAGE_MANIP_RE.search(body):
@@ -1143,7 +1208,13 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
     _image_kind = _image_guidance_kind(
         ctx.text or "", bool(available_tools and ctx.inbound_images)
     )
-    if _image_kind == "semantic":
+    if _image_kind == "generate":
+        # 🔴 2026-10-26：无图 + 要新图 ⇒ 必须明确引导调 generate_image。
+        # 事故：模型收不到引导 ⇒ 一次工具没调，却回「给你捏一个出来」。
+        logger.info("[图像引导] trace=%s kind=generate text=%r",
+                    ctx.meta.get("trace", "-"), (ctx.text or "")[:60])
+        _inject_runtime_tool_guidance(ctx, _IMAGE_GENERATE_GUIDANCE)
+    elif _image_kind == "semantic":
         logger.info("[图像引导] trace=%s kind=semantic text=%r",
                     ctx.meta.get("trace", "-"), (ctx.text or "")[:60])
         _inject_runtime_tool_guidance(ctx, _IMAGE_SEMANTIC_GUIDANCE)
