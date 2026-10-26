@@ -516,21 +516,40 @@ class OwnerAgent:
         # 完全无知，用户问"东西呢"时只能编。这里留一条**摘要**（不写全文，
         # 免得污染上下文）：既让下一轮知道"我交过什么"，也不撑大记忆。
         #
-        # 🔴 2026-10-25：**摘要里绝不能带【步骤N】脚手架**。
-        #   生产实证（10-21～10-25，13 条）写进记忆的是：
-        #     （Agent 任务 e7dae7c2bc 已完成并交付 1936 字：【步骤1】读取文件 …）
-        #   而 `hydrate` 会把 chat_memory 里 role=bot 的条目当作
-        #   「**我自己说过的话**」喂回 prompt ⇒ 等于自己教自己用工程日志说话。
-        #   ⇒ 摘要改为：去脚手架后的**实质产物首句**，不带任务 id / 字数 / 步骤号。
+        # 🔴 2026-10-26：**包裹语本身是错的**（上线次日就出问题）。
+        #
+        # 生产实证（10-26 00:01:06，私聊）：实际发出去的那条，开头是一句
+        # 我拼的"交付告知语"，后面接的是模型在任务里随口抱怨的一句话。
+        # 见 `tests/test_agent_delivery_meta.py::test_fake_prose_wrapper_is_gone`
+        # （那里断言该句式不得再出现；此处刻意不复述原句，避免被误判为代码里还在用）。
+        #
+        # 两个错误叠在一起：
+        #  1. `_delivery_gist` 抽到的那句话根本**不是产物**，是模型在任务里
+        #     随口抱怨的一句话 —— 「实质产物首句」这个假设不成立：
+        #     步骤结果里混杂着思考、抱怨、寒暄，机械抽「末段首句」抽不准。
+        #  2. **那句包裹语把它包装成了正文发给用户**。旧格式
+        #     「（Agent 任务 xxx 已完成并交付 275 字：…）」虽然难看，但一眼是
+        #     内部消息；加一句人话包裹反而**冒充成了正常说话**。
+        #
+        # ⇒ 结论：交付通知**不该由本文件拼任何自然语言**。
+        #   用户已经通过 `gateway.send` 收到了真正的正文（上面 `sent` 片数）。
+        #   这里只需要给**对话层**留一条可回溯的、明显是元信息的记录，
+        #   让人（和模型自己）都知道"我干过一件事"，而不冒充正文。
+        #
+        #   格式：`[已交付 <任务短id>] <gist 或 状态>`
+        #     · 带方括号前缀 ⇒ 一眼是元信息，模型不会当自己的话延续
+        #       （`chat_memory._is_bot_meta_line` 会在注入时跳过它）
+        #     · 任务 id 只留 8 位（原来 10 位，够溯源又不占位）
+        #     · 不带字数/步骤号
         try:
             from anima.memory.chat_memory import get_chat_memory
             _gist = self._delivery_gist(body)
-            if _gist:
-                note = "（我刚把一份东西交过去了：%s）" % _gist
-                get_chat_memory().add(
-                    detail_type, target, "bot", "Anima", note,
-                    user_id=(int(task.creator) if detail_type == "group" else None),
-                )
+            note = "[已交付 %s] %s" % (
+                str(task.id)[:8], _gist or "（正文已发）")
+            get_chat_memory().add(
+                detail_type, target, "bot", "Anima", note,
+                user_id=(int(task.creator) if detail_type == "group" else None),
+            )
         except Exception:
             logger.debug("Agent 交付回写会话记忆失败（已隔离）", exc_info=True)
 

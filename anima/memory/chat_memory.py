@@ -78,6 +78,35 @@ def _neutralise_self_alias(text: str) -> str:
     return s
 
 
+#: bot 元信息条目的前缀（`owner_agent._deliver_text` 写入）。
+#: 这类记录是给人和审计看的**可回溯元信息**，不是"我说过的话"。
+#: 喂进对话的后果（实证）：模型会把它当自己的发言风格延续，
+#: 开始输出类似的方括号元信息；更早的版本是「（Agent 任务 xxx 已完成…）」，
+#: 模型学会了用工程日志口气说话。
+#:
+#: 🔴 单元素元组**必须带尾逗号**：写成 `("[已交付 ")` 是**字符串**，
+#:    `for p in "..."` 会逐字符迭代 ⇒ 任何以 `[` 开头的文本都会被误判成元信息
+#:    （实测把 bot 的 `[图片:一只猫]` 也跳过了）。这个坑由
+#:    `test_meta_filter_helper_only_matches_bot_prefixed` 抓出。
+_BOT_META_PREFIXES: tuple[str, ...] = ("[已交付 ",)
+
+
+def _is_bot_meta_line(entry: dict) -> bool:
+    """该条目是否为 **bot 的元信息**（注入时应跳过）。
+
+    ⚠️ 只判 `role == "bot"`：user 条目以 `[` 开头是常见占位
+    （`[用户发送了图片]`、`[外部来源引用…]`），那些是**正常内容**，不能跳。
+    """
+    if not isinstance(entry, dict):
+        return False
+    role = entry.get("role")
+    # 兼容两种存法：chat_memory 内部用 "bot"，有的路径用 "assistant"
+    if role not in ("bot", "assistant"):
+        return False
+    text = str(entry.get("content") or "")
+    return any(text.startswith(p) for p in _BOT_META_PREFIXES)
+
+
 def _clean_transport_entry(entry: dict) -> dict:
     """剥离不应进入上下文的 CQ 媒体载荷，保留普通文字。"""
     cleaned = dict(entry)
@@ -393,6 +422,22 @@ class ChatMemory:
                     _t = entry.get("time") or entry.get("ts")
                     if _t and (now - _t) > max_age_minutes * 60:
                         continue
+                # 🔴 2026-10-26：**元信息条目不进 prompt**。
+                #
+                # Agent 交付后会往 chat_memory 写一条 `[已交付 xxxxxxxx] …` 的
+                # 可回溯记录（`owner_agent._deliver_text`）。那是给人和审计看的
+                # 元信息，不是"我说过的话"。
+                #
+                # 喂进对话会怎样（实证）：模型看到 `[已交付 …]` 会把它当
+                # **自己的发言风格**延续，于是开始输出类似的方括号元信息。
+                # 更早的版本是「（Agent 任务 xxx 已完成并交付 275 字：…）」，
+                # 模型学会了用工程日志口气说话。
+                #
+                # 判据：bot 条目带元信息前缀 ⇒ 跳过。
+                # ⚠️ 只跳 bot：user 条目以 `[` 开头是常见的
+                #   「[图片]」「[外部来源引用…]」占位，那些是正常内容。
+                if _is_bot_meta_line(entry):
+                    continue
                 label = entry["name"] if entry["role"] == "user" else "你"
                 text = entry["content"]
                 vd = entry.get("vision_desc")
@@ -537,11 +582,13 @@ class ChatMemory:
         if not annotate:
             # 与 `get_context` 同一净化点：bot 历史发言里的自称/贬称漂移词
             # （本函数有 5 个消费者，是群语境的**主入口** —— 必须一起净）
+            # 2026-10-26：同样跳过 bot 的元信息条目（`[已交付 …]`）
             return [
                 {"role": m["role"],
                  "content": (_neutralise_self_alias(m["content"])
                              if m["role"] == "assistant" else m["content"])}
                 for m in rows
+                if not _is_bot_meta_line(m)
             ]
         annotated: list[dict] = []
         pending = 0
@@ -706,6 +753,9 @@ class ChatMemory:
             od = self._store[key]
             for _, entries in list(od.items())[-recent_rounds:]:
                 for entry in entries:
+                    # 2026-10-26：与 `get_context` 同一判据，跳过 bot 元信息
+                    if _is_bot_meta_line(entry):
+                        continue
                     label = entry["name"] if entry["role"] == "user" else "你"
                     # 与 `get_context` 同一净化点（bot 历史发言里的自称/贬称漂移词）
                     _text = str(entry["content"] or "")
