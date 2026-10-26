@@ -516,37 +516,56 @@ INTER_ACCOUNT_GAP = 3
 #: 当前正在跑的用户 id（None = 空闲）
 _running_uid: Optional[str] = None
 
-#: 等待队列（FIFO，存 user_id）
+#: 等待队列（FIFO，存 user_id）。**当前不用于排队** ——
+#: 语义是「抢占式拒绝」，见 `_queue_acquire` 的 docstring。
+#: 保留它只为了 `queue_status()` 的向后兼容与测试可观察性。
 _waiters: list[str] = []
+
+#: 自上次清空以来「被拒绝的次数」—— 用于给用户报告「前面还有几人」。
+#: 因为被拒者不入队，只能靠计数推算等待压力。
+_rejected_count: int = 0
 
 
 def _queue_acquire(uid: str) -> tuple[bool, int]:
     """尝试占槽。返回 `(是否拿到槽, 前面还有几人)`。
 
     - `(True, 0)`   → 拿到槽，可以跑
-    - `(False, n)`  → 没拿到，前面 n 人（n > 0）
+    - `(False, n)`  → 没拿到，前面 n 人（n > 0）—— **不占位、不入队**
     - `(False, -1)` → 该用户已在队列里（不重复入队）
+
+    🔴 **语义是「抢占式拒绝」而不是「排队等待」**：
+
+    本函数不把请求放进等待队列 —— 因为一旦入队，调用方就必须负责在
+    轮到自己时执行 + 释放，而调用方（工具/调度）是**立刻返回**给用户的
+    （用户不能等 5 分钟）。实测踩过：把被拒用户也塞进 `_waiters`，
+    结果它们永远不会执行、永远不释放 ⇒ 队列状态残留、
+    `running` 指向一个早就返回了的用户。
+
+    ⇒ 所以这里只做「当前能不能跑」的判定，入队交给调用方重试
+      （用户过一会儿再说一次「签到」）。`MAX_QUEUE_WAITERS` 只用于
+      **报告排队压力**（前面几人），不是真实队列长度。
     """
-    global _running_uid
+    global _running_uid, _rejected_count
     if uid in _waiters or uid == _running_uid:
         return (False, -1)
     if _running_uid is None:
         _running_uid = uid
+        _rejected_count = 0
         return (True, 0)
-    if len(_waiters) >= MAX_QUEUE_WAITERS:
-        return (False, len(_waiters))
-    _waiters.append(uid)
-    return (False, len(_waiters))
+    # 不 append 到 _waiters —— 见 docstring
+    _rejected_count += 1
+    return (False, _rejected_count)
 
 
 def _queue_release(uid: str) -> None:
-    """释放槽位；若有等待者，把下一个提升为运行中。"""
-    global _running_uid
+    """释放槽位。"""
+    global _running_uid, _rejected_count
     try:
         if uid in _waiters:
             _waiters.remove(uid)
         if _running_uid == uid:
-            _running_uid = _waiters.pop(0) if _waiters else None
+            _running_uid = None
+            _rejected_count = 0
     except Exception:
         logger.debug("[雨云] 队列释放异常（已隔离）", exc_info=True)
 
@@ -562,9 +581,10 @@ def queue_status() -> dict:
 
 def reset_queue_for_test() -> None:
     """仅测试用：清空队列状态。"""
-    global _running_uid
+    global _running_uid, _rejected_count
     _running_uid = None
     _waiters.clear()
+    _rejected_count = 0
 
 
 def _parse_runner_output(stdout: str, returncode: int) -> dict:

@@ -522,15 +522,27 @@ def test_only_one_slot():
     assert ahead3 == 2
 
 
-def test_queue_is_fifo():
-    """释放后，先来的先跑。"""
-    R._queue_acquire("111")          # 占槽
-    R._queue_acquire("222")          # 排第 1
-    R._queue_acquire("333")          # 排第 2
+def test_rejected_requests_do_not_pollute_queue():
+    """🔴 实测踩过：被拒绝的用户被塞进 `_waiters`，但它们永远不会执行、
+    永远不会释放 ⇒ 队列状态残留，`running` 指向早就返回了的用户。
+
+    ⇒ 语义是「抢占式拒绝」：拿不到槽就**不占位**，
+      让用户过一会儿自己重试。
+    """
+    R._queue_acquire("111")            # 占槽
+    ok2, ahead2 = R._queue_acquire("222")
+    ok3, ahead3 = R._queue_acquire("333")
+    assert ok2 is False and ok3 is False
+    # 被拒者不得进入等待队列
+    assert R.queue_status()["waiting"] == [], "被拒的用户污染了等待队列"
+    # 但「前面几人」仍要正确报告（用于文案）
+    assert ahead2 == 1
+    assert ahead3 == 2
+
+    # 释放后队列干净
     R._queue_release("111")
-    q = R.queue_status()
-    assert q["running"] == "222", "没按 FIFO 提升"
-    assert q["waiting"] == ["333"]
+    assert R.queue_status() == {"running": None, "waiting": [],
+                                "capacity": R.MAX_QUEUE_WAITERS}
 
 
 def test_same_user_cannot_queue_twice():
@@ -542,14 +554,15 @@ def test_same_user_cannot_queue_twice():
     assert R.queue_status()["waiting"] == []
 
 
-def test_queue_full_rejects():
-    """队列满 ⇒ 立刻拒绝（让用户等 10 分钟才失败更糟）。"""
+def test_reported_ahead_count_grows():
+    """「前面几人」随请求递增（用于给用户准确的等待提示）。"""
     R._queue_acquire("111")
-    for i in range(R.MAX_QUEUE_WAITERS):
-        R._queue_acquire(f"w{i}")
-    ok, ahead = R._queue_acquire("extra")
-    assert ok is False
-    assert ahead == R.MAX_QUEUE_WAITERS
+    counts = []
+    for i in range(4):
+        ok, ahead = R._queue_acquire(f"w{i}")
+        assert ok is False
+        counts.append(ahead)
+    assert counts == [1, 2, 3, 4], f"等待人数报告不对：{counts}"
 
 
 def test_release_frees_slot():
