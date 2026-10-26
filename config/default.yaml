@@ -303,7 +303,10 @@ sylann:
   engine_mode: "lite"               # Sylanne-Core: lite | pro | max
   assessor_enabled: true
   pel_core_enabled: true
-  tick_sessions_limit: 32
+  # 每次 tick 最多驱动多少个会话。0 = 不限制。
+  # 2026-10-26：32 → 4。50 小时实测 sylann_ticks +8015 而 llm_requests 只 +21
+  # ⇒ 每 6 次真实交互产生 8000 次 tick，只换来 84 条表达提示。原值从未被数据检验。
+  tick_sessions_limit: 4
 
 skills:
   enabled: true
