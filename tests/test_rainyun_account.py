@@ -403,3 +403,30 @@ def test_parse_runner_output_failure():
 def test_parse_runner_output_garbage():
     assert R._parse_runner_output("not json", 1)["ok"] is False
     assert R._parse_runner_output("", 0)["ok"] is False
+
+
+# ---------------------------------------------------------------------------
+# 8. 「今日已签到」不能被说成「签到成功」
+# ---------------------------------------------------------------------------
+
+def test_already_signed_reason_is_preserved():
+    """🔴 实测踩过：今日已签到时 runner 返回「今日已签到」，
+    但 `_parse_runner_output` 曾无条件覆盖成「签到成功」，
+    用户会以为又加了 500 分（积分其实没变）。
+    """
+    out = '{"ok": true, "points": 29100, "reason": "今日已签到"}'
+    res = R._parse_runner_output(out, 0)
+    assert res["ok"] is True
+    assert res["reason"] == "今日已签到", "把「已签到」说成了「签到成功」"
+
+
+def test_fresh_sign_reason_is_success():
+    out = '{"ok": true, "points": 29600}'
+    res = R._parse_runner_output(out, 0)
+    assert res["reason"] == "签到成功"
+
+
+def test_unknown_reason_is_normalised():
+    """runner 给了个不在白名单的成功原因 ⇒ 收敛成「签到成功」。"""
+    out = '{"ok": true, "points": 1, "reason": "随便什么"}'
+    assert R._parse_runner_output(out, 0)["reason"] == "签到成功"

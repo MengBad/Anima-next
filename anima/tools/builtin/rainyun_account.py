@@ -468,9 +468,16 @@ def _parse_runner_output(stdout: str, returncode: int) -> dict:
         if not isinstance(obj, dict):
             continue
         if obj.get("ok"):
+            # 🔴 保留 runner 给的 reason，不要无条件覆盖成「签到成功」。
+            #    runner 会区分「签到成功」与「今日已签到」——后者积分不变，
+            #    若统一说成「签到成功」，用户会以为又加了分（实测踩过：
+            #    今日已签到时返回「签到成功」而积分仍是 29100）。
+            _why = str(obj.get("reason") or "").strip()
+            if _why not in ("签到成功", "今日已签到"):
+                _why = "签到成功"
             return {"ok": True,
                     "points": obj.get("points"),
-                    "reason": "签到成功"}
+                    "reason": _why}
         return {"ok": False, "reason": _safe_reason(obj.get("reason"))}
     if returncode == 0:
         return {"ok": False, "reason": "签到组件没有返回结果"}
