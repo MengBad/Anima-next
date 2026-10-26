@@ -339,6 +339,87 @@ class ExplorationManager:
         notes = list(self.state.get("notes") or [])
         return list(reversed(notes[-max(1, min(100, int(limit))):]))
 
+    def by_id(self, note_id: str) -> dict[str, Any] | None:
+        """按 id 取回一条笔记（2026-10-26）。
+
+        ## 为什么需要它
+
+        生产事故（10-26 09:02）：它分享了法国抗议新闻，群友追「@MengKing 发」，
+        它回「发什么发，当本喵是自动复读机呢喵……」——**答不上细节**。
+
+        根因：主动发言路径拿到的 intent 只有 60 字摘要，笔记原文没跟着走。
+        ⇒ 现在 `_maybe_share` 把 `note_id` 写进 agenda；
+        追问时（`cognition_stage` 检测到「短追问 + 引用 bot 自己」）
+        用本方法按 id 取回**完整笔记**再注入。
+
+        ## 查找范围
+
+        先查 `state["notes"]`（上限 200 条，够用）。
+        找不到返回 None —— 调用方必须容忍（笔记可能已被裁剪）。
+        """
+        want = str(note_id or "").strip()
+        if not want:
+            return None
+        for note in reversed(self.state.get("notes") or []):
+            if not isinstance(note, dict):
+                continue
+            if str(note.get("id") or "") == want:
+                return note
+        return None
+
+    def last_shared_note(self) -> dict[str, Any] | None:
+        """最近一条**已分享**的笔记（追问兜底用）。
+
+        当 agenda 里没带 note_id（旧数据）时，退到「最近分享的那条」。
+        判据：`shared is True`，且按 `observed_at` 取最新。
+        """
+        best: dict[str, Any] | None = None
+        best_ts = -1.0
+        for note in self.state.get("notes") or []:
+            if not isinstance(note, dict) or not note.get("shared"):
+                continue
+            try:
+                ts = float(note.get("observed_at") or 0.0)
+            except (TypeError, ValueError):
+                ts = 0.0
+            if ts > best_ts:
+                best_ts = ts
+                best = note
+        return best
+
+    def followup_fragment(self, note_id: str = "") -> str:
+        """为「追问上一条分享」生成**完整资料**片段（2026-10-26）。
+
+        与 `relevant_fragment` 的区别：
+          · `relevant_fragment` 按**当前问句**做词面匹配（问「视频」才给视频笔记）
+          · 本方法按 **note_id / 最近分享** 直接取回，**不做匹配**
+            —— 因为追问（「发」「详细说说」「哪看的」）本身几乎没有关键词。
+
+        返回空串表示没有可用的笔记（调用方不注入）。
+        """
+        note = self.by_id(note_id) if note_id else None
+        if note is None:
+            note = self.last_shared_note()
+        if not note:
+            return ""
+        title = str(note.get("title") or "").strip()
+        summary = str(note.get("summary") or "").strip()
+        src = str(note.get("source") or "").strip()
+        url = str(note.get("url") or "").strip()
+        if not (title or summary):
+            return ""
+        lines = ["## 你刚才分享的那条，完整内容在这"]
+        if title:
+            lines.append(f"- 标题：{title}")
+        if summary:
+            lines.append(f"- 内容：{summary[:600]}")
+        if src or url:
+            lines.append(f"- 来源：{src} {url}".strip())
+        lines.append(
+            "（对方是在追问细节，不是让你复读。照着上面这些讲，"
+            "用你自己的口气，别念稿。）")
+        return "\n".join(lines)
+
     def relevant_fragment(self, text: str, limit: int = 3) -> str:
         """仅在当前问题与笔记有词面交集时注入，避免热点污染普通聊天。"""
         query = _search_terms(text)
@@ -1164,14 +1245,39 @@ class ExplorationManager:
             return
         if allowlist and int(group_id) not in allowlist:
             return
+        # 🔴 2026-10-26：**intent 必须带上完整资料，不能只给 60 字摘要**。
+        #
+        # 生产事故（10-26 09:02）：
+        #   09:02:26 它说「诶本喵刚刷到一个好玩的，法国那边又开始抗议了，抓了一千多人呢。」
+        #   09:02:40 群友追「@MengKing 发」（想看详情）
+        #   09:02:47 它回「发什么发，当本喵是自动复读机呢喵……」
+        #
+        # 根因两层：
+        #   1. 旧 intent 只有 `summary[:60]` ⇒ 它分享时**手上只有 60 字**，
+        #      被追问细节自然答不上，只能把「发」理解成「让我复读」并拒绝。
+        #   2. 主动发言路径（`autonomy._speak_locked`）**不注入探索笔记**
+        #      （只有被动回复 `cognition_stage` 才注入 `relevant_fragment`）
+        #      ⇒ 它在说那句话的时候，自己也不知道细节。
+        #
+        # 修法：intent 里给足 `summary[:400]` + 来源，并明确告知「被追问时讲这些」。
+        # 另带 `note_id` 到 agenda ⇒ 追问时可回查原文（见 `cognitive/agenda.py::note_id`）。
+        _detail = str(note.summary or "")[:400]
+        _src = str(note.source or "")
+        _url = str(note.url or "")
         intent = (
-            f"你刚刷到一条有意思的事：{note.title}——{note.summary[:60]}。"
-            "顺嘴跟群里提一嘴就行，别搞得像新闻播报，"
-            "就像'诶本喵刚看到个好玩的'那种感觉。"
+            f"你刚刷到一条有意思的事：{note.title}\n"
+            f"内容：{_detail}\n"
+            + (f"来源：{_src} {_url}\n" if (_src or _url) else "")
+            + "顺嘴跟群里提一嘴，别搞得像新闻播报，"
+              "就像'诶本喵刚看到个好玩的'那种感觉。\n"
+              "但**这些细节你要记住** —— 如果有人追问"
+              "（「发」「详细说说」「哪看的」），你能照着上面这些讲出来，"
+              "不要当成对方在让你复读。"
         )
         self.core.propose_agenda(
             int(group_id), intent, priority=0.62,
             expires_at=time.time() + 4 * 3600, source="external_exploration",
+            note_id=str(getattr(note, "id", "") or ""),
         )
         note.shared = True
         # note 已序列化入 state，需要同步最后一条。

@@ -26,8 +26,11 @@ def test_idle_detects_short_unaddressed_phrases():
     assert is_familiar_idle_unaddressed({}, "肺雾")
     assert is_familiar_idle_unaddressed({}, "煞笔")
     assert is_familiar_idle_unaddressed({}, "我没叫你")
-    # ≤12 字未点名也 idle
-    assert is_familiar_idle_unaddressed({}, "什么时候更新")
+    # ≤12 字未点名、且**不是在问它** ⇒ idle
+    # 🔴 2026-10-26：原先这里举的是「什么时候更新」——
+    #   那条含疑问词「什么」，按新判据属于**在提问** ⇒ 应放行（见 `test_question_*`）。
+    #   换成真正的纯闲聊/陈述短句。
+    assert is_familiar_idle_unaddressed({}, "视频太长了你自己看去")
     # pure CQ / empty after strip
     assert is_familiar_idle_unaddressed({}, "[CQ:image,file=x.jpg]")
     # @ someone else, not bot —— 判据是协议层 at_uids（I6：event["text"] 由 text 段拼接、

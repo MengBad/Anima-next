@@ -684,7 +684,22 @@ class SylannConfig(BaseModel):
     engine_mode: str = "lite"  # Sylanne-Core: lite | pro | max
     assessor_enabled: bool = True
     pel_core_enabled: bool = True
-    tick_sessions_limit: int = 32
+    #: 🔴 2026-10-26：每次 tick 最多驱动多少个会话。
+    #:
+    #: 生产实测（50 小时 health_history）：
+    #:     sylann_ticks        808534 → 816549  (+8015)
+    #:     sylann_responses        3595 →   3679  (+84)
+    #:     llm_requests               7 →     28  (+21)
+    #:
+    #: ⇒ 每 6 次真实交互产生 8000 次 tick，只换来 84 条表达提示。
+    #:   代价：每次 tick 要跑 sheaf 矩阵运算（σ / H¹ / dissociation），
+    #:   而 `data/sylann/engine` 下有 63 个会话文件 ⇒ 实际是
+    #:   「32 个会话 × 每 30 秒」的固定开销，与有没有人说话无关。
+    #:
+    #: 原值 32 是「够用就好」的猜数，从未被数据检验过。
+    #: 改 4：只 tick 最近活跃的少数会话，把算力留给真正在聊的。
+    #: `0` = 不限制（回退旧行为）。
+    tick_sessions_limit: int = 4
 
 
 class SkillsConfig(BaseModel):

@@ -1023,7 +1023,36 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     if exploration_cfg and getattr(exploration_cfg, "enabled", False):
         try:
             from anima.cognitive.exploration import get_exploration_manager
-            fragment = get_exploration_manager(core).relevant_fragment(ctx.text or "")
+            _ex = get_exploration_manager(core)
+            fragment = _ex.relevant_fragment(ctx.text or "")
+            # 🔴 2026-10-26：**追问上一条分享**时，注入完整笔记。
+            #
+            # 生产事故（10-26 09:02）：
+            #   09:02:26 它分享「诶本喵刚刷到一个好玩的，法国那边又开始抗议了，抓了一千多人呢。」
+            #   09:02:40 群友追「@MengKing 发」  ← 想看详情
+            #   09:02:47 它回「发什么发，当本喵是自动复读机呢喵……」
+            #
+            # 为什么答不上：`relevant_fragment` 按**当前问句**做词面匹配，
+            # 而「发」「详细说说」「哪看的」这类追问**几乎没有关键词**
+            # ⇒ 匹配不到那条笔记 ⇒ 模型手上只有主动发言时那句 60 字摘要。
+            #
+            # ⇒ 追问场景**不走词面匹配**，直接按 note_id / 最近分享取回原文。
+            #   判据很窄，避免把普通对话都当追问：
+            #     · 被直接呼叫（@ / 引用 / 喊名）
+            #     · 且当前文本很短（≤6 字）—— 「发」「说说」「哪看的」
+            if not fragment:
+                try:
+                    from anima.llm.group_gate import is_direct_group_call
+                    _txt = (ctx.text or "").strip()
+                    if is_direct_group_call(ctx.event or {}, _txt) and 0 < len(_txt) <= 6:
+                        _follow = _ex.followup_fragment("")
+                        if _follow:
+                            logger.info(
+                                "[追问兜底] 注入上一条分享的完整笔记（%d 字）",
+                                len(_follow))
+                            fragment = _follow
+                except Exception:
+                    logger.debug("追问兜底判定失败（已隔离）", exc_info=True)
             if fragment:
                 add_system_fragment("external_exploration", fragment, 25)
         except Exception:

@@ -123,7 +123,11 @@ class TestCapFieldIsWired:
         cap = snap["upstream_cap"]
         assert cap["configured"] is True
         assert cap["reachable"] is True
-        assert len(cap["groups"]) == 2
+        # 🔴 2026-10-26：`groups` 明细**不再落盘**（25KB/条，占单样本 93%，
+        # 49MB → 一年 900MB）。改为只存计数，明细去 CAP 查实时。
+        # 判据从「len(groups)==2」改为「groups_count==2 且无 groups 数组」。
+        assert cap["groups_count"] == 2
+        assert "groups" not in cap, "明细数组不该落盘（体积元凶）"
 
     def test_broken_group_surfaces_in_snapshot(self):
         probe = _FakeProbe(_real_probe([_BROKEN_GROUP, _HEALTHY_GROUP]))
@@ -158,9 +162,13 @@ class TestCapFieldIsWired:
 class TestFailClosed:
     def test_no_probe_is_configured_false_not_healthy(self):
         snap = _history(_Core(cap_probe=None))._snapshot(1_700_000_000.0)
-        assert snap["upstream_cap"] == {"configured": False}
-        # 关键：没有 reachable=True，也没有空的 broken_groups() 被当成"全好"
-        assert "reachable" not in snap["upstream_cap"]
+        # 🔴 2026-10-26：`_slim_cap` 会统一补一个 `upstream_reachable=False`
+        # （把历史上两种键名 `reachable` / `upstream_reachable` 归一）。
+        # 核心判据不变：**没有 reachable=True**，不能被当成"全好"。
+        cap = snap["upstream_cap"]
+        assert cap["configured"] is False
+        assert cap.get("reachable") is not True, "没探针时不得报健康"
+        assert cap["upstream_reachable"] is False
 
     def test_probe_raising_is_reachable_false(self):
         probe = _FakeProbe(RuntimeError("boom"))
@@ -177,7 +185,8 @@ class TestFailClosed:
         cap = snap["upstream_cap"]
         assert cap["reachable"] is False
         assert cap["error"] == "HTTP 503"
-        assert cap["groups"] == []
+        # 2026-10-26：groups 明细不再落盘；计数为 0 等价于「没有可用模型」
+        assert cap.get("groups_count", 0) == 0
         assert cap["broken_groups"] == []
 
     def test_health_sample_never_raises_from_bad_probe(self):

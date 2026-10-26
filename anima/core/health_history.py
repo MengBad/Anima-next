@@ -34,6 +34,73 @@ def _empty_latency() -> dict[str, Any]:
     return {"count": 0, "p50": 0.0, "p99": 0.0, "avg": 0.0, "max": 0.0}
 
 
+#: `upstream_cap` 里**保留**的标量字段（趋势判读够用）。
+_CAP_KEEP = (
+    "reachable", "range", "captured_at", "error", "retained_since",
+    "last_used", "latency_ms", "summary", "broken_groups", "configured",
+)
+
+
+def _slim_cap(cap: Any) -> dict[str, Any]:
+    """把 CAP 快照压成**只有标量 + 计数**的小对象（2026-10-26）。
+
+    ## 为什么
+
+    生产实测：`data/health_history.json` 49MB / 2880 条样本，
+    单条最大 28KB 里 **`groups` 独占 25KB（93%）** ——
+    那是 106 个模型的完整明细数组。环形缓冲只保条数不保体积
+    ⇒ 每 30 秒存一份 17KB 快照，一年 900MB。
+
+    健康历史要的是**趋势**（上游可达率、失败模型数、延迟变化），
+    不是「每个模型此刻的明细快照」。
+
+    ## 保留什么
+
+    - 全部标量字段（`_CAP_KEEP`）—— WebUI 与判读逻辑在用的
+    - `groups_count` / `all_failed_count` —— 计数足以看趋势
+    - **`failed_models` 原样保留** —— 它是个**小字典**（模型名 → 失败次数），
+      是「哪个模型在挂」的直接证据，判读必须靠它。
+      实测体积：5 个模型 ≈ 538 字节，不是瓶颈。
+
+    ## 丢弃什么
+
+    - **`groups` 明细数组**（106 项 × ~240 字节 = 25KB，占单条 93%）。
+      那是「每个模型此刻的完整状态」，健康历史不需要这个粒度 ——
+      需要明细时去 CAP 查实时，那里才是权威。
+
+    fail-closed：输入不是 dict 时返回 `{"reachable": None}`，
+    绝不伪造健康状态。
+    """
+    if not isinstance(cap, dict):
+        return {"reachable": None}
+    out: dict[str, Any] = {k: cap.get(k) for k in _CAP_KEEP if k in cap}
+    # 🔴 兼容两种键名：`_cap_usage` 的成功路径用 `reachable`（来自 CAP 的 to_dict），
+    # 失败/异常路径用 `upstream_reachable`（本文件 246-251 行自己拼的）。
+    # 两处历史上不一致，测试与 WebUI 都读过 `upstream_reachable` ⇒ 这里统一补上，
+    # 让下游无论走哪条路径都能拿到同一个判据。
+    if "upstream_reachable" not in out:
+        out["upstream_reachable"] = bool(cap.get("reachable")) if cap.get("reachable") is not None else False
+    groups = cap.get("groups")
+    if isinstance(groups, list):
+        out["groups_count"] = len(groups)
+        # 「全失败」的模型数 —— 这是最需要看趋势的一个量
+        try:
+            out["all_failed_count"] = sum(
+                1 for g in groups
+                if isinstance(g, dict) and g.get("all_failed"))
+        except Exception:
+            pass
+    # `failed_models` 是小字典（模型名 → 次数），保留原文
+    failed = cap.get("failed_models")
+    if isinstance(failed, dict):
+        out["failed_models"] = failed
+    elif isinstance(failed, list):
+        # 旧格式是列表 —— 保留（体积可控）
+        out["failed_models"] = failed
+    return out
+
+
+
 class HealthHistory:
     """保留最近约 48 小时的健康样本，供诊断和 WebUI 趋势使用。"""
 
@@ -142,7 +209,21 @@ class HealthHistory:
             # 失败才切换）。CAP 插件其实一直记着 failed/failure_status/effort，
             # 只是没人读。**只加字段，不新增周期任务**。
             # fail-closed：CAP 不可达 ⇒ `upstream_reachable=False`，**不谎报健康**。
-            "upstream_cap": cap,
+            #
+            # 🔴 2026-10-26：**必须瘦身**。生产实测 `data/health_history.json` 49MB，
+            # 而单条样本最大 28KB 里 **`upstream_cap.groups` 独占 25KB（93%）** ——
+            # 那是 106 个模型的完整明细（provider/model/requests/failed/
+            # failure_status/success_rate/all_failed/avg_latency）。
+            #
+            # `max_samples=2880`（30 秒 × 24 小时）⇒ 2880 × 17KB ≈ 49MB，
+            # 且**永不缩减**（环形只保条数，不保体积）。一年就是 900MB。
+            #
+            # 健康历史要的是**趋势**，不是「每个模型此刻的明细快照」。
+            # ⇒ 只留可判读的聚合量，丢弃逐模型数组：
+            #   · 保留 reachable / range / error / latency_ms / summary
+            #   · 保留 counts（groups 条数、失败模型数）供趋势观察
+            #   · 丢弃 groups / failed_models 明细（需要时去 CAP 查实时）
+            "upstream_cap": _slim_cap(cap),
         }
 
     def _cap_usage(self) -> dict[str, Any]:

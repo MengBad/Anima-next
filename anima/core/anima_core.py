@@ -204,8 +204,12 @@ class AnimaCore:
 
     def propose_agenda(self, group_id: int, text_intent: str, *, priority: float = 0.5,
                        not_before_at: float = 0.0, expires_at: float = 0.0,
-                       source: str = "system"):
-        """认知层和 owner 命令创建主动表达意图的唯一入口。"""
+                       source: str = "system", note_id: str = ""):
+        """认知层和 owner 命令创建主动表达意图的唯一入口。
+
+        ``note_id``（2026-10-26 新增）：这条议程背后的**资料来源 id**
+        （如探索笔记 id）。追问细节时按它取回完整笔记。
+        """
         from anima.cognitive.agenda import AgendaItem, is_garbled_text
         # P0/P1: 乱码/无意义内容不创建议程，避免 LLM 编造回复
         if is_garbled_text(text_intent):
@@ -217,7 +221,7 @@ class AnimaCore:
         )
         item = self.agenda.push(AgendaItem(
             group_id, text_intent, priority, not_before_at, expires_at,
-            intent_id=intent.id, source=source,
+            intent_id=intent.id, source=source, note_id=str(note_id or ""),
         ))
         self.audit.emit("agenda_created", agenda_id=item.id, group_id=item.group_id,
                         priority=item.priority, intent_id=intent.id, source=source)

@@ -59,6 +59,77 @@ _FAMILIAR_IDLE_PHRASES = frozenset({
 })
 # 熟人未点名时：超过此长度才考虑插话（原 4 字太松，导致乱接闲聊）。
 _FAMILIAR_IDLE_MAX_CHARS = 12
+
+#: 问句特征（含问号或疑问词）—— 短句命中这些 ⇒ 是在问，不是闲聊。
+_QUESTION_MARKERS = (
+    "？", "?", "什么", "啥", "哪", "怎么", "咋", "为什么", "为何", "多少",
+    "吗", "呢", "是不是", "有没有", "能不能", "可不可以", "如何", "几",
+)
+
+#: 请求特征 —— 在让 bot 做事（发/说/来/给/查…）。
+_REQUEST_MARKERS = (
+    "发点", "发个", "来点", "来个", "给我", "帮我", "说说", "讲讲", "讲讲看",
+    "看看", "查查", "找找", "推荐", "讲一下", "说一下", "详细", "展开",
+    "再多", "然后呢", "继续", "接着", "还有呢",
+)
+
+#: 指向 bot 的人称（未点名但明显在对它说）。
+#: 🔴 单靠人称不够：「视频太长了你自己看去」也含「你」，但那是**陈述**不是提问。
+#: ⇒ 人称必须与「疑问/请求」共现才算（见 `_looks_like_question_or_request` 第 3 条）。
+_ADDRESSED_MARKERS = ("你", "您", "本喵", "哈基米")
+
+#: 指向 bot 的**提问句式**：人称 + 疑问词/请求动词的紧邻组合。
+#: 比「含『你』」窄得多 —— 只有这些形态才视为「在问它」。
+_ADDRESSED_PATTERNS = (
+    "你看了", "你看过", "你知道", "你觉得", "你会", "你能", "你可以",
+    "你说说", "你讲讲", "你推荐", "你查", "你发", "你给", "你帮",
+    "你最近", "你刚才", "你上次", "你刷到", "你看到", "你听过",
+    "你叫什么", "你是谁", "你在干嘛", "你在干什么",
+)
+
+
+def _looks_like_question_or_request(text: str) -> bool:
+    """短句是否**在问它/求它**（而不是纯闲聊）。
+
+    ## 为什么需要它（2026-10-26）
+
+    `_FAMILIAR_IDLE_MAX_CHARS = 12` 一刀切把「在问它」和「纯闲聊」一起拦掉：
+
+        9字 「发点人类的视频好吗」    → 被判 idle（实际是请求）
+        7字 「你看了什么视频」        → 被判 idle（实际是提问）
+       10字 「你最近刷到什么好玩的」  → 被判 idle（实际是提问）
+       10字 「视频太长了你自己看去」  → 被判 idle（这条确实该拦 ✅）
+
+    后果：**群友以为它不会回答，实际是它根本没收到**。
+
+    ## 判据（三选一，保守）
+
+    1. 含问号或疑问词（什么/哪/怎么/吗…）
+    2. 含请求词（发点/来点/给我/说说/推荐…）
+    3. 含**指向 bot 的提问句式**（`_ADDRESSED_PATTERNS`：你看了/你觉得/你推荐…）
+
+    ⚠️ 第 3 条刻意用**具体句式**而不是「含『你』」：
+    实测「视频太长了你自己看去」含「你」但那是陈述句，
+    用「含『你』」会把它放行 ⇒ 熟人乱插话。
+
+    纯函数、无 I/O。
+    """
+    s = str(text or "").strip()
+    if not s:
+        return False
+
+    # 1. 问号 / 疑问词
+    if any(m in s for m in _QUESTION_MARKERS):
+        return True
+    # 2. 请求词
+    if any(m in s for m in _REQUEST_MARKERS):
+        return True
+    # 3. 指向 bot 的具体提问句式（不是"含你"这么粗）
+    if any(p in s for p in _ADDRESSED_PATTERNS):
+        return True
+    return False
+
+
 # 对方示意对话结束的信号：命中后 bot 不再连环追着说。
 # 规则：硬缺口——若群友已明示「不聊/睡了/别再回复/下线/晚安/收工」等收尾，
 # bot 除非被直接点名需要实际回应，否则不接不追，避免把聊天拖成一串互怼。
@@ -249,8 +320,25 @@ def is_familiar_idle_unaddressed(event: dict, text: str) -> bool:
         return True
     compact = re.sub(r"[\s\W_]+", "", plain, flags=re.UNICODE)
     # 未点名时抬高门槛：短闲聊/半句不接，减少熟人乱插话
+    #
+    # 🔴 2026-10-26：**问句/请求句不受长度限制**。
+    #
+    # 生产实证：`_FAMILIAR_IDLE_MAX_CHARS = 12` 一刀切，把「在问它」的短句
+    # 和「纯闲聊」一起拦掉了：
+    #
+    #     9字 「发点人类的视频好吗」      → idle（这是在请求它做事！）
+    #     7字 「你看了什么视频」          → idle（这是在问它！）
+    #    10字 「你最近刷到什么好玩的」    → idle（这是在问它！）
+    #    10字 「视频太长了你自己看去」    → idle（这条确实该拦 ✅）
+    #
+    # 前三句被拦的直接后果：**群友以为它不会回答，实际是它根本没收到**。
+    #
+    # ⇒ 判据从「长度」改为「长度 + 是不是在问/求它」：
+    #   命中问句/请求特征 ⇒ 交给后续亲密度判定（不再按 idle 拦）。
+    #   纯闲聊短句（「视频太长了你自己看去」）仍按长度拦。
     if len(plain) <= _FAMILIAR_IDLE_MAX_CHARS or len(compact) <= _FAMILIAR_IDLE_MAX_CHARS:
-        return True
+        if not _looks_like_question_or_request(plain):
+            return True
     normalized = plain.replace("？", "").replace("?", "").replace("！", "").replace("!", "").strip()
     if plain in _FAMILIAR_IDLE_PHRASES or normalized in _FAMILIAR_IDLE_PHRASES:
         return True
