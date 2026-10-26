@@ -484,6 +484,81 @@ def _tool_failure_fallback(user_text: str) -> str:
     return "本喵这次没查到准信，不想乱编；换个问法或过会儿再试试喵。"
 
 
+#: 声称「已完成某个多步任务」的句式（2026-10-26）。
+#:
+#: 生产事故（10-26 16:11~16:17）：用户让它「生成吴雨萌在天上飞的图」，
+#: 任务 `b37febecaf` 状态停在 `planning`、**0 个步骤**、
+#: `created_at == updated_at`（从创建起一次都没被碰过）。
+#: 但它连续三条说：
+#:   「好嘞，那本喵这就去办，等我好消息喵~」
+#:   「已经办妥啦，快夸夸我！」
+#:   「已经弄好啦，快看看满意不喵！」
+#:
+#: **`_looks_like_fake_action` 拦不住这个** —— 那道闸在 `agent/executor.py` 里，
+#: 只检查「Agent 任务的某个 step 声称完成却没调工具」。
+#: 而这次任务根本没进 executor（还停在 planning），回复是**对话层**产出的，
+#: 完全绕过了 agent 侧所有护栏。
+#:
+#: ⇒ 对话层必须有自己的编造检测。
+_CLAIM_DONE_RE = re.compile(
+    r"(已经办妥|已经办好|已经弄好|已经做好|办妥了|弄好了|做好了|"
+    r"搞定(了|啦)|已完成|已经完成|完成了|"
+    r"这就去办|马上去办|已经在办|正在办)"
+)
+
+#: 允许「声称完成」的前提：本回合**确实有**工具调用或任务活动。
+#: 没有这些证据时，声称完成 = 编造。
+_ACTIVITY_EVIDENCE_KEYS = ("tool_trace", "agent_task_id", "generation_tool_calls")
+
+
+def _has_activity_evidence(ctx: "PipelineContext") -> bool:
+    """本回合是否有**实际活动**的证据（工具调用 / 任务创建）。
+
+    判据刻意宽松（宁可漏判）：只要有任一证据就认为「它可能真做了事」。
+    真正的编造是「什么都没有，却说得像做完了」。
+    """
+    try:
+        trace = ctx.meta.get("tool_trace")
+        if isinstance(trace, list) and trace:
+            return True
+        for k in _ACTIVITY_EVIDENCE_KEYS[1:]:
+            if ctx.meta.get(k):
+                return True
+        # 生成本身可能调用过工具（generation 阶段把调用记在这里）
+        if ctx.meta.get("tools_called"):
+            return True
+    except Exception:
+        return True   # 判不了就当有证据（不误拦）
+    return False
+
+
+def _looks_like_fake_completion(reply: str, ctx: "PipelineContext") -> bool:
+    """对话层编造「任务已完成」（2026-10-26 事故后新增）。
+
+    ## 为什么要独立于 `agent/executor._looks_like_fake_action`
+
+    那道闸只覆盖「Agent 任务的某个 step」。而生产事故里任务**从未进入
+    executor**（停在 planning），回复由对话层直接产出 ⇒ agent 侧护栏全绕过了。
+
+    ## 判据（两条同时满足才判编造，宁少勿错）
+
+    1. 回复里出现**完成态断言**（已经办妥/弄好了/完成了/这就去办…）
+    2. 本回合**没有任何实际活动证据**（无 tool_trace、无任务 id、无工具调用）
+
+    ⚠️ 纯文本任务（「整理并汇报最近的事」）不调工具也能完成 ——
+    但那种回复通常不会说「已经办妥」这类**动作完成语**，而会说内容本身。
+    实测样本里编造的三条全都是纯动作断言、零内容。
+    """
+    text = str(reply or "")
+    if not text:
+        return False
+    if not _CLAIM_DONE_RE.search(text):
+        return False
+    if _has_activity_evidence(ctx):
+        return False
+    return True
+
+
 def _runtime_status_reply(tool_trace: object) -> str:
     """状态工具已成功时，保留事实数据而不是被泄漏护栏误改为空失败。"""
     if not isinstance(tool_trace, list):
@@ -995,6 +1070,32 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             return StageResult.SKIP_REPLY
     except Exception:
         logger.debug("prompt 泄漏检测失败（已隔离）", exc_info=True)
+
+    # 🔴 2026-10-26：**对话层编造「任务已完成」**（生产事故）。
+    #
+    # 事故（16:11~16:17）：用户要「生成吴雨萌在天上飞的图」，
+    # 任务 `b37febecaf` 停在 planning / 0 步骤 / `created_at == updated_at`，
+    # 但它连说三次「这就去办 / 已经办妥啦 / 已经弄好啦」。
+    #
+    # `agent/executor._looks_like_fake_action` 拦不住 —— 那道闸只覆盖
+    # 「Agent 任务的某个 step」，而这次任务**从未进 executor**，
+    # 回复是对话层产出的 ⇒ agent 侧护栏全绕过。
+    #
+    # 处置：**不改写、不替换**，直接标记 + 拒发。
+    # 为什么拒发而不是替换成「本喵还没做」：
+    #   替换是**又一次替它说话**，而且说错了用户也不知道。
+    #   拒发会让上游走「空回复 + 诚实遥测」路径，用户看不到假消息，
+    #   日志里有 `[编造完成拦截]` 可追溯。
+    try:
+        if _looks_like_fake_completion(ctx.reply, ctx):
+            logger.error(
+                "[编造完成拦截] 出站声称任务完成，但本回合零活动证据，已拒发 len=%d",
+                len(ctx.reply or ""))
+            ctx.reply = ""
+            ctx.meta["fake_completion_blocked"] = True
+            return StageResult.SKIP_REPLY
+    except Exception:
+        logger.debug("编造完成检测失败（已隔离）", exc_info=True)
 
     # 🔴 2026-10-25：**emoji / 颜文字出站兜底**。
     #
