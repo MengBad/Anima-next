@@ -121,6 +121,31 @@ def _clean_transport_entry(entry: dict) -> dict:
 class ChatMemory:
     """短期对话记忆，支持 JSON 文件持久化。"""
 
+    #: 🔴 2026-10-27：**单轮条数上限**与**单轮时间跨度上限**。
+    #:
+    #: 事故（生产实测）：`round` 原本**只在 bot 回复后**才切下一轮
+    #: （`add()` 里 `if role == "bot"` 才新建 round）。bot 不回复的群聊时段
+    #: 会把这些用户消息**无限堆进同一轮**，于是「一轮」根本不是一轮对话，
+    #: 而是按用户累积的桶：
+    #:
+    #:     146 个轮的跨度 > 1 小时；最长 round_55 跨度 222 小时（9 天）、93 条消息
+    #:     round_156 装了 17:12→18:40 近 1.5 小时、15 条消息、含 6 次 /say
+    #:
+    #: 后果：`get_context(recent_rounds=8)` 里 8 个「轮」可能横跨好几天 ——
+    #: `memory_stage` 的 `max_age_minutes=30` 能挡住注入，但 `recent_rounds`
+    #: 选出的 8 轮里有效内容被稀释（8 轮里 7 轮超龄被滤掉 ⇒ 真实上下文变少）；
+    #: 且轮内顺序把「9 天前的消息」和「刚才的消息」摆在同一段，模型会
+    #: 把久远话题当成仍在继续（复核复读事故：10-25 22:18 与 10-26 11:54
+    #: 同处 round_146）。
+    #:
+    #: ⇒ 双闸门：条数超限 或 距本轮首条超时 ⇒ 开新轮。
+    #: 阈值取「偏宽」的一侧 —— 目的是消灭 9 天/222 小时这种病态桶，
+    #: 不是把正常长对话切碎（真人连发 60 条以内不该断）。
+    MAX_ENTRIES_PER_ROUND = 60
+    #: 单轮最长跨度（秒）。30 分钟与 `memory_stage` 的注入窗口对齐 ——
+    #: 超过这个跨度的消息本来就不该被当成「同一段对话」。
+    MAX_ROUND_SPAN_SEC = 1800.0
+
     def __init__(self, max_rounds: int = 20, persist_path: str = ""):
         self.max_rounds = max_rounds
         self._store: dict[str, OrderedDict[str, list[dict]]] = defaultdict(
@@ -315,6 +340,26 @@ class ChatMemory:
         last_round_key = next(reversed(od))
         od[last_round_key].append(entry)
 
+        # 🔴 2026-10-27：**轮边界双闸门（条数 / 时间跨度）**。
+        #
+        # 原来只有 `role == "bot"` 才切轮 ⇒ bot 不回复时用户消息无限堆积，
+        # 于是出现 222 小时 / 93 条消息的「一轮」。详见
+        # `MAX_ENTRIES_PER_ROUND` 处的注释与生产实测数据。
+        #
+        # ⚠️ 这里的判定必须在**追加之后**做（`od[last_round_key]` 已含本条），
+        #    且只在「该轮还剩内容」时切 —— 若本条正好是 bot 回复，
+        #    下面的 bot 分支会负责切轮，不必重复切出空轮。
+        _split_by_size = len(od[last_round_key]) >= self.MAX_ENTRIES_PER_ROUND
+        _split_by_span = False
+        try:
+            _first_ts = float(od[last_round_key][0].get("ts") or 0.0)
+            _last_ts = float(entry.get("ts") or 0.0)
+            if _first_ts and _last_ts and (_last_ts - _first_ts) > self.MAX_ROUND_SPAN_SEC:
+                _split_by_span = True
+        except (TypeError, ValueError, IndexError):
+            # 脏数据（ts 缺失/非数值）不切轮 —— 宁可留大桶，不可误切丢上下文
+            _split_by_span = False
+
         if role == "bot":
             # ANM-007：用『现有最大轮号 + 1』命名新 round，而非 len(od)。
             # LRU 淘汰后 od 长度 < 最大轮号，若用 len(od) 会在淘汰后覆盖最新非空轮，
@@ -326,6 +371,20 @@ class ChatMemory:
                     if suffix.isdigit():
                         max_n = max(max_n, int(suffix))
             od[f"round_{max_n + 1}"] = []
+        elif _split_by_size or _split_by_span:
+            # 用户消息触发的切轮：把本条**移入新轮**（它属于下一段对话）。
+            # 只切一个空轮给「下一条」会让本条留在超限轮里，闸门形同虚设。
+            try:
+                od[last_round_key].pop()
+            except IndexError:
+                pass
+            max_n = 0
+            for rk in od:
+                if rk.startswith("round_"):
+                    suffix = rk[len("round_"):]
+                    if suffix.isdigit():
+                        max_n = max(max_n, int(suffix))
+            od[f"round_{max_n + 1}"] = [entry]
 
         # LRU：轮数超上限时淘汰最旧轮。
         # 兼容 dict / OrderedDict：Python 3.7+ 的普通 dict 也保持插入序，首键即最旧轮。
