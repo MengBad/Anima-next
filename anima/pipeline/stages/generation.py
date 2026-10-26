@@ -451,6 +451,72 @@ def _image_guidance_kind(text: str, has_image: bool) -> str | None:
     return "present"
 
 
+async def _force_generate_image(core, ctx: "PipelineContext") -> bool:
+    """强制生图兜底：不经模型选择，直接调 generate_image（2026-10-26）。
+
+    ## 什么时候用
+
+    只在本回合被判为 `generate`（明确要新图）**且** ReAct 跑完
+    `generated_image_paths` 仍为空时调用。
+
+    ## 为什么需要它（生产实证）
+
+    18:40 那次：引导注入成功（`[图像引导] kind=generate`），但模型第一轮
+    就返回 content、无 tool_calls ⇒ 零工具调用 ⇒ 只说话不给图。
+    `tool_choice` 恒为 `auto`（`llm/__init__.py:702`）⇒ 模型有权不调。
+
+    ⇒ 引导是**软约束**，必须在事后补一次**硬调用**。
+
+    ## 为什么直接调工具而不是重跑 ReAct
+
+    · 重跑要靠模型这次听话 —— 它上一轮就没听，再赌一次没意义；
+    · prompt 直接取用户原话（已经足够描述要画什么）；
+    · 「多生成一张图」的代价（配额 +1）远小于「用户拿不到图」。
+
+    ## 返回
+
+    True = 补出来了；False = 没补出来（配额用尽/服务不可用/无 manager）。
+    调用方（`generation_stage`）不因 False 而失败。
+    """
+    manager = getattr(core, "image_generation", None)
+    if manager is None:
+        logger.warning("[生图兜底] 无 image_generation manager，跳过")
+        return False
+    prompt = str(getattr(ctx, "text", "") or "").strip()
+    if not prompt:
+        return False
+    # 去掉 @ / 命令前缀等噪声，只留「要画什么」
+    prompt = re.sub(r"^[@\s]+", "", prompt)
+    prompt = re.sub(r"\s+", " ", prompt)[:200]
+    try:
+        path = await manager.generate(prompt)
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("[生图兜底] 生图失败: %s", exc)
+        return False
+    if not path:
+        return False
+    # 写回上下文（出站层从这里取图）
+    try:
+        if isinstance(getattr(ctx, "generated_image_paths", None), list):
+            ctx.generated_image_paths.append(str(path))
+        else:
+            ctx.generated_image_paths = [str(path)]
+    except Exception:
+        pass
+    # 也记进跨回合记忆（供后续融合/改图）
+    try:
+        remember_generated_image(
+            str(getattr(ctx, "detail_type", "") or ""),
+            int(getattr(ctx, "group_id", None) or getattr(ctx, "user_id", 0) or 0),
+            str(path),
+        )
+    except Exception:
+        logger.debug("生图兜底：跨回合记忆失败（已隔离）", exc_info=True)
+    logger.info("[生图兜底] 已补生成图片: %s", str(path)[-40:])
+    return True
+
+
+
 def _inject_runtime_tool_guidance(ctx: PipelineContext, guidance: str) -> bool:
     """把本轮工具提示插入唯一 system，且保持身份锁定仍在末尾。"""
     if not guidance:
@@ -1332,6 +1398,34 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
             _inject_secret_bias(ctx, _secret_bias)
 
         reply = await react.run(ctx.messages, temperature=_temperature, max_tokens=_max_tokens)
+
+        # 🔴 2026-10-26：**生图意图的强制兜底**。
+        #
+        # 事故（18:40:34）：引导注入**成功了**：
+        #     [图像引导] kind=generate text='生成吴语萌大头照给华初'
+        # 但 generation_stage 只用了 4.7s（成功生图要 28s），
+        # ReAct 第一轮就返回 content、无 tool_calls ⇒ 一次工具没调。
+        #
+        # 结论：**引导是软约束，模型可以不听**（`tool_choice` 恒为 auto）。
+        # ⇒ 在 ReAct 之后校验：如果本回合是「明确要生图」但**一张图都没产出**，
+        #    就直接调一次 `generate_image`（不经过模型选择），把图补出来。
+        #
+        # 为什么直接调工具而不是「重跑 ReAct」：
+        #   · 重跑要靠模型这次听话 —— 它上一轮就没听，再赌一次没意义；
+        #   · prompt 里已经有 prompt 文本（用户请求本身），直接拿来生图足够；
+        #   · 生图是幂等性低但**副作用可接受**的操作（多一张图 vs 用户拿不到图）。
+        #
+        # fail-soft：任何异常都不影响主回复（图没补出来，至少话还在）。
+        if _image_kind == "generate" and available_tools is not None:
+            try:
+                _paths_now = available_tools.get_call_context().get("generated_image_paths") or []
+                if not _paths_now:
+                    logger.warning(
+                        "[生图兜底] 引导已注入但模型未调工具，直接补调 generate_image text=%r",
+                        (ctx.text or "")[:60])
+                    await _force_generate_image(core, ctx)
+            except Exception:
+                logger.debug("生图兜底失败（已隔离）", exc_info=True)
     except Exception:
         logger.exception("ReAct 生成阶段异常，降级为可见回复")
         _record_fallback(core, "react_error")
