@@ -332,7 +332,21 @@ async def unified_recall(core, query: str, *, group_id=None, user_id=None,
     try:
         from anima.memory.chat_memory import get_chat_memory
         cm = get_chat_memory()
-        entries = cm.get_context("group", int(group_id), user_id=user_id) if group_id else []
+        # 🔴 2026-10-27：**必须带时间窗**，否则会注入好几天前的聊天。
+        #
+        # `get_context` 不带 `max_age_minutes` 时返回该用户全部存活轮次
+        # 的消息，取 `entries[-5:]` 只保证「最后 5 条」，不保证「最近的」。
+        # 生产实测存在 222 小时 / 93 条消息的累积桶
+        # （bot 长期不回复时用户消息堆进同一轮），
+        # ⇒ `entries[-5:]` 可能是**9 天前**的对话，被当作「当前上下文」
+        #    注入 ⇒ 模型答非所问 / 复读旧话题。
+        #
+        # 与 `memory.py` 的 `max_age_minutes=30` 对齐：本来就不该把
+        # 半小时前的话题当成仍在继续。`max_messages` 兜住条数。
+        entries = cm.get_context(
+            "group", int(group_id), user_id=user_id,
+            max_age_minutes=30, max_messages=int(lim["chat"]) * 2,
+        ) if group_id else []
         out["chat"] = [str(e.get("content", ""))[:120] for e in entries[-lim["chat"]:]]
     except Exception:
         pass
