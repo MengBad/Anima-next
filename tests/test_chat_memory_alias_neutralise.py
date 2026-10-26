@@ -159,3 +159,44 @@ def test_recent_group_context_annotate_path_neutralises(tmp_path):
         m["content"] for m in recent if m["role"] == "assistant")
     assert "本大爷" not in joined
     assert "两脚兽" not in joined
+
+
+# ── 历史元信息残留（2026-10-27）────────────────────────────────────
+
+def test_legacy_meta_prefixes_are_filtered():
+    """三代交付包裹语都必须被识别为元信息（含已停产的两代旧格式）。
+
+    生产 `data/chat_memory.json` 里残留 2 条第 1 代格式
+    （`（我刚把一份东西交过去了：…）`），每次注入都在教模型用那种口气说话。
+    """
+    from anima.memory.chat_memory import _is_bot_meta_line
+
+    for content in (
+        "[已交付 657bbeee] 主人～最近有没有去吃榆林炸鸡腿呀？",
+        "（我刚把一份东西交过去了：本喵的排雷指南收好啦喵！）",
+        "（Agent 任务 abc123 已完成并交付 275 字：…）",
+    ):
+        assert _is_bot_meta_line({"role": "bot", "content": content}), \
+            f"未识别为元信息：{content[:30]}"
+
+
+def test_normal_bot_reply_not_filtered():
+    """正常 bot 回复绝不能被元信息过滤误伤。"""
+    from anima.memory.chat_memory import _is_bot_meta_line
+
+    for content in (
+        "今天天气不错喵~",
+        "（发了一张表情包：开心）",
+        "哼，笑什么笑，有什么好开心的喵？",
+        "[图片:一只猫]",          # 旧 bug：以 `[` 开头就误判
+        "我刚把作业交过去了",     # 正文里含类似字样但不是包裹语开头
+    ):
+        assert not _is_bot_meta_line({"role": "bot", "content": content}), \
+            f"正常回复被误判为元信息：{content[:30]}"
+
+
+def test_legacy_prefix_still_only_for_bot_role():
+    """`user` 条目以旧前缀开头不算元信息（用户可能真的这么说）。"""
+    from anima.memory.chat_memory import _is_bot_meta_line
+    assert not _is_bot_meta_line(
+        {"role": "user", "content": "（我刚把一份东西交过去了：我自己的事）"})

@@ -90,6 +90,25 @@ def _neutralise_self_alias(text: str) -> str:
 #:    `test_meta_filter_helper_only_matches_bot_prefixed` 抓出。
 _BOT_META_PREFIXES: tuple[str, ...] = ("[已交付 ",)
 
+#: 🔴 2026-10-27：**历史残留格式**（只用于净化，不再产生）。
+#:
+#: `[已交付 …]` 之前有两代更早的包裹语，都是「把内部交付通知包成人话」的
+#: 失败尝试（详见 `owner_agent._deliver_text` 的注释）：
+#:
+#:     第 0 代：`（Agent 任务 xxx 已完成并交付 275 字：…）`
+#:     第 1 代：`（我刚把一份东西交过去了：…）`
+#:
+#: 第 1 代最糟 —— 它**冒充成了正常说话**，模型看到会当成自己的语气延续。
+#: 生产 `data/chat_memory.json` 里还残留 2 条（`private_1562290139 round_34`），
+#: 每次注入都在教模型用这种口气讲话。
+#:
+#: ⇒ 前缀过滤同时认这些旧形态，让存量污染自然失效（不需要改历史数据）。
+#: 只做 `startswith` 匹配，不影响正文里偶然出现同样字样的正常回复。
+_BOT_META_LEGACY_PREFIXES: tuple[str, ...] = (
+    "（Agent 任务 ",
+    "（我刚把一份东西交过去了",
+)
+
 
 def _is_bot_meta_line(entry: dict) -> bool:
     """该条目是否为 **bot 的元信息**（注入时应跳过）。
@@ -104,7 +123,8 @@ def _is_bot_meta_line(entry: dict) -> bool:
     if role not in ("bot", "assistant"):
         return False
     text = str(entry.get("content") or "")
-    return any(text.startswith(p) for p in _BOT_META_PREFIXES)
+    return any(text.startswith(p)
+               for p in (*_BOT_META_PREFIXES, *_BOT_META_LEGACY_PREFIXES))
 
 
 def _clean_transport_entry(entry: dict) -> dict:
