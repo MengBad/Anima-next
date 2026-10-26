@@ -88,12 +88,54 @@ API_BASE = "https://api.v2.rainyun.com"
 #: 请求超时（秒）。这是轻量 JSON 接口，不需要长超时。
 TIMEOUT = 12
 
-#: 「可领取」的 Status 值（见模块 docstring 的语义说明）。
-STATUS_CLAIMABLE = 1
-#: 「条件未达成」的 Status 值 —— 这类任务**不算可领**，但值得提醒去完成。
-#: 实测（2026-10-26）：绑定邮箱/手机/QQ/微信、加入用户群、关注 B站/抖音/淘宝
-#: 全部是 2，合计 **13000 分**，比每日签到（500/天）值钱得多。
-STATUS_TODO = 2
+#: ----- Status 语义（2026-10-26 第三次修正 —— 前两次都错了）-----
+#:
+#: ## 错误 1：以为 `2 = 未达成`
+#:    owner 说「这些我早就做完了」⇒ 错。
+#:
+#: ## 错误 2：以为 `2 = 已完成待领取`
+#:    对 10 个任务逐个调 POST 探测，结果**同为 Status=2 却分成两半**：
+#:
+#:     任务              Status  POST 返回
+#:     每日签到          1        10004 需验证码
+#:     绑定邮箱          2        30011 未达到完成条件
+#:     绑定手机          2        30011 未达到完成条件
+#:     绑定QQ           2        30011 未达到完成条件
+#:     绑定微信          2        30011 未达到完成条件
+#:     加入用户群         2        10004 需验证码      ← 能领
+#:     关注雨云B站号       2        10004 需验证码      ← 能领
+#:     关注雨云抖音号       2        10004 需验证码      ← 能领
+#:     关注雨云淘宝店       2        10004 需验证码      ← 能领
+#:     在淘宝渠道下单       0        30011 未达到完成条件
+#:
+#:    ⇒ **`Status` 不能用来判断「能不能领」**。同为 2，一半能领一半不能。
+#:
+#: ## 正确做法：用服务端的**真实返回**判定，不猜状态字段
+#:
+#: | POST 返回 | 含义 |
+#: |---|---|
+#: | `10004` 验证码校验失败 | **条件已满足**，只差人机验证 ⇒ 可以领 |
+#: | `30011` 未达到完成条件 | 条件**真的没达成** |
+#: | `200` | 领取成功 |
+#:
+#: 代价：需要为每个任务发一次 POST（**有副作用风险**：万一某个任务不需要验证码
+#: 就直接领了，那也是一次真实领取，属于用户想要的）。
+#: ⇒ 只在**用户显式请求查询可领列表**时探测，不在每日提醒里探测
+#:   （每天发 10 个 POST 太重，且会打日志噪音）。
+#:
+#: ## 已绑定 ≠ 任务可领（重要！）
+#:
+#: 「绑定邮箱」任务返回 30011，而 `Email` 字段确实有值。
+#: ⇒ **任务判定与账号字段是两套逻辑**：雨云可能要求「通过它的绑定流程绑定」
+#:   才算；或者该任务已被历史领取过、现在是另一种状态。
+#: **不要用账号字段反推任务状态** —— 我上一版就是这么错的。
+
+#: POST 返回码：条件已满足，只差验证码 ⇒ 可以领
+CODE_NEED_CAPTCHA = 10004
+#: POST 返回码：条件未达成
+CODE_NOT_MET = 30011
+#: POST 返回码：领取成功
+CODE_OK = 200
 
 #: 任务名 → 稳定标识（避免中文名改动导致提醒失效）。
 _DAILY_TASK = "每日签到"
@@ -210,7 +252,9 @@ def daily_task_state(tasks: list[dict]) -> dict:
             points = 0
         return {
             "found": True,
-            "claimable": status_i == STATUS_CLAIMABLE,
+            # 「每日签到」是唯一可用 Status 判断的任务：
+            # 每天回到 1，领完变 0。其它任务的 Status 不可信（见模块顶部）。
+            "claimable": status_i == 1,
             "points": points,
             "detail": str(t.get("Detail") or "")[:120],
             "status_raw": status,
@@ -219,53 +263,106 @@ def daily_task_state(tasks: list[dict]) -> dict:
             "status_raw": None}
 
 
-def summarize_other_tasks(tasks: list[dict]) -> list[str]:
-    """一次性任务里**可领取**的那些（`Status == 1` 且不是每日签到）。
+def probe_claimable(key: str, tasks: list[dict]) -> dict[str, list[str]]:
+    """**逐个 POST 探测**哪些任务真的可以领。这是唯一可靠的判据。
 
-    用途：顺带提醒「这些也能领」。
+    🔴 为什么必须探测：`Status` 字段不可信（详见模块顶部第三版语义表）。
+    同为 `Status=2`，「加入用户群/关注B站/抖音/淘宝店」返回 10004（能领），
+    而「绑定邮箱/手机/QQ/微信」返回 30011（不能领）。
+
+    ## 副作用
+
+    每次探测都是一次真实领取尝试：
+    - 返回 10004 ⇒ 没领到（差验证码），**无副作用**
+    - 返回 30011 ⇒ 没领到，**无副作用**
+    - 返回 200   ⇒ **真的领到了**（这正是用户想要的，不是事故）
+
+    ⇒ 允许在用户显式查询时探测；**不在每日提醒里探测**（每天 10 个 POST 太重）。
+
+    ## 返回
+
+    `{"claimable": [...], "not_met": [...], "claimed": [...]}`
+    每项形如 `"名称（1000 分）"`。
     """
-    out: list[str] = []
+    out: dict[str, list[str]] = {"claimable": [], "not_met": [], "claimed": []}
+    if not key:
+        return out
     for t in tasks:
         name = str(t.get("Name") or "").strip()
-        if not name or name == _DAILY_TASK:
+        if not name:
             continue
         try:
-            if int(t.get("Status")) != STATUS_CLAIMABLE:
-                continue
             pts = int(t.get("Points") or 0)
         except (TypeError, ValueError):
-            continue
-        out.append(f"{name}（{pts} 分）")
+            pts = 0
+        label = f"{name}（{pts} 分）"
+        code = _api_post_claim(key, name)
+        if code == CODE_OK:
+            out["claimed"].append(label)
+        elif code == CODE_NEED_CAPTCHA:
+            out["claimable"].append(label)
+        elif code == CODE_NOT_MET:
+            out["not_met"].append(label)
+        # 其它（网络失败/未知码）→ 不归类，避免误报
     return out
+
+
+def _api_post_claim(key: str, task_name: str) -> Optional[int]:
+    """发一次领取 POST，只取 `code`。失败返回 None。
+
+    ⚠️ 这是本模块**唯一**的写操作，且**只在 `probe_claimable` 里调用**。
+    不试图绕过验证码（没有 ticket 就不可能成功），
+    它只用来**问服务端「这个任务条件满足了吗」**。
+    """
+    if not key:
+        return None
+    try:
+        body = json.dumps({"task_name": task_name}).encode("utf-8")
+        req = urllib.request.Request(
+            API_BASE + "/user/reward/tasks",
+            data=body,
+            headers={"X-Api-Key": key, "Content-Type": "application/json",
+                     "Accept": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as resp:
+            raw = resp.read(64 * 1024)
+        payload = json.loads(raw.decode("utf-8", errors="replace"))
+        if not isinstance(payload, dict):
+            return None
+        try:
+            return int(payload.get("code"))
+        except (TypeError, ValueError):
+            return None
+    except urllib.error.HTTPError as exc:
+        # 雨云用 HTTP 403 + JSON body 表达业务错误，要读 body 才能拿 code
+        try:
+            payload = json.loads(exc.read(64 * 1024).decode("utf-8", errors="replace"))
+            return int(payload.get("code")) if isinstance(payload, dict) else None
+        except Exception:
+            return None
+    except Exception as exc:
+        logger.warning("[雨云] 领取探测失败（task=%s）: %s", task_name[:20], type(exc).__name__)
+        return None
+
+
+def summarize_other_tasks(tasks: list[dict]) -> list[str]:
+    """保留给旧调用方：**不再基于 Status 判断**，恒返回空。
+
+    历史上它按 `Status == 1` 筛「可领取」，但已证实 Status 不可信
+    （见模块顶部第三版语义表）。正确判据是 `probe_claimable`（真发 POST 探测）。
+    """
+    return []
 
 
 def summarize_todo_tasks(tasks: list[dict]) -> list[str]:
-    """一次性任务里**还没完成**的那些（`Status == STATUS_TODO`）。
+    """同上，已废弃：Status 无法区分「能领」与「不能领」。"""
+    return []
 
-    🔴 与 `summarize_other_tasks` 的区别很重要：
-    - `Status == 1` ⇒ **点一下就能领**（可领取）
-    - `Status == 2` ⇒ **还得去做**（绑邮箱/加群/关注…），不是点一下的事
 
-    实测（2026-10-26 的 owner 账号）：9 个 Status=2 的任务合计 **13000 分**，
-    而每日签到 500 分/天。⇒ 这些才是真正的大头，但**必须先完成动作**。
-
-    提醒时分开表述，别让用户以为「点一下就到账」。
-    """
-    out: list[str] = []
-    total = 0
-    for t in tasks:
-        name = str(t.get("Name") or "").strip()
-        if not name or name == _DAILY_TASK:
-            continue
-        try:
-            if int(t.get("Status")) != STATUS_TODO:
-                continue
-            pts = int(t.get("Points") or 0)
-        except (TypeError, ValueError):
-            continue
-        out.append(f"{name}（{pts} 分）")
-        total += pts
-    return out
+def summarize_not_met_tasks(tasks: list[dict]) -> list[str]:
+    """同上，已废弃。"""
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +377,8 @@ def make_rainyun_status(core: Any):
 
 
 async def _impl_status(core: Any) -> str:
+    import asyncio
+
     from anima.tools import (
         TOOL_REASON_RAINYUN_FAILED,
         TOOL_REASON_RAINYUN_NO_KEY,
@@ -302,19 +401,27 @@ async def _impl_status(core: Any) -> str:
         lines.append(f"当前积分：{points}")
     if state["found"]:
         if state["claimable"]:
-            lines.append(f"每日签到：**可领取**（{state['points']} 分 + 抽奖券）")
+            lines.append(f"每日签到：可领取（{state['points']} 分 + 抽奖券）")
         else:
             lines.append("每日签到：今天已经领过了")
     else:
         lines.append("每日签到：任务列表里没找到（接口可能改版）")
 
-    others = summarize_other_tasks(tasks)
-    if others:
-        lines.append("现在就能领的一次性任务：" + "、".join(others[:6]))
-    todos = summarize_todo_tasks(tasks)
-    if todos:
-        # Status=2 的任务**还得去做动作**（绑邮箱/加群/关注），不是点一下的事
-        lines.append("还没完成的一次性任务（做完才能领）：" + "、".join(todos[:6]))
+    # 🔴 一次性任务的「能不能领」**必须探测才知道**（Status 不可信）。
+    # 放线程池：10 个 POST 约 2-4 秒，不能阻塞心跳。
+    try:
+        probe = await asyncio.to_thread(probe_claimable, key, tasks)
+    except Exception:
+        logger.warning("[雨云] 领取探测失败（已隔离）", exc_info=True)
+        probe = {"claimable": [], "not_met": [], "claimed": []}
+
+    if probe.get("claimed"):
+        lines.append("**本次已领到**：" + "、".join(probe["claimed"]))
+    if probe.get("claimable"):
+        lines.append("**条件已满足、只差验证码**（去网页点一下就能领）："
+                     + "、".join(probe["claimable"]))
+    if probe.get("not_met"):
+        lines.append("条件未达成：" + "、".join(probe["not_met"][:6]))
 
     return "\n".join(lines) if lines else tool_unavailable(TOOL_REASON_RAINYUN_FAILED)
 
@@ -347,13 +454,26 @@ def build_daily_reminder(core: Any) -> Optional[str]:
     points = fetch_points(key)
     if points is not None:
         parts.append(f"当前积分 {points}")
-    others = summarize_other_tasks(tasks)
-    if others:
-        parts.append("现在就能领的：" + "、".join(others[:5]))
-    todos = summarize_todo_tasks(tasks)
-    if todos:
-        # 与「现在就能领」分开说：这些还得先做动作（绑邮箱/加群/关注）
-        parts.append("做完就能领的（" + str(len(todos)) + " 项）："
-                     + "、".join(todos[:5]))
+
+    # 🔴 这里**不做 POST 探测**：
+    #   · 每天 10 个 POST 太重（2-4 秒）
+    #   · 而且探测本身是「领取尝试」，每天跑一遍日志噪音大
+    #   ⇒ 每日提醒只报「签到 + 积分 + 去这里领」，
+    #     想查「哪些能领」用 `rainyun_status` 工具（那里会真探测）。
+    #   ⚠️ 不能按 Status 列出任务 —— 已证实 Status 不可信
+    #     （同为 2，一半能领一半不能，详见模块顶部第三版语义表）。
+    one_off = [t for t in tasks
+               if str(t.get("Name") or "").strip() != _DAILY_TASK]
+    if one_off:
+        total = 0
+        for t in one_off:
+            try:
+                total += int(t.get("Points") or 0)
+            except (TypeError, ValueError):
+                continue
+        parts.append(
+            f"另外还有 {len(one_off)} 个一次性任务（合计 {total} 分）；"
+            "哪些能领要页面上看（问本喵「雨云状态」我会逐个探）")
+
     parts.append("https://www.rainyun.com/reward/")
     return "\n".join(parts)
