@@ -15,6 +15,38 @@ from .usage import UsageEvent, UsageLedger, current_call_info, estimate_tokens
 
 logger = logging.getLogger("anima.llm")
 
+
+def _as_image_list(value: Any) -> list[str]:
+    """把 `str | list[str] | None` 归一成 `list[str]`（2026-10-26）。
+
+    为什么需要它：`edit_image` 的 `input_image_b64` 历史上是**单张**，
+    2026-10-26 起支持多张（「两张融合一下」）。调用方可能传 str、list、None
+    中任意一种 ⇒ 在**唯一入口**归一，避免每个下游各写一遍类型判断
+    （本项目反复踩过的「同一修法多处各写一份、只改一半」）。
+
+    行为：
+      · None / 空串 / 空列表 ⇒ `[]`
+      · str ⇒ `[str]`（去空白；空串归 `[]`）
+      · list ⇒ 过滤掉非字符串与空串，保序去重
+      · 其它类型 ⇒ `[]`（fail-safe，绝不让脏数据进 payload）
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        return [s] if s else []
+    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            s = item.strip()
+            if s and s not in out:
+                out.append(s)
+        return out
+    return []
+
+
 #: 熔断器桶名 —— **出站正文**（要发给用户的回复生成）。
 _CIRCUIT_OUTBOUND = "outbound"
 #: 熔断器桶名 —— **后台/旁路**（跨群提取、矛盾检测、表情打标、反刍…）。
@@ -432,7 +464,6 @@ class LLMClient:
 
     async def generate_image(self, prompt: str, *, model: str, max_bytes: int) -> bytes | None:
         """经 /v1/chat/completions 调用 Gemini 图像模型（gemini-3.1-flash-image）生成图片。
-
         CLI Proxy 网关的 /images/generations 只认 OpenAI 兼容图像模型（gpt-image/grok-imagine），
         不认 gemini 图像模型；实测 gemini-3.1-flash-image 需走 chat 端点，返回
         choices[].message.images[].image_url.url（base64）。任何非图片响应都视为失败。
@@ -444,14 +475,28 @@ class LLMClient:
             prompt, model=model, max_bytes=max_bytes, input_image_b64=None,
         )
 
-    async def edit_image(self, prompt: str, *, model: str, input_image_b64: str, max_bytes: int) -> bytes | None:
-        """经 /v1/chat/completions 用 Gemini 图像模型修改已有图片（多模态输入图 + 指令）。"""
+    async def edit_image(self, prompt: str, *, model: str,
+                         input_image_b64: str | list[str] | None = None,
+                         max_bytes: int) -> bytes | None:
+        """经 /v1/chat/completions 用 Gemini 图像模型修改已有图片（多模态输入图 + 指令）。
+
+        🔴 2026-10-26：`input_image_b64` 支持**多张**（`str | list[str]`）。
+
+        原因（生产事故）：用户说「两张融合一下」，而旧实现只能接受一张 ——
+        结果要么静默只用第一张，要么（当前消息没带图时）一张都拿不到，
+        产出与用户期望完全无关的图，用户还看不出来。
+
+        Gemini 图像模型本身支持多图输入（chat/completions 的 content 数组
+        可以带多个 `image_url`），所以是**上层没传够**，不是模型能力不足。
+        """
         return await self._request_image_with_fallback(
-            prompt, model=model, max_bytes=max_bytes, input_image_b64=input_image_b64,
+            prompt, model=model, max_bytes=max_bytes,
+            input_image_b64=input_image_b64,
         )
 
     async def _request_image_with_fallback(
-        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+        self, prompt: str, *, model: str, max_bytes: int,
+        input_image_b64: str | list[str] | None,
     ) -> bytes | None:
         """生图跨模型容灾：主模型失败且状态可重试时，依次尝试图像 fallback 模型。"""
         requested = self.model_for(current_call_info().module, model)
@@ -471,7 +516,8 @@ class LLMClient:
         return None
 
     async def _request_image_one(
-        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+        self, prompt: str, *, model: str, max_bytes: int,
+        input_image_b64: str | list[str] | None,
     ) -> bytes | None:
         """按模型类型路由：gemini 类走 chat 端点，imagine/grok 类走 /images/generations。"""
         if "imagine" in model.lower():
@@ -483,7 +529,8 @@ class LLMClient:
         )
 
     async def _request_image_via_generations(
-        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+        self, prompt: str, *, model: str, max_bytes: int,
+        input_image_b64: str | list[str] | None,
     ) -> bytes | None:
         """经 /images/generations 调用 OpenAI 兼容图像模型（grok-imagine-*），返回 data[].b64_json。
 
@@ -492,8 +539,16 @@ class LLMClient:
         if self._session is None:
             await self.start()
         payload: dict[str, Any] = {"model": model, "prompt": prompt[:4000], "n": 1, "size": "1024x1024"}
-        if input_image_b64:
-            payload["image"] = input_image_b64  # edits：OpenAI 兼容传 base64 图
+        # 🔴 2026-10-26：多图。`/images/generations` 的 OpenAI 兼容协议只认
+        # 单张 `image` 字段 ⇒ **多图时传第一张并记警告**，不静默丢弃（可追溯）。
+        _imgs = _as_image_list(input_image_b64)
+        if len(_imgs) == 1:
+            payload["image"] = _imgs[0]
+        elif len(_imgs) > 1:
+            payload["image"] = _imgs[0]
+            logger.warning(
+                "images/generations 端点只支持单张输入图，已传首张（共 %d 张）"
+                "—— 需要多图融合请用 gemini 类模型（走 chat 端点）", len(_imgs))
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
         self.request_count += 1
         started = time.perf_counter()
@@ -541,18 +596,21 @@ class LLMClient:
         return image
 
     async def _request_image_via_chat(
-        self, prompt: str, *, model: str, max_bytes: int, input_image_b64: str | None,
+        self, prompt: str, *, model: str, max_bytes: int,
+        input_image_b64: str | list[str] | None,
     ) -> bytes | None:
         """共用实现：Gemini 图像生成/修改都走 chat/completions，解析 message.images[].url(base64)。"""
         if self._session is None:
             await self.start()
         requested_model = self.model_for(current_call_info().module, model)
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt[:4000]}]
-        if input_image_b64:
-            # 多模态输入图：可带 data URI 前缀（网关透传），缺失时补 image/png
-            uri = input_image_b64
+        # 🔴 2026-10-26：**多图输入**（「两张融合」）。
+        # 网关的 chat/completions 接受 content 里多个 image_url 段；
+        # 旧实现只 append 一张，导致「融合」只能拿到半份素材。
+        for uri_raw in _as_image_list(input_image_b64):
+            uri = uri_raw
             if not uri.startswith("data:"):
-                uri = f"data:image/png;base64,{input_image_b64}"
+                uri = f"data:image/png;base64,{uri}"
             content.append({"type": "image_url", "image_url": {"url": uri}})
         payload = {"model": requested_model, "messages": [{"role": "user", "content": content}], "max_tokens": 4096}
         headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}

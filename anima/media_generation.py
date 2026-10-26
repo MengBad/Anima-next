@@ -16,6 +16,31 @@ _WEBP_RIFF = b"RIFF"
 _WEBP_MAGIC = b"WEBP"
 
 
+def _normalise_images(value) -> list[str]:
+    """`str | list[str] | None` → `list[str]`，去空、保序去重。
+
+    与 `anima.llm._as_image_list` 同语义。此处独立实现是因为
+    `media_generation` 不应依赖 `llm` 包的内部工具函数
+    （llm 包导入较重，且这里是更小的单元）。
+    ⚠️ 两处行为必须一致 —— `test_multi_image_fusion.py` 有对照测试钉住。
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        s = value.strip()
+        return [s] if s else []
+    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                continue
+            s = item.strip()
+            if s and s not in out:
+                out.append(s)
+        return out
+    return []
+
+
 class ImageGenerationManager:
     def __init__(self, core):
         self.core = core
@@ -31,13 +56,22 @@ class ImageGenerationManager:
         )
 
     @scoped_llm("image_generation", "edit")
-    async def edit(self, prompt: str, input_image_b64: str) -> str:
-        """修改已有图片：多模态输入图 + 改图指令（Gemini 图像模型）。"""
+    async def edit(self, prompt: str,
+                   input_image_b64: str | list[str] | None = None) -> str:
+        """在已有图片基础上生成/修改（支持**多张**输入图，2026-10-26）。
+
+        🔴 生产事故：「两张融合一下」时旧实现只能传一张 ——
+        要么静默只用第一张，要么（当前消息没带图）一张都拿不到，
+        产出与用户期望无关的图。Gemini 图像模型本身支持多图，
+        是上层没传够 ⇒ 这里放开为 `str | list[str]`。
+        """
         return await self._render(
-            prompt, input_image_b64=input_image_b64, llm_method="edit_image", tag="image_edited",
+            prompt, input_image_b64=input_image_b64,
+            llm_method="edit_image", tag="image_edited",
         )
 
-    async def _render(self, prompt: str, *, input_image_b64: str | None,
+    async def _render(self, prompt: str, *,
+                      input_image_b64: str | list[str] | None,
                       llm_method: str, tag: str) -> str:
         """共用：调用 Gemini 图像模型（生成或修改），输出写入 Anima 数据目录。"""
         cfg = self.core.config.image_generation
@@ -67,9 +101,12 @@ class ImageGenerationManager:
             limit = int(cfg.daily_limit)
             if limit > 0 and int(usage.get("count", 0)) >= limit:
                 raise ValueError("今日生图额度已用完")
-            if input_image_b64 is not None:
+            # 🔴 2026-10-26：多图输入。传 list 时**整份**交给 LLM 层
+            # （它负责在 content 里 append 多个 image_url 段）。
+            _imgs = _normalise_images(input_image_b64)
+            if _imgs:
                 image = await fn(prompt, model=model, max_bytes=cfg.max_output_bytes,
-                                 input_image_b64=input_image_b64)
+                                 input_image_b64=_imgs if len(_imgs) > 1 else _imgs[0])
             else:
                 image = await fn(prompt, model=model, max_bytes=cfg.max_output_bytes)
             if not image:

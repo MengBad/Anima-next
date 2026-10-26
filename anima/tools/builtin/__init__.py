@@ -501,11 +501,19 @@ def register_all_builtin(registry, core=None) -> None:
             "当用户要求在已有图片基础上做【语义级修改】时调用——即需要理解图片内容才能完成的修改："
             "换画风/改风格（如改成二次元、水墨、写实）、改人物表情/服装/发型、改背景内容、换主体、改变人物穿着气质、"
             "风格迁移、根据语义改图（如「把人物弄骚一点」「加上星空」）等。"
+            "**也用于多图融合**（「两张融合一下」「把这两张合起来」「让他们同框」）——"
+            "融合时必须传**两张或以上**的图（`image` 传数组，不是单张）。"
             "这类修改必须用 edit_image 调用真实 Gemini 图像模型，而不是用 run_python 做像素处理。"
             "需要原始图片（随消息附带或显式传 image）；返回修改后的图片并发送。不支持时如实说明，绝不伪造图片。",
             {
                 "prompt": {"type": "string", "description": "对图片的语义级修改指令，描述想改成什么内容/风格/效果"},
-                "image": {"type": "string", "description": "可选：原始图片的 base64/data URI。缺省时自动取本次消息附带的图片"},
+                "image": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "可选：原始图片的 base64/data URI 列表。"
+                                   "单图改图传 1 张；**多图融合必须传 2 张及以上**。"
+                                   "缺省时自动取本次消息附带的图 + 最近生成的图",
+                },
             },
             make_edit_image(core), min_level=LEVEL_USER, required=["prompt"],
         ))

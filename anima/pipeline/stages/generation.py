@@ -1,6 +1,7 @@
 """阶段 4: LLM 生成。"""
 
 from __future__ import annotations
+import base64
 import logging
 import random
 import re
@@ -30,6 +31,80 @@ _DEGRADE_FALLBACKS = (
 #: 原为 :1092 处的**内联字面量** ⇒ 出站侧的兜底判定（`handler._is_degrade_fallback`）
 #: 扫不到它，会漏剥这一类的引用块。提出来才有单一来源。
 _TOOL_NO_RESULT_FALLBACK = "本喵这边没查到准信喵，你换个说法或过会儿再问本喵一次？"
+
+#: 「它自己刚生成过的图」的跨回合记忆（2026-10-26）。
+#:
+#: 生产事故（17:12:44）：「两张融合一下」——要融的素材之一，是它 30 秒前
+#: 刚发给用户的那张图。而 `input_images_b64` 只来自**当前这条消息**的
+#: `ctx.inbound_images` ⇒ 这条消息没带图 ⇒ 一张都拿不到 ⇒ 它改走
+#: `generate_image`（纯文本生图），画出一张与素材无关的新图。
+#:
+#: 这里按 key 记录最近生成的图片**路径**（不存 base64，省内存），
+#: 需要时再读盘转 base64。
+#: key = (detail_type, target_id) ⇒ 同一会话内「刚生成过什么」不会串到别处。
+_RECENT_GEN_MAX = 4          # 每个会话最多记 4 张
+_RECENT_GEN_TTL_SEC = 1800   # 30 分钟内的生成才算「刚生成过」
+_recent_generated: "dict[tuple[str, int], list[tuple[float, str]]]" = {}
+
+
+def remember_generated_image(detail_type: str, target_id: int,
+                             path: str, *, now: float | None = None) -> None:
+    """记下「刚生成了一张图」，供后续回合做融合/改图时取用。
+
+    fail-soft：任何异常都吞掉 —— 记录失败绝不能影响生图本身。
+    """
+    try:
+        p = str(path or "").strip()
+        if not p:
+            return
+        key = (str(detail_type or ""), int(target_id))
+        ts = float(now if now is not None else time.time())
+        bucket = _recent_generated.setdefault(key, [])
+        bucket.append((ts, p))
+        # 去重（同一路径只留最新一次）+ 裁剪
+        # 🔴 存储格式统一为 `(ts, path)` —— 读取侧按 (ts, path) 解包。
+        #   首版这里是 `sorted(seen.items())` 得到 `(path, ts)` 顺序，
+        #   与读取侧不一致 ⇒ `if ts < cutoff` 拿字符串比浮点，TypeError。
+        #   测试 `test_remember_and_recall` 抓出来的。
+        seen: dict[str, float] = {}
+        for t, q in bucket:
+            seen[q] = max(t, seen.get(q, 0.0))
+        items = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)
+        _recent_generated[key] = [(t, q) for q, t in items[:_RECENT_GEN_MAX]]
+    except Exception:
+        logger.debug("记录最近生成图失败（已隔离）", exc_info=True)
+
+
+def _recent_generated_images_b64(ctx: "PipelineContext",
+                                 *, limit: int = 2) -> list[str]:
+    """取「本会话最近生成过的图」的 base64（供多图融合）。
+
+    读盘转 base64；文件不存在/读失败则跳过（不阻塞）。
+    最多 `limit` 张，且只取 `_RECENT_GEN_TTL_SEC` 内的。
+    """
+    key = (str(getattr(ctx, "detail_type", "") or ""),
+           int(getattr(ctx, "group_id", None) or getattr(ctx, "user_id", 0) or 0))
+    bucket = _recent_generated.get(key) or []
+    if not bucket:
+        return []
+    cutoff = time.time() - _RECENT_GEN_TTL_SEC
+    out: list[str] = []
+    for ts, path in bucket:
+        if ts < cutoff:
+            continue
+        try:
+            p = Path(path)
+            if not p.is_file():
+                continue
+            raw = p.read_bytes()
+            if not raw:
+                continue
+            out.append(base64.b64encode(raw).decode("ascii"))
+            if len(out) >= limit:
+                break
+        except Exception:
+            logger.debug("读取最近生成图失败（跳过）: %s", path, exc_info=True)
+    return out
 
 
 def _record_fallback(core: Any, kind: str) -> None:
@@ -1117,6 +1192,27 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                         break
             except Exception:
                 logger.debug("提取入站图片 base64 失败", exc_info=True)
+        # 🔴 2026-10-26：**补上「它自己刚生成过的图」**。
+        #
+        # 生产事故（17:12:44）：「两张融合一下」——要融的一张是它 30 秒前刚生成的
+        # （华初飞天图），另一张是群里别人发的表情包。而 `uris` 只来自
+        # **当前这条消息**的 `ctx.inbound_images` ⇒ 这条消息没带图 ⇒ 一张都拿不到
+        # ⇒ 它改走 `generate_image`（纯文本生图），画出一张与素材无关的新图。
+        #
+        # 修法：把**本会话最近生成过的图片**转成 base64 追加进上下文。
+        #   来源优先级（近 → 远）：
+        #     1. `ctx.meta["recent_generated_images"]`（本轮之前的生成，由
+        #        `_remember_generated` 跨回合记录）
+        #     2. 当前 `ctx.generated_image_paths`（本回合已生成的）
+        #   最多补 2 张，且总量仍受 `_input_images_b64` 上限约束（避免 prompt 爆炸）。
+        try:
+            _extra = _recent_generated_images_b64(ctx)
+            if _extra:
+                _input_images_b64.extend(_extra)
+                logger.info("[多图上下文] 补入最近生成图 %d 张（供融合/改图使用）",
+                            len(_extra))
+        except Exception:
+            logger.debug("补入最近生成图失败（已隔离）", exc_info=True)
         context_token = available_tools.set_call_context(
             group_id=ctx.group_id if ctx.detail_type == "group" else None,
             share_stickers=bool(core.config.sticker.share_across_groups),
@@ -1185,6 +1281,17 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                         _seen.add(_s)
                         _paths.append(_s)
                 ctx.generated_image_paths = _paths
+                # 🔴 2026-10-26：把它们记进**跨回合**记忆，供下一轮「融合/改图」取用。
+                # 事故：17:12:44「两张融合一下」——要融的一张就是它 30 秒前刚生成的，
+                # 但跨回合后 `input_images_b64` 拿不到 ⇒ 它改走纯文本生图，
+                # 画出与素材无关的新图。
+                for _gen_path in _paths:
+                    remember_generated_image(
+                        str(getattr(ctx, "detail_type", "") or ""),
+                        int(getattr(ctx, "group_id", None)
+                            or getattr(ctx, "user_id", 0) or 0),
+                        _gen_path,
+                    )
             # 🔴 2026-10-21：同步「写文件产物」（与生图同一手法）。
             # 此前 write_file 只回服务器路径，用户在 QQ 里打不开 ⇒ 对话层说
             # 「写在文件里啦，自己去看」而用户什么也没有（owner 实测提出）。
