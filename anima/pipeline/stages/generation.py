@@ -1438,9 +1438,28 @@ async def generation_stage(ctx: PipelineContext) -> StageResult:
                 # 去重保序，保留本回合全部生图路径（出站层再统一上限）。
                 # 旧逻辑 generated[:1] 会吞掉第 2 张及之后的图，导致 x_search 拿多张图
                 # 时永远只发第 1 张（且 X 相似 query 排第一的图常相同 -> 表现为「一直发同一张」）。
+                #
+                # 🔴 2026-10-26 二次修正：**合并，不是覆盖**。
+                #
+                # 事故（18:56:52）：`_force_generate_image` 补生成的图已经写进
+                # `ctx.generated_image_paths`，但本 `finally` 无条件读
+                # `call_context['generated_image_paths']`（模型没调工具 ⇒ 空列表）
+                # 再 `ctx.generated_image_paths = []` 把它**清空**⇒
+                #   · guardrail 判「本回合无图」⇒ 触发编造出图拦截、改写回复
+                #   · 出站层拿不到图 ⇒ 只发文字
+                # 现象：日志里 `[生图兜底] 已补生成图片` 与
+                #       `[编造出图拦截] 声称给图但本回合无图片产出` **同时出现**。
+                #
+                # ⇒ 两处来源必须合并：call_context（模型主动调的）在前，
+                #    ctx 已有的（兜底补的）在后，去重保序。
                 _seen = set()
                 _paths = []
                 for _p in generated:
+                    _s = str(_p)
+                    if _s and _s not in _seen:
+                        _seen.add(_s)
+                        _paths.append(_s)
+                for _p in (getattr(ctx, "generated_image_paths", None) or []):
                     _s = str(_p)
                     if _s and _s not in _seen:
                         _seen.add(_s)

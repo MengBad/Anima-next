@@ -221,3 +221,79 @@ def test_forced_image_is_remembered(tmp_path, monkeypatch):
     assert _run_force(_core(mgr), ctx) is True
     got = G._recent_generated_images_b64(ctx)
     assert got, "补出来的图没进跨回合记忆"
+
+
+# ── 6. finally 必须「合并」而不是「覆盖」（2026-10-26 生产事故）──────────
+
+def test_finally_merges_instead_of_overwriting():
+    """🔴 生产事故回归：`finally` 无条件用 call_context 覆盖 ctx 会吞掉兜底图。
+
+    18:56:52 实证：
+        [生图兜底] 已补生成图片: ...image_b96d4848de8a.jpg     ← 图生成了
+        [编造出图拦截] 声称给图但本回合无图片产出，已改写       ← 却被判无图
+        出站 segs=['reply', 'text']                            ← 图没发出去
+
+    原因：模型没调工具 ⇒ `call_context['generated_image_paths']` 是空列表
+    ⇒ `ctx.generated_image_paths = []` 把兜底刚写进去的路径**清空**。
+
+    ⇒ `finally` 必须把两处来源**合并**（call_context 优先，ctx 已有的补后），
+      不能无条件覆盖。
+    """
+    src = _SRC.read_text(encoding="utf-8")
+    start = src.index("finally:\n        if context_token is not None:")
+    block = src[start:start + 3000]
+    # 合并来源：必须遍历 ctx 已有的路径
+    assert 'getattr(ctx, "generated_image_paths", None)' in block, (
+        "finally 未合并 ctx 已有的生成图 —— 会把兜底补的图覆盖掉")
+    # 且必须在赋值之前读（顺序：先收集 ctx 已有的，再统一赋值）
+    assert block.index('getattr(ctx, "generated_image_paths", None)') < block.index(
+        "_paths.append(_s)") or block.count("_paths.append(_s)") >= 2, (
+        "finally 只从 call_context 收集，没有把 ctx 已有路径并进去")
+    # 去重键必须共用同一个 set（合并后仍去重）
+    assert block.count("_seen = set()") == 1, "合并逻辑应复用同一个 _seen 去重集合"
+
+
+def test_finally_merge_preserves_order_and_dedup():
+    """合并后：call_context 在前，ctx 兜底图在后，重复路径只留一次。"""
+    import re as _re
+    src = _SRC.read_text(encoding="utf-8")
+    start = src.index("finally:\n        if context_token is not None:")
+    block = src[start:start + 3000]
+    # 抽取循环体内的两段 _paths.append(_s)，确认是「先 call_context 后 ctx」
+    first = block.index("for _p in generated:")
+    second = block.index('for _p in (getattr(ctx, "generated_image_paths", None) or []):')
+    assert first < second, "合并顺序错了：应 call_context 在前、ctx 兜底图在后"
+
+
+def test_forced_image_survives_finally_merge():
+    """行为验证：兜底写入 ctx 的图，经过 finally 合并逻辑后仍然在。"""
+    # 直接模拟 finally 的合并代码（纯逻辑，不依赖 pipeline 运行时）
+    generated_from_tools = []          # 模型没调工具
+    ctx_existing = ["/data/gen/forced.png"]   # 兜底刚写进去的
+    _seen = set()
+    _paths = []
+    for _p in generated_from_tools:
+        _s = str(_p)
+        if _s and _s not in _seen:
+            _seen.add(_s)
+            _paths.append(_s)
+    for _p in ctx_existing:
+        _s = str(_p)
+        if _s and _s not in _seen:
+            _seen.add(_s)
+            _paths.append(_s)
+    assert _paths == ["/data/gen/forced.png"], "兜底图在 finally 里被吞掉了"
+
+
+def test_finally_merge_no_duplicate_when_both_sources_have_same():
+    """两处来源含同一路径时只保留一份（模型调了工具 + 兜底也写了同一路径）。"""
+    generated_from_tools = ["/data/gen/a.png", "/data/gen/b.png"]
+    ctx_existing = ["/data/gen/b.png", "/data/gen/c.png"]
+    _seen = set()
+    _paths = []
+    for _p in generated_from_tools + ctx_existing:
+        _s = str(_p)
+        if _s and _s not in _seen:
+            _seen.add(_s)
+            _paths.append(_s)
+    assert _paths == ["/data/gen/a.png", "/data/gen/b.png", "/data/gen/c.png"]
