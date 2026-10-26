@@ -1232,6 +1232,7 @@ class Heartbeat:
     #: 「攒了 2 件」，09:08:33（部署重启后）又推「攒了 1 件」—— 8 分钟内两条
     #: 同质推送，而 owner 什么都没做。**重启是运维动作，不该造成重复打扰。**
     _OWNER_DIGEST_MARK_FILE = "owner_digest_mark.json"
+    _RAINYUN_MARK_FILE = "rainyun_reminder_mark.json"
 
     @property
     def _owner_digest_mark(self) -> dict:
@@ -1351,6 +1352,118 @@ class Heartbeat:
                     logger.debug("owner 交付审计写入失败", exc_info=True)
         except Exception:
             logger.debug("[owner交付] 构造或发送失败（已隔离）", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # 雨云签到提醒（2026-10-26）
+    # ------------------------------------------------------------------
+
+    def _rainyun_mark(self) -> dict:
+        """读持久化标记（懒加载，失败按「今天没发过」处理）。"""
+        if not hasattr(self, "_rainyun_mark_cache"):
+            _d = {}
+            try:
+                _p = getattr(getattr(self.core, "persistence", None), "read_json", None)
+                if _p is not None:
+                    _d = _p(self._RAINYUN_MARK_FILE, {}) or {}
+            except Exception:
+                logger.debug("雨云提醒标记读取失败（按未推送处理）", exc_info=True)
+            self._rainyun_mark_cache = _d if isinstance(_d, dict) else {}
+        return self._rainyun_mark_cache
+
+    def _rainyun_mark_save(self, day: str) -> None:
+        """写当日标记（内存 + 落盘），使「当天已推」跨重启成立。"""
+        self._rainyun_mark_cache = {"last_date": str(day)}
+        try:
+            _w = getattr(getattr(self.core, "persistence", None), "write_json", None)
+            if _w is not None:
+                _w(self._RAINYUN_MARK_FILE, self._rainyun_mark_cache)
+        except Exception:
+            logger.debug("雨云提醒标记落盘失败（内存仍生效）", exc_info=True)
+
+    async def _rainyun_reminder_tick(self, now: float) -> None:
+        """每日一次：雨云「每日签到」还没领就私聊提醒 owner。**只读**。
+
+        ## 为什么单独一段而不复用 agenda / owner_digest
+
+        - 不复用 `propose_agenda`：它的第一参数是群 id，消费端会套上群侧防刷屏
+          闸门（冷却/占比/日预算）——语义完全不对（owner 私聊没有群）。
+        - 不复用 `_owner_digest_tick`：那个搬的是 `owner_tasks.json` 里的待办，
+          与本需求数据源不同；混在一起会让「今天有没有待办」和
+          「今天签没签到」互相干扰（一个为空就整体不发）。
+
+        但**纪律完全照抄**它（本项目在「日切一次」上踩过多个坑）：
+
+        - 日切一次 + **持久化**标记（`data/rainyun_reminder_mark.json`）。
+          只存内存的话：重启当天会再推一次（`owner_digest` 的真实事故：
+          09:00 推一次、09:08 部署重启后又推一次，8 分钟内两条同质推送）。
+        - 过了配置小时才发（`rainyun.hour`，默认 9），不整点触发，避免心跳抖动漏发。
+        - `permissions.owners` 为空 ⇒ **不发也不标记**（fail-closed）：
+          下个 tick 若 owner 出现了还能正常提醒，不伪造目标。
+        - 任何异常只记日志、绝不抛（本函数被 `_tick` 的 try 包着，但不依赖它）。
+
+        ## 为什么只提醒不自动领
+
+        领取接口需要腾讯 TCaptcha 通过后的票据。**LLM 识图对这类验证码无效**
+        （无感验证没有图可识，通过后是一次性加密票据）——详见
+        `anima/tools/builtin/rainyun.py` 的模块 docstring。
+        """
+        cfg = getattr(self.core.config, "rainyun", None)
+        if cfg is None or not bool(getattr(cfg, "enabled", False)):
+            return
+
+        # 时刻门控：过了配置小时才发
+        import datetime as _dt
+        try:
+            _now_dt = _dt.datetime.now(_BJ)
+        except Exception:
+            _now_dt = _dt.datetime.now()
+        if _now_dt.hour < int(getattr(cfg, "hour", 9)):
+            return
+
+        _today = self._bj_date_str(now)
+        if self._rainyun_mark().get("last_date") == _today:
+            return
+
+        owners = getattr(getattr(self.core.config, "permissions", None), "owners", None) or []
+        if not owners:
+            # fail-closed：不伪造发送，也不标记（等下个 tick 再试）
+            logger.warning("[雨云] permissions.owners 为空，跳过提醒")
+            return
+
+        # 构造文案（只读；含网络请求，放线程池避免阻塞心跳）
+        try:
+            from anima.tools.builtin.rainyun import build_daily_reminder
+            body = await asyncio.to_thread(build_daily_reminder, self.core)
+        except Exception:
+            logger.warning("[雨云] 生成提醒失败（已隔离）", exc_info=True)
+            return
+        if not body:
+            # 已签到 / 接口不可用 ⇒ 静默。
+            # 🔴 这里**不标记**：接口失败时标记了，今天就再也不会重试；
+            #   而「已签到」本来就不需要发。两种情况都保持「下次 tick 再看」。
+            return
+
+        sent = False
+        try:
+            from anima.core.gateway import OutboundMsg
+            for oid in owners:
+                try:
+                    await self.core.gateway.send(OutboundMsg("private", int(oid), body))
+                    sent = True
+                except Exception:
+                    logger.warning("[雨云] 私聊发送失败 owner=%s", oid, exc_info=True)
+        except Exception:
+            logger.debug("[雨云] OutboundMsg 导入失败", exc_info=True)
+            return
+        if sent:
+            self._rainyun_mark_save(_today)
+            logger.info("[雨云] 已提醒 owner 签到")
+            try:
+                audit = getattr(self.core, "audit", None) or getattr(self.core, "auditor", None)
+                if audit is not None and hasattr(audit, "emit"):
+                    audit.emit("rainyun_reminder_delivered", owners=len(owners))
+            except Exception:
+                logger.debug("雨云提醒审计写入失败", exc_info=True)
 
     async def _tick(self) -> None:
         # 🔴 2026-10-23：**成长快照**（每日一次，让「它在变」可见）。
@@ -1779,6 +1892,16 @@ class Heartbeat:
             await self._owner_digest_tick(now)
         except Exception:
             logger.debug("owner 私聊交付失败（已隔离）", exc_info=True)
+
+        # 🔴 2026-10-26：**雨云每日签到提醒**（只读）。
+        # 与 `_owner_digest_tick` 同一纪律：日切一次 + 持久化标记 +
+        # 过了配置小时才发 + 无 owner 不伪造发送 + 任何异常只记日志。
+        # 为什么只提醒不自动领：领取接口要过人机验证（腾讯 TCaptcha），
+        # 见 `anima/tools/builtin/rainyun.py` 的模块 docstring。
+        try:
+            await self._rainyun_reminder_tick(now)
+        except Exception:
+            logger.debug("雨云签到提醒失败（已隔离）", exc_info=True)
 
         # 🔴 P1 自主触发（2026-10-21）：它自己发现该干的活，**先报备再执行**。
         # owner 明确否掉「提议制」（不批就不动），要求直接执行；这里按确认的

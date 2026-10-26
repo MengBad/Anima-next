@@ -85,6 +85,11 @@ TOOL_REASON_FILE_TOO_LARGE = "文件过大，超出单次读取上限，可改�
 TOOL_REASON_BILI_SEARCH_FAILED = "B 站搜索暂时失败，可稍后再试或换个关键词"
 TOOL_REASON_BILI_RISK = "B 站搜索触发风控，稍后自动恢复"
 TOOL_REASON_BILI_NO_RESULT = "B 站没有搜到相关视频，可换个关键词"
+#: 🔴 2026-10-26：雨云积分接口。
+#: 措辞刻意不含 API Key / HTTP 状态码 / 响应体（那些进日志），
+#: 只给行为性事实，让模型能说「查不到」而不是编一个积分数字（D1 规则）。
+TOOL_REASON_RAINYUN_NO_KEY = "雨云接口未配置访问密钥，需要先在服务端配置"
+TOOL_REASON_RAINYUN_FAILED = "雨云接口暂时查询失败，可稍后再试"
 
 _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_X_DISABLED,
@@ -99,6 +104,8 @@ _TOOL_REASON_WHITELIST = frozenset({
     TOOL_REASON_BILI_SEARCH_FAILED,
     TOOL_REASON_BILI_RISK,
     TOOL_REASON_BILI_NO_RESULT,
+    TOOL_REASON_RAINYUN_NO_KEY,
+    TOOL_REASON_RAINYUN_FAILED,
 })
 
 

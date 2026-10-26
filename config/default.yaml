@@ -286,6 +286,15 @@ bilibili_read:                               # B 站视频理解（字幕抓取 
   summary_model: ""                          # 字幕总结模型；空=复用 llm.model
   max_subtitle_length: 4000                  # 字幕截断上限，防上下文溢出
 
+rainyun:                                     # 雨云积分任务（只读 + 每日签到提醒）
+  # 🔴 只提醒不自动领：领取接口需要腾讯 TCaptcha 人机验证，
+  #    LLM 识图对这类验证码无效（无感验证没有图可识，通过后是加密票据）。
+  #    详见 anima/tools/builtin/rainyun.py 的模块 docstring。
+  enabled: false                             # 默认关；自主打扰类能力需显式开启
+  api_key: ""                                # 留空 ⇒ 从 .secrets 的 RAINYUN_API_KEY= 读
+  hour: 9                                    # 过了这个点才提醒（北京时间）
+  include_one_off: true                       # 提醒里附带「还可领的一次性任务」
+
 sylann:
   enabled: false
   mode: "disabled"                  # disabled | shadow | active

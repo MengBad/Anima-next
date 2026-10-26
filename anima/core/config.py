@@ -558,6 +558,48 @@ class BilibiliReadConfig(BaseModel):
     max_subtitle_length: int = 4000  # 字幕截断上限，防上下文溢出
 
 
+class RainyunConfig(BaseModel):
+    """雨云（RainYun）积分任务 —— 只读查询 + 每日签到提醒（2026-10-26）。
+
+    ## 为什么只有「提醒」没有「自动领取」
+
+    领取接口需要**腾讯防水墙（TCaptcha）**通过后的票据：
+
+        POST /user/reward/tasks  {"task_name":"每日签到"}
+        → {"code":10004,"message":"验证码校验失败"}
+
+    参数名已试出（错参数是 10002，对参数才变 10004），但验证码这一层过不去。
+    **LLM 识图对这类验证码无效**：TCaptcha 的主流形态是「无感验证」，
+    没有图可识，靠浏览器指纹在后台判定；通过后拿到一次性加密票据，不是可见文字。
+    ⇒ 对症的做法是真浏览器 + 反检测（`patchright`），属独立工程，
+      且失败时必须退回提醒模式，不能硬撑。
+
+    因此本配置只驱动**只读 + 提醒**：
+      · 每天在 `hour` 之后查一次「每日签到」的 Status
+      · 可领 ⇒ 私聊 owner 一条提醒（含积分余额与一次性任务）
+      · 已领 ⇒ 静默（不做「今天已签到」这类自我打卡）
+
+    🔴 `api_key` **默认留空**，生产从 `.secrets` 的 `RAINYUN_API_KEY=` 读
+      （`anima/tools/builtin/rainyun.py::_read_api_key`）。
+      密钥绝不进 config.yaml、不进 git、不进日志。
+    """
+
+    #: 总开关（含每日提醒）。默认 **False** —— 自主打扰类能力需显式开启。
+    enabled: bool = False
+
+    #: 雨云 API Key。**优先用 `.secrets`**，这里留空即可。
+    #: 仅本地测试时临时填（填了就会被写进 yaml，注意别提交）。
+    api_key: str = ""
+
+    #: 每日提醒的时刻（24 小时制，北京时间）。过了这个点才发，避免整点抖动漏发。
+    hour: int = 9
+
+    #: 提醒里是否附带「还可领的一次性任务」。
+    #: 实测 owner 账号有 9 个未做的一次性任务合计 13000 分，
+    #: 比每日签到（500/天）值钱得多 ⇒ 默认带上。
+    include_one_off: bool = True
+
+
 class SelfCodeConfig(BaseModel):
     """自我编程：用 agentic coder（Claude Code CLI）把自然语言目标变成真实可运行能力。
 
@@ -1267,6 +1309,9 @@ class AnimaConfig(BaseModel):
     rumination: RuminationConfig = Field(default_factory=RuminationConfig)
     sticker: StickerConfig = Field(default_factory=StickerConfig)
     bilibili_read: BilibiliReadConfig = Field(default_factory=BilibiliReadConfig)
+    #: 🔴 必须是**显式字段**：pydantic 在本项目是 `extra=ignore`，
+    #: 只写 yaml 不加字段会被静默丢弃（= 哑开关，本项目踩过）。
+    rainyun: RainyunConfig = Field(default_factory=RainyunConfig)
     self_code: SelfCodeConfig = Field(default_factory=SelfCodeConfig)
     vision: VisionConfig = Field(default_factory=VisionConfig)
     image_generation: ImageGenerationConfig = Field(default_factory=ImageGenerationConfig)

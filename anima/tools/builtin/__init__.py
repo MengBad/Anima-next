@@ -26,6 +26,7 @@ from .agent_tools import register_agent_tools
 from .reminder import register_reminder_tools
 from .repo import register_repo_tools
 from .code_exec import make_code_exec_tool
+from .rainyun import make_rainyun_status
 
 # ---------------------------------------------------------------------------
 # M0.3.1 Capability Pilot
@@ -615,3 +616,15 @@ def register_all_builtin(registry, core=None) -> None:
     # --- 表情包工具 ---
     for t in make_sticker_tools(core):
         registry.register(t)
+
+    # --- 雨云积分（2026-10-26，owner 专用只读）---
+    # 🔴 `LEVEL_OWNER`：这是 owner 自己账号的数据（积分余额、任务状态），
+    #    群里任何人都不该能读到。而且本工具**只读**——真正领取得过人机验证，
+    #    见 `anima/tools/builtin/rainyun.py` 的模块 docstring。
+    registry.register(Tool(
+        "rainyun_status",
+        "查询雨云积分任务状态（每日签到是否可领、当前积分、还有哪些一次性任务）。只读。",
+        {},
+        make_rainyun_status(core),
+        min_level=LEVEL_OWNER,
+    ))
