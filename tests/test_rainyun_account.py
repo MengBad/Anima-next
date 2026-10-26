@@ -640,3 +640,217 @@ async def test_queue_released_after_exception(core, monkeypatch):
         await R.run_sign_in(core, "111")
 
     assert R.queue_status()["running"] is None, "异常后槽位没释放 —— 队列卡死"
+
+
+# ---------------------------------------------------------------------------
+# 12. 备份不得包含凭证密文（P1-4）
+# ---------------------------------------------------------------------------
+
+def test_vault_not_in_backup_safelist():
+    """🔴 `BackupManager` 用白名单 `SAFE_FILES` 决定备份什么。
+
+    凭证密文（`rainyun_accounts.enc`）**不得**进这个清单 ——
+    否则每天一次的自动备份会把「他人的雨云账号密文」复制到 backups/ 目录，
+    多一份泄露面（虽然主密钥在 .secrets 里、备份解不开，但密文外流本身是风险）。
+
+    这条测试是**防止将来有人顺手把它加进去**。
+    """
+    from anima.core.backup import SAFE_FILES
+    assert R.VAULT_FILE not in SAFE_FILES, "凭证密文进了备份白名单"
+    assert not any("rainyun" in f for f in SAFE_FILES), \
+        f"备份白名单里出现 rainyun 相关文件：{SAFE_FILES}"
+
+
+def test_vault_filename_is_not_globbed():
+    """密文文件名不应被通配符批量带走（如 data/*.json 之类）。"""
+    # 用 .enc 后缀而非 .json —— 常见的备份/清理脚本按 .json 批量处理
+    assert R.VAULT_FILE.endswith(".enc"), \
+        f"密文用了 {R.VAULT_FILE} 后缀，容易被按 .json 批量处理的脚本带走"
+
+
+# ---------------------------------------------------------------------------
+# 13. 今日已签短路（P1-6）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_skip_browser_when_already_signed_today(core, monkeypatch):
+    """今天已签过 ⇒ 不起浏览器（省 40-80 秒 + 1.2G 内存）。"""
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+    R.mark_signed(core, "111", "a@example.com", R._today_str())
+
+    called = {"n": 0}
+
+    async def _should_not_run(*a, **kw):
+        called["n"] += 1
+        return {"ok": True, "items": []}
+
+    monkeypatch.setattr(R, "_run_one_account", _should_not_run)
+    res = await R.run_sign_in(core, "111")
+
+    assert called["n"] == 0, "已签到却还是起了浏览器"
+    assert res["ok"] is True
+    assert res["items"][0]["reason"] == "今日已签到"
+
+
+@pytest.mark.asyncio
+async def test_still_runs_when_one_account_pending(core, monkeypatch, fake_runner):
+    """多账号里有一个没签 ⇒ 仍要跑（不能因为另一个签过就整体跳过）。"""
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+    assert R.bind_account(core, "111", "b@example.com", "password456")["ok"]
+    R.mark_signed(core, "111", "a@example.com", R._today_str())
+
+    seen = []
+
+    async def _fake(py, script, login, pwd):
+        seen.append(login)
+        return {"ok": True, "reason": "签到成功", "points": 1}
+
+    monkeypatch.setattr(R, "_run_one_account", _fake)
+    await R.run_sign_in(core, "111")
+
+    assert "b@example.com" in seen, "未签的账号被跳过了"
+    assert "a@example.com" not in seen, "已签的账号不该再跑"
+
+
+# ---------------------------------------------------------------------------
+# 14. 失败重试（P1-5）
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_retry_on_captcha_failure(core, monkeypatch, fake_runner):
+    """验证码失败会重试；密码错误不重试。"""
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+
+    calls = {"n": 0}
+
+    async def _fail_captcha(py, script, login, pwd):
+        calls["n"] += 1
+        return {"ok": False, "reason": "验证码未通过"}
+
+    monkeypatch.setattr(R, "_run_one_account", _fail_captcha)
+    await R.run_sign_in(core, "111")
+    assert calls["n"] == R.CAPTCHA_RETRY + 1, \
+        f"验证码失败应重试 {R.CAPTCHA_RETRY} 次，实际调用 {calls['n']} 次"
+
+
+@pytest.mark.asyncio
+async def test_no_retry_on_wrong_password(core, monkeypatch, fake_runner):
+    """密码错误是确定性失败，重试白费内存 ⇒ 不重试。"""
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+
+    calls = {"n": 0}
+
+    async def _bad_pwd(py, script, login, pwd):
+        calls["n"] += 1
+        return {"ok": False, "reason": "账号或密码错误"}
+
+    monkeypatch.setattr(R, "_run_one_account", _bad_pwd)
+    await R.run_sign_in(core, "111")
+    assert calls["n"] == 1, f"密码错误不该重试，实际调了 {calls['n']} 次"
+
+
+# ---------------------------------------------------------------------------
+# 15. 签到历史（P2）
+# ---------------------------------------------------------------------------
+
+def test_record_and_summarise_history(core):
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+    R.record_result(core, "111", "a@example.com", True, "签到成功")
+    R.record_result(core, "111", "a@example.com", False, "验证码未通过")
+
+    txt = R.history_summary(core, "111")
+    assert "a@example.com" in txt
+    assert "共 1 天" in txt, f"同日应只记一条，实际：{txt}"
+
+
+def test_history_has_no_credentials(core):
+    """🔴 历史文件里绝不能出现密码。"""
+    pwd = "VerySecret!999"
+    assert R.bind_account(core, "111", "a@example.com", pwd)["ok"]
+    R.record_result(core, "111", "a@example.com", True, "签到成功")
+
+    path = os.path.join(core.persistence.data_dir, R.HISTORY_FILE)
+    raw = pathlib.Path(path).read_text(encoding="utf-8")
+    assert pwd not in raw, "签到历史里出现了明文密码"
+    assert "password" not in raw.lower()
+
+
+def test_history_isolated_per_user(core):
+    R.record_result(core, "111", "a@example.com", True, "签到成功")
+    R.record_result(core, "222", "b@example.com", False, "验证码未通过")
+    assert "a@example.com" in R.history_summary(core, "111")
+    assert "b@example.com" not in R.history_summary(core, "111")
+
+
+# ---------------------------------------------------------------------------
+# 16. 连续失败降级（P2）
+# ---------------------------------------------------------------------------
+
+def test_consecutive_failures_counting(core):
+    for _ in range(3):
+        R.record_result(core, "111", "a@example.com", False, "验证码未通过")
+    # 同日只保留最后一条 ⇒ 这里靠手动构造多天
+    import json as _json
+    path = os.path.join(core.persistence.data_dir, R.HISTORY_FILE)
+    data = _json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
+    data["111"]["a@example.com"] = [
+        {"d": "2026-10-20", "ok": False, "r": "x"},
+        {"d": "2026-10-21", "ok": False, "r": "x"},
+        {"d": "2026-10-22", "ok": False, "r": "x"},
+    ]
+    pathlib.Path(path).write_text(_json.dumps(data), encoding="utf-8")
+    assert R.consecutive_failures(core, "111", "a@example.com") == 3
+
+
+def test_consecutive_resets_after_success(core):
+    import json as _json
+    path = os.path.join(core.persistence.data_dir, R.HISTORY_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    pathlib.Path(path).write_text(_json.dumps({
+        "111": {"a@example.com": [
+            {"d": "2026-10-20", "ok": False, "r": "x"},
+            {"d": "2026-10-21", "ok": True, "r": "y"},
+            {"d": "2026-10-22", "ok": False, "r": "x"},
+        ]}
+    }), encoding="utf-8")
+    # 最新是失败，往前一个成功 ⇒ 连续失败 1
+    assert R.consecutive_failures(core, "111", "a@example.com") == 1
+
+
+def test_should_auto_sign_blocks_after_max_failures(core):
+    import json as _json
+    path = os.path.join(core.persistence.data_dir, R.HISTORY_FILE)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    rows = [{"d": f"2026-10-{20+i}", "ok": False, "r": "x"}
+            for i in range(R.MAX_CONSECUTIVE_FAILURES)]
+    pathlib.Path(path).write_text(
+        _json.dumps({"111": {"a@example.com": rows}}), encoding="utf-8")
+
+    go, why = R.should_auto_sign(core, "111", "a@example.com")
+    assert go is False, "连续失败 N 次仍允许自动签到"
+    assert "暂停" in why
+
+
+def test_should_auto_sign_allows_fresh_account(core):
+    go, why = R.should_auto_sign(core, "111", "a@example.com")
+    assert go is True
+    assert why == ""
+
+
+# ---------------------------------------------------------------------------
+# 17. 测试夹具：让 _runner_paths 指向存在的假文件
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def fake_runner(monkeypatch, tmp_path):
+    """让 `_runner_paths` 返回**存在**的假文件。
+
+    🔴 不加这个夹具，`_run_one_user` 会在「服务端未部署签到组件」处提前返回，
+    测试就永远测不到后面的重试/历史逻辑（实测踩过：断言调用次数为 0）。
+    """
+    py = tmp_path / "fakepy"
+    script = tmp_path / "fakescript.py"
+    py.write_text("#!/bin/sh\n", encoding="utf-8")
+    script.write_text("# fake\n", encoding="utf-8")
+    monkeypatch.setattr(R, "_runner_paths", lambda core: (str(py), str(script)))
+    return py, script

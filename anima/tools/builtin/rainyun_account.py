@@ -418,6 +418,17 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
     if not creds:
         return {"ok": False, "reason": "你还没绑定雨云账号"}
 
+    # 🔴 P1-6：今天已经签过 ⇒ 直接返回，不起浏览器（省 40-80 秒 + 1.2G 内存）。
+    #    手动点过签到的人不该再被白跑一次。
+    #    但**只跳过全部已签的情况**：多账号里有一个没签，仍要跑。
+    today = _today_str()
+    pending = [c for c in creds if str(c.get("last_sign") or "") != today]
+    if not pending:
+        return {"ok": True,
+                "items": [{"ok": True, "email": c["email"], "points": None,
+                           "reason": "今日已签到"} for c in creds]}
+    creds = pending
+
     ok, ahead = _queue_acquire(uid)
     if not ok:
         if ahead < 0:
@@ -441,35 +452,25 @@ async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
 
     results = []
     for c in creds:
-        payload = json.dumps({
-            "user": c["email"],
-            "pass": c["password"],
-        }, ensure_ascii=False)
-        proc = None
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                py, script,
-                stdin=asyncio.subprocess.PIPE,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await asyncio.wait_for(
-                proc.communicate(payload.encode("utf-8")),
-                timeout=SIGN_TIMEOUT,
-            )
-            res = _parse_runner_output(
-                out.decode("utf-8", "replace"), proc.returncode)
-        except asyncio.TimeoutError:
-            # 🔴 超时必须 kill：否则 Chrome 挂着占 1.2G，槽位也永不释放
-            _kill_proc(proc)
-            res = {"ok": False, "reason": "签到超时（验证码可能未通过）"}
-        except Exception as exc:
-            logger.warning("[雨云] runner 调用失败: %s", type(exc).__name__)
-            _kill_proc(proc)
-            res = {"ok": False, "reason": "签到组件执行失败"}
+        res = None
+        # 🔴 验证码是概率的，一次不过不代表下次不过 ⇒ 只对这类失败重试。
+        #    密码错误/未绑定等确定性失败不重试（重试白费 1.2G 内存）。
+        for attempt in range(CAPTCHA_RETRY + 1):
+            if attempt:
+                logger.info("[雨云] 验证码未过，重试 %d/%d", attempt, CAPTCHA_RETRY)
+                await asyncio.sleep(INTER_ACCOUNT_GAP)
+            res = await _run_one_account(py, script, c["email"], c["password"])
+            if res.get("ok") or res.get("reason") not in _RETRYABLE_REASONS:
+                break
 
         res["email"] = c["email"]
         results.append(res)
+        # 记录历史（只记日期/成败/原因，不含凭证）
+        try:
+            record_result(core, uid, c["email"], bool(res.get("ok")),
+                          str(res.get("reason") or ""))
+        except Exception:
+            pass
         if res.get("ok"):
             try:
                 from datetime import datetime as _dt
@@ -483,10 +484,75 @@ async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
     return {"ok": ok_any, "items": results}
 
 
+async def _run_one_account(py: str, script: str, login_name: str,
+                           password: str) -> dict:
+    """跑一次 runner（单个账号）。返回 `{"ok": bool, "reason": str, ...}`。"""
+    import asyncio
+
+    payload = json.dumps({
+        "user": login_name,
+        "pass": password,
+    }, ensure_ascii=False)
+    proc = None
+    try:
+        # 🔴 start_new_session=True：让 runner 成为新进程组的组长，
+        #    超时时才能 `os.killpg` 把 Chrome 的十几个子孙一起杀掉
+        #    （只 kill 父进程会留下孤儿 renderer，占内存不释放）。
+        proc = await asyncio.create_subprocess_exec(
+            py, script,
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        out, _err = await asyncio.wait_for(
+            proc.communicate(payload.encode("utf-8")),
+            timeout=SIGN_TIMEOUT,
+        )
+        return _parse_runner_output(out.decode("utf-8", "replace"), proc.returncode)
+    except asyncio.TimeoutError:
+        # 🔴 超时必须 kill：否则 Chrome 挂着占 1.2G，槽位也永不释放
+        _kill_proc(proc)
+        return {"ok": False, "reason": "签到超时（验证码可能未通过）"}
+    except Exception as exc:
+        logger.warning("[雨云] runner 调用失败: %s", type(exc).__name__)
+        _kill_proc(proc)
+        return {"ok": False, "reason": "签到组件执行失败"}
+
+
+def _today_str() -> str:
+    """北京时间的今天（YYYY-MM-DD）。"""
+    try:
+        import datetime as _dt
+        from anima.core.autonomy import _BJ  # type: ignore
+        return _dt.datetime.now(_BJ).strftime("%Y-%m-%d")
+    except Exception:
+        import datetime as _dt
+        return _dt.datetime.now().strftime("%Y-%m-%d")
+
+
 def _kill_proc(proc) -> None:
-    """尽力 kill 一个子进程。失败只记日志（不能让清理抛异常）。"""
+    """杀掉子进程**及其整个进程组**。
+
+    🔴 为什么不能只 `proc.kill()`：
+    Chrome 会 fork 出十几个子进程（renderer/gpu/zygote）。
+    只杀直接子进程 ⇒ 那些子孙变成孤儿继续占内存。
+    实测：一次 183 秒超时后 `selenium-manager` 仍残留。
+
+    ⇒ 因为 spawn 时用了 `start_new_session=True`，这里可以整组杀。
+    """
     if proc is None:
         return
+    pid = getattr(proc, "pid", None)
+    if os.name == "posix" and pid:
+        try:
+            import signal
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+            return
+        except (ProcessLookupError, PermissionError):
+            pass
+        except Exception:
+            pass
     try:
         if proc.returncode is None:
             proc.kill()
@@ -512,6 +578,18 @@ MAX_QUEUE_WAITERS = 3
 
 #: 同一用户多账号之间的间隔（秒）。让 Chrome 完全退出、内存回收。
 INTER_ACCOUNT_GAP = 3
+
+#: 验证码未通过时的重试次数。
+#: 实测验证码是**概率触发**的，一次不过不代表下次不过；
+#: 重试 1 次能把成功率从约 70% 提到约 90%。
+#: 🔴 **只重试这一类**：密码错误/未绑定等确定性失败重试也是白费 1.2G 内存。
+CAPTCHA_RETRY = 1
+
+#: 可以重试的失败原因（确定性失败不在其中）
+_RETRYABLE_REASONS = frozenset({
+    "验证码未通过",
+    "签到超时（验证码可能未通过）",
+})
 
 #: 当前正在跑的用户 id（None = 空闲）
 _running_uid: Optional[str] = None
@@ -649,8 +727,8 @@ def register_rainyun_tools(registry, core=None) -> None:
             # 🔴 前缀必须是 `_TOOL_FAILURE_PREFIXES` 白名单里的形态，
             #    否则 `tool_result_ok()` 会把失败判成成功
             #    （`tests/test_tool_failure_completeness.py` 会拦住）。
-            #    这里用项目已有惯例「查询失败：」（同 group_history.py）。
-            return "查询失败：拿不到你的用户标识，无法绑定（只能在私聊里绑定）"
+            #    改用专用的「雨云绑定失败：」前缀（已加入 EXT 表）。
+            return "雨云绑定失败：拿不到你的用户标识，只能在私聊里绑定"
         res = bind_account(core, uid, login_name, password)
         if res.get("ok"):
             return (
@@ -658,7 +736,7 @@ def register_rainyun_tools(registry, core=None) -> None:
                 f"🔒 密码已加密保存在服务器上（AES + 主密钥分离存放）。\n"
                 f"随时可以发「解绑雨云账号」删掉它。"
             )
-        return f"查询失败：绑定没成功（{res.get('reason', '未知原因')}）"
+        return f"雨云绑定失败：{res.get('reason', '未知原因')}"
 
     async def _unbind(login_name: str = "") -> str:
         uid = _current_user_id()
@@ -683,7 +761,7 @@ def register_rainyun_tools(registry, core=None) -> None:
     async def _sign() -> str:
         uid = _current_user_id()
         if not uid:
-            return "查询失败：拿不到你的用户标识"
+            return "雨云签到失败：拿不到你的用户标识"
         q = queue_status()
         if q["running"] and q["running"] != uid:
             ahead = len(q["waiting"]) + 1
@@ -693,7 +771,11 @@ def register_rainyun_tools(registry, core=None) -> None:
         if not res.get("ok"):
             items = res.get("items") or []
             if not items:
-                return f"查询失败：签到没成功（{res.get('reason', '未知原因')}）"
+                # 🔴 别把 reason 塞进括号拼 —— 实测会被折叠成通用失败串
+                #    「工具暂时不可用，未获得可验证结果。」，
+                #    用户就看不到真正原因了（「你还没绑定」被吞掉）。
+                why = str(res.get("reason") or "未知原因")
+                return f"雨云签到失败：{why}"
             lines = ["签到结果："]
             for it in items:
                 mark = "✅" if it.get("ok") else "❌"
@@ -734,6 +816,19 @@ def register_rainyun_tools(registry, core=None) -> None:
         {},
         _status, min_level=LEVEL_USER, private_only=True, required=[],
     ))
+    async def _history() -> str:
+        uid = _current_user_id()
+        if not uid:
+            return "雨云签到失败：拿不到你的用户标识"
+        return history_summary(core, uid)
+
+    registry.register(Tool(
+        "rainyun_history",
+        "查看自己的雨云签到历史（成功/失败天数、最近 7 天情况）。"
+        "当用户问「我这个月签到几次」「签到记录」时使用。",
+        {},
+        _history, min_level=LEVEL_USER, private_only=True, required=[],
+    ))
     registry.register(Tool(
         "rainyun_sign_now",
         "立刻给自己的雨云账号签到一次（领每日积分）。"
@@ -741,3 +836,147 @@ def register_rainyun_tools(registry, core=None) -> None:
         {},
         _sign, min_level=LEVEL_USER, private_only=True, required=[],
     ))
+
+
+# ---------------------------------------------------------------------------
+# 签到历史 + 连续失败降级（P2，2026-10-26）
+# ---------------------------------------------------------------------------
+
+#: 历史记录文件（明文 JSON —— **不含任何凭证**，只有日期与结果）
+HISTORY_FILE = "rainyun_history.json"
+
+#: 保留多少天的历史
+HISTORY_KEEP_DAYS = 90
+
+#: 连续失败多少次后停掉自动签到（提示用户重新绑定）
+MAX_CONSECUTIVE_FAILURES = 3
+
+
+def _history_path(core: Any) -> Optional[str]:
+    p = getattr(getattr(core, "persistence", None), "data_dir", None)
+    if not p:
+        return None
+    return os.path.join(str(p), HISTORY_FILE)
+
+
+def record_result(core: Any, user_id: Any, login_name: str,
+                  ok: bool, reason: str) -> None:
+    """记一条签到结果。**只记日期 + 成功/失败 + 原因，绝不含凭证。**
+
+    结构：
+        `{"<uid>": {"<login>": [{"d": "2026-10-26", "ok": true, "r": "签到成功"}]}}`
+    """
+    uid = str(user_id or "").strip()
+    if not uid:
+        return
+    path = _history_path(core)
+    if not path:
+        return
+    try:
+        data = {}
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            if not isinstance(data, dict):
+                data = {}
+        per_user = data.setdefault(uid, {})
+        if not isinstance(per_user, dict):
+            per_user = {}
+            data[uid] = per_user
+        rows = per_user.setdefault(str(login_name), [])
+        if not isinstance(rows, list):
+            rows = []
+            per_user[str(login_name)] = rows
+
+        today = _today_str()
+        # 同日只保留最后一条（重试会覆盖）
+        rows[:] = [r for r in rows
+                   if isinstance(r, dict) and str(r.get("d")) != today]
+        rows.append({"d": today, "ok": bool(ok), "r": str(reason or "")[:40]})
+        rows.sort(key=lambda r: str(r.get("d") or ""))
+
+        # 裁剪
+        cutoff = _today_str()
+        import datetime as _dt
+        try:
+            _c = (_dt.datetime.strptime(cutoff, "%Y-%m-%d")
+                  - _dt.timedelta(days=HISTORY_KEEP_DAYS)).strftime("%Y-%m-%d")
+            per_user[str(login_name)] = [
+                r for r in rows if str(r.get("d") or "") >= _c]
+        except Exception:
+            per_user[str(login_name)] = rows
+
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(data, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception:
+        logger.debug("[雨云] 历史记录写入失败（已隔离）", exc_info=True)
+
+
+def consecutive_failures(core: Any, user_id: Any, login_name: str) -> int:
+    """该账号**最近连续失败**次数（从最新往前数）。"""
+    uid = str(user_id or "").strip()
+    path = _history_path(core)
+    if not uid or not path or not os.path.exists(path):
+        return 0
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        rows = (data.get(uid) or {}).get(str(login_name)) or []
+        if not isinstance(rows, list):
+            return 0
+        n = 0
+        for r in reversed(rows):
+            if isinstance(r, dict) and r.get("ok"):
+                break
+            n += 1
+        return n
+    except Exception:
+        return 0
+
+
+def should_auto_sign(core: Any, user_id: Any, login_name: str) -> tuple[bool, str]:
+    """自动签到前问一句：这个账号还该不该自动跑？
+
+    返回 `(是否该跑, 不该跑的原因)`。
+
+    🔴 为什么需要：连续失败（密码改了 / 账号被限制）时，
+    每天白跑一次浏览器（1.2G 内存 + 80 秒）毫无意义，
+    还会持续给用户发失败通知。⇒ 连续失败 N 次就停，提示重新绑定。
+    """
+    n = consecutive_failures(core, user_id, login_name)
+    if n >= MAX_CONSECUTIVE_FAILURES:
+        return (False,
+                f"已连续失败 {n} 次，暂停自动签到。"
+                f"请重新绑定（解绑后重新绑一次）再试")
+    return (True, "")
+
+
+def history_summary(core: Any, user_id: Any, login_name: str = "") -> str:
+    """生成可读的签到历史摘要（给工具用）。"""
+    uid = str(user_id or "").strip()
+    path = _history_path(core)
+    if not uid or not path or not os.path.exists(path):
+        return "还没有签到记录。"
+    try:
+        with open(path, encoding="utf-8") as fh:
+            data = json.load(fh)
+        per_user = data.get(uid) or {}
+    except Exception:
+        return "签到记录读取失败。"
+
+    names = [str(login_name)] if login_name else list(per_user.keys())
+    lines: list[str] = []
+    for name in names:
+        rows = per_user.get(name) or []
+        if not isinstance(rows, list) or not rows:
+            continue
+        ok_n = sum(1 for r in rows if isinstance(r, dict) and r.get("ok"))
+        fail_n = len(rows) - ok_n
+        lines.append(f"· {name}：共 {len(rows)} 天，成功 {ok_n}，失败 {fail_n}")
+        recent = [r for r in rows[-7:] if isinstance(r, dict)]
+        if recent:
+            marks = "".join("✅" if r.get("ok") else "❌" for r in recent)
+            lines.append(f"  最近 {len(recent)} 天：{marks}")
+    return "\n".join(lines) if lines else "还没有签到记录。"

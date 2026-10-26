@@ -1554,7 +1554,7 @@ class Heartbeat:
 
         owners = set(str(x) for x in (
             getattr(getattr(self.core.config, "permissions", None), "owners", None) or []))
-        ok, fail = 0, 0
+        ok, fail, skipped = 0, 0, 0
         for uid in list(vault.keys()):
             # 🔴 批量签到也要排队：单 Chrome 峰值 1.2G，并发 2 个就爆内存。
             #    如果用户此刻正在手动签（占了槽），这里等它跑完再继续，
@@ -1566,6 +1566,33 @@ class Heartbeat:
                     if not q["running"] or q["running"] == uid:
                         break
                     await asyncio.sleep(5)
+            except Exception:
+                pass
+
+            # 🔴 连续失败降级：密码改了 / 账号被限制时，
+            #    每天白跑一次浏览器（1.2G + 80s）毫无意义。
+            #    连续失败 N 次就跳过，并通知用户重新绑定。
+            try:
+                from anima.tools.builtin.rainyun_account import (
+                    get_credentials as _gc,
+                    should_auto_sign,
+                )
+                _creds = _gc(self.core, uid)
+                _blocked = None
+                for _c in _creds:
+                    _go, _why = should_auto_sign(self.core, uid, _c["email"])
+                    if not _go:
+                        _blocked = _why
+                        break
+                if _blocked:
+                    skipped += 1
+                    logger.info("[雨云签到] user=%s 跳过：%s", uid[-4:], _blocked[:30])
+                    try:
+                        await self._notify_rainyun_failure(
+                            uid, {"ok": False, "reason": _blocked})
+                    except Exception:
+                        pass
+                    continue
             except Exception:
                 pass
 
@@ -1589,11 +1616,11 @@ class Heartbeat:
                     logger.debug("[雨云签到] 通知失败 user=%s", uid[-4:], exc_info=True)
 
         self._rainyun_signin_mark_save(_today)
-        logger.info("[雨云签到] 完成：成功 %d / 失败 %d", ok, fail)
+        logger.info("[雨云签到] 完成：成功 %d / 失败 %d / 跳过 %d", ok, fail, skipped)
         try:
             audit = getattr(self.core, "audit", None) or getattr(self.core, "auditor", None)
             if audit is not None and hasattr(audit, "emit"):
-                audit.emit("rainyun_signin_run", ok=ok, fail=fail)
+                audit.emit("rainyun_signin_run", ok=ok, fail=fail, skipped=skipped)
         except Exception:
             logger.debug("雨云签到审计写入失败", exc_info=True)
 

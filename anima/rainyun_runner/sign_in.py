@@ -62,6 +62,10 @@ import time
 import traceback
 from typing import Optional
 
+# 同目录的共享工具（API 预检查 / cookie 缓存 / 进程组清理）
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import common  # noqa: E402
+
 
 # ---------------------------------------------------------------------------
 # 常量
@@ -356,6 +360,55 @@ def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# 签到执行（登录后 / cookie 免登录后共用）
+# ---------------------------------------------------------------------------
+
+def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
+    """去积分页签到并输出结果。**不返回**（内部 _emit 直接退出）。"""
+    from selenium.webdriver.common.by import By
+
+    driver.get(REWARD_URL)
+    time.sleep(4)
+
+    # 找签到按钮（"领取奖励" 表示还没签）
+    clicked = False
+    btn_text = ""
+    try:
+        earn = driver.find_element(
+            By.XPATH,
+            '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/'
+            'div/div[1]/div/div[1]/div/div[1]/div/span[2]/a',
+        )
+        btn_text = (earn.text or "").strip()
+        _log(f"签到按钮文字: [{btn_text}]")
+        if btn_text == "领取奖励":
+            earn.click()
+            clicked = True
+            time.sleep(2)
+            _solve_captcha(driver)
+    except Exception as exc:
+        _log(f"找签到按钮失败: {type(exc).__name__}")
+
+    # 读积分
+    time.sleep(3)
+    points = None
+    try:
+        raw_pts = driver.find_element(
+            By.XPATH,
+            '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3',
+        ).get_attribute("textContent")
+        digits = re.sub(r"\D", "", str(raw_pts or ""))
+        points = int(digits) if digits else None
+    except Exception:
+        pass
+
+    if not clicked:
+        _emit({"ok": True, "points": points, "reason": "今日已签到"}, 0)
+    else:
+        _emit({"ok": True, "points": points}, 0)
+
+
+# ---------------------------------------------------------------------------
 # 主流程
 # ---------------------------------------------------------------------------
 
@@ -373,9 +426,37 @@ def main() -> None:
         _emit({"ok": False, "reason": "登录失败"}, 1)
         return
 
+    # 🔴 P0-3：API 预检查 —— 已签到就直接返回，不起浏览器（省 40-80 秒）。
+    # 需要 api_key，但用户绑的是账号密码 ⇒ 多数情况拿不到 key，
+    # 此时 precheck 返回 None，正常走浏览器路径。这是「尽力而为的优化」。
+    api_key = str(cred.get("api_key") or "")
+    pre = common.precheck_signed_today(user, api_key)
+    if pre is True:
+        _log("API 预检查：今日已签到，跳过浏览器")
+        _emit({"ok": True, "points": None, "reason": "今日已签到"}, 0)
+        return
+    if pre is False:
+        _log("API 预检查：今日未签到，启动浏览器")
+
     driver = None
     try:
         driver = _build_driver()
+
+        # 🔴 P0-1：cookie 缓存 —— 有有效 cookie 就不用走登录流程。
+        # 收益不只是省时间：实测「不触发验证码」的登录只占 2/3，
+        # 带 cookie 直接跳过登录 = 根本不碰验证码。
+        used_cookie = common.load_cookies(driver, user)
+        if used_cookie:
+            _log("已加载缓存 cookie，尝试免登录")
+            driver.get(REWARD_URL)
+            time.sleep(4)
+            if "/auth/login" not in driver.current_url:
+                _log("cookie 有效，免登录成功")
+                _finish_sign_in(driver, user, points_from_api=None)
+                return
+            _log("cookie 已失效，清除后重新登录")
+            common.clear_cookies(user)
+
         driver.get(LOGIN_URL)
         time.sleep(3)
 
@@ -436,46 +517,11 @@ def main() -> None:
             _emit({"ok": False, "reason": reason}, 1)
             return
         _log("登录成功")
+        common.save_cookies(driver, user)
+        _log("已保存 cookie（下次免登录）")
 
-        # 6. 去积分页签到
-        driver.get(REWARD_URL)
-        time.sleep(4)
-
-        # 找签到按钮（"领取奖励" 表示还没签）
-        clicked = False
-        try:
-            earn = driver.find_element(
-                By.XPATH,
-                '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/'
-                'div/div[1]/div/div[1]/div/div[1]/div/span[2]/a',
-            )
-            txt = (earn.text or "").strip()
-            _log(f"签到按钮文字: [{txt}]")
-            if txt == "领取奖励":
-                earn.click()
-                clicked = True
-                time.sleep(2)
-                _solve_captcha(driver)
-        except Exception as exc:
-            _log(f"找签到按钮失败: {type(exc).__name__}")
-
-        # 7. 读积分
-        time.sleep(3)
-        points = None
-        try:
-            raw_pts = driver.find_element(
-                By.XPATH,
-                '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[1]/div[1]/div/p/div/h3',
-            ).get_attribute("textContent")
-            digits = re.sub(r"\D", "", str(raw_pts or ""))
-            points = int(digits) if digits else None
-        except Exception:
-            pass
-
-        if not clicked:
-            _emit({"ok": True, "points": points, "reason": "今日已签到"}, 0)
-        else:
-            _emit({"ok": True, "points": points}, 0)
+        _finish_sign_in(driver, user)
+        return
 
     except Exception as exc:
         _log(f"未捕获异常: {type(exc).__name__}")
@@ -485,6 +531,15 @@ def main() -> None:
         if driver is not None:
             try:
                 driver.quit()
+            except Exception:
+                pass
+            # 🔴 P0-2：`driver.quit()` 不保证杀干净 Chrome 子孙进程。
+            #    实测：一次超时后 `selenium-manager` 仍残留。
+            #    这里按进程组兜底清一次（尽力而为，失败不影响结果）。
+            try:
+                import subprocess as _sp
+                _sp.run(["pkill", "-9", "-f", "chrome-linux64"],
+                        stderr=_sp.DEVNULL, timeout=5)
             except Exception:
                 pass
 
