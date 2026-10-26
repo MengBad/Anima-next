@@ -636,4 +636,4 @@ def register_all_builtin(registry, core=None) -> None:
     #    全部 `private_only=True`（群聊不可见/不可调用）+ `LEVEL_USER`
     #    （任何私聊用户都能绑自己的）。隔离靠「数据按 user_id 索引」。
     from .rainyun_account import register_rainyun_tools
-    register_rainyun_tools(registry)
+    register_rainyun_tools(registry, core)

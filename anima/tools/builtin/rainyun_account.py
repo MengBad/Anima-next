@@ -498,7 +498,7 @@ def _safe_reason(reason: Any) -> str:
 # 工具入口（全部 private_only，只有私聊能用）
 # ---------------------------------------------------------------------------
 
-def register_rainyun_tools(registry) -> None:
+def register_rainyun_tools(registry, core=None) -> None:
     """注册雨云多人绑定签到工具。
 
     🔴 全部 `private_only=True`：
@@ -519,7 +519,7 @@ def register_rainyun_tools(registry) -> None:
             #    （`tests/test_tool_failure_completeness.py` 会拦住）。
             #    这里用项目已有惯例「查询失败：」（同 group_history.py）。
             return "查询失败：拿不到你的用户标识，无法绑定（只能在私聊里绑定）"
-        res = bind_account(None, uid, login_name, password)
+        res = bind_account(core, uid, login_name, password)
         if res.get("ok"):
             return (
                 f"{res['reason']}。\n"
@@ -532,14 +532,14 @@ def register_rainyun_tools(registry) -> None:
         uid = _current_user_id()
         if not uid:
             return "拿不到你的用户标识"
-        res = unbind_account(None, uid, login_name)
+        res = unbind_account(core, uid, login_name)
         return res.get("reason", "操作失败")
 
     async def _status() -> str:
         uid = _current_user_id()
         if not uid:
             return "拿不到你的用户标识"
-        accts = list_accounts(None, uid)
+        accts = list_accounts(core, uid)
         if not accts:
             return "你还没绑定雨云账号。想绑定就告诉我你的雨云邮箱和密码。"
         lines = [f"你绑定了 {len(accts)} 个雨云账号："]
@@ -552,7 +552,7 @@ def register_rainyun_tools(registry) -> None:
         uid = _current_user_id()
         if not uid:
             return "拿不到你的用户标识"
-        res = await run_sign_in(None, uid)
+        res = await run_sign_in(core, uid)
         if not res.get("ok"):
             items = res.get("items") or []
             if not items:

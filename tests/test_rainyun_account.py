@@ -430,3 +430,64 @@ def test_unknown_reason_is_normalised():
     """runner 给了个不在白名单的成功原因 ⇒ 收敛成「签到成功」。"""
     out = '{"ok": true, "points": 1, "reason": "随便什么"}'
     assert R._parse_runner_output(out, 0)["reason"] == "签到成功"
+
+
+# ---------------------------------------------------------------------------
+# 9. 工具必须真的拿到 core（否则静默失效）
+# ---------------------------------------------------------------------------
+
+def test_register_receives_core():
+    """🔴 实测踩过：`register_rainyun_tools(registry)` 没传 core，
+    于是工具里 `list_accounts(None, uid)` → `_vault_path(None)` → None
+    → 读不到文件 → **永远回「你还没绑定」**，而日志里毫无异常。
+
+    这种「静默返回空」的 bug 最难发现：用户看到的是正常文案，
+    不是报错。⇒ 用源码断言钉死。
+    """
+    src = _SRC.read_text(encoding="utf-8")
+    # 注册函数签名必须接受 core
+    assert "def register_rainyun_tools(registry, core=None)" in src
+    # 工具内部不得把 None 当 core 传
+    for bad in ("list_accounts(None", "bind_account(None",
+                "unbind_account(None", "run_sign_in(None"):
+        assert bad not in src, f"工具把 core=None 传下去了：{bad}"
+
+
+def test_builtin_init_passes_core():
+    """注册点必须把 core 传进来。"""
+    init = (_ROOT / "anima" / "tools" / "builtin" / "__init__.py").read_text(encoding="utf-8")
+    assert "register_rainyun_tools(registry, core)" in init
+
+
+def test_tools_work_with_real_core(tmp_path, monkeypatch):
+    """端到端：注册后调工具，能读到自己绑定的账号。"""
+    import asyncio
+    from cryptography.fernet import Fernet
+    from anima.tools import ToolRegistry, LEVEL_USER
+    from anima.tools.builtin.rainyun_account import register_rainyun_tools
+
+    monkeypatch.setenv(R.MASTER_KEY_ENV, Fernet.generate_key().decode("ascii"))
+    d = tmp_path / "d"
+    d.mkdir()
+
+    class P:
+        data_dir = str(d)
+
+    class C:
+        persistence = P()
+
+    core = C()
+    # 先绑定
+    assert R.bind_account(core, "111", "me@example.com", "password123")["ok"]
+
+    reg = ToolRegistry()
+    register_rainyun_tools(reg, core)
+
+    tok = reg.set_call_context(detail_type="private", user_id="111")
+    try:
+        out = asyncio.run(reg.call("rainyun_my_status", {}))
+    finally:
+        reg.reset_call_context(tok)
+
+    assert "me@example.com" in out, f"工具读不到自己绑定的账号：{out!r}"
+    assert "还没绑定" not in out
