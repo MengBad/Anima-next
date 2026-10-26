@@ -1233,6 +1233,7 @@ class Heartbeat:
     #: 同质推送，而 owner 什么都没做。**重启是运维动作，不该造成重复打扰。**
     _OWNER_DIGEST_MARK_FILE = "owner_digest_mark.json"
     _RAINYUN_MARK_FILE = "rainyun_reminder_mark.json"
+    _RAINYUN_SIGNIN_MARK_FILE = "rainyun_signin_mark.json"
 
     @property
     def _owner_digest_mark(self) -> dict:
@@ -1464,6 +1465,144 @@ class Heartbeat:
                     audit.emit("rainyun_reminder_delivered", owners=len(owners))
             except Exception:
                 logger.debug("雨云提醒审计写入失败", exc_info=True)
+
+    # ------------------------------------------------------------------
+    # 雨云多人自动签到（2026-10-26，方案 B）
+    # ------------------------------------------------------------------
+
+    def _rainyun_signin_mark(self) -> dict:
+        """读持久化标记（懒加载，失败按「今天没跑过」处理）。"""
+        if not hasattr(self, "_rainyun_signin_mark_cache"):
+            _d = {}
+            try:
+                _p = getattr(getattr(self.core, "persistence", None), "read_json", None)
+                if _p is not None:
+                    _d = _p(self._RAINYUN_SIGNIN_MARK_FILE, {}) or {}
+            except Exception:
+                logger.debug("雨云签到标记读取失败（按未跑处理）", exc_info=True)
+            self._rainyun_signin_mark_cache = _d if isinstance(_d, dict) else {}
+        return self._rainyun_signin_mark_cache
+
+    def _rainyun_signin_mark_save(self, day: str) -> None:
+        """写当日标记（内存 + 落盘），使「当天已跑」跨重启成立。"""
+        self._rainyun_signin_mark_cache = {"last_date": str(day)}
+        try:
+            _w = getattr(getattr(self.core, "persistence", None), "write_json", None)
+            if _w is not None:
+                _w(self._RAINYUN_SIGNIN_MARK_FILE, self._rainyun_signin_mark_cache)
+        except Exception:
+            logger.debug("雨云签到标记落盘失败（内存仍生效）", exc_info=True)
+
+    async def _rainyun_signin_tick(self, now: float) -> None:
+        """每天一次：替**每个绑定了账号的用户**跑一次雨云签到。
+
+        ## 与 `_rainyun_reminder_tick` 的区别
+
+        | | reminder | signin（本函数）|
+        |---|---|---|
+        | 数据源 | owner 的 API Key | 各用户自己绑定的账号 |
+        | 行为 | 只读查询 + 提醒 | 真的启动浏览器签到 |
+        | 频率 | 每天一次 | 每天一次 |
+
+        两个都保留：reminder 是「owner 自己的只读状态」，
+        signin 是「所有绑定用户的自动签到」。
+
+        ## 纪律（照抄 owner_digest 的教训）
+
+        - **日切一次 + 持久化标记**：只存内存的话，部署重启当天会再跑一遍
+          （`owner_digest` 的真实事故：8 分钟内推两条同质消息）。
+        - **过了配置小时才跑**（`rainyun.signin_hour`，默认 9）。
+        - **串行执行**：浏览器很重（约 400MB/实例），并发会打爆 3.9G 内存。
+        - **单用户失败不影响别人**：每个用户独立 try。
+        - **任何异常只记日志**：签到失败绝不能拖垮心跳。
+
+        ## 隐私
+
+        绝不把密码写进日志。只记 `user_id` 与成功/失败。
+        """
+        cfg = getattr(self.core.config, "rainyun", None)
+        if cfg is None or not bool(getattr(cfg, "enabled", False)):
+            return
+        if not bool(getattr(cfg, "signin_enabled", False)):
+            return
+
+        import datetime as _dt
+        try:
+            _now_dt = _dt.datetime.now(_BJ)
+        except Exception:
+            _now_dt = _dt.datetime.now()
+        if _now_dt.hour < int(getattr(cfg, "signin_hour", 9)):
+            return
+
+        _today = self._bj_date_str(now)
+        if self._rainyun_signin_mark().get("last_date") == _today:
+            return
+
+        # 拿全部绑定了账号的用户（只取 user_id 列表，不取凭证）
+        try:
+            from anima.tools.builtin.rainyun_account import (
+                _load_vault,
+                run_sign_in,
+            )
+            vault = _load_vault(self.core)
+        except Exception:
+            logger.warning("[雨云签到] 读取凭证库失败（已隔离）", exc_info=True)
+            return
+        if not vault:
+            self._rainyun_signin_mark_save(_today)
+            return
+
+        owners = set(str(x) for x in (
+            getattr(getattr(self.core.config, "permissions", None), "owners", None) or []))
+        ok, fail = 0, 0
+        for uid in list(vault.keys()):
+            try:
+                res = await run_sign_in(self.core, uid)
+            except Exception:
+                logger.warning("[雨云签到] user=%s 执行异常（已隔离）", uid[-4:], exc_info=True)
+                fail += 1
+                continue
+
+            if res.get("ok"):
+                ok += 1
+            else:
+                fail += 1
+
+            # 失败时通知该用户本人（不通知 owner —— 别人不该知道谁绑了账号）
+            if not res.get("ok"):
+                try:
+                    await self._notify_rainyun_failure(uid, res)
+                except Exception:
+                    logger.debug("[雨云签到] 通知失败 user=%s", uid[-4:], exc_info=True)
+
+        self._rainyun_signin_mark_save(_today)
+        logger.info("[雨云签到] 完成：成功 %d / 失败 %d", ok, fail)
+        try:
+            audit = getattr(self.core, "audit", None) or getattr(self.core, "auditor", None)
+            if audit is not None and hasattr(audit, "emit"):
+                audit.emit("rainyun_signin_run", ok=ok, fail=fail)
+        except Exception:
+            logger.debug("雨云签到审计写入失败", exc_info=True)
+
+    async def _notify_rainyun_failure(self, uid: str, res: dict) -> None:
+        """把失败原因**只告诉本人**（不告诉 owner，避免泄露「谁绑了账号」）。"""
+        try:
+            from anima.core.gateway import OutboundMsg
+        except Exception:
+            return
+        items = res.get("items") or []
+        if items:
+            lines = ["雨云签到失败："]
+            for it in items:
+                lines.append(f"· {it.get('email','')}：{it.get('reason','签到失败')}")
+            lines.append("可以稍后发「现在就签到」重试。")
+            body = "\n".join(lines)
+        else:
+            body = f"雨云签到失败：{res.get('reason', '未知原因')}"
+        try:
+            await self.core.gateway.send(OutboundMsg("private", int(uid), body))
+        except Exception:
+            logger.debug("[雨云签到] 私聊发送失败", exc_info=True)
 
     async def _tick(self) -> None:
         # 🔴 2026-10-23：**成长快照**（每日一次，让「它在变」可见）。
@@ -1902,6 +2041,17 @@ class Heartbeat:
             await self._rainyun_reminder_tick(now)
         except Exception:
             logger.debug("雨云签到提醒失败（已隔离）", exc_info=True)
+
+        # 🔴 2026-10-26：**雨云多人自动签到**（方案 B，每人绑自己的账号）。
+        # 与上面的 `_rainyun_reminder_tick` 是两件事：
+        #   · reminder 用 owner 的 API Key 查只读状态，只提醒
+        #   · 这个真的替**每个绑定了账号的用户**跑一次浏览器签到
+        # 纪律同样照抄 owner_digest：日切一次 + 持久化标记 + 过了配置小时才跑
+        # + 任何异常只记日志（不能让签到失败拖垮心跳）。
+        try:
+            await self._rainyun_signin_tick(now)
+        except Exception:
+            logger.debug("雨云自动签到失败（已隔离）", exc_info=True)
 
         # 🔴 P1 自主触发（2026-10-21）：它自己发现该干的活，**先报备再执行**。
         # owner 明确否掉「提议制」（不批就不动），要求直接执行；这里按确认的

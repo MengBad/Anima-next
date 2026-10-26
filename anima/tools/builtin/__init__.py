@@ -628,3 +628,12 @@ def register_all_builtin(registry, core=None) -> None:
         make_rainyun_status(core),
         min_level=LEVEL_OWNER,
     ))
+
+    # --- 雨云多人绑定签到（2026-10-26，方案 B）---
+    # 🔴 与上面的 `rainyun_status` 完全不同：
+    #    · `rainyun_status` 用 owner 的 API Key 查**只读**状态
+    #    · 这一组让**每个私聊用户绑定自己的账号**，各自签到
+    #    全部 `private_only=True`（群聊不可见/不可调用）+ `LEVEL_USER`
+    #    （任何私聊用户都能绑自己的）。隔离靠「数据按 user_id 索引」。
+    from .rainyun_account import register_rainyun_tools
+    register_rainyun_tools(registry)

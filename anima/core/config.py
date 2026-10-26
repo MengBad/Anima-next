@@ -599,6 +599,17 @@ class RainyunConfig(BaseModel):
     #: 比每日签到（500/天）值钱得多 ⇒ 默认带上。
     include_one_off: bool = True
 
+    #: ----- 方案 B：多人各自绑定账号，自动签到（2026-10-26）-----
+    #: 🔴 与上面的 `enabled` 是**两件事**：
+    #:   · `enabled`        → owner 用 API Key 查只读状态 + 每日提醒
+    #:   · `signin_enabled` → 真的替每个绑定用户启动浏览器签到
+    #: 分开是因为后者重得多（每次约 40-90s、内存峰值 400MB）。
+    signin_enabled: bool = False
+
+    #: 自动签到的时刻（24 小时制，北京时间）。过了这个点才跑。
+    #: 默认 9 点，与提醒同小时但各自有独立标记文件（互不干扰）。
+    signin_hour: int = 9
+
 
 class SelfCodeConfig(BaseModel):
     """自我编程：用 agentic coder（Claude Code CLI）把自然语言目标变成真实可运行能力。
