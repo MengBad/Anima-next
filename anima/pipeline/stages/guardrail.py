@@ -506,6 +506,82 @@ _CLAIM_DONE_RE = re.compile(
     r"这就去办|马上去办|已经在办|正在办)"
 )
 
+#: 🔴 2026-10-26 第二轮：「**说**要画图/发图，但**没真的生成**」。
+#:
+#: 生产事故（17:14:32 ~ 17:15:35，华初 要「吴语萌大头照」）：
+#:
+#:     17:14:41  出：「哼，怎么又来找本喵变图…看本喵给你捏一个出来喵喵~」
+#:               segs=['reply','text']          ← 无 image 段
+#:     17:15:35  出：「在这儿呢，爪子刚伸出来，瞅啥呐喵~」
+#:               segs=['reply','text']          ← 又无 image 段
+#:
+#: 两次 `generation_stage` 里**零次工具调用**。它没画，但说得像画了。
+#:
+#: 为什么上一轮的 `_CLAIM_DONE_RE` 拦不住：那条词表是**完成态**
+#: （已经办妥/弄好了），而它这次说的是**将来时/进行时的承诺**
+#: （给你捏一个/在这儿呢）—— 语义上更隐蔽，但对用户伤害相同：
+#: 用户以为图在路上，实际什么都没有。
+#:
+#: 判据：回复里出现「画/捏/生成/做图」类动词 + 指向交付的语气，
+#: **且**本回合 `generated_image_paths` 为空、也无生图工具调用 ⇒ 编造。
+_IMAGE_CLAIM_RE = re.compile(
+    r"(给你(画|捏|做|弄|整|搞)|帮你(画|捏|做|弄|整|搞)|本喵(给你|帮你)(画|捏|做)|"
+    r"画好(了|啦)|画完了|捏好(了|啦)|生成好(了|啦)|图(在|就在|给你)|"
+    r"在这儿呢|喏[,，]|接好|看好了|这就给你(画|捏|做)|马上(画|捏|做))"
+)
+
+#: 生图类工具的**真调用**判据（`tool_trace` 里的名字）。
+_IMAGE_TOOL_NAMES = ("generate_image", "edit_image", "browser_generate_image")
+
+
+def _has_image_delivery_evidence(ctx: "PipelineContext") -> bool:
+    """本回合是否**真的**产出了图片（或真的调了生图工具）。
+
+    三种证据任一成立即算：
+      1. `ctx.generated_image_paths` 非空（生图/改图成功落盘）
+      2. `tool_trace` 里有生图类工具且 `ok=True`
+      3. `ctx.meta["generation_tool_calls"]` 里有生图类工具
+
+    ⚠️ 判不了（异常）时返回 True —— 宁可漏判，不可误杀正常回复。
+    """
+    try:
+        if getattr(ctx, "generated_image_paths", None):
+            return True
+        trace = ctx.meta.get("tool_trace")
+        if isinstance(trace, list):
+            for item in trace:
+                if not isinstance(item, dict):
+                    continue
+                if item.get("name") in _IMAGE_TOOL_NAMES and item.get("ok"):
+                    return True
+        calls = ctx.meta.get("generation_tool_calls")
+        if isinstance(calls, list):
+            for item in calls:
+                name = item.get("name") if isinstance(item, dict) else str(item)
+                if name in _IMAGE_TOOL_NAMES:
+                    return True
+        # 入站就有图 + 回复提到图（可能是"这就是你说的那张"）⇒ 不判编造
+        if getattr(ctx, "inbound_images", None):
+            return True
+    except Exception:
+        return True
+    return False
+
+
+def _looks_like_fake_image_claim(reply: str, ctx: "PipelineContext") -> bool:
+    """回复声称要交图/已交图，但本回合没有图片产出（2026-10-26）。
+
+    与 `_looks_like_fake_completion` 并列，但针对**图片交付**这一类
+    （词表不同、证据类型也不同）。
+    """
+    text = str(reply or "")
+    if not text:
+        return False
+    if not _IMAGE_CLAIM_RE.search(text):
+        return False
+    return not _has_image_delivery_evidence(ctx)
+
+
 #: 允许「声称完成」的前提：本回合**确实有**工具调用或任务活动。
 #: 没有这些证据时，声称完成 = 编造。
 _ACTIVITY_EVIDENCE_KEYS = ("tool_trace", "agent_task_id", "generation_tool_calls")
@@ -1096,6 +1172,29 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             return StageResult.SKIP_REPLY
     except Exception:
         logger.debug("编造完成检测失败（已隔离）", exc_info=True)
+
+    # 🔴 2026-10-26 第二轮：**说要画图，但没真的画**。
+    #
+    # 生产事故（17:14:41 / 17:15:35）：
+    #   「看本喵给你捏一个出来喵喵~」   segs=['reply','text']  ← 无 image
+    #   「在这儿呢，爪子刚伸出来…」     segs=['reply','text']  ← 又无 image
+    # 两次 generation 里**零次工具调用**。
+    #
+    # 处置与「编造完成」不同：**改写**而不是拒发。
+    #   理由：这类回复通常是「答应了但没做到」，直接拒发会让用户觉得 bot 死了；
+    #   改写为一句诚实的话（「没画成」），用户能理解、也知道该怎么重试。
+    #   而「编造任务完成」那条拒发，是因为它会牵出后续追问（结果呢/在哪），
+    #   越解释越假。
+    try:
+        if _looks_like_fake_image_claim(ctx.reply, ctx):
+            logger.error(
+                "[编造出图拦截] 声称给图但本回合无图片产出，已改写 len=%d",
+                len(ctx.reply or ""))
+            ctx.meta["fake_image_claim_blocked"] = True
+            ctx.reply = "……本喵没画成，图没出来。你再说一次，本喵重试喵。"
+            return StageResult.CONTINUE
+    except Exception:
+        logger.debug("编造出图检测失败（已隔离）", exc_info=True)
 
     # 🔴 2026-10-25：**emoji / 颜文字出站兜底**。
     #
