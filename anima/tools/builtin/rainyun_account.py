@@ -789,7 +789,13 @@ def register_rainyun_tools(registry, core=None) -> None:
         if quick is not None:
             return quick
 
-        _spawn_background_sign(core, uid)
+        try:
+            _spawn_background_sign(core, uid)
+        except Exception:
+            # 后台起不来（无事件循环等）⇒ **不要骗用户说「正在签」**，
+            # 如实说明，否则他等到明天也没有结果。
+            return ("雨云签到失败：后台任务启动不了，"
+                    "稍后再试，或者问主人看服务端日志")
         return ("正在给你签雨云，大概要一分钟，签完我私聊告诉你结果。"
                 "（不用在这儿等）")
 
@@ -1112,8 +1118,17 @@ def _spawn_background_sign(core: Any, uid: str) -> None:
         task = asyncio.create_task(_runner())
         _background_tasks[uid] = task
         logger.info("[雨云] 已转入后台签到 user=%s", str(uid)[-4:])
+    except RuntimeError as exc:
+        # 没有运行中的事件循环（离线调用/测试/同步上下文）。
+        # 🔴 不能静默吞掉：用户会以为「正在签」却永远收不到结果。
+        # ⇒ 记 error 级日志，并且**在调用方拿得到的地方留标记**，
+        #   让 `_sign` 能改成「同步告知失败」而不是「稍后告诉你」。
+        logger.error("[雨云] 无法创建后台任务（无事件循环）user=%s: %s",
+                     str(uid)[-4:], type(exc).__name__)
+        raise
     except Exception:
         logger.warning("[雨云] 无法创建后台任务 user=%s", str(uid)[-4:], exc_info=True)
+        raise
 
 
 def _format_result(res: dict) -> str:

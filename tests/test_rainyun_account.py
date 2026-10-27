@@ -959,3 +959,19 @@ def test_background_task_not_started_twice(core, fake_runner, monkeypatch):
     asyncio.run(go())
     assert started["n"] == 1, f"起了 {started['n']} 次后台任务"
     R._background_tasks.clear()
+
+
+def test_spawn_raises_without_event_loop(core, fake_runner, monkeypatch):
+    """🔴 无事件循环时 `_spawn_background_sign` 必须抛，不能静默。
+
+    实测踩过：在同步上下文里调用 → `asyncio.create_task` 抛
+    `RuntimeError: no running event loop`，但被 `except Exception` 吞掉
+    只记了 warning ⇒ 用户看到「正在给你签，签完告诉你」，
+    然后**永远收不到结果**。
+    """
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv(R.MASTER_KEY_ENV, Fernet.generate_key().decode("ascii"))
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+
+    with pytest.raises(RuntimeError):
+        R._spawn_background_sign(core, "111")
