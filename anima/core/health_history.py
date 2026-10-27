@@ -121,6 +121,29 @@ class HealthHistory:
         if not isinstance(samples, list):
             return
         self._samples = [item for item in samples if isinstance(item, dict)][-self.max_samples:]
+        # 🔴 2026-10-27：**读入时也精简 `upstream_cap`**。
+        #
+        # `_slim_cap` 原来只在 `_snapshot()`（写新样本）里调用 ⇒
+        # **存量样本永远不会被精简**，而且每次启动都会把旧文件整份读进内存、
+        # 下次落盘又整份写回去 —— 手工清理一次也没用（实测：清到 6.4MB，
+        # 重启后又回到 42.7MB，含 `groups` 的样本仍有 1086 条）。
+        #
+        # 生产实测：`health_history.json` 42.7MB / 2880 条，
+        # 其中 1086 条的 `upstream_cap.groups`（106 个模型的完整明细）
+        # 每条约 25KB，占单条体积 93%。健康历史要的是趋势，不是模型明细快照。
+        #
+        # 在**读入处**精简有两个好处：
+        #   1. 存量数据自然收敛（下一次落盘就是精简后的）；
+        #   2. 内存占用立刻下降（不再持有 2880 份 × 25KB 的明细数组）。
+        #
+        # fail-soft：单条精简失败保留原样，绝不因清理而丢样本。
+        for item in self._samples:
+            try:
+                cap = item.get("upstream_cap")
+                if isinstance(cap, dict) and "groups" in cap:
+                    item["upstream_cap"] = _slim_cap(cap)
+            except Exception:
+                continue
         if self._samples:
             self._last_record_at = float(self._samples[-1].get("ts", 0.0) or 0.0)
 
