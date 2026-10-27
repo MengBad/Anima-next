@@ -74,8 +74,17 @@ import common  # noqa: E402
 #: 雨云登录页
 LOGIN_URL = "https://app.rainyun.com/auth/login"
 
-#: 积分/任务页（登录后跳这里）
-REWARD_URL = "https://app.rainyun.com/account/reward/earn"
+#: 积分/任务页。
+#:
+#: 🔴 2026-10-27 实测：**不能直接访问 `/account/reward/earn`** ——
+#: 会 302 到 `/dashboard`（丢掉页面状态），导致签到按钮 XPath 永远找不到。
+#: 正确路径是先访问 `/account/reward`，SPA 自己会渲染出「每日签到」区。
+#:
+#:     /account/reward/earn  → https://app.rainyun.com/dashboard   ❌
+#:     /account/reward       → 停在原页，含「领取奖励」「每日签到」  ✅
+#:
+#: 这解释了为什么之前每次都是「找不到按钮 ⇒ 报今日已签到」的假象。
+REWARD_URL = "https://app.rainyun.com/account/reward"
 
 #: 登录按钮的精确 XPath（🔴 必须用这个，不能用 `//button[contains(., '登')]`）
 #: 页面上有 8 个 button，模糊匹配会点到隐藏的那个，点了没反应。
@@ -404,7 +413,30 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
         # 下面 `if not clicked` 就当成「今日已签到」返回 ok=True
         # ⇒ 用户以为签上了，实际根本没签，而且 `last_sign` 被写成今天
         # ⇒ 之后每天都被短路「今天已签过了」，永久卡死。
-        _log(f"找签到按钮失败: {type(exc).__name__}")
+        _log(f"找签到按钮失败: {type(exc).__name__}，重试一次")
+        # 再给一次机会：可能 SPA 还没渲染完
+        try:
+            driver.get(REWARD_URL)
+            time.sleep(5)
+            earn = driver.find_element(
+                By.XPATH,
+                '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/'
+                'div/div[1]/div/div[1]/div/div[1]/div/span[2]/a',
+            )
+            btn_text = (earn.text or "").strip()
+            btn_found = True
+            _log(f"重试后按钮文字: [{btn_text}]")
+            if btn_text == "领取奖励":
+                earn.click()
+                clicked = True
+                time.sleep(2)
+                captcha_ok = _solve_captcha(driver)
+                if not captcha_ok:
+                    _log("验证码未通过，本次签到失败")
+                    _emit({"ok": False, "reason": "验证码未通过",
+                           "points": None}, 1)
+        except Exception as exc2:
+            _log(f"重试仍失败: {type(exc2).__name__}")
 
     # 读积分
     time.sleep(3)

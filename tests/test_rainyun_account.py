@@ -1036,3 +1036,29 @@ def test_mark_signed_only_on_real_success():
         window = src[max(0, pos - 500):pos]
         assert '== "签到成功"' in window, \
             f"mark_signed 调用处缺少严格判据：{window[-200:]}"
+
+
+# ---------------------------------------------------------------------------
+# 20. REWARD_URL 必须是 /account/reward（不是 /earn）
+# ---------------------------------------------------------------------------
+
+def test_reward_url_is_not_the_redirecting_one():
+    """🔴 真实事故：`/account/reward/earn` 会 302 到 `/dashboard`。
+
+    实测（2026-10-27）：
+
+        /account/reward/earn  → https://app.rainyun.com/dashboard   ❌
+        /account/reward       → 停在原页，含「领取奖励」「每日签到」  ✅
+
+    直接访问 `/earn` 会被重定向并丢掉页面状态 ⇒ 签到按钮 XPath
+    永远找不到 ⇒ 之前每次都误报「今日已签到」。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    import re
+    m = re.search(r'^REWARD_URL\s*=\s*"([^"]+)"', src, re.M)
+    assert m, "找不到 REWARD_URL 定义"
+    url = m.group(1)
+    assert not url.endswith("/earn"), \
+        f"REWARD_URL 用了会 302 的 /earn：{url}"
+    assert url.rstrip("/").endswith("/account/reward"), \
+        f"REWARD_URL 应指向 /account/reward，实际 {url}"
