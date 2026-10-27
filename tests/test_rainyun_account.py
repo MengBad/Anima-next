@@ -1119,3 +1119,141 @@ def test_icr_module_exists_and_has_array_api():
     assert icr_path.exists(), "icr.py 不存在"
     src = icr_path.read_text(encoding="utf-8")
     assert "def find_part_positions_array" in src
+
+
+# ── 未来日期污染（2026-10-27 生产发现）────────────────────────────
+
+def test_record_result_drops_future_dates(tmp_path):
+    """历史里的**未来日期**必须被丢弃。
+
+    ## 为什么这是真 bug
+
+    生产 `data/rainyun_history.json` 里有 `2026-10-28`（明天）的记录，
+    而当天是 10-27。未来日期的「签到记录」不可能来自真实签到。
+
+    ## 危害是实体性的
+
+    `consecutive_failures` 从最新记录往前数连续失败。未来日期若 `ok=True`，
+    会让「连续失败」永远在第 0 条断掉 ⇒
+    `MAX_CONSECUTIVE_FAILURES` 失败降级**永久失效**，坏账号永不停手。
+
+    原来只做「同日去重 + 下限裁剪」，不删未来 ⇒ 未来记录永久留存
+    （实测：写入后 `2026-10-28` 仍在）。
+    """
+    import datetime
+    import json
+
+    from anima.tools.builtin.rainyun_account import record_result, _today_str
+
+    class _P:
+        data_dir = str(tmp_path)
+
+    class _C:
+        persistence = _P()
+
+    today = _today_str()
+    future = (datetime.date.fromisoformat(today)
+              + datetime.timedelta(days=1)).isoformat()
+    old = (datetime.date.fromisoformat(today)
+           - datetime.timedelta(days=2)).isoformat()
+
+    p = tmp_path / "rainyun_history.json"
+    p.write_text(json.dumps({"1": {"a@b.c": [
+        {"d": old, "ok": True, "r": "签到成功"},
+        {"d": future, "ok": True, "r": "今日已签到"},
+    ]}}), encoding="utf-8")
+
+    record_result(_C(), "1", "a@b.c", True, "签到成功")
+
+    days = [r["d"] for r in json.loads(p.read_text(encoding="utf-8"))["1"]["a@b.c"]]
+    assert future not in days, f"未来日期没被丢弃：{days}"
+    assert today in days, "今天的记录没写进去"
+    assert old in days, "历史记录被误删"
+
+
+def test_future_date_no_longer_masks_consecutive_failures(tmp_path):
+    """未来 ok=True 记录不得让连续失败计数归零。"""
+    import datetime
+    import json
+
+    from anima.tools.builtin.rainyun_account import (
+        record_result, consecutive_failures, _today_str)
+
+    class _P:
+        data_dir = str(tmp_path)
+
+    class _C:
+        persistence = _P()
+
+    today = _today_str()
+    future = (datetime.date.fromisoformat(today)
+              + datetime.timedelta(days=1)).isoformat()
+
+    p = tmp_path / "rainyun_history.json"
+    p.write_text(json.dumps({"1": {"a@b.c": [
+        {"d": today, "ok": False, "r": "验证码未通过"},
+        {"d": future, "ok": True, "r": "今日已签到"},   # 假的成功
+    ]}}), encoding="utf-8")
+
+    # 再记一次失败：未来假成功应被清掉，连续失败应从今天这条往前数
+    record_result(_C(), "1", "a@b.c", False, "验证码未通过")
+    n = consecutive_failures(_C(), "1", "a@b.c")
+    assert n >= 1, f"连续失败被未来假记录掩盖了（n={n}）"
+
+
+# ── 短路不得记成功（2026-10-27 生产发现）──────────────────────────
+
+def test_short_circuit_does_not_record_ok_true(tmp_path):
+    """「按记录已签」短路**不得**往历史写 ok=True。
+
+    ## 证据
+
+    生产 `data/rainyun_history.json`：10-26 / 10-27 / 10-28 三条全是
+    `{"ok": true, "r": "今日已签到"}`，其中没有一条能证明雨云侧真签过
+    （11:14 那次 `rainyun_sign_now` **0.01 秒**返回 ok=True，一次浏览器没起）。
+
+    ## 危害
+
+    `consecutive_failures` 从最新记录往前数连续失败 ⇒ 恒为 0 ⇒
+    `MAX_CONSECUTIVE_FAILURES` 失败降级**永久失效**，坏账号永不停手。
+
+    ## 讽刺之处
+
+    `_sign` 里那段注释本来就写着「**不能记成 ok=True**」，
+    但代码写的是 `True` —— 注释与实现自相矛盾。
+    """
+    import asyncio
+    import json
+
+    from anima.tools.builtin.rainyun_account import (
+        run_sign_in, _today_str, mark_signed)
+
+    class _P:
+        data_dir = str(tmp_path)
+
+    class _C:
+        persistence = _P()
+
+    c = _C()
+    today = _today_str()
+    # 造一个「今天已签」的账号（last_sign == today ⇒ 走短路）
+    pass  # vault 由真实 _load_vault 读，这里直接测 record 路径
+
+    # 直接验证：短路分支写进历史的 ok 必须是 False
+    src = open(__import__("anima.tools.builtin.rainyun_account",
+                         fromlist=["x"]).__file__, encoding="utf-8").read()
+    # 两处短路都不得再出现 ok=True + 「按记录」
+    bad = [ln for ln in src.splitlines()
+           if 'record_result(' in ln and 'True' in ln and '按记录' in ln]
+    assert not bad, f"短路仍在记 ok=True：{bad}"
+
+
+def test_short_circuit_reason_is_marked_unverified():
+    """短路写的 reason 必须标明「未核实」，让人能区分真假成功。"""
+    import anima.tools.builtin.rainyun_account as R
+    src = open(R.__file__, encoding="utf-8").read()
+    assert "按记录已签（未核实）" in src, "短路没标「未核实」"
+    # 且旧的「今日已签到（按记录）」不得再配 True
+    for ln in src.splitlines():
+        if "今日已签到（按记录）" in ln and "record_result" in ln:
+            assert "True" not in ln, f"仍在记成功：{ln.strip()}"

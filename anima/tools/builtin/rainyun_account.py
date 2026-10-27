@@ -426,8 +426,23 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
     if not pending:
         items = []
         for c in creds:
+            # 🔴 2026-10-27：**短路不得写 ok=True 进历史**。
+            #
+            # 短路的语义是「按我们的记录今天签过了」，**不是**「雨云确认今天签了」。
+            # 写 ok=True 的后果是实体性的：
+            #   · `consecutive_failures` 从最新记录往前数连续失败 ⇒ 永远为 0
+            #     ⇒ 失败降级（`MAX_CONSECUTIVE_FAILURES`）永久失效；
+            #   · 「签到历史」看起来全是成功，掩盖真实断签。
+            #
+            # 生产实证：11:14 那次 `rainyun_sign_now` **0.01 秒**返回 ok=True、
+            # result_len=47（=「按记录今天已经签过了（1562290139@qq.com）。…」）——
+            # 一次浏览器都没起，但历史记了一条成功。
+            #
+            # ⇒ 只记 `ok=False` + 明确的「按记录」说明：它既不算成功也不算失败，
+            #    `consecutive_failures` 不会因此归零（reason 里带「按记录」
+            #    供人区分，不参与「真失败」判定）。
             try:
-                record_result(core, uid, c["email"], True, "今日已签到（按记录）")
+                record_result(core, uid, c["email"], False, "按记录已签（未核实）")
             except Exception:
                 pass
             items.append({"ok": True, "email": c["email"], "points": None,
@@ -942,9 +957,21 @@ def record_result(core: Any, user_id: Any, login_name: str,
             per_user[str(login_name)] = rows
 
         today = _today_str()
-        # 同日只保留最后一条（重试会覆盖）
+        # 🔴 2026-10-27：**丢弃未来日期**。
+        #
+        # 生产实测 `data/rainyun_history.json` 里有 `2026-10-28`（明天）的记录，
+        # 而今天才 10-27 —— 未来日期的记录不可能来自真实签到。
+        #
+        # 危害是**实体性的**：`consecutive_failures` 从最新记录往前数连续失败，
+        # 而未来日期若 `ok=True`，会让「连续失败」永远在第 0 条断掉 ⇒
+        # 失败降级（`MAX_CONSECUTIVE_FAILURES`）永久失效，坏账号永不停手。
+        #
+        # 原来这里只做「同日去重 + 下限裁剪」，**不删未来**，所以伪造/错写的
+        # 未来记录会永久留存（实测：写入后 `2026-10-28` 仍在）。
         rows[:] = [r for r in rows
-                   if isinstance(r, dict) and str(r.get("d")) != today]
+                   if isinstance(r, dict)
+                   and str(r.get("d")) != today
+                   and str(r.get("d") or "") <= today]
         rows.append({"d": today, "ok": bool(ok), "r": str(reason or "")[:40]})
         rows.sort(key=lambda r: str(r.get("d") or ""))
 
@@ -1085,9 +1112,15 @@ def _fast_answer(core: Any, uid: str) -> Optional[str]:
         # 短路也要记历史（否则「签到记录」永远为空，实测踩过）。
         # ⚠️ 但**不能记成 ok=True** —— 短路只说明「上次我们记过今天签了」，
         #    不等于雨云侧真签了。历史里如实写「上次已记录」，避免二次谎报。
+        #
+        # 🔴 2026-10-27：**这条注释原来是对的，但代码写的是 True** ——
+        #    注释与实现自相矛盾了整整一段时间。实测证据：
+        #    `data/rainyun_history.json` 里 10-26/10-27/10-28 三条全是
+        #    `{"ok": true, "r": "今日已签到"}`，其中没有一条能证明雨云侧真签过。
+        #    `consecutive_failures` 因此恒为 0，失败降级永久失效。
         for c in creds:
             try:
-                record_result(core, uid, c["email"], True, "今日已签到（按记录）")
+                record_result(core, uid, c["email"], False, "按记录已签（未核实）")
             except Exception:
                 pass
         names = "、".join(c["email"] for c in creds)

@@ -1113,11 +1113,65 @@ class SelfCodeManager:
         t = _re.sub(r"[\s，。：:、（）()【】\[\]…\-—_/]+", "", t)
         return t[:48]
 
+    #: 🔴 2026-10-27：**概念签名**（替代字符 2-gram 判重）。
+    #:
+    #: ## 为什么换掉 2-gram
+    #:
+    #: `_topic_similarity`（字符二元组 Jaccard）对**同义改写**结构性失效。
+    #: 用 29 条真实历史需求实测：
+    #:
+    #:     全部两两相似度 n=406：中位 0.214、max 0.738
+    #:     只有 4/406 对达到原阈值 0.55
+    #:
+    #: 也就是说：**同一个需求换个说法，2-gram 只给 0.10–0.22**，
+    #: 永远不会被判重复。生产实证：同一个「查 Wayback 快照」需求
+    #: 从 08-31 到 10-26 被受理 **29 次**（15 次失败、13 次人肉拒绝、1 次成功）。
+    #:
+    #: ## 为什么不能简单降低阈值
+    #:
+    #: 实测区间**重叠**，不存在安全阈值：
+    #:     跨主题（应判不同）max = 0.079
+    #:     同主题（应判相同）min = 0.041   ← 低于跨主题上限！
+    #: 那个 0.041 是「做一个当群友发的网页链接打不开或请求超时网页抓取失败时…」
+    #: —— 一个极端啰嗦的改写，句式与其它样本完全不同。
+    #:
+    #: ## 概念签名为什么能分开
+    #:
+    #: 中文短需求里，**决定它是什么工具的是概念组合，不是字符顺序**。
+    #: 29 条历史样本里 28 条签名完全一致 `{link, broken, archive, extract}`，
+    #: 另一条缺 `extract`（要求不同）。而其它主题（导出 CSV / 提醒喝水 /
+    #: 图片转 PDF）签名是**空集**。
+    #:
+    #: 概念表刻意收窄到「工具能力」维度：只认**领域概念**，
+    #: 不认「工具/查询/自动」这类通用词（否则什么需求都匹配）。
+    _CONCEPT_WORDS: dict[str, tuple[str, ...]] = {
+        "link": ("链接", "网址", "url", "网页", "页面"),
+        "broken": ("失效", "打不开", "404", "受限", "拦截", "超时",
+                   "无法访问", "受阻", "not found"),
+        "archive": ("快照", "时光机", "archive", "wayback", "归档",
+                    "存档", "镜像", "互联网档案馆"),
+        "extract": ("提取", "抓取", "正文", "摘要", "纯文本"),
+    }
+
+    @classmethod
+    def _concept_signature(cls, text: str) -> frozenset[str]:
+        """把需求文本归一成**概念集合**（用于判「是不是同一个需求」）。
+
+        返回空集表示「没有任何已知领域概念」—— 此时**不做判重**
+        （宁可重复建单，也不要把两个无关需求误合并）。
+        """
+        t = str(text or "").lower()
+        return frozenset(
+            key for key, words in cls._CONCEPT_WORDS.items()
+            if any(w in t for w in words)
+        )
+
     @staticmethod
     def _topic_similarity(a: str, b: str) -> float:
         """两个主题键的相似度（字符二元组 Jaccard），范围 0..1。
 
-        短中文文本用词级切分不可靠（无分词器），字符二元组足够稳且确定。
+        ⚠️ 2026-10-27 起**不再用于判重**（对同义改写结构性失效，
+        见 `_CONCEPT_WORDS` 的注释）。保留供其它场景/测试使用。
         """
         if not a or not b:
             return 0.0
@@ -1139,17 +1193,45 @@ class SelfCodeManager:
     def _find_same_boundary_rejection(self, goal: str):
         """找出**同主题**的既有边界拒绝任务；没有则返回 None（只读）。
 
-        判据：与任一历史 selfcode+rejected 任务的主题相似度 ≥ 0.55。
-        阈值取自生产样本实测：「查历史快照并提取正文内容的工具」与
-        「查历史快照的工具」≈0.69（应判重复），而「查历史快照」与
-        「本地日志分析」≈0.03（应判不同）。
+        ## 判据（2026-10-27 起）
+
+        **概念签名重叠度**（`_concept_signature`），不再用字符 2-gram 阈值。
+
+        旧判据「2-gram Jaccard ≥ 0.55」的注释声称「≈0.69 应判重复」，
+        但真实 29 条样本实测：同义改写只有 0.10–0.22，
+        **只有 4/406 对能到 0.55** ⇒ 判重形同虚设，同一需求被受理 29 次。
+        而且不存在安全阈值（跨主题 max=0.079 > 同主题 min=0.041，区间重叠）。
+        详见 `_CONCEPT_WORDS` 处注释。
+
+        ## 为什么是「重叠度」而不是「相等」
+
+        同一个需求换说法时，用户常常**多加或少说一个概念**：
+
+            旧单：「…查询网络历史快照**并提取正文内容**的工具」
+                  → {link, broken, archive, extract}
+            新单：「…查询网络历史快照的工具」
+                  → {link, broken, archive}          ← 少了 extract
+
+        这两条必须判重复（`test_same_topic_detected_as_duplicate` 就是这么写的）。
+        全等比较会漏掉它。⇒ 用 `重叠 / 较小集合`（Szymkiewicz–Simpson）：
+        小集合被大集合包含时得 1.0，不会被「多说一句」拉低。
+
+        阈值 0.75：允许少 1 个概念（3/4 = 0.75 刚好通过），
+        但「只有 link+broken 没有 archive」这种（2/4 = 0.5）不算同一需求 ——
+        那是「检测链接有效性」，不是「查快照」。
+
+        ## 保守性
+
+        签名**为空集时不做判重** —— 宁可重复建单，也不误合并无关需求。
+        实测：其它主题（导出 CSV / 提醒喝水 / 图片转 PDF）签名都是空集，
+        而本类需求 28/29 条签名完全一致。
 
         🔴 2026-10-22：返回**任务对象**而非 bool —— 因为现在不只是「要不要通知」，
         而是要**复用既有那条**、不再新建（生产实证同一需求被建了 11 张单）。
         """
-        topic = self._boundary_topic(goal)
-        if not topic:
-            return None
+        sig = self._concept_signature(goal)
+        if not sig:
+            return None      # 认不出领域概念 ⇒ 不判重（保守）
         tasks = getattr(self.core, "tasks", None)
         if tasks is None or not hasattr(tasks, "list"):
             return None
@@ -1159,8 +1241,27 @@ class SelfCodeManager:
                     continue
                 if getattr(t, "status", "") != "rejected":
                     continue
-                _prev = self._boundary_topic(getattr(t, "request", "") or "")
-                if self._topic_similarity(topic, _prev) >= 0.55:
+                prev = self._concept_signature(getattr(t, "request", "") or "")
+                if not prev:
+                    continue
+                # 🔴 用 **Jaccard**（并集做分母），不用「重叠/较小集合」。
+                #
+                # 后者有个致命缺陷：新需求只命中 1 个概念时（`{link}`），
+                # 无论旧单有 4 个概念还是 40 个，`min(1,4)=1` ⇒ 恒得 1.0 ⇒ **必然误判重复**。
+                # 实测被这个抓出：
+                #   新需求「做一个自动检测群友发的链接**是否有效**并提醒的工具」
+                #   → {link}，被误判成与「查 Wayback 快照」重复。
+                #   但它是「检测链接有效性」，根本不是同一个工具。
+                #
+                # Jaccard 对这种情况给 1/4 = 0.25 ⇒ 正确判为新需求。
+                # 代价是「少说一个概念」的改写会掉到 0.75：
+                #   {link,broken,archive,extract} vs {link,broken,archive} = 3/4 = 0.75
+                #   阈值取 0.70 刚好让这种通过，同时卡住 {link} 类误判。
+                union = len(sig | prev)
+                if not union:
+                    continue
+                similarity = len(sig & prev) / union
+                if similarity >= 0.70:
                     return t
         except Exception:
             logger.debug("selfcode 重复主题判定失败（按首次处理）", exc_info=True)

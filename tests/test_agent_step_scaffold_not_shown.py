@@ -225,3 +225,46 @@ def test_replan_notify_guarded_by_should_notify_steps():
     idx_guard = src.find("_should_notify_steps")
     assert idx_guard != -1, "_replan_or_give_up 里的 _notify 没被节流闸包住"
     assert idx_guard < idx_notify, "节流判据必须在 _notify 之前"
+
+
+# ── 5. 步骤元话语（工作笔记 / 写给下游的计划）───────────────────────
+
+def test_current_step_metatalk_removed():
+    """「当前步骤：…执行：…」只保留「执行：」后的真话。
+
+    生产实证（b2860d152c 步1，10-26 00:01 用户实际收到）：
+        当前步骤：如实告知用户目前小鱼干库存为零，无法接受贿赂，并幽默回应其傲娇语气。
+        执行：哼，小鱼干库存为零，免谈！…
+    """
+    raw = ("当前步骤：如实告知用户目前小鱼干库存为零，无法接受贿赂，"
+           "并幽默回应其傲娇语气。\n\n"
+           "执行：哼，小鱼干库存为零，免谈！不过看在你这么大声的份上，说吧，到底有什么事？")
+    out = OwnerAgent._sanitize_delivery(raw)
+    assert "当前步骤" not in out, f"工作笔记没删：{out!r}"
+    assert "执行：" not in out, f"「执行：」标签没删：{out!r}"
+    assert "小鱼干库存为零" in out, "真话被吞了"
+
+
+def test_next_step_plan_removed():
+    """「下一步可直接将该图片…发送给用户」是对下游的计划，不是对用户说的话。
+
+    生产实证（5c86a40cd0 步2，10-27 16:04 用户实际收到）：
+        已成功调用生图工具生成了一张…爆笑梗图。下一步可直接将该图片及相应短句发送给用户。
+    """
+    raw = ("已成功调用生图工具生成了一张极具喜剧效果的搞笑猫咪图片，"
+           "图片内容为一只表情滑稽、垮起个批脸的爆笑梗图。"
+           "下一步可直接将该图片及相应短句发送给用户。")
+    out = OwnerAgent._sanitize_delivery(raw)
+    assert "下一步" not in out, f"下游计划没删：{out!r}"
+    assert "发送给用户" not in out, f"下游计划没删干净：{out!r}"
+    assert "搞笑猫咪图片" in out, "正文被吞了"
+
+
+def test_metatalk_cleanup_does_not_eat_real_content():
+    """清理元话语不得误伤正常叙述（含「下一步」但不是计划的句子）。"""
+    # 「下一步」出现在正常对话里（用户视角的行动建议）仍应保留
+    assert "下一步" in OwnerAgent._sanitize_delivery(
+        "这道题的下一步是求导，我算给你看。")
+    # 没有「执行：」时只删「当前步骤：」行
+    out = OwnerAgent._sanitize_delivery("当前步骤：分析一下\n真正要给的话在这里。")
+    assert "当前步骤" not in out and "真正要给的话" in out
