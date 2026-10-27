@@ -693,13 +693,35 @@ def main() -> None:
                 driver.quit()
             except Exception:
                 pass
-            # 🔴 P0-2：`driver.quit()` 不保证杀干净 Chrome 子孙进程。
-            #    实测：一次超时后 `selenium-manager` 仍残留。
-            #    这里按进程组兜底清一次（尽力而为，失败不影响结果）。
+            # 🔴 `driver.quit()` 不保证杀干净 Chrome 子孙进程。
+            #
+            # 实测（2026-10-27）：08:45 启动的一批 Chrome 进程一直到
+            # 10:58 还活着（13 个），占着内存没释放。原因：
+            #   · 只 `pkill -f chrome-linux64` 匹配不到
+            #     `.cache/selenium/chrome/linux64/.../chrome` 这条路径
+            #   · 而且 `driver.quit()` 之后 Chrome 已被 init 收养，
+            #     不是本进程的子进程了
+            #
+            # ⇒ 用**本进程的 user-data-dir** 精确匹配，那是本次启动独有的
+            #   随机目录名，不会误杀别的实例。
             try:
                 import subprocess as _sp
-                _sp.run(["pkill", "-9", "-f", "chrome-linux64"],
-                        stderr=_sp.DEVNULL, timeout=5)
+                # 1) 从 driver 拿本次的 user-data-dir（唯一标记）
+                marker = ""
+                try:
+                    for arg in (driver.capabilities or {}).get("args", []) or []:
+                        if isinstance(arg, str) and "user-data-dir=" in arg:
+                            marker = arg.split("user-data-dir=")[-1]
+                            break
+                except Exception:
+                    pass
+                if marker:
+                    _sp.run(["pkill", "-9", "-f", marker],
+                            stderr=_sp.DEVNULL, timeout=5)
+                # 2) 兜底：两种可能路径都扫一遍（别用太宽的模式，防误杀）
+                for pat in ("selenium/chrome/linux64", "ms-playwright/chromium"):
+                    _sp.run(["pkill", "-9", "-f", pat],
+                            stderr=_sp.DEVNULL, timeout=5)
             except Exception:
                 pass
 
