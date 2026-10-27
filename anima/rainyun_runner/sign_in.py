@@ -76,15 +76,17 @@ LOGIN_URL = "https://app.rainyun.com/auth/login"
 
 #: 积分/任务页。
 #:
-#: 🔴 2026-10-27 实测：**不能直接访问 `/account/reward/earn`** ——
-#: 会 302 到 `/dashboard`（丢掉页面状态），导致签到按钮 XPath 永远找不到。
-#: 正确路径是先访问 `/account/reward`，SPA 自己会渲染出「每日签到」区。
+#: 🔴 2026-10-27 实测：**直接访问 `/account/reward/earn` 会被 302 到
+#: `/dashboard`**，除非 SPA 已经初始化过。三种情况实测：
 #:
-#:     /account/reward/earn  → https://app.rainyun.com/dashboard   ❌
-#:     /account/reward       → 停在原页，含「领取奖励」「每日签到」  ✅
+#:     从登录页/空白页直接 goto /account/reward/earn → /dashboard   ❌
+#:     从 /dashboard 再 goto /account/reward/earn      → 停在 earn  ✅
+#:     goto /account/reward                           → 跳到 earn  ✅（稍后）
 #:
-#: 这解释了为什么之前每次都是「找不到按钮 ⇒ 报今日已签到」的假象。
-REWARD_URL = "https://app.rainyun.com/account/reward"
+#: ⇒ 正确顺序是**先到 dashboard（让 SPA 初始化），再去 earn**。
+#:   这解释了之前「找不到按钮 ⇒ 误报今日已签到」的全部假象。
+DASHBOARD_URL = "https://app.rainyun.com/dashboard"
+REWARD_URL = "https://app.rainyun.com/account/reward/earn"
 
 #: 登录按钮的精确 XPath（🔴 必须用这个，不能用 `//button[contains(., '登')]`）
 #: 页面上有 8 个 button，模糊匹配会点到隐藏的那个，点了没反应。
@@ -372,12 +374,37 @@ def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
 # 签到执行（登录后 / cookie 免登录后共用）
 # ---------------------------------------------------------------------------
 
+def _goto_reward(driver, timeout: float = 20) -> bool:
+    """导航到「赚取积分」页。返回是否成功（按钮可见）。
+
+    🔴 **必须先到 dashboard**：直接从登录页跳 earn 会被 302 到 dashboard
+    （SPA 未初始化）。实测：从 dashboard 再跳就正常。
+    """
+    from selenium.webdriver.common.by import By
+    for _ in range(3):
+        try:
+            driver.get(DASHBOARD_URL)
+            time.sleep(3)
+            driver.get(REWARD_URL)
+            time.sleep(4)
+            # 确认真的在 earn 页（而不是被 302 回 dashboard）
+            if "/reward/earn" in driver.current_url:
+                _log(f"已到签到页: {driver.current_url}")
+                return True
+            _log(f"被重定向到 {driver.current_url}，重试")
+        except Exception as exc:
+            _log(f"导航失败: {type(exc).__name__}")
+        time.sleep(2)
+    return False
+
+
 def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     """去积分页签到并输出结果。**不返回**（内部 _emit 直接退出）。"""
     from selenium.webdriver.common.by import By
 
-    driver.get(REWARD_URL)
-    time.sleep(4)
+    if not _goto_reward(driver):
+        _emit({"ok": False, "reason": "页面加载超时", "points": None}, 1)
+        return
 
     # 找签到按钮（"领取奖励" 表示还没签，"去完成" 表示已签）
     clicked = False
@@ -416,8 +443,7 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
         _log(f"找签到按钮失败: {type(exc).__name__}，重试一次")
         # 再给一次机会：可能 SPA 还没渲染完
         try:
-            driver.get(REWARD_URL)
-            time.sleep(5)
+            _goto_reward(driver)
             earn = driver.find_element(
                 By.XPATH,
                 '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/'

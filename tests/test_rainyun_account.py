@@ -1058,7 +1058,14 @@ def test_reward_url_is_not_the_redirecting_one():
     m = re.search(r'^REWARD_URL\s*=\s*"([^"]+)"', src, re.M)
     assert m, "找不到 REWARD_URL 定义"
     url = m.group(1)
-    assert not url.endswith("/earn"), \
-        f"REWARD_URL 用了会 302 的 /earn：{url}"
-    assert url.rstrip("/").endswith("/account/reward"), \
-        f"REWARD_URL 应指向 /account/reward，实际 {url}"
+    # earn 本身可以，但**必须先到 dashboard 初始化 SPA**
+    assert url.rstrip("/").endswith("/account/reward/earn"), \
+        f"REWARD_URL 应指向 /account/reward/earn，实际 {url}"
+    # 必须存在「先到 dashboard」的导航辅助
+    assert "_goto_reward" in src, "缺少 _goto_reward 导航辅助"
+    assert "DASHBOARD_URL" in src, "缺少 DASHBOARD_URL"
+    # _goto_reward 里必须先 DASHBOARD_URL 再 REWARD_URL
+    i = src.index("def _goto_reward")
+    win = src[i:i + 1200]
+    assert win.index("DASHBOARD_URL") < win.index("REWARD_URL"), \
+        "_goto_reward 里必须先到 dashboard 再去 earn"
