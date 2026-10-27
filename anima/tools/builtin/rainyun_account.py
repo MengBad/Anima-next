@@ -477,19 +477,22 @@ async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
                           str(res.get("reason") or ""))
         except Exception:
             pass
-        # 🔴 只有**真正签到成功**才写 last_sign。
+        # 🔴 什么时候写 last_sign？
         #
-        # 为什么不能只看 `res.get("ok")`：runner 的 ok=True 包含
-        # 「今日已签到」这种**没真签**的情形（用户昨天/手动签过）。
-        # 而 last_sign 是 `_fast_answer` 的**短路依据** ——
-        # 一旦被错写成今天，之后每天都会回「今天已经签过了」，
-        # 永久不再真签。实测事故（用户 1371704917，2026-10-27）：
-        # runner 因 XPath 取不到按钮误报「今日已签到」⇒ 写 last_sign
-        # ⇒ 此后该用户再也不会真正签到。
+        # 唯一的正例是 runner **确认**了状态，两种都算：
+        #   · reason == "签到成功"     —— 真点了、验证码过了
+        #   · reason == "今日已签到"   —— 按钮文案证明「去完成」，雨云侧确认已签
         #
-        # ⇒ 判据必须是 **`reason == "签到成功"`**（runner 在真正点击并
-        #   通过验证码后才给这个原因），不是 ok 布尔值。
-        if res.get("ok") and str(res.get("reason") or "") == "签到成功":
+        # 🔴 **不能**用 `ok` 布尔值：runner 历史上曾把「找不到按钮」
+        # 误报成 ok=True「今日已签到」（用户 1371704917，2026-10-27），
+        # 那个假值写进 last_sign 后导致该用户永久卡在「今天已签过了」。
+        # 现在 runner 侧已改成三态（找不到按钮 ⇒ ok=False），
+        # 所以「今日已签到」这个 reason 只可能来自「按钮文案确认」。
+        #
+        # 🔴 反例：`reason == "页面加载超时"` / 「验证码未通过」**绝不写**。
+        # 写了会导致该账号以后每天被短路，永久不再真签（正是上面那次事故）。
+        _why = str(res.get("reason") or "")
+        if res.get("ok") and _why in ("签到成功", "今日已签到"):
             try:
                 from datetime import datetime as _dt
                 mark_signed(core, uid, c["email"], _dt.now().strftime("%Y-%m-%d"))

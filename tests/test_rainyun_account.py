@@ -1033,9 +1033,15 @@ def test_mark_signed_only_on_real_success():
         real.append(pos)
     assert real, "没找到 mark_signed 调用处"
     for pos in real:
-        window = src[max(0, pos - 500):pos]
-        assert '== "签到成功"' in window, \
-            f"mark_signed 调用处缺少严格判据：{window[-200:]}"
+        window = src[max(0, pos - 900):pos]
+        # 判据必须是 reason 白名单（"签到成功" / "今日已签到"），
+        # 不能只看 ok 布尔
+        assert '"签到成功"' in window, \
+            f"mark_signed 调用处缺少 reason 判据：{window[-250:]}"
+        # 且必须是「白名单 in」而不是「== 签到成功」这种排他判断
+        # （"今日已签到" 也是确认态，必须能写）
+        assert 'in ("签到成功", "今日已签到")' in window, \
+            f"判据没包含「今日已签到」：{window[-250:]}"
 
 
 # ---------------------------------------------------------------------------
