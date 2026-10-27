@@ -689,7 +689,7 @@ async def test_skip_browser_when_already_signed_today(core, monkeypatch):
 
     assert called["n"] == 0, "已签到却还是起了浏览器"
     assert res["ok"] is True
-    assert res["items"][0]["reason"] == "今日已签到"
+    assert "今日已签到" in res["items"][0]["reason"]
 
 
 @pytest.mark.asyncio
@@ -975,3 +975,64 @@ def test_spawn_raises_without_event_loop(core, fake_runner, monkeypatch):
 
     with pytest.raises(RuntimeError):
         R._spawn_background_sign(core, "111")
+
+
+# ---------------------------------------------------------------------------
+# 19. 「找不到按钮」不得说成「已签到」（2026-10-27 谎报事故）
+# ---------------------------------------------------------------------------
+
+def test_runner_does_not_report_signed_when_button_missing():
+    """🔴 **真实事故**（用户 1371704917，2026-10-27）：
+
+    runner 里找签到按钮的 XPath 取不到（页面改版/加载慢），
+    `except` 只记了一行日志，随后 `if not clicked` 就当成
+    「今日已签到」返回 `ok=True`。
+
+    后果链：
+      1. 用户以为签上了（其实没签）
+      2. `last_sign` 被写成今天
+      3. `_fast_answer` 之后每天都短路「今天已经签过了」
+      ⇒ **永久不再真正签到**
+
+    实测证据：该用户 runner 输出
+        [runner] 签到按钮文字: [领取奖励]   ← 根本没签
+        {"ok": true, "points": 58074}       ← 却说成功
+    而历史里写的是「今日已签到」。
+
+    ⇒ 钉死：三态判定，只有「按钮存在且点了」或「按钮存在且不是领取奖励」
+      才算成功；按钮找不到必须返回 ok=False。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    # 必须有 btn_found 这个显式标志
+    assert "btn_found = True" in src, "缺少「按钮找到了」的显式标志"
+    assert "btn_found = False" in src or "btn_found = False" in src.replace("btn_found = False","btn_found = False")
+    # 三态分支必须都在
+    assert 'if clicked:' in src
+    assert 'elif btn_found and btn_text != "领取奖励":' in src
+    # 找不到按钮时必须 ok=False
+    i = src.index("elif btn_found and btn_text")
+    tail = src[i:i + 500]
+    assert '"ok": False' in tail, "按钮找不到时仍在报成功"
+
+
+def test_mark_signed_only_on_real_success():
+    """🔴 `last_sign` 是短路的依据，写错一次就永久卡死。
+
+    只有 runner 明确说「签到成功」才写；「今日已签到」不写
+    （那是「本来就没签」的意思，不是「今天签成功了」）。
+    """
+    src = _SRC.read_text(encoding="utf-8")
+    import re
+    # 找「调用处」= 不是 def 定义的那个
+    calls = [m.start() for m in re.finditer(r"mark_signed\(", src)]
+    real = []
+    for pos in calls:
+        # def 定义的特征：前面 20 字符内有 "def "
+        if re.search(r"def\s+$", src[max(0, pos - 20):pos]):
+            continue
+        real.append(pos)
+    assert real, "没找到 mark_signed 调用处"
+    for pos in real:
+        window = src[max(0, pos - 500):pos]
+        assert '== "签到成功"' in window, \
+            f"mark_signed 调用处缺少严格判据：{window[-200:]}"

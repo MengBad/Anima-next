@@ -370,9 +370,10 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     driver.get(REWARD_URL)
     time.sleep(4)
 
-    # 找签到按钮（"领取奖励" 表示还没签）
+    # 找签到按钮（"领取奖励" 表示还没签，"去完成" 表示已签）
     clicked = False
     btn_text = ""
+    btn_found = False
     try:
         earn = driver.find_element(
             By.XPATH,
@@ -380,6 +381,7 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
             'div/div[1]/div/div[1]/div/div[1]/div/span[2]/a',
         )
         btn_text = (earn.text or "").strip()
+        btn_found = True
         _log(f"签到按钮文字: [{btn_text}]")
         if btn_text == "领取奖励":
             earn.click()
@@ -387,6 +389,12 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
             time.sleep(2)
             _solve_captcha(driver)
     except Exception as exc:
+        # 🔴 **找不到按钮 ≠ 已签到**。
+        # 实测事故（用户 1371704917，2026-10-27）：XPath 取不到按钮
+        # （页面改版/加载慢/没进到积分页），这里只记了一行日志，
+        # 下面 `if not clicked` 就当成「今日已签到」返回 ok=True
+        # ⇒ 用户以为签上了，实际根本没签，而且 `last_sign` 被写成今天
+        # ⇒ 之后每天都被短路「今天已签过了」，永久卡死。
         _log(f"找签到按钮失败: {type(exc).__name__}")
 
     # 读积分
@@ -402,10 +410,19 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     except Exception:
         pass
 
-    if not clicked:
+    # 🔴 三态判定：签了 / 确实已签 / **状态未知**
+    if clicked:
+        _emit({"ok": True, "points": points, "reason": "签到成功"}, 0)
+    elif btn_found and btn_text != "领取奖励":
+        # 按钮存在且文案不是「领取奖励」⇒ 真的已签（如「去完成」）
         _emit({"ok": True, "points": points, "reason": "今日已签到"}, 0)
     else:
-        _emit({"ok": True, "points": points}, 0)
+        # 按钮都没找到 ⇒ **不能假设已签到**。
+        # 这是本 bug 的核心：把「查不到」说成「已签到」是最坏的谎报，
+        # 因为调用方会据此写 last_sign 并短路掉之后每天的真实签到。
+        _emit({"ok": False,
+               "reason": "页面加载超时",
+               "points": points}, 1)
 
 
 # ---------------------------------------------------------------------------

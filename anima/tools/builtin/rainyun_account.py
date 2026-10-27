@@ -424,16 +424,14 @@ async def run_sign_in(core: Any, user_id: Any) -> dict:
     today = _today_str()
     pending = [c for c in creds if str(c.get("last_sign") or "") != today]
     if not pending:
-        # 短路路径也要记历史 —— 否则用户查「签到记录」永远是空的
-        # （实测踩过：工具秒回「今日已签到」但 rainyun_history 说「还没有记录」）。
         items = []
         for c in creds:
             try:
-                record_result(core, uid, c["email"], True, "今日已签到")
+                record_result(core, uid, c["email"], True, "今日已签到（按记录）")
             except Exception:
                 pass
             items.append({"ok": True, "email": c["email"], "points": None,
-                          "reason": "今日已签到"})
+                          "reason": "今日已签到（按记录）"})
         return {"ok": True, "items": items}
     creds = pending
 
@@ -479,7 +477,19 @@ async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
                           str(res.get("reason") or ""))
         except Exception:
             pass
-        if res.get("ok"):
+        # 🔴 只有**真正签到成功**才写 last_sign。
+        #
+        # 为什么不能只看 `res.get("ok")`：runner 的 ok=True 包含
+        # 「今日已签到」这种**没真签**的情形（用户昨天/手动签过）。
+        # 而 last_sign 是 `_fast_answer` 的**短路依据** ——
+        # 一旦被错写成今天，之后每天都会回「今天已经签过了」，
+        # 永久不再真签。实测事故（用户 1371704917，2026-10-27）：
+        # runner 因 XPath 取不到按钮误报「今日已签到」⇒ 写 last_sign
+        # ⇒ 此后该用户再也不会真正签到。
+        #
+        # ⇒ 判据必须是 **`reason == "签到成功"`**（runner 在真正点击并
+        #   通过验证码后才给这个原因），不是 ok 布尔值。
+        if res.get("ok") and str(res.get("reason") or "") == "签到成功":
             try:
                 from datetime import datetime as _dt
                 mark_signed(core, uid, c["email"], _dt.now().strftime("%Y-%m-%d"))
@@ -1069,14 +1079,16 @@ def _fast_answer(core: Any, uid: str) -> Optional[str]:
     today = _today_str()
     pending = [c for c in creds if str(c.get("last_sign") or "") != today]
     if not pending:
-        # 短路也要记历史（否则「签到记录」永远为空，实测踩过）
+        # 短路也要记历史（否则「签到记录」永远为空，实测踩过）。
+        # ⚠️ 但**不能记成 ok=True** —— 短路只说明「上次我们记过今天签了」，
+        #    不等于雨云侧真签了。历史里如实写「上次已记录」，避免二次谎报。
         for c in creds:
             try:
-                record_result(core, uid, c["email"], True, "今日已签到")
+                record_result(core, uid, c["email"], True, "今日已签到（按记录）")
             except Exception:
                 pass
         names = "、".join(c["email"] for c in creds)
-        return f"今天已经签过了（{names}），不用再签。"
+        return f"按记录今天已经签过了（{names}）。要是你确认没签上，就解绑重绑一次。"
 
     # 连续失败降级
     blocked = None
