@@ -869,3 +869,93 @@ def test_shortcut_path_records_history(core):
 
     txt = R.history_summary(core, "111")
     assert "a@example.com" in txt, f"短路路径没记历史：{txt}"
+
+
+# ---------------------------------------------------------------------------
+# 18. 禁止在对话回合里同步等签到（2026-10-27 事故）
+# ---------------------------------------------------------------------------
+
+def test_sign_tool_does_not_await_run_sign_in_synchronously():
+    """🔴 真实事故：用户 1371704917 于 2026-10-27 08:05 说「签到」，
+
+        08:05:06  ReAct 调 rainyun_sign_now
+        08:05:51  WARNING 工具调用超时(45s) name=rainyun_sign_now
+        08:05:51  工具调用完成 ok=False
+
+    签到本身是好的（runner 跑 40-80s 属正常），是它**同步等**撞上了
+    ReAct 的 45s 工具墙钟上限。
+
+    抬高超时值不是解法（45s 是全局值，放松它会提高
+    「同群排队 2 分钟零回复」的复现概率）。
+    正确做法：快路径同步返回、慢路径转后台。
+
+    ⇒ 钉死：`_sign` 工具里**不得直接 await run_sign_in**。
+    """
+    import inspect
+    import re
+    src = _SRC.read_text(encoding="utf-8")
+    i = src.index("    async def _sign() -> str:")
+    # 取到下一个方法定义为止
+    j = src.index("    async def _unused_sync_sign", i)
+    body = src[i:j]
+    assert "await run_sign_in(" not in body, \
+        "_sign 又变回同步等签到了 —— 会撞 45s 工具超时"
+    assert "_spawn_background_sign" in body, "_sign 没有转后台"
+
+
+def test_fast_answer_covers_unbound():
+    """未绑定 ⇒ 0.1s 内给出确定答案，不转后台。"""
+    class P:
+        data_dir = "/nonexistent"
+    class C:
+        persistence = P()
+    out = R._fast_answer(C(), "999")
+    assert out and "还没绑定" in out
+
+
+def test_fast_answer_returns_none_when_must_run(core, fake_runner, monkeypatch):
+    """真要起浏览器时返回 None（表示「必须跑」）。"""
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv(R.MASTER_KEY_ENV, Fernet.generate_key().decode("ascii"))
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+    assert R._fast_answer(core, "111") is None
+
+
+def test_format_result_reads_well():
+    out = R._format_result({"ok": True, "items": [
+        {"email": "a@example.com", "ok": True, "points": 29100, "reason": "签到成功"},
+        {"email": "b@example.com", "ok": False, "reason": "验证码未通过"},
+    ]})
+    assert "✅ a@example.com 签到成功（当前 29100 分）" in out
+    assert "❌ b@example.com 验证码未通过" in out
+
+
+def test_format_result_failure_without_items():
+    out = R._format_result({"ok": False, "reason": "你还没绑定雨云账号"})
+    assert "还没绑定" in out
+
+
+def test_background_task_not_started_twice(core, fake_runner, monkeypatch):
+    """同一用户重复要求签到，不重复起后台任务（否则会绕过队列）。"""
+    import asyncio
+    from cryptography.fernet import Fernet
+    monkeypatch.setenv(R.MASTER_KEY_ENV, Fernet.generate_key().decode("ascii"))
+    assert R.bind_account(core, "111", "a@example.com", "password123")["ok"]
+
+    started = {"n": 0}
+
+    async def _slow(_core, _uid):
+        started["n"] += 1
+        await asyncio.sleep(0.3)
+        return {"ok": True, "items": []}
+
+    monkeypatch.setattr(R, "run_sign_in", _slow)
+    monkeypatch.setattr(R, "_push", lambda *a, **kw: asyncio.sleep(0))
+
+    async def go():
+        R._spawn_background_sign(core, "111")
+        R._spawn_background_sign(core, "111")   # 第二次应被忽略
+        await asyncio.sleep(0.5)
+    asyncio.run(go())
+    assert started["n"] == 1, f"起了 {started['n']} 次后台任务"
+    R._background_tasks.clear()

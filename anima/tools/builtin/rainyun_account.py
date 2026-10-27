@@ -775,6 +775,32 @@ def register_rainyun_tools(registry, core=None) -> None:
             ahead = len(q["waiting"]) + 1
             return (f"现在有人在签（前面还有 {ahead} 个），"
                     f"等一会儿再说一次「签到」就行。")
+
+        # 🔴 2026-10-27：**不能同步等**。
+        # 实测事故：用户 08:05 说「签到」，52 秒后 ReAct 报
+        # `工具调用超时(45s) name=rainyun_sign_now` —— 签到本身是好的
+        # （runner 跑 40-80s 属正常），但它撞上了**工具墙钟上限**。
+        # 抬高超时值不是解法：45s 是全局值，为它单独放松会让
+        # 「同群排队 2 分钟零回复」（10-02 事故）复现概率上升。
+        # ⇒ 正确做法：**快路径同步返回、慢路径转后台**。
+        #   · 今日已签 / 未绑定 / 组件未部署 → 0.1s 内同步给出确定答案
+        #   · 真要起浏览器 → 立刻回「正在签」，跑完私聊推送结果
+        quick = _fast_answer(core, uid)
+        if quick is not None:
+            return quick
+
+        _spawn_background_sign(core, uid)
+        return ("正在给你签雨云，大概要一分钟，签完我私聊告诉你结果。"
+                "（不用在这儿等）")
+
+    async def _unused_sync_sign() -> str:
+        """保留原同步路径的实现作为参考（当前不注册）。
+
+        🔴 不要再把它接回 `_sign`：它会撞 ReAct 工具超时。
+        需要同步结果时应该走 `run_sign_in` 的调用方自己 await，
+        而不是在对话回合里同步等。
+        """
+        uid = _current_user_id()
         res = await run_sign_in(core, uid)
         if not res.get("ok"):
             items = res.get("items") or []
@@ -988,3 +1014,125 @@ def history_summary(core: Any, user_id: Any, login_name: str = "") -> str:
             marks = "".join("✅" if r.get("ok") else "❌" for r in recent)
             lines.append(f"  最近 {len(recent)} 天：{marks}")
     return "\n".join(lines) if lines else "还没有签到记录。"
+
+
+# ---------------------------------------------------------------------------
+# 后台签到（快路径同步 / 慢路径异步）—— 2026-10-27
+# ---------------------------------------------------------------------------
+#
+# 🔴 为什么必须异步：
+#
+#   实测事故（用户 1371704917，2026-10-27 08:05）：
+#       08:05:02  rainyun_bind ok=True
+#       08:05:06  ReAct 调 rainyun_sign_now
+#       08:05:51  WARNING 工具调用超时(45s) name=rainyun_sign_now
+#       08:05:51  工具调用完成 ok=False
+#
+#   签到本身没问题（runner 跑 40-80s 属正常），是它**同步等**撞上了
+#   ReAct 的 45s 工具墙钟上限。
+#
+#   抬高超时值不是解法：45s 是全局值，为它单独放松会提高
+#   「同群排队 2 分钟零回复」（10-02 事故）的复现概率。
+#
+#   ⇒ 快路径同步（今日已签/未绑定/未部署 → 0.1s），
+#     慢路径转后台 + 完成后私聊推送。
+
+#: 正在后台跑的签到任务（防重复启动；key = user_id）
+_background_tasks: dict[str, Any] = {}
+
+
+def _fast_answer(core: Any, uid: str) -> Optional[str]:
+    """能在 0.1 秒内确定的答案。返回 None 表示「必须真起浏览器」。
+
+    覆盖三种情形（都是实测踩过的、不该让用户等一分钟的）：
+      1. 没绑定        → 告诉去绑定
+      2. 今天已签过    → 直接说已签到
+      3. 组件未部署    → 说清楚，别让用户等到超时
+    """
+    try:
+        creds = get_credentials(core, uid)
+    except Exception:
+        return "雨云签到失败：读不到账号信息"
+    if not creds:
+        return "雨云签到失败：你还没绑定雨云账号"
+
+    py, script = _runner_paths(core)
+    if not (os.path.exists(py) and os.path.exists(script)):
+        return "雨云签到失败：服务端未部署签到组件，请联系主人"
+
+    today = _today_str()
+    pending = [c for c in creds if str(c.get("last_sign") or "") != today]
+    if not pending:
+        # 短路也要记历史（否则「签到记录」永远为空，实测踩过）
+        for c in creds:
+            try:
+                record_result(core, uid, c["email"], True, "今日已签到")
+            except Exception:
+                pass
+        names = "、".join(c["email"] for c in creds)
+        return f"今天已经签过了（{names}），不用再签。"
+
+    # 连续失败降级
+    blocked = None
+    for c in pending:
+        go, why = should_auto_sign(core, uid, c["email"])
+        if not go:
+            blocked = why
+            break
+    if blocked:
+        return f"雨云签到失败：{blocked}"
+
+    return None
+
+
+def _spawn_background_sign(core: Any, uid: str) -> None:
+    """把签到丢到后台跑，完成后私聊推送。重复启动会被忽略。"""
+    import asyncio
+
+    if uid in _background_tasks:
+        task = _background_tasks[uid]
+        if not task.done():
+            return  # 已经在跑，别重复起
+
+    async def _runner():
+        try:
+            res = await run_sign_in(core, uid)
+            body = _format_result(res)
+            await _push(core, uid, body)
+        except Exception:
+            logger.warning("[雨云] 后台签到异常 user=%s", str(uid)[-4:], exc_info=True)
+            try:
+                await _push(core, uid, "雨云签到失败：程序异常，稍后再试")
+            except Exception:
+                pass
+        finally:
+            _background_tasks.pop(uid, None)
+
+    try:
+        task = asyncio.create_task(_runner())
+        _background_tasks[uid] = task
+        logger.info("[雨云] 已转入后台签到 user=%s", str(uid)[-4:])
+    except Exception:
+        logger.warning("[雨云] 无法创建后台任务 user=%s", str(uid)[-4:], exc_info=True)
+
+
+def _format_result(res: dict) -> str:
+    """把 run_sign_in 的结果格式化成用户可读的一句话。"""
+    items = res.get("items") or []
+    if not items:
+        return f"雨云签到失败：{res.get('reason') or '未知原因'}"
+    lines = ["雨云签到结果："]
+    for it in items:
+        mark = "✅" if it.get("ok") else "❌"
+        pts = f"（当前 {it['points']} 分）" if it.get("points") else ""
+        lines.append(f"{mark} {it.get('email','')} {it.get('reason','')}{pts}")
+    return "\n".join(lines)
+
+
+async def _push(core: Any, uid: str, body: str) -> None:
+    """私聊推送结果给本人。"""
+    try:
+        from anima.core.gateway import OutboundMsg
+        await core.gateway.send(OutboundMsg("private", int(uid), body))
+    except Exception:
+        logger.debug("[雨云] 后台结果推送失败", exc_info=True)
