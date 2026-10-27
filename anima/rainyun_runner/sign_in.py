@@ -245,28 +245,92 @@ def _match_positions(bg_img, target_img):
     """在 bg_img 里找 target_img 各字符的位置，返回中心点列表（按从左到右）。"""
     import cv2
 
+    import numpy as np
+
     chars = _split_chars(target_img)
     if not chars:
         return []
     bgg = cv2.cvtColor(bg_img, cv2.COLOR_BGR2GRAY)
 
-    found = []
+    # 🔴 关键：先**二值化**再匹配。
+    #
+    # 雨云主图是彩色照片，关键字图是纯黑白。拿灰度模板去 TM_CCOEFF_NORMED
+    # 匹配彩色照片，会被背景纹理强烈干扰 —— 实测 3 个字里有两个匹配到
+    # 几乎同一点（601,280)/(599,297)，明显是背景纹理骗了匹配器。
+    #
+    # ⇒ 两边都做「暗区二值化」（文字是深色），在二值图上比较，
+    #   背景纹理被压掉，只剩笔画形状。
+    def _bin(gray):
+        # 自适应阈值：暗部为 255（文字），其余 0
+        thr = max(60, int(np.percentile(gray, 12)))
+        return ((gray < thr).astype(np.uint8)) * 255
+
+    bg_bin = _bin(bgg)
+    found: list[tuple[int, int]] = []
+    MIN_SEP = 40          # 两个字中心的最小距离（像素），防同一字重复匹配
+
     for (x, y, w, h) in chars:
-        tpl = cv2.cvtColor(target_img[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY)
+        tpl_bin = _bin(cv2.cvtColor(target_img[y:y + h, x:x + w], cv2.COLOR_BGR2GRAY))
+        # 模板几乎全空 ⇒ 切歪了，跳过
+        if tpl_bin.sum() < 255 * 20:
+            continue
         best = (-1.0, None)
-        # 多尺度：雨云关键字图和主图里的字大小不一致
-        for scale in (0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2):
+        for scale in (0.7, 0.8, 0.9, 1.0, 1.1, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.5):
             tw, th = int(w * scale), int(h * scale)
-            if tw < 6 or th < 6 or tw >= bgg.shape[1] or th >= bgg.shape[0]:
+            if tw < 6 or th < 6 or tw >= bg_bin.shape[1] or th >= bg_bin.shape[0]:
                 continue
-            t2 = cv2.resize(tpl, (tw, th), interpolation=cv2.INTER_CUBIC)
-            res = cv2.matchTemplate(bgg, t2, cv2.TM_CCOEFF_NORMED)
-            _, mv, _, mp = cv2.minMaxLoc(res)
-            if mv > best[0]:
-                best = (mv, (mp[0] + tw // 2, mp[1] + th // 2, tw, th))
-        if best[1] is not None and best[0] > 0.30:
-            found.append(best[1][:2])
-    return found
+            t2 = cv2.resize(tpl_bin, (tw, th), interpolation=cv2.INTER_NEAREST)
+            if t2.sum() < 255 * 20:
+                continue
+            try:
+                res = cv2.matchTemplate(bg_bin, t2, cv2.TM_CCOEFF_NORMED)
+            except Exception:
+                continue
+            # 取该尺度下最好的、且**离已有点足够远**的位置
+            for _ in range(6):
+                _, mv, _, mp = cv2.minMaxLoc(res)
+                cx, cy = mp[0] + tw // 2, mp[1] + th // 2
+                far = all((cx - fx) ** 2 + (cy - fy) ** 2 > MIN_SEP ** 2
+                          for fx, fy in found)
+                if far and mv > best[0]:
+                    best = (mv, (cx, cy))
+                    break
+                # 把这一点抹掉再找次优
+                y0 = max(0, mp[1] - th // 2)
+                res[y0:mp[1] + th // 2 + 1, max(0, mp[0] - tw // 2):mp[0] + tw // 2 + 1] = -1.0
+                if res.size == 0:
+                    break
+        if best[1] is not None and best[0] > 0.25:
+            found.append(best[1])
+
+    # 去重（防同一字被两个字模板命中同一点）
+    dedup: list[tuple[int, int]] = []
+    for pt in found:
+        if all((pt[0] - q[0]) ** 2 + (pt[1] - q[1]) ** 2 > MIN_SEP ** 2 for q in dedup):
+            dedup.append(pt)
+    # 按 x 排序（雨云要求「依次点击」，通常是左→右）
+    dedup.sort(key=lambda t: t[0])
+    return dedup
+
+
+def _icr_positions(bg_img, target_img):
+    """用 ICR（chizw 的算法）定位各字符中心点。
+
+    🔴 为什么不自己写：实证对比同一张图，ICR 给出分散合理的坐标，
+    我的二值化版本全挤在右下角（被背景暗区误导）。
+    而且 chizw 项目在真账号上签到成功过。
+
+    ICR 放在 runner 目录下（icr.py）；缺失时退回自写实现。
+    """
+    try:
+        import icr  # 同目录
+        pos = icr.find_part_positions_array(bg_img, target_img)
+        if pos:
+            return [(float(x), float(y)) for x, y in pos]
+        _log("ICR 无结果，退回自写匹配")
+    except Exception as exc:
+        _log(f"ICR 不可用（{type(exc).__name__}），退回自写匹配")
+    return _match_positions(bg_img, target_img)
 
 
 def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
@@ -321,25 +385,37 @@ def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
             return False
         _log(f"主图 {bg.shape} 关键字图 {target.shape}")
 
-        positions = _match_positions(bg, target)
-        _log(f"识别到 {len(positions)} 个位置: {positions}")
+        # 🔴 用 ICR（移植自 chizw/Rainyun-Qiandao）而不是自己写的匹配。
+        #
+        # 2026-10-27 实证对比同一张真实验证码图：
+        #     我写的二值化+去重 → (409,444) (423,392) (454,451)  ← 全挤在右下角，明显错
+        #     ICR.find_part_positions → (198,201) (440,200) (40,41) ← 分散、y 对齐，合理
+        #
+        # 而且 chizw 那个项目**昨天在这个账号上确实签到成功过**
+        # （08:04 积分 28600 → 29100，日志 `验证码通过`），说明它的算法是对的。
+        # ⇒ 不该重写，直接用它。
+        positions = _icr_positions(bg, target)
+        _log(f"ICR 识别到 {len(positions)} 个位置: {positions}")
         if not positions:
             return False
 
-        # 点击。注意：坐标是**原图**像素，要换算成 iframe 内的 CSS 像素
         bg_el = driver.find_element(By.ID, "slideBg")
         box = bg_el.rect
         raw_h, raw_w = bg.shape[:2]
-        sx = box["width"] / raw_w
-        sy = box["height"] / raw_h
 
         for (px, py) in positions:
-            x = box["x"] + px * sx
-            y = box["y"] + py * sy
+            # 🔴 **必须减去元素半宽/半高**。
+            # `move_to_element_with_offset` 的偏移是**相对元素中心**，
+            # 不是左上角。chizw 的写法：
+            #     final_x = int(x / raw_w * bg_width - bg_width / 2)
+            # 我原来漏了 `- bg_width/2`，所以点击位置整体偏了半个图。
+            fx = int(px / raw_w * box["width"] - box["width"] / 2)
+            fy = int(py / raw_h * box["height"] - box["height"] / 2)
+            _log(f"  点击 ({px},{py}) → 偏移 ({fx},{fy})")
             ActionChains(driver).move_to_element_with_offset(
-                bg_el, int(px * sx), int(py * sy)
+                bg_el, fx, fy
             ).click().perform()
-            time.sleep(0.6)
+            time.sleep(0.8)
 
         # 提交
         for sel in ("#tcStatus div div div div", ".tc-action.verify-btn"):

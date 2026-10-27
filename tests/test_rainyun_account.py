@@ -1069,3 +1069,47 @@ def test_reward_url_is_not_the_redirecting_one():
     win = src[i:i + 1200]
     assert win.index("DASHBOARD_URL") < win.index("REWARD_URL"), \
         "_goto_reward 里必须先到 dashboard 再去 earn"
+
+
+# ---------------------------------------------------------------------------
+# 21. 用 ICR 而非自写匹配 + 点击偏移必须减半宽（2026-10-27 决定性修复）
+# ---------------------------------------------------------------------------
+
+def test_uses_icr_not_homemade_matcher():
+    """🔴 实证对比同一张真实验证码图：
+
+        自写（二值化+去重）    → (409,444) (423,392) (454,451)  ← 全挤右下角，错
+        ICR.find_part_positions → (198,201) (440,200) (40,41)   ← 分散、合理
+
+    而且 chizw 项目在真账号上签到成功过（08:04 积分 28600→29100）。
+    ⇒ 不该重写，直接用它的算法。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    assert "_icr_positions" in src, "缺少 ICR 桥接"
+    assert "find_part_positions_array" in src or "import icr" in src
+
+
+def test_click_offset_subtracts_half_size():
+    """🔴 `move_to_element_with_offset` 的偏移是**相对元素中心**，不是左上角。
+
+    chizw 的正确写法：
+
+        final_x = int(x / raw_w * bg_width - bg_width / 2)
+        final_y = int(y / raw_h * bg_height - bg_height / 2)
+
+    我原来写成 `move_to_element_with_offset(bg_el, px*sx, py*sy)`，
+    漏了 `- width/2`，导致点击整体偏了半个图 —— 验证码永远过不了。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    i = src.index("for (px, py) in positions:")
+    win = src[i:i + 700]
+    assert "- box[\"width\"] / 2" in win, "点击偏移没减半宽"
+    assert "- box[\"height\"] / 2" in win, "点击偏移没减半高"
+
+
+def test_icr_module_exists_and_has_array_api():
+    """ICR 必须提供 numpy 数组接口（原版只吃文件路径）。"""
+    icr_path = _ROOT / "anima" / "rainyun_runner" / "icr.py"
+    assert icr_path.exists(), "icr.py 不存在"
+    src = icr_path.read_text(encoding="utf-8")
+    assert "def find_part_positions_array" in src
