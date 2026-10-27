@@ -387,7 +387,16 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
             earn.click()
             clicked = True
             time.sleep(2)
-            _solve_captcha(driver)
+            # 🔴 **必须检查验证码结果**。
+            # 实测事故（2026-10-27）：验证码没通过（`tcOperation` 仍是
+            # `tc-opera pointer` 而非 `show-success`），但这里忽略了返回值，
+            # 直接报 ok=True「签到成功」⇒ 第二次谎报。
+            # 而且按钮仍是「领取奖励」，说明雨云侧根本没签上。
+            captcha_ok = _solve_captcha(driver)
+            if not captcha_ok:
+                _log("验证码未通过，本次签到失败")
+                _emit({"ok": False, "reason": "验证码未通过",
+                       "points": None}, 1)
     except Exception as exc:
         # 🔴 **找不到按钮 ≠ 已签到**。
         # 实测事故（用户 1371704917，2026-10-27）：XPath 取不到按钮
