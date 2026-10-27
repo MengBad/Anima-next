@@ -246,6 +246,71 @@ class OwnerAgent:
     #: 单个步骤结果最多交付的字数
     _TEXT_STEP_MAX = 1000
 
+    #: 出站净化：Agent 正文走 `gateway.send` 直发、**不经过 pipeline**，
+    #: 所以对话层的守卫必须在这里复用手动一遍。
+    #:
+    #: 🔴 绝不能「见长数字就打码」：生产正文里正常会出现
+    #: 「积分从 29100 涨到 29600」「成本 120 元」「读了 16 条」这类数字，
+    #: 一律打码会把**有效信息**毁掉（实测被
+    #: `test_sanitize_keeps_normal_text` 抓住）。
+    #:
+    #: 判据分两档（宁可漏删，不可误删有效数字）：
+    #:   ① 账号上下文里的数字（「QQ号是N」「账号：N」）⇒ 连词带数字一起删；
+    #:   ② **裸的 QQ 号形态**（9–11 位、首位非 0、且不是明显金额/时间）
+    #:      ⇒ 打码。真实 QQ 号是 5–11 位，这里取 9–11 位以减少误伤
+    #:      （「29100」「120」这类 5–6 位金额/数量不碰）。
+    _QQ_CONTEXT_RE = re.compile(
+        r"(?:主人的?|用户的?|你的?)?\s*"
+        r"(?:QQ\s*号?|帐号|账号|绑定(?:的)?(?:账号|号码)?)"
+        r"\s*(?:是|为|：|:)?\s*\d{5,12}",
+        re.I,
+    )
+    #: 裸 QQ 号：9–11 位数字，前后不能紧邻数字/小数点（排除金额、版本号）
+    _BARE_QQ_RE = re.compile(r"(?<![\d.])\d{9,11}(?![\d.])")
+
+    @classmethod
+    def _sanitize_delivery(cls, text: str) -> str:
+        """净化 Agent 交付正文（步骤脚手架 / 账号数字 / 元话语包裹）。
+
+        ## 为什么需要它
+
+        Agent 交付用 `gateway.send()` 直发，**绕过整条 pipeline** ⇒
+        `guardrail` 的 QQ 号泄漏拦截在这条路径上完全不生效。
+
+        生产实证（2026-10-27 11:44）用户收到：
+            【步骤1】基于已有的零星话题和状态数据，直接构思一句简短的关怀话术
+            主人的QQ号是1562290139。构思的关怀话术：「主人今天有好好吃饭嘛？…」
+
+        人格正本明令「绝不报QQ号」。
+
+        ## 为什么是净化而不是拒发
+
+        交付正文被整条拒发 = 用户什么都没拿到（比发一条带噪的还差）。
+
+        ## 保守原则
+
+        **只删确定性噪声**（步骤标签、账号上下文里的数字），
+        不碰任何其它数字/正文 —— 误删有效信息比漏删一句脚手架更糟。
+        """
+        text = str(text or "")
+        if not text.strip():
+            return ""
+        # 1) 步骤脚手架行（`【步骤1】…` 整行删；行内前缀只删前缀）
+        text = re.sub(r"(?m)^\s*【\s*步骤\s*\d+\s*】.*$", "", text)
+        text = re.sub(r"【\s*步骤\s*\d+\s*】\s*", "", text)
+        # 2) 只在**账号上下文**里删数字（不做全局数字打码）
+        text = cls._QQ_CONTEXT_RE.sub("", text)
+        # 2b) 裸 QQ 号（9–11 位，前后不紧邻数字/小数点）⇒ 打码而非删除。
+        #     这类多半是「发给 1562290139 就好」这种没有上下文词的形态；
+        #     打码保留句子结构，读起来仍通顺。
+        text = cls._BARE_QQ_RE.sub("***", text)
+        # 3) 压掉净化后留下的空行堆
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        # 4) 只剩标点/空白 ⇒ 视为无产物
+        if not re.search(r"[\w\u4e00-\u9fff]", text):
+            return ""
+        return text
+
     @staticmethod
     def _goal_note_indicates_progress(body: str) -> bool:
         """本次推进是否**取得了实质进展**（用于进展标注，不用于改状态）。
@@ -369,21 +434,36 @@ class OwnerAgent:
             return
 
         steps = sorted(getattr(task, "steps", []) or [], key=lambda s: getattr(s, "index", 0))
-        # 🔴 2026-10-25：**保留步骤标题（溯源必需），但去掉内容重复的步骤**。
-        #   生产实证（10-24 11:44，目标推进任务）用户收到：
-        #     【步骤1】主人最近在忙什么呢？…记得歇一歇喵~
-        #     【步骤2】主人最近在忙什么呀？注意到您辛苦啦…
-        #     【步骤3】主人～最近过得怎么样呀？…
-        #   **同一个意思说三遍**，第 2 步还变成「您」的客服腔 ——
-        #   用户看到的是完整草稿过程，不是一条能看的回复。
+        # 🔴 2026-10-27：**步骤脚手架不再进出站**。用户要的是结果，不是过程。
         #
-        #   但**步骤标题不能删**：它是溯源锚点（`test_completed_text_task_is_delivered`
-        #   明确要求「【步骤2】」存在；`_deliver_text` 的 docstring 也写明
-        #   「交付步骤结果而不是 result_list 清单」）。
-        #   ⇒ 正确做法：**内容高度重复的步骤只保留一条**（保留最后一条，
-        #      它通常是定稿），不重复的照常全发。
-        blocks: list[str] = []
-        used = 0
+        # 前两轮都在治标，方向是错的：
+        #
+        #   2026-10-20（11a531c）：交付步骤标题，认为「标题用于溯源」。
+        #     ⇒ 用户开始收到 `【步骤1】…【步骤2】…` 的工程日志。
+        #   2026-10-25（00ecb04）：只删「内容重复的步骤」，理由写的是
+        #     「步骤标题不能删，它是溯源锚点」。
+        #     ⇒ 治的是「同一个意思说三遍」，**没治「为什么要给用户看步骤」**。
+        #
+        # 2026-10-27 生产实证（owner 直接质问「为什么要把步骤给我看」）：
+        #
+        #     【步骤1】基于已有的零星话题和状态数据，直接构思一句简短、轻松且
+        #             带有生活气息的关怀话术
+        #     主人的QQ号是1562290139。构思的关怀话术：「主人今天有好好吃饭嘛？…」
+        #
+        #     【步骤2】向主人发送这条主动问候消息（1562290139）
+        #     主人今天有好好吃饭嘛？别太辛苦啦，记得揉揉猫猫～
+        #
+        # 用户看到的是一条**能用的问候**，被埋在「构思过程 + 内部 QQ 号 + 元话语」
+        # 里。这不是"溯源"问题，是**把推理草稿当交付物**。
+        #
+        # ⇒ 正确做法：
+        #   · 出站只给**最终产物**（末步 result，或显式 result_text）；
+        #   · 步骤标题/全部步骤结果**转进 `chat_memory` 供溯源**（
+        #     由调用方 `_record_delivery_note` 负责，不进用户可见文本）；
+        #   · 多步任务在**结果确有多个不同产物**时才合并多条，
+        #     且用自然分隔而不是 `【步骤N】` 标签。
+        #
+        # 「溯源」是内部需求，不该让用户替我们承担这个成本。
         _kept_texts: list[str] = []
 
         def _similar(a: str, b: str) -> bool:
@@ -406,6 +486,38 @@ class OwnerAgent:
                 return False
             return len(ga & gb) / len(ga | gb) >= 0.85
 
+        def _contains_or_similar(a: str, b: str) -> bool:
+            """`a` 是 `b` 的包裹版（含它 / 被它含）也算重复。
+
+            🔴 2026-10-27：单纯的 Jaccard ≥0.85 **抓不住真实事故**。
+            生产实证（8e6c68ab74）：
+
+                步1: 主人的QQ号是1562290139。构思的关怀话术：「主人今天有好好吃饭嘛？…」
+                步2: 主人今天有好好吃饭嘛？别太辛苦啦，记得揉揉猫猫～
+
+            步2 整句被**完整包含**在步1 里，但步1 多了一段前缀，Jaccard 只有
+            约 0.6 ⇒ 没被合并 ⇒ 用户收到「构思过程 + 定稿」两段，
+            同一句话出现两次。
+
+            判据：去噪后一方是另一方的子串且较长者不超其 3 倍 ⇒ 视为同一件事
+            （保留**更短/更干净**的那条，即后出现的定稿）。
+
+            倍数取 3 而非 2：真实事故里步1=45 字、步2=21 字，比值 2.14 ——
+            2 倍刚好卡住（实测被本测试抓出）。而 3 倍仍远小于「一篇长文里
+            顺手提到同一句话」的比值，不会误合并。
+            """
+            if _similar(a, b):
+                return True
+            _clean = lambda s: "".join(ch for ch in s if ch.isalnum())
+            ca, cb = _clean(a), _clean(b)
+            if not ca or not cb:
+                return False
+            short, long_ = (ca, cb) if len(ca) <= len(cb) else (cb, ca)
+            # 太短的不做包含判定（「好的」会被任何句子包含）
+            if len(short) < 10:
+                return False
+            return short in long_ and len(long_) <= len(short) * 3
+
         _rows: list[tuple[str, str]] = []
         for st in steps:
             res = str(getattr(st, "result", "") or "").strip()
@@ -418,7 +530,7 @@ class OwnerAgent:
         _keep_idx: list[int] = []
         for i in range(len(_rows) - 1, -1, -1):
             _desc, _text = _rows[i]
-            if any(_similar(_text, _rows[j][1]) for j in _keep_idx):
+            if any(_contains_or_similar(_text, _rows[j][1]) for j in _keep_idx):
                 logger.info(
                     "文本交付去重：步骤「%s」与后续步骤内容重复，已省略",
                     _desc[:24] or f"#{i + 1}",
@@ -427,18 +539,19 @@ class OwnerAgent:
             _keep_idx.append(i)
         _keep_idx.sort()
 
-        for i in _keep_idx:
-            _desc, res = _rows[i]
-            head = "【步骤%d】%s" % (i + 1, _desc[:40])
-            block = head + "\n" + res[:self._TEXT_STEP_MAX]
-            blocks.append(block)
-            used += len(block)
-            if used >= self._TEXT_TOTAL:
-                break
+        # 出站正文：**只给产物，不给步骤标签**。
+        # 多步时按自然空行拼接（正文本身已是一句话就不加任何分隔）。
+        _bodies = [res[:self._TEXT_STEP_MAX] for _desc, res in
+                   (_rows[i] for i in _keep_idx)]
+        # 单步任务最常见（「关心一下主人」这种）⇒ 直接就是那一句，不加分隔
+        body = "\n\n".join(_bodies).strip() if len(_bodies) > 1 else "".join(_bodies).strip()
 
-        body = "\n\n".join(blocks).strip()
-        if not body:
-            body = str(result_text or "").strip()
+        # `result_text` 是 executor 的显式产物；有它时优先于步骤拼装
+        # （步骤 result 可能是中间稿，`result_text` 是定稿）。
+        _explicit = str(result_text or "").strip()
+        if _explicit and len(_explicit) >= len(body):
+            body = _explicit
+
         if not body:
             logger.info("Agent 文本交付跳过：无产物 task=%s", task.id)
             return
@@ -474,9 +587,11 @@ class OwnerAgent:
             # 群里那条要放**最后一段实质内容**（通常是最终产物），而不是把
             # 「步骤1 语料分析」这半截截给群里看（10-18 回放：原样取 body[:700]
             # 群里只看到语料清单，看不到 16 句脚本）。
+            # 2026-10-27：`blocks` 已不再含步骤标签，取最后一段 ≥200 字的产物；
+            # 都不够长时退回 body 尾部。
             _tail_pick = next(
-                (b for b in reversed(blocks) if len(b) >= 200),
-                blocks[-1] if blocks else body,
+                (b for b in reversed(_bodies) if len(b) >= 200),
+                (_bodies[-1] if _bodies else body),
             )
             head = _tail_pick[:self._TEXT_GROUP_MAX].rstrip() + "\n…（完整结果已私聊给你）"
             plans.append(("group", target, head))
@@ -485,6 +600,30 @@ class OwnerAgent:
         else:
             for c in _split_text_chunks(body, self._TEXT_CHUNK):
                 plans.append((detail_type, target, c))
+
+        # 🔴 2026-10-27：**出站前过一遍对话层的守卫**。
+        #
+        # Agent 交付走 `gateway.send` 直发，**不经过 pipeline** ⇒ 对话层所有
+        # 出站守卫（QQ 号泄漏 / 元话语 / 编造断言）在这条路径上全部失效。
+        #
+        # 生产实证（10-27 11:44）用户收到：
+        #     【步骤1】…构思一句简短、轻松且带有生活气息的关怀话术
+        #     主人的QQ号是1562290139。构思的关怀话术：「主人今天有好好吃饭嘛？…」
+        #
+        # 人格正本明令「绝不报QQ号」，`guardrail._detect_prompt_leak` 也**能**
+        # 识别它（实测 `account_digits:156***`），但它根本没被调用。
+        #
+        # ⇒ 在同一处补下游净化。用 `strip`-类纯函数而非 `SKIP_REPLY`：
+        #   交付正文被整条拒发等于用户什么都没拿到，那是更坏的结果。
+        _sanitized: list[tuple[str, int, str]] = []
+        for _dt, _tid, _chunk in plans:
+            _clean = self._sanitize_delivery(_chunk)
+            if _clean:
+                _sanitized.append((_dt, _tid, _clean))
+        plans = _sanitized
+        if not plans:
+            logger.warning("Agent 文本交付净化后为空，跳过 task=%s", task.id)
+            return
 
         sent = 0
         for dt, tid, chunk in plans:

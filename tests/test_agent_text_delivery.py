@@ -92,7 +92,11 @@ def test_completed_text_task_is_delivered():
     assert gw.sent, "完成的任务必须有出站（这就是事故：一个字都没发）"
     joined = "\n".join(t for _d, t in gw.sent)
     assert "雀仔 massage" in joined, "必须交付**步骤结果**正文，而不是标题清单"
-    assert "【步骤2】" in joined, "步骤标题用于溯源"
+    # 🔴 2026-10-27：**反向断言**。原断言是 `assert "【步骤2】" in joined`
+    # （理由写「步骤标题用于溯源」）。那条断言把「给用户看工程日志」写成了规格 ——
+    # 生产里 owner 直接质问「为什么要把步骤给我看」。
+    # 溯源是内部需求，走 chat_memory 的 `[已交付 …]` 记录，不进用户可见文本。
+    assert "【步骤" not in joined, "不得把步骤脚手架发给用户"
     assert task.context["text_delivered"] is True
 
 

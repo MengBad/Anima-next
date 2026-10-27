@@ -1199,12 +1199,50 @@ class Heartbeat:
 
         try:
             from anima.core.gateway import OutboundMsg
+            # 🔴 2026-10-27：**报备要说人话**。
+            #
+            # 报备制本身是对的（`test_auto_trigger.py` 锁死「先报备再执行」），
+            # 但旧文案把内部字段直接摊给用户：
+            #
+            #     本喵自己去干个活喵：
+            #     做什么：推进这个长期目标并给出本次进展：维系和主人的关系：
+            #             主动关心一下 ta 最近怎么样（1562290139） 」到推进时间了
+            #     为什么：你之前答应过这件事，现在到时间了：…
+            #     任务：8e6c68ab74
+            #     （不用回，本喵自己会做完汇报；想叫停就发 !anima agent cancel …）
+            #
+            # 三个问题：
+            #   1. `做什么`/`为什么`/`任务` 是**内部字段名**，不是说话方式；
+            #   2. `picked.request` 里嵌着目标模板原文（「」到推进时间了」这种半句）
+            #      和 **QQ 号**（人格正本明令绝不报）；
+            #   3. `task.id` / `!anima agent cancel` 是给开发者的操作指令。
+            #
+            # ⇒ 改成一句自然报备 + 保留「怎么叫停」这一条**用户真需要**的信息，
+            #   但用自然语言说（不再露 task id 这种内部标识）。
+            _what = re.sub(r"\s+", " ", str(picked.request or "")).strip()
+            # 去掉目标模板的尾巴（` 」到推进时间了`）与内部前缀
+            _what = re.sub(r"^推进这个长期目标并给出本次进展[：:]\s*", "", _what)
+            _what = re.sub(r"\s*」\s*到推进时间了\s*$", "", _what)
+            # 去掉 QQ 号（人格正本：绝不报QQ号）
+            _what = re.sub(r"[（(]\s*\d{5,12}\s*[）)]", "", _what)
+            _what = re.sub(r"(?<![\d.])\d{9,11}(?![\d.])", "", _what).strip()
+            _what = _what[:60] + ("…" if len(_what) > 60 else "")
+            # 「为什么」这条也是合理的：用户有权知道它拿什么理由自主行动。
+            # 同样去噪（QQ 号 / 目标模板尾巴），用自然句子而非字段名。
+            _why = re.sub(r"\s+", " ", str(picked.reason or "")).strip()
+            _why = re.sub(r"\s*」\s*到推进时间了\s*$", "", _why)
+            _why = re.sub(r"[（(]\s*\d{5,12}\s*[）)]", "", _why)
+            _why = re.sub(r"(?<![\d.])\d{9,11}(?![\d.])", "", _why).strip()
+            _why = _why[:50] + ("…" if len(_why) > 50 else "")
+            # task_id **必须保留**：它是「叫停」的唯一锚点
+            # （`test_auto_trigger.test_enabled_submits_and_notifies_privately`
+            #   明确要求报备里含 task_id，否则用户无法精确取消）。
+            # 但用自然语言说，不再以 `做什么：/为什么：/任务：` 字段名开头。
             _body = (
-                f"本喵自己去干个活喵：\n"
-                f"做什么：{picked.request[:90]}{'…' if len(picked.request) > 90 else ''}\n"
-                f"为什么：{picked.reason[:90]}\n"
-                f"任务：{task.id}\n"
-                f"（不用回，本喵自己会做完汇报；想叫停就发 !anima agent cancel {task.id}）"
+                f"本喵去干个活喵：{_what}\n"
+                f"为什么：{_why}\n"
+                f"不用回，做完本喵来汇报。想叫停就说「停掉 {task.id}」"
+                f"（或发 !anima agent cancel {task.id}）"
             )
             for oid in owners:
                 try:

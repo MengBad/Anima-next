@@ -605,11 +605,32 @@ class AgentExecutor:
                               failed_step=failed_step.description[:200],
                               error=error[:200],
                               new_steps=[s.description[:120] for s in new_steps])
-        await self._notify(
-            task,
-            f"[重规划 #{task.replan_count}] 「{failed_step.description[:40]}」未达成"
-            f"（{reason}），改为 {len(new_steps)} 步替代方案",
-        )
+        # 🔴 2026-10-27：**重规划通知改为受同一道节流闸管**。
+        #
+        # 原来这里无条件 `_notify`，绕过了 `_should_notify_steps` 的门槛 ——
+        # 生产实证（10-27 11:44）：一个 2 步的短任务，用户收到
+        #
+        #     11:43:42  本喵自己去干个活喵：…任务：8e6c68ab74
+        #     11:44:00  [重规划 #1] 「分析主人近期的互动习惯与情感状态」
+        #               未达成（verify_failed），改为 2 步替代方案
+        #     11:44:15  【步骤1】…【步骤2】…
+        #
+        # 三条消息里两条是**内部工程事件**（重规划/步骤），真正的产物只有一句
+        # 「主人今天有好好吃饭嘛？」。owner 的原话：「为什么要把步骤给我看」。
+        #
+        # 「我换了个做法」是**内部调度**，不是用户需要知道的事实；
+        # 它只该进日志（`auditor.emit("agent_replan")` 已有），
+        # 不该占用一条 QQ 消息。仅当任务本身够长（用户在等）时才报。
+        if self._should_notify_steps(task):
+            await self._notify(
+                task,
+                f"[重规划 #{task.replan_count}] 换了个做法，改为 {len(new_steps)} 步",
+            )
+        else:
+            logger.info(
+                "[重规划] task=%s #%d 「%s」未达成（%s）-> %d 步（短任务不推送）",
+                task.id, task.replan_count, failed_step.description[:30],
+                reason, len(new_steps))
         return True
 
     #: 步骤进度推送的门槛：步数达到此值，或已耗时超过阈值，才逐步报进度。
