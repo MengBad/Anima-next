@@ -1932,10 +1932,34 @@ class WebUIServer:
 
         modules.append(module("webui", "WebUI", "running" if self._site else "stopped",
                               "管理页面已提供" if self._site else "管理页面未启动", {}))
+
+        # 🔴 2026-10-28：**业务模块真实清单**（来自统一注册表）。
+        #
+        # 上面那些 `modules.append(...)` 是手写的固定列表（gateway/llm/chat_memory
+        # /heartbeat/watchdog/...），**与 `anima/cognitive/` 下的 34 个业务模块无关** ——
+        # 这正是「启动日志说注册 2 个」和「71 个 cognitive 文件」能同时成立的原因：
+        # 面板看的是一套，实际跑的是另一套。
+        #
+        # 现在把 `ModuleRegistry.status()` 的 34 条如实追加，字段：
+        #   name / instantiated / dirty / has_save / has_close / declared_* / error / note
+        # 只读快照，不主动构造模块（避免「看一眼面板」把没启动的模块拉起来）。
+        registry_summary: dict[str, Any] = {}
+        registry_modules: list[dict[str, Any]] = []
+        try:
+            from anima.core.registry import get_registry
+            _reg = get_registry(str(config.persistence.data_dir))
+            registry_modules = _reg.status()
+            registry_summary = _reg.summary()
+        except Exception:
+            logger.debug("读取模块注册表失败（已隔离）", exc_info=True)
+
         return web.json_response({
             "status": "running" if running else "stopped",
             "timestamp": time.time(),
             "modules": modules,
+            # 业务模块（认知子系统）真实清单 + 汇总
+            "business_modules": registry_modules,
+            "business_modules_summary": registry_summary,
         })
 
     async def autonomy_action(self, request: web.Request) -> web.Response:

@@ -362,7 +362,36 @@ class AnimaCore:
             self.health_history.record(force=True)
         except Exception:
             logger.exception("运行健康初始采样失败")
-        logger.info("AnimaCore 已启动，注册模块 %d 个", len(self.modules))
+        # 🔴 2026-10-28：**统一模块注册表启动**。
+        #
+        # 34 个业务模块（mood/desire/relation/scar/exploration/...）此前各自
+        # 靠 `get_xxx()` 惰性构造，**没有任何统一入口** ⇒
+        #   · 无法枚举「现在到底加载了哪些模块」
+        #   · 无法保证它们在 shutdown 时都被落盘/关闭
+        #
+        # 现在由注册表在启动时统一构造并 restore，`/api/modules/status`
+        # 可列出全部 34 个的状态（instantiated / dirty / error / 有无 save/close）。
+        #
+        # fail-soft：单个模块构造失败只记日志（`summary()["errors"]` 可查），
+        # 绝不阻断 AnimaCore 启动 —— 与项目既有的「降级设计」一致。
+        try:
+            from anima.core.registry import get_registry
+            _reg = get_registry(str(self.config.persistence.data_dir))
+            _up = await _reg.startup(self)
+            logger.info("[registry] 业务模块启动：ok=%d failed=%d",
+                        _up.get("ok", 0), _up.get("failed", 0))
+        except Exception:
+            logger.exception("统一模块注册表启动异常（已隔离，不影响核心启动）")
+        logger.info("AnimaCore 已启动，注册模块 %d 个（基础设施）+ %d 个（业务）",
+                    len(self.modules), self._business_module_count())
+
+    def _business_module_count(self) -> int:
+        """已注册业务模块数（供启动日志；取不到返回 0，绝不抛）。"""
+        try:
+            from anima.core.registry import get_registry
+            return len(get_registry(str(self.config.persistence.data_dir)).names())
+        except Exception:  # noqa: BLE001
+            return 0
 
     async def _memory_hydrate_loop(self) -> None:
         """周期性把实时 chat_memory 水合进宪法记忆(M1.2, dedupe), 随运行累积。"""
@@ -469,45 +498,25 @@ class AnimaCore:
                 await self.webui.close()
             except Exception:
                 logger.exception("WebUI 关闭异常")
-        # G1：跨群记忆/氛围 JSON 已增量落盘，此处幂等 flush 收尾
+        # 🔴 2026-10-28：**统一模块注册表关闭**（取代此前 7 处手写 close）。
+        #
+        # 原来这里是 7 段 `try: from X import close_Y; close_Y() except: ...`。
+        # 问题不是重复，而是**加新模块时容易漏** ——
+        # `desire_decay_state.json` 那次损坏（37 字节残文件）就是
+        # 「模块有落盘需求但 shutdown 里没有对应调用」的后果。
+        #
+        # 现在：`ModuleRegistry` 按 `default_specs()` 声明的顺序逆序关闭，
+        # 每个模块的 save/close 方法名都在 spec 里显式登记（实测探测得来）。
+        # 新增模块**只需在 `registry.default_specs()` 加一条**，这里不用动。
+        #
+        # fail-soft：注册表内部逐个 try，单个失败不影响其它，也不阻断退出。
         try:
-            from anima.crossgroup import close_crossgroup_manager
-            close_crossgroup_manager()
+            from anima.core.registry import get_registry
+            _shut = await get_registry(str(self.config.persistence.data_dir)).shutdown()
+            logger.info("[registry] 模块关闭完成 ok=%d failed=%d",
+                        _shut.get("ok", 0), _shut.get("failed", 0))
         except Exception:
-            logger.exception("跨群管理器 flush 异常")
-        # P0/P1：工具自学习 / 能力系统单例关闭
-        try:
-            from anima.cognitive.tool_learning import close_tool_learning
-            close_tool_learning()
-        except Exception:
-            logger.exception("工具自学习单例关闭异常")
-        try:
-            from anima.cognitive.capabilities import close_capability_manager
-            close_capability_manager()
-        except Exception:
-            logger.exception("能力系统单例关闭异常")
-        # 表情包单例关闭
-        try:
-            from anima.cognitive.stickers import close_sticker_manager
-            close_sticker_manager()
-        except Exception:
-            logger.exception("表情包单例关闭异常")
-        # 视觉理解单例关闭
-        try:
-            from anima.cognitive.vision import close_vision_manager
-            close_vision_manager()
-        except Exception:
-            logger.exception("视觉理解单例关闭异常")
-        try:
-            from anima.cognitive.reply_quality import close_reply_quality
-            close_reply_quality()
-        except Exception:
-            logger.exception("回复质量统计关闭异常")
-        try:
-            from anima.cognitive.selfcode import close_selfcode_manager
-            close_selfcode_manager()
-        except Exception:
-            logger.exception("自我编程管理器关闭异常")
+            logger.exception("统一模块注册表关闭异常（已隔离，不影响进程退出）")
         logger.info("AnimaCore 已停止")
 
     # ---- 辅助 -----------------------------------------------------------

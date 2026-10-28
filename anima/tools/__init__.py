@@ -1011,6 +1011,54 @@ class ToolRegistry:
         logger.debug("移除工具: %s", name)
         return True
 
+    # ------------------------------------------------------------------
+    # 🔴 2026-10-28：**统一可观测面**（与 ModuleRegistry.status() 对齐）
+    # ------------------------------------------------------------------
+    #
+    # 此前 ToolRegistry 只有 `register` / `unregister` / `get_schemas`，
+    # **没有任何枚举接口** ⇒ 想回答「现在到底注册了哪些工具、各自什么权限级别」
+    # 只能靠 grep 源码。这与模块层的问题同源：**能加，但看不见**。
+    #
+    # 这三个方法给 WebUI / 调试 / 测试提供统一入口，不改任何执行路径。
+
+    def names(self) -> list[str]:
+        """全部已注册工具名（排序，便于对比/快照测试）。"""
+        return sorted(self.tools)
+
+    def list_tools(self) -> list[dict[str, Any]]:
+        """全部工具的元信息快照（不含 handler，可安全序列化）。
+
+        字段：name / min_level / priority / required / params / private_only / desc。
+        """
+        out: list[dict[str, Any]] = []
+        for name in self.names():
+            t = self.tools[name]
+            out.append({
+                "name": name,
+                "min_level": int(getattr(t, "min_level", 0) or 0),
+                "priority": int(getattr(t, "priority", 0) or 0),
+                "required": list(getattr(t, "required", []) or []),
+                "params": sorted((getattr(t, "parameters", {}) or {}).keys()),
+                "private_only": bool(getattr(t, "private_only", False)),
+                "desc": str(getattr(t, "description", "") or "")[:120],
+            })
+        return out
+
+    def status(self) -> dict[str, Any]:
+        """汇总状态（供 `/api/health` 或调试面板）。"""
+        levels: dict[int, int] = {}
+        for t in self.tools.values():
+            lv = int(getattr(t, "min_level", 0) or 0)
+            levels[lv] = levels.get(lv, 0) + 1
+        return {
+            "total": len(self.tools),
+            "by_level": levels,
+            "private_only": sum(1 for t in self.tools.values()
+                                if getattr(t, "private_only", False)),
+            "capability_mode": bool(getattr(self, "capability_mode", False)),
+            "capability_indexed": len(getattr(self.capability_index, "_by_id", {}) or {}),
+        }
+
     def set_call_context(self, **context: Any):
         """绑定当前 asyncio 任务的会话上下文，避免并发消息串群。"""
         return _CALL_CONTEXT.set(context)
