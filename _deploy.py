@@ -677,21 +677,37 @@ def main():
     #
     # 等两个条件都成立才继续：
     #   ① `systemctl is-active` 返回 inactive/failed（unit 已停）
-    #   ② 没有残留的 `anima start` 进程（防 systemd 之外的孤儿）
+    #   ② 没有残留的 anima 主进程（防 systemd 之外的孤儿）
     # 超时（30s，> TimeoutStopSec=15）则强制 SIGKILL 并继续 ——
     # 宁可丢一次关机态，也不能让部署卡死。
+    #
+    # 🔴 判定残留进程**不能用 `pgrep -f 'anima start'`**：
+    #    实测它会把执行本命令的 shell 自己也匹配进去
+    #    （`bash -c ... pgrep -af 'anima start' ...` 的命令行含该字符串）
+    #    ⇒ 计数恒 ≥1 ⇒ 等待永远超时。
+    #    改用 `pgrep -x python` 取 PID 再用 `ps -o args=` 精确比对 argv，
+    #    且显式排除自己的 PID（$$）与父 shell。
     print("[STOP] 等待进程完全退出（避免删 data/ 时进程仍在写）...")
     run(
         "for i in $(seq 1 30); do "
         "  st=$(systemctl is-active anima 2>/dev/null || true); "
-        "  n=$(pgrep -fc 'anima start' 2>/dev/null || echo 0); "
+        "  n=0; "
+        "  for p in $(pgrep -x python 2>/dev/null); do "
+        "    case \"$(ps -o args= -p $p 2>/dev/null)\" in "
+        "      *'-m anima start'*) n=$((n+1));; "
+        "    esac; "
+        "  done; "
         "  if [ \"$st\" != \"active\" ] && [ \"$n\" -eq 0 ]; then "
         "    echo \"[STOP] 已完全退出（等待 ${i}s）\"; exit 0; "
         "  fi; "
         "  sleep 1; "
         "done; "
         "echo '[STOP] WARN 30s 未退净，强制结束'; "
-        "pkill -9 -f 'anima start' 2>/dev/null || true; sleep 1; exit 0",
+        "for p in $(pgrep -x python 2>/dev/null); do "
+        "  case \"$(ps -o args= -p $p 2>/dev/null)\" in "
+        "    *'-m anima start'*) kill -9 $p 2>/dev/null || true;; "
+        "  esac; "
+        "done; sleep 1; exit 0",
         check=False,
     )
     # O3 自愈：5 分钟后系统级自动拉起（systemd-run 瞬态定时器，独立于
