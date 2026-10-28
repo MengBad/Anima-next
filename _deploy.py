@@ -654,6 +654,46 @@ def main():
     # 代价是部署期间 bot 下线（含 pip 安装时长），换取零数据丢失。
     print("[STOP] 停机窗口：停止 anima 以安全执行数据/依赖操作...")
     run("systemctl stop anima")
+
+    # 🔴 2026-10-28：**必须显式确认进程真的退完，再动 data/ 目录**。
+    #
+    # ## 事故
+    #
+    # 2026-10-28 16:51:20 部署时，anima 进程在**收到 SIGTERM 的同一秒**
+    # 连抛 5 个 `OSError: [Errno 30] Read-only file system`：
+    #
+    #     16:51:20  SIGTERM，开始优雅停止
+    #     16:51:20  ERROR 心跳持久化失败 / 时间感知 / 欲望系统 / 关系引擎 / crossgroup
+    #     16:51:20  [registry] 关闭完成：ok=7 failed=1
+    #
+    # 根因不是「文件系统只读」，而是**竞态**：
+    #   · `systemctl stop` 对 `Type=simple` 只保证「发出 SIGTERM 并等主进程退出」，
+    #     而 Python 的优雅停止是 asyncio 里跑的（registry.shutdown → 逐个 persist），
+    #     主进程退出与这些协程收尾之间有窗口；
+    #   · 脚本紧接着 `rm -rf data`（第 672 行）**把整个数据目录删掉再重建**，
+    #     进程此时若还在写 ⇒ 目录 inode 已被换掉 ⇒ EROFS。
+    #
+    # ## 修法
+    #
+    # 等两个条件都成立才继续：
+    #   ① `systemctl is-active` 返回 inactive/failed（unit 已停）
+    #   ② 没有残留的 `anima start` 进程（防 systemd 之外的孤儿）
+    # 超时（30s，> TimeoutStopSec=15）则强制 SIGKILL 并继续 ——
+    # 宁可丢一次关机态，也不能让部署卡死。
+    print("[STOP] 等待进程完全退出（避免删 data/ 时进程仍在写）...")
+    run(
+        "for i in $(seq 1 30); do "
+        "  st=$(systemctl is-active anima 2>/dev/null || true); "
+        "  n=$(pgrep -fc 'anima start' 2>/dev/null || echo 0); "
+        "  if [ \"$st\" != \"active\" ] && [ \"$n\" -eq 0 ]; then "
+        "    echo \"[STOP] 已完全退出（等待 ${i}s）\"; exit 0; "
+        "  fi; "
+        "  sleep 1; "
+        "done; "
+        "echo '[STOP] WARN 30s 未退净，强制结束'; "
+        "pkill -9 -f 'anima start' 2>/dev/null || true; sleep 1; exit 0",
+        check=False,
+    )
     # O3 自愈：5 分钟后系统级自动拉起（systemd-run 瞬态定时器，独立于
     # 部署进程/SSH 存活）——若部署中途断连，anima 最迟 5 分钟后恢复；
     # 正常流程的 restart 会覆盖此定时器，无副作用。
@@ -668,9 +708,26 @@ def main():
         f"test -n \"$release\" && cp -a \"$release\"/. {REMOTE_ROOT}/ && "
         f"rm -rf {stage_dir} {bundle_remote}"
     )
-    # 恢复生产数据目录（无论 bundle 是否含 data/，都以快照还原）
-    run(f"rm -rf {REMOTE_ROOT}/data && "
-        f"mv {REMOTE_ROOT}/data.deploy-bak {REMOTE_ROOT}/data 2>/dev/null || true")
+    # 🔴 2026-10-28：**恢复数据目录改为「原子换名」而非 `rm -rf` + `mv`**。
+    #
+    # 旧写法 `rm -rf data && mv data.deploy-bak data` 有两个问题：
+    #   ① `rm -rf` 是不可逆的 —— 若 `mv` 那步失败（权限/中断），数据就没了，
+    #      只剩 `data.deploy-bak` 这个非标准名，没人知道该拿它怎么办；
+    #   ② 它把「删除」和「恢复」拆成两条命令，中间窗口里 `data/` 根本不存在。
+    #
+    # 新写法：先把刚解包出来的 `data/`（若有）挪成 `data.from-bundle`，
+    # 再把备份 `mv` 回 `data` —— 全程用 rename（同分区内原子），
+    # 且**任何一步失败都能从 `data.deploy-bak` / `data.from-bundle` 手工恢复**。
+    run(
+        f"cd {REMOTE_ROOT} && "
+        f"if [ -e data ]; then mv data data.from-bundle.$(date +%s); fi && "
+        f"mv data.deploy-bak data && "
+        f"echo '[DATA] 生产数据目录已原子恢复'",
+        check=False,
+    )
+    # 清理上一轮遗留的 bundle-data（正常情况下不存在；存在说明上次异常中断）
+    run(f"cd {REMOTE_ROOT} && rm -rf data.from-bundle.* 2>/dev/null || true",
+        check=False)
     release_tmp.cleanup()
     print("[UPLOAD] Done. (one source bundle)")
 
