@@ -344,6 +344,23 @@ def is_familiar_idle_unaddressed(event: dict, text: str) -> bool:
         return True
     if compact.lower() in _FAMILIAR_IDLE_PHRASES:
         return True
+    # 🔴 2026-10-28：**纯标点/纯符号不接**（与 `_is_session_thread_idle` 同一修法）。
+    #
+    # 生产实证（18:54:03）：「？！」三个字符 ——
+    #   · `plain`      = "？！" → 不在短语表
+    #   · `normalized` = ""    → 空串不在表（**漏洞在此**）
+    #   · `compact`    = ""    → 同上
+    #   · 长度 2 ≤ 12，但 `_looks_like_question_or_request` 认「？」为问句
+    #     ⇒ 走不到上面那个 return True ⇒ 最终放行
+    #
+    # 结果：bot 把两个标点读成「被说中的反应」，凭空接了一整句。
+    #
+    # ⇒ 去掉标点/空白/符号后什么都不剩 ⇒ 无内容 ⇒ 不接。
+    # ⚠️ 放在**问句判定之后**：`「在吗？」` 这类是真实短问句，
+    #    应该交给 `_looks_like_question_or_request` 放行，
+    #    只有「全是标点、一个实词都没有」才拦。
+    if not compact:
+        return True
     return False
 
 
@@ -370,6 +387,17 @@ def _is_session_thread_idle(event: dict, text: str) -> bool:
         return True
     compact = re.sub(r"[\s\W_]+", "", plain, flags=re.UNICODE).lower()
     if compact in _FAMILIAR_IDLE_PHRASES:
+        return True
+    # 🔴 2026-10-28：**纯标点/纯符号不接**（与 `is_familiar_idle_unaddressed` 同一修法）。
+    #
+    # 生产实证（18:54:03）：「？！」三个字符 ⇒ bot 回了一整句
+    # 「干嘛突然这种语气看着我……难道被本喵说中了，心虚啦？」——
+    # 它把两个标点读成「被说中的反应」，凭空脑补。
+    #
+    # 根因：三层短语表全落空，`compact` 去符号后是**空串**，不在表里。
+    #
+    # ⇒ 去掉标点/空白/符号后什么都不剩 ⇒ 无内容 ⇒ 不接。
+    if not compact:
         return True
     return False
 

@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 import asyncio
+import inspect
 import logging
 import signal
 from typing import Any, Optional
@@ -573,7 +574,47 @@ class AnimaCore:
         get_sticker_manager(data_dir, config=self.config.sticker)
 
     def _persist_cognitive_state(self) -> None:
-        """保存认知单例状态。"""
+        """保存认知单例状态（**进程退出时**的最后一次落盘）。
+
+        ## 2026-10-28 改造：从「硬编码 3 个」改为「注册表驱动」
+
+        原来写死了三个：`time_sense` / `desire` / `relation`。
+        问题：
+          · 其余模块靠各自的「变更即落盘」，一旦进程被 SIGKILL
+            （systemd `TimeoutStopSec=15` 超时、OOM、断电）就丢最后一段状态；
+          · `desire_decay_state.json` 那次 37 字节残文件正是这类中断的产物；
+          · 加新模块时没人知道要来这里补一行。
+
+        ⇒ 改为遍历 `ModuleRegistry` 里**所有声明了 save 的模块**，
+          逐个 try（单个失败不影响其它）。
+
+        ⚠️ 保留原来的三个显式调用作为**兜底**：
+           注册表可能因构造失败而没那几个实例（fail-soft 会吞掉异常），
+           而那三个模块的状态最有价值（时间感/欲望/关系）。
+        """
+        # ① 注册表驱动：所有声明了 save 的模块
+        try:
+            from anima.core.registry import get_registry
+            reg = get_registry(str(self.config.persistence.data_dir))
+            n = 0
+            for spec_name in reg.names():
+                ad = reg._adapters.get(spec_name)
+                if ad is None or ad._inst is None or not ad.has_save():
+                    continue
+                try:
+                    # persist() 是 async；此处是同步退出路径 ⇒ 用 run_until_complete
+                    # 但事件循环可能已在关闭中，故优先走同步直调
+                    ok = self._persist_one_sync(ad)
+                    if ok:
+                        n += 1
+                except Exception:  # noqa: BLE001
+                    logger.debug("退出落盘 %s 失败", spec_name, exc_info=True)
+            if n:
+                logger.info("[退出落盘] 注册表已保存 %d 个模块", n)
+        except Exception:  # noqa: BLE001
+            logger.exception("注册表退出落盘异常（已隔离）")
+
+        # ② 关键三个的显式兜底（注册表可能没它们）
         try:
             from anima.cognitive.time_sense import get_time_sense
             get_time_sense().persist()
@@ -589,6 +630,57 @@ class AnimaCore:
             get_relation().persist()
         except Exception:
             logger.exception("关系引擎持久化失败")
+
+    @staticmethod
+    def _persist_one_sync(adapter) -> bool:
+        """同步调用一个 `ModuleAdapter` 的 save 方法（退出路径专用）。
+
+        ## 为什么不能直接 `await adapter.persist()`
+
+        `_persist_cognitive_state()` 是**同步**方法，且在 `AnimaCore.stop()`
+        里被调用 —— 此时事件循环可能已经在收尾，`await` 会拿到
+        `RuntimeError: no running event loop`。
+
+        ## 处理两种形态
+
+        - **同步 save**（多数模块的 `_save`/`persist`）：直接调
+        - **协程 save**（如 `XBrowserSession._persist_stats`）：
+          用 `asyncio.get_event_loop().run_until_complete` 跑；
+          loop 已关闭则跳过（记 debug，不抛）
+
+        失败一律返回 False，绝不让退出流程崩。
+        """
+        names = adapter.spec.save
+        if not names:
+            return False
+        seq = [names] if isinstance(names, str) else list(names)
+        inst = adapter._inst
+        for n in seq:
+            fn = getattr(inst, n, None) if inst is not None else None
+            if not callable(fn):
+                # 模块级函数形态（如 close_xxx_manager）
+                fn = adapter._resolve_module_func(n)
+            if not callable(fn):
+                continue
+            try:
+                ret = fn()
+            except Exception:  # noqa: BLE001
+                logger.debug("同步落盘 %s.%s 失败", adapter.spec.name, n, exc_info=True)
+                return False
+            if not inspect.isawaitable(ret):
+                return True
+            # 协程：尝试在（可能已关闭的）loop 上跑完
+            try:
+                loop = asyncio.get_event_loop_policy().get_event_loop()
+                if loop.is_closed():
+                    logger.debug("退出落盘跳过协程 %s（loop 已关闭）", n)
+                    return False
+                loop.run_until_complete(ret)
+                return True
+            except Exception:  # noqa: BLE001
+                logger.debug("退出落盘协程 %s 失败", n, exc_info=True)
+                return False
+        return False
 
     async def emit(self, topic: str, payload=None) -> None:
         """向 EventBus 发布事件。"""

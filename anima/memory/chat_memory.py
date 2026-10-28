@@ -870,6 +870,31 @@ class ChatMemory:
 _default_persist_path: str = ""
 _chat_memory: Optional[ChatMemory] = None
 
+#: 🔴 2026-10-28：**无参调用时的兜底路径**。
+#:
+#: ## 问题
+#:
+#: `set_chat_memory_persist_path()` 只在 `AnimaCore.start()` 里调
+#: （`anima_core.py:550`）。服务进程正常 —— 但**任何外部脚本 / 调试工具 /
+#: 一次性 CLI 都会拿到空 store**：
+#:
+#:     $ python -c "from anima.memory.chat_memory import get_chat_memory; \
+#:                  print(len(get_chat_memory()._store))"
+#:     0                     ← 而 data/chat_memory.json 有 1.3MB
+#:
+#: 根因：`persist_path=None` ⇒ `ChatMemory` 不读任何文件（`_restore` 直接返回）。
+#:
+#: ## 修法
+#:
+#: 未显式设置时，**按项目惯例回退到 `data/chat_memory.json`**
+#: （与 `config/default.yaml` 的 `persistence.data_dir: data` 一致）。
+#: 这样外部工具拿到的是生产那份，不必先手动 set。
+#:
+#: ⚠️ 刻意**不**去读 `config.yaml` 猜自定义 data_dir ——
+#:    那会让这个纯记忆模块依赖 core 配置链。生产若用非默认 data_dir，
+#:    `set_chat_memory_persist_path()` 仍会覆盖它（服务进程走那条路，行为零变化）。
+_FALLBACK_PERSIST_PATH = "data/chat_memory.json"
+
 
 def set_chat_memory_persist_path(path: str) -> None:
     """把 get_chat_memory() 的默认落盘路径钉到配置目录下的 chat_memory.json。"""
@@ -879,7 +904,7 @@ def set_chat_memory_persist_path(path: str) -> None:
 
 def get_chat_memory(persist_path: str = "") -> ChatMemory:
     global _chat_memory
-    pp = persist_path or _default_persist_path
+    pp = persist_path or _default_persist_path or _FALLBACK_PERSIST_PATH
     if _chat_memory is None:
         _chat_memory = ChatMemory(persist_path=pp)
     return _chat_memory

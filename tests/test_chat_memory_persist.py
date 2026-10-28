@@ -146,3 +146,57 @@ def test_restore_backs_up_corrupt_file(tmp_path):
     bak = p.with_name("chat_memory.corrupt.bak.json")
     assert bak.exists(), "损坏文件应被备份到 .corrupt.bak.json"
     assert "这不是合法" in bak.read_text(encoding="utf-8")
+
+
+# ── 兜底落盘路径（2026-10-28）────────────────────────────────────────
+
+def test_get_chat_memory_has_fallback_path():
+    """无参 `get_chat_memory()` 必须有兜底路径，不能锚死空串。
+
+    ## 问题
+
+    `set_chat_memory_persist_path()` 只在 `AnimaCore.start()` 里调。
+    服务进程正常 —— 但**任何外部脚本 / 调试工具 / 一次性 CLI 都拿到空 store**：
+
+        >>> from anima.memory.chat_memory import get_chat_memory
+        >>> len(get_chat_memory()._store)
+        0                      ← 而 data/chat_memory.json 有 1.3MB
+
+    根因：`persist_path=None` ⇒ `ChatMemory._restore()` 直接返回，不读文件。
+
+    ## 修法
+
+    未显式设置时回退到 `data/chat_memory.json`（与 config 默认一致）。
+    生产若用非默认 data_dir，`set_chat_memory_persist_path()` 仍会覆盖它
+    —— 服务进程走那条路，行为零变化。
+    """
+    import anima.memory.chat_memory as cm_mod
+
+    cm_mod.reset_chat_memory()
+    cm_mod._default_persist_path = ""        # 模拟「未设置」
+    m = cm_mod.get_chat_memory()
+    assert m._persist_path is not None, "兜底路径没生效（仍是 None）"
+    assert str(m._persist_path).endswith("chat_memory.json")
+    cm_mod.reset_chat_memory()
+
+
+def test_explicit_path_overrides_fallback():
+    """显式传入的路径优先级最高。"""
+    import anima.memory.chat_memory as cm_mod
+
+    cm_mod.reset_chat_memory()
+    m = cm_mod.get_chat_memory("/tmp/custom_cm.json")
+    assert str(m._persist_path).replace("\\", "/") == "/tmp/custom_cm.json"
+    cm_mod.reset_chat_memory()
+
+
+def test_set_path_overrides_fallback():
+    """`set_chat_memory_persist_path()` 设置后优先于兜底。"""
+    import anima.memory.chat_memory as cm_mod
+
+    cm_mod.reset_chat_memory()
+    cm_mod.set_chat_memory_persist_path("/tmp/set_cm.json")
+    m = cm_mod.get_chat_memory()
+    assert str(m._persist_path).replace("\\", "/") == "/tmp/set_cm.json"
+    cm_mod.reset_chat_memory()
+    cm_mod._default_persist_path = ""

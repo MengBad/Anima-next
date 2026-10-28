@@ -303,7 +303,81 @@ class ModuleAdapter:
             "error": self._error,
             "age_sec": round(time.time() - self._created_at, 1) if self._created_at else 0.0,
             "note": self.spec.note,
+            # 🔴 2026-10-28：**内容摘要**（12 个模块没有 get_status，从这里补）
+            "live": self.live_summary(),
         }
+
+    #: 常见容器字段名 → 计数（用于给「没有状态接口」的模块补一个摘要）。
+    #:
+    #: 33 个模块里 **12 个完全没有** `get_status()` / `status()` / `get_state()`：
+    #:     relation scar quirk time_sense desire intent_generator debt
+    #:     chat_memory learning tool_learning reply_quality forgetting
+    #: ⇒ `/api/modules/status` 只能说「instantiated=true」，
+    #:   不能回答「它现在装了多少东西」。
+    #:
+    #: 与其改 12 个文件（每个都要设计一套返回结构、加测试），
+    #: 不如在这里**按属性名惯例**扫一遍容器大小 —— 只读、零侵入。
+    #: 这不是「统一接口」，是「在统一接口缺席时给一个最小可观测面」。
+    _COUNTABLE = ("_relations", "_scars", "_desires", "_items", "_entries",
+                  "_notes", "_store", "_last_interaction", "_interaction_count",
+                  "_records", "_pairs", "_groups")
+
+    def live_summary(self) -> dict[str, Any]:
+        """实例内容摘要（只读，零侵入，绝不抛）。
+
+        先找模块自己的 `get_status()`；没有就按属性名扫容器大小。
+        两者都拿不到就返回 `{}`（不伪造）。
+        """
+        if self._inst is None:
+            return {}
+        # ① 模块自带的统一接口优先
+        for m in ("get_status", "status", "get_state", "snapshot"):
+            fn = getattr(self._inst, m, None)
+            if callable(fn):
+                try:
+                    got = fn()
+                    if isinstance(got, dict):
+                        return {"source": m, **got}
+                    return {"source": m, "value": str(got)[:120]}
+                except Exception as exc:  # noqa: BLE001
+                    return {"source": m, "error": f"{type(exc).__name__}: {exc}"[:80]}
+        # 🔴 2026-10-28 二版：**改成通用扫描**，不再猜属性名。
+        #
+        # 首版写死了 12 个候选名（`_relations`/`_scars`/...），实测只覆盖 3 个 ——
+        # 真实属性名差异极大：
+        #     DebtManager._debts        Learning._window_events
+        #     SocialGraph._edges        ToolLearning._data
+        #     Capabilities._daily_register
+        # 猜名字的成本高于收益。改成扫**所有下划线开头的容器属性**，
+        # 只报「有内容的」（长度 > 0）和少量上限，避免把常量表也列出来。
+        out: dict[str, Any] = {"source": "attrs"}
+        _skip = {"_persist", "_core", "_path", "_data_dir", "_config", "_lock"}
+        # 名字像「常量表」的不报（全大写或含 BAD/GOOD/KEYWORDS 之类）
+        import re as _re
+        _const_like = _re.compile(r"^_[A-Z0-9_]+$|BAD|GOOD|KEYWORD|PHRASE|PATTERN|RE$")
+        try:
+            for attr in dir(self._inst):
+                if not attr.startswith("_") or attr.startswith("__"):
+                    continue
+                if attr in _skip or _const_like.search(attr):
+                    continue
+                try:
+                    v = getattr(self._inst, attr)
+                except Exception:  # noqa: BLE001
+                    continue
+                if isinstance(v, str) or not hasattr(v, "__len__"):
+                    continue
+                try:
+                    n = len(v)
+                except Exception:  # noqa: BLE001
+                    continue
+                key = attr.lstrip("_")
+                out[key] = n
+                if len(out) >= 7:      # 够看了，别把整份 __dict__ 倒出来
+                    break
+        except Exception:  # noqa: BLE001
+            pass
+        return out if len(out) > 1 else {}
 
 
 # ---------------------------------------------------------------------------

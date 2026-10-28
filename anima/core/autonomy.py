@@ -1910,6 +1910,22 @@ class Heartbeat:
                     except Exception:
                         logger.debug("[自治自检] 补元数据失败（不影响建单）", exc_info=True)
                     logger.warning("[自治自检] 生成 owner 待办：%s", issue.title)
+                    # 🔴 2026-10-28：**同步入队到 owner 私聊**（D-41 扩展第二处）。
+                    #
+                    # 此前只 `tasks.create()` ⇒ 待办躺 WebUI，等次日 09:00 的
+                    # digest 才可能被看到（且只列前 5 条）。
+                    # 自治自检发现的多是「该修的东西坏了」，等一天没道理。
+                    #
+                    # 用 `enqueue()` 而非 `await notify()`：本链是同步的
+                    # （`tasks.create` / `set_proposal` 都在同一段），
+                    # await 会污染调用链。入队后由心跳 flush（≤30s）。
+                    try:
+                        from anima.core.owner_notify import get_owner_notifier
+                        get_owner_notifier(self.core).enqueue(
+                            "normal", f"[自治自检] {issue.title}",
+                            source="self_monitor")
+                    except Exception:  # noqa: BLE001
+                        logger.debug("自治自检通知入队失败（已隔离）", exc_info=True)
         except Exception:
             logger.debug("自治工程自检失败（已隔离）", exc_info=True)
 

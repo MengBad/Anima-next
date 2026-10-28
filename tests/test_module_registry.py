@@ -389,3 +389,56 @@ def test_summary_distinguishes_declared_from_actual():
         "声明数不应少于已探测到的实例能力数"
     # 未构造时，实例方法形态探测不到 ⇒ with_* 可能小于 declared_*
     assert s["instantiated"] == 0
+
+
+# ── 8. live_summary：给「没有状态接口」的模块补最小可观测面 ──────────
+
+def test_live_summary_covers_majority(tmp_path):
+    """33 个模块里至少 20 个要有活体摘要。
+
+    背景：12 个模块**完全没有** `get_status()` / `status()` / `get_state()`：
+        relation scar quirk time_sense desire intent_generator debt
+        chat_memory learning tool_learning reply_quality forgetting
+    ⇒ `/api/modules/status` 只能说「instantiated=true」，
+      不能回答「它现在装了多少东西」。
+
+    修法不是改 12 个文件，而是在 registry 层**扫所有容器属性**。
+    首版写死了 12 个候选名（`_relations`/`_scars`/...），只覆盖 3 个 ——
+    真实属性名差异极大（`_debts`/`_edges`/`_data`/`_window_events`）。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    st = reg.status()
+    covered = [s for s in st if (s.get("live") or {}).get("source")]
+    assert len(covered) >= 20, \
+        f"只有 {len(covered)}/{len(st)} 有活体摘要：{[s['name'] for s in st if not (s.get('live') or {}).get('source')]}"
+
+
+def test_live_summary_prefers_module_status_method(tmp_path):
+    """模块自带 `get_status()` 时优先用它，不要用属性扫描糊弄。"""
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    by_name = {s["name"]: s for s in reg.status()}
+    # reply_learning 有 snapshot()
+    assert (by_name["reply_learning"].get("live") or {}).get("source") == "snapshot"
+    # owner_notify 有 status()
+    assert (by_name["owner_notify"].get("live") or {}).get("source") == "status"
+
+
+def test_live_summary_never_fabricates(tmp_path):
+    """拿不到就返回 `{}`，绝不编造数字。
+
+    `quirk` / `forgetting` 这类模块确实没有容器属性 ——
+    返回空比返回假数字好。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    for s in reg.status():
+        live = s.get("live")
+        assert isinstance(live, dict)
+        # 有 source 就一定有内容（不能 source=attrs 但只有一个键）
+        if live.get("source") == "attrs":
+            assert len(live) > 1, f"{s['name']} 的 attrs 摘要为空"
