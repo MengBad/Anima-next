@@ -347,19 +347,29 @@ class ModuleAdapter:
         # 真实属性名差异极大：
         #     DebtManager._debts        Learning._window_events
         #     SocialGraph._edges        ToolLearning._data
-        #     Capabilities._daily_register
-        # 猜名字的成本高于收益。改成扫**所有下划线开头的容器属性**，
-        # 只报「有内容的」（长度 > 0）和少量上限，避免把常量表也列出来。
+        #     TimeSense.last_interaction  DesireSystem.desires   ← **公有属性**
+        # 猜名字的成本高于收益。改成扫所有容器属性（**公有和私有都扫**）。
+        #
+        # 🔴 2026-10-28 三版：前两版都只扫 `_` 开头，漏掉了
+        #    `TimeSense.last_interaction` / `DesireSystem.desires`
+        #    这两个**公有**容器 —— 结果 time_sense 和 desire 一直是空摘要。
+        #    公开属性恰恰是「这个对象装着什么」最主要的信息来源。
         out: dict[str, Any] = {"source": "attrs"}
-        _skip = {"_persist", "_core", "_path", "_data_dir", "_config", "_lock"}
+        _skip = {"_persist", "_core", "_path", "_data_dir", "_config", "_lock",
+                 "persist", "core", "config"}  # 名字像基础设施的不报
         # 名字像「常量表」的不报（全大写或含 BAD/GOOD/KEYWORDS 之类）
         import re as _re
-        _const_like = _re.compile(r"^_[A-Z0-9_]+$|BAD|GOOD|KEYWORD|PHRASE|PATTERN|RE$")
+        _const_like = _re.compile(r"^_?[A-Z0-9_]+$|BAD|GOOD|KEYWORD|PHRASE|PATTERN|RE$|_RE$")
         try:
-            for attr in dir(self._inst):
-                if not attr.startswith("_") or attr.startswith("__"):
-                    continue
+            # 先公有后私有：公有属性更能代表「这个对象的状态」
+            _attrs = [a for a in dir(self._inst) if not a.startswith("_")]
+            _attrs += [a for a in dir(self._inst)
+                       if a.startswith("_") and not a.startswith("__")]
+            for attr in _attrs:
                 if attr in _skip or _const_like.search(attr):
+                    continue
+                # 类方法/静态方法跳过（只要数据）
+                if callable(getattr(type(self._inst), attr, None)):
                     continue
                 try:
                     v = getattr(self._inst, attr)
