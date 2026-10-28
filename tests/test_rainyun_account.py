@@ -1257,3 +1257,69 @@ def test_short_circuit_reason_is_marked_unverified():
     for ln in src.splitlines():
         if "今日已签到（按记录）" in ln and "record_result" in ln:
             assert "True" not in ln, f"仍在记成功：{ln.strip()}"
+
+
+# ---------------------------------------------------------------------------
+# 22. 自动签到必须在心跳周期内收口（2026-10-28 事故）
+# ---------------------------------------------------------------------------
+
+def test_sign_timeout_fits_heartbeat():
+    """🔴 真实事故：09:00 那次跑到 09:09 还没结束，
+
+        `rainyun_signin_mark.json` 一直是 `2026-10-27`（没来得及写）
+        ⇒ 以为「今天跑过了」，实际没有。
+
+    原因：`SIGN_TIMEOUT=180` + `CAPTCHA_RETRY=1` ⇒ 单账号最坏 360s，
+    两个账号 12 分钟，远超心跳容忍范围。
+
+    ⇒ 约束：单账号上限 × 账号数 必须能在几分钟内收口。
+    """
+    # 单账号上限
+    per_account = R.SIGN_TIMEOUT * (1 + R.CAPTCHA_RETRY)
+    assert per_account <= 150, \
+        f"单账号最坏 {per_account}s 太长（{R.SIGN_TIMEOUT}s × {1 + R.CAPTCHA_RETRY}）"
+    # 假设 10 个用户也要能在 25 分钟内跑完
+    assert per_account * 10 <= 1500, f"10 用户要 {per_account*10}s，太久"
+
+
+def test_per_user_hard_timeout_in_scheduler():
+    """调度侧必须有 per-user 硬超时，防一个卡住拖垮整批。"""
+    src = (_ROOT / "anima" / "core" / "autonomy.py").read_text(encoding="utf-8")
+    i = src.index("async def _rainyun_signin_tick")
+    win = src[i:i + 6000]
+    assert "asyncio.wait_for(run_sign_in" in win, "缺少 per-user 超时保护"
+    assert "_per_user_cap" in win
+
+
+# ---------------------------------------------------------------------------
+# 23. 「签到了吗」必须查工具，不许编（2026-10-28 幻觉事故）
+# ---------------------------------------------------------------------------
+
+def test_status_tool_description_covers_status_questions():
+    """🔴 真实事故：用户问「签到了吗」，模型**没调任何工具**，
+
+        直接回「你今天早就已经签过到啦，积分安安稳稳地躺在账户里呢」
+        —— 当天实际根本没签上（last_sign 还是昨天）。
+
+    根因：`rainyun_my_status` 的描述只提「我绑了哪些雨云账号」，
+    没覆盖「签到了吗 / 今天签没签」这类问法，模型就靠上下文猜了。
+
+    ⇒ 描述必须显式列出这些问法 + 明确要求「必须先调工具」。
+    """
+    src = _SRC.read_text(encoding="utf-8")
+    i = src.index('"rainyun_my_status"')
+    # 描述可能跨多行，取到 registry.register 结束
+    j = src.index("_status, min_level", i)
+    desc = src[i:j]
+    for phrase in ("签到了吗", "今天签没签到", "必须先调这个工具"):
+        assert phrase in desc, f"描述里缺「{phrase}」，模型会靠猜"
+
+
+def test_sign_now_description_disambiguates_from_status():
+    """「签到了吗」是**查询**，不该触发 sign_now（那是写操作）。"""
+    src = _SRC.read_text(encoding="utf-8")
+    i = src.index('"rainyun_sign_now"')
+    j = src.index("_sign, min_level", i)
+    desc = src[i:j]
+    assert "rainyun_my_status" in desc, \
+        "sign_now 描述里没指向 my_status，模型可能用错工具"

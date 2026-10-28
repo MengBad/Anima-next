@@ -380,7 +380,7 @@ def _current_user_id() -> str:
 _RUNNER_REL = os.path.join("anima", "rainyun_runner", "sign_in.py")
 
 #: 单账号签到超时（秒）。浏览器启动+登录+验证码约 40-90s，给足余量。
-SIGN_TIMEOUT = 180
+SIGN_TIMEOUT = 120
 
 
 def _runner_paths(core: Any) -> tuple[str, str]:
@@ -616,10 +616,17 @@ MAX_QUEUE_WAITERS = 3
 INTER_ACCOUNT_GAP = 3
 
 #: 验证码未通过时的重试次数。
-#: 实测验证码是**概率触发**的，一次不过不代表下次不过；
-#: 重试 1 次能把成功率从约 70% 提到约 90%。
+#: 实测验证码是**概率触发**的，一次不过不代表下次不过。
 #: 🔴 **只重试这一类**：密码错误/未绑定等确定性失败重试也是白费 1.2G 内存。
-CAPTCHA_RETRY = 1
+#:
+#: 🔴 2026-10-28 从 1 降到 0：
+#:   单个账号最坏 180s×2 = 360s，两个账号 12 分钟 —— **远超心跳周期**，
+#:   实测 09:00 那次跑到 09:09 还没结束，`signin_mark` 都没来得及写
+#:   （所以「今天跑过」的标记一直是昨天）。
+#:   现在 SIGN_TIMEOUT=120 + 不重试 ⇒ 单账号上限 2 分钟，
+#:   两个账号 4 分钟，能在心跳容忍范围内收口。
+#:   重试改由**用户手动「签到」**承担（后台跑，失败会私聊告知）。
+CAPTCHA_RETRY = 0
 
 #: 可以重试的失败原因（确定性失败不在其中）
 _RETRYABLE_REASONS = frozenset({
@@ -880,7 +887,13 @@ def register_rainyun_tools(registry, core=None) -> None:
     ))
     registry.register(Tool(
         "rainyun_my_status",
-        "查看自己绑定的雨云账号和上次签到时间。当用户问「我绑了哪些雨云账号」时使用。",
+        "查看自己绑定的雨云账号、今天签没签到、上次签到时间。"
+        # 🔴 2026-10-28 事故：用户问「签到了吗」，模型**没调任何工具**，
+        #    直接编了「你今天早就已经签过到啦」—— 而当天实际根本没签上。
+        #    根因是描述没覆盖这类问法，模型倾向靠上下文猜。
+        #    ⇒ 显式点出这些问法，并明确要求「不许凭印象」。
+        "当用户问「我绑了哪些雨云账号」「今天签到了吗」「签到了吗」"
+        "「我签没签」时**必须先调这个工具**，不许凭印象回答。",
         {},
         _status, min_level=LEVEL_USER, private_only=True, required=[],
     ))
@@ -900,7 +913,9 @@ def register_rainyun_tools(registry, core=None) -> None:
     registry.register(Tool(
         "rainyun_sign_now",
         "立刻给自己的雨云账号签到一次（领每日积分）。"
-        "当用户说「现在就签到」「帮我签一下雨云」时使用。",
+        "当用户说「签到」「雨云签到」「现在就签到」「帮我签一下雨云」"
+        "「帮我签个到」时使用。"
+        "别用这个工具回答「签到了吗」——那种问法用 rainyun_my_status。",
         {},
         _sign, min_level=LEVEL_USER, private_only=True, required=[],
     ))

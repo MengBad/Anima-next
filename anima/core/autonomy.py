@@ -1634,8 +1634,19 @@ class Heartbeat:
             except Exception:
                 pass
 
+            # 🔴 单用户硬超时：不让一个卡住的账号拖垮整批（进而拖垮心跳）。
+            # 2026-10-28 实测：09:00 那次跑到 09:09 还没结束，
+            # `signin_mark` 都没来得及写 ⇒ 第二天看还以为「今天跑过」。
+            # 单个账号上限 = SIGN_TIMEOUT(120) × (1 + CAPTCHA_RETRY) + 60 余量。
+            _per_user_cap = 300.0
             try:
-                res = await run_sign_in(self.core, uid)
+                res = await asyncio.wait_for(run_sign_in(self.core, uid),
+                                             timeout=_per_user_cap)
+            except asyncio.TimeoutError:
+                logger.warning("[雨云签到] user=%s 单账号超时（%.0fs，已隔离）",
+                               uid[-4:], _per_user_cap)
+                fail += 1
+                continue
             except Exception:
                 logger.warning("[雨云签到] user=%s 执行异常（已隔离）", uid[-4:], exc_info=True)
                 fail += 1
