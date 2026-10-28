@@ -1406,3 +1406,44 @@ def test_timeout_path_also_dumps():
     win = src[i:i + 1400]
     assert "_dump_runner_stderr" in win or "拿不到 runner 日志" in win, \
         "超时路径完全没有诊断"
+
+
+# ---------------------------------------------------------------------------
+# 26. 用本地 chromedriver，不联网（2026-10-28 自动签到失败根因）
+# ---------------------------------------------------------------------------
+
+def test_uses_local_chromedriver():
+    """🔴 **这是「自动签到一直出问题」的第二个根因。**
+
+    诊断日志实证（`data/rainyun_diag/20261028-092658-*.log`）：
+
+        selenium.common.exceptions.WebDriverException:
+        Unsuccessful command executed: .../selenium-manager
+        {'message': 'error sending request for url
+         (https://googlechromelabs.github.io/chrome-for-testing/...)'}
+
+    原因：runner 固定用 Playwright 的 Chrome **149**，
+    而本机 Selenium 缓存里的 chromedriver 是 **156**（配 Chrome 156）。
+    版本不匹配 ⇒ Selenium Manager **每次都要联网**查 149 的 driver
+    ⇒ 网络一抖就 `NoSuchDriverException` ⇒ 自动签到失败。
+
+    ⇒ 必须显式指定本地 chromedriver（同版本，不联网）。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    assert "DEFAULT_CHROMEDRIVER" in src, "缺少本地 driver 路径常量"
+    assert "Service(" in src, "没用 Service 显式指定 driver"
+    assert "使用本地 chromedriver" in src
+
+
+def test_chrome_and_driver_versions_match():
+    """Chrome 与 chromedriver 必须是同一版本号（否则又要联网解析）。"""
+    import re
+    src = _RUNNER.read_text(encoding="utf-8")
+    m_chrome = re.search(r'DEFAULT_CHROME\s*=\s*"([^"]+)"', src)
+    m_driver = re.search(r'DEFAULT_CHROMEDRIVER\s*=\s*\(?\s*"([^"]+)"', src)
+    assert m_chrome and m_driver
+    v_chrome = re.search(r'(\d+\.\d+\.\d+\.\d+)', m_chrome.group(1))
+    v_driver = re.search(r'(\d+\.\d+\.\d+\.\d+)', m_driver.group(1))
+    if v_chrome and v_driver:
+        assert v_chrome.group(1) == v_driver.group(1), \
+            f"Chrome {v_chrome.group(1)} vs driver {v_driver.group(1)} 版本不一致"

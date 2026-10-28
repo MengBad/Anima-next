@@ -97,8 +97,25 @@ LOGIN_BTN_XPATH = (
 #: 验证码 iframe 选择器（id 是 tcaptcha_iframe_dy，但可能带后缀）
 CAPTCHA_IFRAME_SEL = "iframe[id^='tcaptcha_iframe']"
 
-#: Chrome 二进制（本机没装 google-chrome，用 Playwright 缓存里的 CFT）
-DEFAULT_CHROME = "/root/.cache/ms-playwright/chromium-1228/chrome-linux64/chrome"
+#: Chrome 二进制 + 配套的 chromedriver。
+#:
+#: 🔴 2026-10-28 事故：原来固定用 Playwright 缓存的 Chrome 149，
+#:    但本机 Selenium 缓存里的 chromedriver 是 156（配 Chrome 156）。
+#:    版本不匹配 ⇒ Selenium Manager **每次都要联网**去
+#:    googlechromelabs.github.io 查 149 的 driver
+#:    ⇒ 网络一抖就 `NoSuchDriverException` ⇒ 自动签到失败。
+#:
+#:    诊断日志实证（data/rainyun_diag/20261028-092658-*.log）：
+#:        selenium.common.exceptions.WebDriverException:
+#:        Unsuccessful command executed: .../selenium-manager
+#:        {'message': 'error sending request for url
+#:         (https://googlechromelabs.github.io/chrome-for-testing/...)'}
+#:
+#: ⇒ 改用**本机已缓存的 Chrome 156 + 配套 chromedriver 156**，
+#:   两者同版本，Selenium 不需要联网解析。
+DEFAULT_CHROME = "/opt/anima/.cache/selenium/chrome/linux64/156.0.8078.47/chrome"
+DEFAULT_CHROMEDRIVER = ("/opt/anima/.cache/selenium/chromedriver/"
+                        "linux64/156.0.8078.47/chromedriver")
 
 #: 各阶段超时（秒）
 WAIT_LOGIN_FORM = 20
@@ -162,7 +179,18 @@ def _build_driver():
         "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
     )
-    driver = webdriver.Chrome(options=opts)
+    # 🔴 显式指定 chromedriver，走本机缓存（不联网）
+    service = None
+    try:
+        from selenium.webdriver.chrome.service import Service
+        _drv = os.environ.get("CHROMEDRIVER_BIN", DEFAULT_CHROMEDRIVER)
+        if os.path.exists(_drv):
+            service = Service(_drv)
+            _log(f"使用本地 chromedriver: {_drv}")
+    except Exception:
+        pass
+    driver = webdriver.Chrome(options=opts, service=service) if service \
+        else webdriver.Chrome(options=opts)
 
     # stealth.min.js：抹掉 navigator.webdriver 等自动化特征
     stealth = os.path.join(os.path.dirname(os.path.abspath(__file__)), "stealth.min.js")
