@@ -49,6 +49,84 @@ def _admin_boundary_fragments(text: str, bot_promised: bool = False) -> list[tup
     return frags
 
 
+#: 🔴 2026-10-28：**追问意图词**（要它把刚才分享的内容展开讲）。
+#:
+#: 生产事故（10-28 09:14:55）：群友回「**哈基米说说详细的**」——
+#: 8 个字，超过旧的「≤6 字」门限 ⇒ 追问兜底不触发 ⇒
+#: 它手上没有笔记原文 ⇒ 答不上细节。
+#:
+#: 关键在于：**加了称呼就会超长**。而「哈基米 + 说说详细的」恰恰是
+#: 群里最自然的追问方式。光靠长度上限，等于「叫了它名字就失效」。
+#:
+#: 词表刻意收窄到「要求展开/要来源」的强意图，不收「真的吗」「然后呢」
+#: 这类弱接话（那些容易在普通闲聊里误触发）。
+_FOLLOWUP_INTENT_WORDS: tuple[str, ...] = (
+    "说说", "讲讲", "详细", "详解", "具体", "展开", "细说",
+    "哪看的", "哪里看", "出处", "来源", "链接", "真的假的", "怎么回事",
+)
+
+#: 短句追问的长度上限（**不含**意图词命中时的兜底）。
+#:
+#: 🔴 实测校准：不要宽松抬到 12 —— 那样「哈基米今天天气怎么样」(10 字)、
+#: 「哈基米你觉得这图好笑吗」(11 字) 都会被当成追问，把探索笔记塞进
+#: 完全无关的对话（被 `test_followup_does_not_hijack_normal_chat` 抓出）。
+#:
+#: 原值 6 的问题是「加了称呼就失效」（「哈基米说说详细的」= 8 字）。
+#: 折中取 8：刚好覆盖「称呼(3) + 短追问(5)」这种最常见形态。
+#: **真正的长追问靠意图词命中**（见 `_follows_by_intent`），不依赖长度。
+_FOLLOWUP_MAX_CHARS = 8
+
+#: 短句门（≤ `_FOLLOWUP_MAX_CHARS`）里，**允许**当作追问的最小形态。
+#:
+#: 光靠长度是判不出意图的：「这图好笑吗」(5 字)、「你在干嘛」(4 字)
+#: 都很短，但它们不是「把刚才那条展开讲」。
+#:
+#: ⇒ 短句门也要求**至少带一点追问/索要痕迹**：
+#:   · 追问意图词（说说/详细/哪看的…）；或
+#:   · 极简索要词（发/来/看/继续/然后/后面/展开…）。
+#: 这样「发」「说说」照常触发，而「这图好笑吗」不会被误当成追问。
+_SHORT_FOLLOWUP_WORDS: tuple[str, ...] = (
+    "发", "来", "看", "说", "讲", "继续", "然后", "后面", "展开",
+    "真的", "哪", "怎么", "什么", "给", "要", "听",
+)
+
+
+def _follows_by_intent(text: str) -> bool:
+    """该文本是否命中**追问意图词**（要求展开刚才的内容）。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    return any(w in t for w in _FOLLOWUP_INTENT_WORDS)
+
+
+def _looks_like_short_followup(text: str) -> bool:
+    """短句是否带**索要/追问痕迹**（不是随便一句短话）。"""
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if _follows_by_intent(t):
+        return True
+    return any(w in t for w in _SHORT_FOLLOWUP_WORDS)
+
+
+def _is_exploration_followup(text: str) -> bool:
+    """被直接呼叫时，这句是否在追问上一条分享。
+
+    两个条件任一成立：
+      a) 短句（≤ `_FOLLOWUP_MAX_CHARS`）**且**带索要痕迹 —— 「发」「说说」「哪看的」；
+      b) **命中追问意图词** —— 不受长度限制（「哈基米把那个徽剑的事详细说说」）。
+
+    ⚠️ 调用方必须先确认 `is_direct_group_call`（被 @ / 引用 / 喊名）。
+    为什么 (b) 也要被呼叫：群里别人互相说「详细讲讲」不该让 bot 抢话。
+    """
+    t = str(text or "").strip()
+    if not t:
+        return False
+    if _follows_by_intent(t):
+        return True                     # (b) 意图词命中，不限长度
+    return len(t) <= _FOLLOWUP_MAX_CHARS and _looks_like_short_followup(t)
+
+
 def _bot_previously_promised_admin(ctx: "PipelineContext") -> bool:
     """扫描 bot 对该用户的近期出站，判断是否曾承诺过管理行为。"""
     try:
@@ -1037,19 +1115,38 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             # ⇒ 匹配不到那条笔记 ⇒ 模型手上只有主动发言时那句 60 字摘要。
             #
             # ⇒ 追问场景**不走词面匹配**，直接按 note_id / 最近分享取回原文。
-            #   判据很窄，避免把普通对话都当追问：
-            #     · 被直接呼叫（@ / 引用 / 喊名）
-            #     · 且当前文本很短（≤6 字）—— 「发」「说说」「哪看的」
+            #
+            # 🔴 2026-10-28：判据从「长度 ≤6」改成「**意图或长度**」。
+            #
+            # 生产实证（10-28 09:14:55）：
+            #   群友「滿天星」追问「**哈基米说说详细的**」（8 字 + bot 名）
+            #   ⇒ `len=8 > 6` ⇒ 兜底不触发 ⇒ 它手上没有笔记内容
+            #   ⇒ 只能拿 58 字摘要应付，或干脆答不上。
+            #
+            # 「哈基米」是 bot 的群内称呼（`is_direct_group_call` 认它），
+            # 但**加了称呼就会超过 6 字** —— 这恰恰是最自然的追问方式：
+            # 「哈基米说说详细的」「哈基米哪看的」「哈基米详细讲讲」。
+            # 光靠长度上限，等于「叫了它名字就失效」。
+            #
+            # 新判据（任一满足）：
+            #   a) 旧行为：被直接呼叫 且 文本 ≤ `_FOLLOWUP_MAX_CHARS`(12)；
+            #   b) **命中追问意图词**（说说/详解/详细/具体/展开/哪看的/真的假的…）
+            #      且被直接呼叫 —— 不受长度限制（「哈基米把那个徽剑的事详细说说」也该触发）。
+            #
+            # 为什么不放开到「命中意图词但没被呼叫」：群里别人互相说
+            # 「详细讲讲」不该让 bot 抢话，那是 `group_gate` 的职责。
             if not fragment:
                 try:
                     from anima.llm.group_gate import is_direct_group_call
                     _txt = (ctx.text or "").strip()
-                    if is_direct_group_call(ctx.event or {}, _txt) and 0 < len(_txt) <= 6:
+                    _addressed = is_direct_group_call(ctx.event or {}, _txt)
+                    if _addressed and _is_exploration_followup(_txt):
                         _follow = _ex.followup_fragment("")
                         if _follow:
                             logger.info(
-                                "[追问兜底] 注入上一条分享的完整笔记（%d 字）",
-                                len(_follow))
+                                "[追问兜底] 注入上一条分享的完整笔记（%d 字，%s）",
+                                len(_follow),
+                                "意图命中" if _follows_by_intent(_txt) else "短句")
                             fragment = _follow
                 except Exception:
                     logger.debug("追问兜底判定失败（已隔离）", exc_info=True)

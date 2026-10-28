@@ -106,9 +106,27 @@ WAIT_CAPTCHA = 25
 WAIT_AFTER_LOGIN = 20
 
 
+#: runner 自己的日志文件（父进程超时拿不到 stderr 时，这是唯一线索）
+_LOG_FILE = os.environ.get("RAINYUN_RUNNER_LOG", "")
+
+
 def _log(msg: str) -> None:
-    """日志走 stderr（stdout 只留最后那行 JSON）。"""
-    print(f"[runner] {msg}", file=sys.stderr, flush=True)
+    """日志走 stderr（stdout 只留最后那行 JSON）。
+
+    🔴 同时**追加写到 `$RAINYUN_RUNNER_LOG`**（若父进程指定）。
+    为什么：父进程超时后 kill -9，管道断开，stderr 全部丢失 ——
+    而超时恰恰是最需要诊断的场景（2026-10-28 实测：
+    「签到超时」那次一条 runner 日志都拿不到）。
+    """
+    line = f"[runner] {msg}"
+    print(line, file=sys.stderr, flush=True)
+    if _LOG_FILE:
+        try:
+            with open(_LOG_FILE, "a", encoding="utf-8") as fh:
+                fh.write(line + "\n")
+                fh.flush()
+        except Exception:
+            pass
 
 
 def _emit(payload: dict, code: int = 0) -> None:

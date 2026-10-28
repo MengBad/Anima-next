@@ -91,7 +91,7 @@ def _maybe_share_code() -> str:
     """取 `_maybe_share` 的**代码行**（去掉注释，避免文档里的旧值误判）。"""
     src = (_ROOT / "anima" / "cognitive" / "exploration.py").read_text(encoding="utf-8")
     i = src.index("def _maybe_share")
-    window = src[i:i + 4000]
+    window = src[i:i + 9000]
     return "\n".join(ln for ln in window.splitlines()
                      if not ln.strip().startswith("#"))
 
@@ -108,6 +108,28 @@ def test_share_intent_tells_model_to_remember_details():
     code = _maybe_share_code()
     assert "记住" in code
     assert "复读" in code
+
+
+def test_sensitive_topics_require_source():
+    """敏感题材必须强制标注出处（2026-10-28）。
+
+    事故：它主动说「徽剑……好像还是被买凶害的」——事实为真，
+    但 58 字里没提来源。涉及死亡/犯罪指控的内容，无出处的转述
+    本身就是风险：说错是造谣，说对也像造谣。
+    """
+    from anima.cognitive.exploration import ExplorationManager
+
+    class _N:
+        def __init__(self, t, s, topic=""):
+            self.title, self.summary, self.topic = t, s, topic
+
+    assert ExplorationManager._sensitive_topic(
+        _N("被人买凶杀死的自媒体人徽剑",
+           "已于2年前遭买凶遇害，曾公开举报电诈大佬刘忍")) == "死亡/伤亡"
+    assert ExplorationManager._sensitive_topic(
+        _N("纳雍烙锅好吃", "辣椒面太棒了")) == ""
+    # 提示词里必须出现「必须说出处」
+    assert "必须说出处" in _maybe_share_code()
 
 
 def test_share_passes_note_id_to_agenda():
@@ -201,12 +223,25 @@ def test_cognition_wires_followup_fallback():
 
 
 def test_followup_judgement_is_narrow():
-    """判据必须窄：被呼叫 + ≤6 字。放宽会把普通对话都当追问。"""
-    src = (_ROOT / "anima" / "pipeline" / "stages" / "cognition.py").read_text(
-        encoding="utf-8")
-    i = src.index("followup_fragment")
-    window = src[max(0, i - 900):i]
-    assert "<= 6" in window, "追问长度判据缺失或过宽"
+    """判据必须窄，但**不能窄到「叫了名字就失效」**。
+
+    2026-10-28 事故：群友回「哈基米说说详细的」（8 字）——
+    旧判据 `<= 6` 卡住 ⇒ 追问兜底不触发 ⇒ 它没有笔记内容可讲。
+
+    新判据 = 被呼叫 ∧ (意图词命中 ∨ (短句 ∧ 索要痕迹))。
+    这里断言**行为**而不是源码文本（源码断言会被注释改动误伤）。
+    """
+    from anima.pipeline.stages.cognition import _is_exploration_followup as f
+
+    # 必须触发（含「称呼 + 短追问」这种最自然形态）
+    for t in ("哈基米说说详细的", "详细说说", "发", "哪看的",
+              "具体讲讲", "展开说说", "哈基米把那个徽剑的事详细说说"):
+        assert f(t), f"应判追问却没触发：{t!r}"
+
+    # 绝不能触发（普通短句/无关提问）
+    for t in ("哈基米你觉得这图好笑吗", "哈基米今天天气怎么样",
+              "这图好笑吗", "你在干嘛", "好的", ""):
+        assert not f(t), f"普通对话被误判成追问：{t!r}"
 
 
 # ── 5. 短句问句豁免 ────────────────────────────────────────────────

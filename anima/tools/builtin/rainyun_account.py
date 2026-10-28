@@ -536,12 +536,19 @@ async def _run_one_account(py: str, script: str, login_name: str,
         # 🔴 start_new_session=True：让 runner 成为新进程组的组长，
         #    超时时才能 `os.killpg` 把 Chrome 的十几个子孙一起杀掉
         #    （只 kill 父进程会留下孤儿 renderer，占内存不释放）。
+        # 🔴 让 runner 自己也写一份日志文件：父进程超时 kill -9 后
+        #    stderr 管道会断，那份文件是**唯一**还能查到的线索。
+        _env = dict(os.environ)
+        _log_file = _runner_log_path(core, uid)
+        if _log_file:
+            _env["RAINYUN_RUNNER_LOG"] = _log_file
         proc = await asyncio.create_subprocess_exec(
             py, script,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
+            env=_env,
         )
         out, err = await asyncio.wait_for(
             proc.communicate(payload.encode("utf-8")),
@@ -566,7 +573,33 @@ async def _run_one_account(py: str, script: str, login_name: str,
         return parsed
     except asyncio.TimeoutError:
         # 🔴 超时必须 kill：否则 Chrome 挂着占 1.2G，槽位也永不释放
+        #
+        # 🔴 但**超时正是最需要诊断的场景**（2026-10-28 实测：
+        # 第一次加日志后，故意制造失败，诊断目录根本没生成 ——
+        # 因为超时路径拿不到 stderr：进程被杀，管道直接断了）。
+        # ⇒ kill 之前先把已缓冲的 stderr 读出来。
+        _partial = b""
+        try:
+            if proc is not None and proc.stderr is not None:
+                # 不 await（进程可能已死），只尝试非阻塞读
+                _partial = proc.stderr._buffer if hasattr(proc.stderr, "_buffer") else b""
+        except Exception:
+            pass
         _kill_proc(proc)
+        try:
+            if proc is not None:
+                # kill 之后管道会关闭，这时能拿到剩余内容
+                _rest = await asyncio.wait_for(proc.stderr.read(), timeout=3)
+                if _rest:
+                    _partial += _rest
+        except Exception:
+            pass
+        if _partial:
+            _log_runner_stderr(_partial)
+            _dump_runner_stderr(core, uid, login_name, _partial,
+                                {"ok": False, "reason": "签到超时"})
+        else:
+            logger.warning("[雨云] 超时且拿不到 runner 日志（管道已断）")
         return {"ok": False, "reason": "签到超时（验证码可能未通过）"}
     except Exception as exc:
         logger.warning("[雨云] runner 调用失败: %s", type(exc).__name__)
@@ -587,6 +620,24 @@ def _today_str() -> str:
 
 #: 单次记录多少行 runner stderr（太多会淹没日志）
 _RUNNER_STDERR_MAX_LINES = 40
+
+
+def _runner_log_path(core: Any, uid: str) -> str:
+    """本次 runner 的日志文件路径（`data/rainyun_diag/<时间>-<uid后4位>.live`）。
+
+    父进程通过 `RAINYUN_RUNNER_LOG` 传给 runner，runner 边跑边写。
+    """
+    try:
+        data_dir = getattr(getattr(core, "persistence", None), "data_dir", None)
+        if not data_dir:
+            return ""
+        d = os.path.join(str(data_dir), "rainyun_diag")
+        os.makedirs(d, exist_ok=True)
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        return os.path.join(d, f"{stamp}-{str(uid)[-4:]}.live.log")
+    except Exception:
+        return ""
 
 
 def _log_runner_stderr(err: bytes) -> None:

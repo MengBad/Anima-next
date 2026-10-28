@@ -1200,6 +1200,39 @@ class ExplorationManager:
         system.mark_resolved(desire)
         system.persist()
 
+    #: 需要**强制标注出处**的敏感题材词表（2026-10-28）。
+    #:
+    #: 起因（10-28 09:12）：它主动在群里说「自媒体人徽剑……好像还是被买凶害的」，
+    #: 事实为真（界面新闻报道 + B站 @温柔JUNZ 视频），但**58 字里没提来源**。
+    #: 这类涉及死亡、犯罪指控、灾难的内容，无出处的转述本身就是风险。
+    #:
+    #: 词表刻意只要「严重到需要读者能自行核实」的题材，不收普通新闻。
+    _SENSITIVE_TOPICS: tuple[tuple[str, tuple[str, ...]], ...] = (
+        ("死亡/伤亡", ("遇害", "身亡", "死亡", "被杀", "去世", "逝世", "牺牲",
+                       "买凶", "谋杀", "凶杀", "自杀", "伤亡", "罹难")),
+        ("犯罪指控", ("诈骗", "犯罪", "违法", "判刑", "入狱", "逮捕", "落网",
+                       "举报", "洗钱", "走私", "故意伤害")),
+        ("重大灾难", ("地震", "海啸", "洪水", "爆炸", "火灾", "坍塌", "坠机")),
+        ("疾病疫情", ("疫情", "病毒感染", "确诊", "疫苗", "流行病")),
+    )
+
+    @classmethod
+    def _sensitive_topic(cls, note: "ExplorationNote") -> str:
+        """判断该笔记是否命中敏感题材；命中返回题材名，否则返回空串。
+
+        只用于「要不要强制标注出处」，不用于拦截分享 ——
+        真实新闻应当能说，但**必须让读者能自行核实**。
+        """
+        haystack = " ".join((
+            str(getattr(note, "title", "") or ""),
+            str(getattr(note, "summary", "") or ""),
+            str(getattr(note, "topic", "") or ""),
+        ))
+        for name, words in cls._SENSITIVE_TOPICS:
+            if any(w in haystack for w in words):
+                return name
+        return ""
+
     def _maybe_share(self, note: ExplorationNote, desire: Any) -> None:
         # 🔴 2026-10-24：**`desire is None` 不再直接挡掉分享**。
         #   生产实证：164 条笔记 0 条分享的**真正原因**在这里 ——
@@ -1264,10 +1297,35 @@ class ExplorationManager:
         _detail = str(note.summary or "")[:400]
         _src = str(note.source or "")
         _url = str(note.url or "")
+        # 🔴 2026-10-28：**敏感题材必须带来源**。
+        #
+        # 生产实证（10-28 09:12）：它主动说
+        #   「诶本喵刚刷到一个挺吓人的事，那个叫徽剑的自媒体人原来两年前就没了，
+        #     好像还是被买凶害的……人类为了搞钱胆子也太大了吧。」
+        #
+        # 事实本身**是真的**（B站 @温柔JUNZ 视频，引界面新闻官方报道
+        # 《自媒体人"徽剑"已于2年前遭买凶遇害，曾公开举报电诈大佬刘忍》），
+        # 但出站 58 字里**一个来源都没提** ⇒ 群里读者无从核实。
+        # 这类涉及**死亡/犯罪指控**的内容，无出处的转述本身就是风险：
+        # 说错是造谣，说对也像造谣。
+        #
+        # 所以：命中敏感题材就**明确要求**点出来源；非敏感不强求
+        # （「诶本喵看到个好吃的烙锅」硬加出处反而像新闻播报，
+        #   与既有的「别搞得像新闻播报」要求冲突）。
+        _sensitive = self._sensitive_topic(note)
+        _cite_line = ""
+        if _sensitive and (_src or _url):
+            _cite_line = (
+                f"🔴 这条涉及{_sensitive}，**必须说出处**："
+                f"正文里自然带一句「在{_src or '网上'}看到的」"
+                + (f"（{_url}）" if _url else "")
+                + "，让群友能自己核实。不要说得像你自己经历的事。\n"
+            )
         intent = (
             f"你刚刷到一条有意思的事：{note.title}\n"
             f"内容：{_detail}\n"
             + (f"来源：{_src} {_url}\n" if (_src or _url) else "")
+            + _cite_line
             + "顺嘴跟群里提一嘴，别搞得像新闻播报，"
               "就像'诶本喵刚看到个好玩的'那种感觉。\n"
               "但**这些细节你要记住** —— 如果有人追问"

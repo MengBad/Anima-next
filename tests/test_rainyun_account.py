@@ -1370,3 +1370,39 @@ def test_diagnostic_files_contain_no_credentials():
     win = src[i:j]
     for bad in ("password", "pwd", "pass\""):
         assert bad not in win, f"诊断落盘里出现 {bad}"
+
+
+# ---------------------------------------------------------------------------
+# 25. runner 自己写日志文件（超时后唯一线索）
+# ---------------------------------------------------------------------------
+
+def test_runner_writes_own_log_file():
+    """🔴 超时 + kill -9 后，stderr 管道断裂 ⇒ 父进程一条日志都拿不到。
+
+    实测（2026-10-28）：故意制造一次「签到超时」，
+    `data/rainyun_diag/` **根本没生成** —— 因为日志只在非超时路径落盘。
+
+    但超时恰恰是最需要诊断的场景（想知道卡在导航/按钮/验证码哪一步）。
+
+    ⇒ runner 自己边跑边写 `$RAINYUN_RUNNER_LOG`，父进程 kill 也带不走。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    assert "RAINYUN_RUNNER_LOG" in src, "runner 没读环境变量"
+    assert "with open(_LOG_FILE" in src, "runner 没写日志文件"
+
+
+def test_parent_passes_runner_log_env():
+    """父进程必须把日志路径传给 runner。"""
+    src = _SRC.read_text(encoding="utf-8")
+    assert "def _runner_log_path" in src
+    assert '"RAINYUN_RUNNER_LOG"' in src
+    assert "env=_env" in src, "subprocess 没传 env"
+
+
+def test_timeout_path_also_dumps():
+    """超时路径也要尝试落盘（不能只在正常返回时做）。"""
+    src = _SRC.read_text(encoding="utf-8")
+    i = src.index("except asyncio.TimeoutError:")
+    win = src[i:i + 1400]
+    assert "_dump_runner_stderr" in win or "拿不到 runner 日志" in win, \
+        "超时路径完全没有诊断"
