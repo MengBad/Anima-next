@@ -399,6 +399,33 @@ class DangerBehaviors:
     def identity_stability(self) -> float:
         return self._identity_stability
 
+    def get_status(self) -> dict:
+        """可观测快照（2026-10-28 补，供 `/api/modules/status`）。
+
+        `DangerBehaviors` 的状态全是**标量**（上次节流原因、上次合成时间、
+        身份稳定度），`ModuleRegistry.live_summary()` 的属性扫描扫不到它。
+
+        为什么值得单独看一眼：**危险行为模块是「默认关闭」的**，
+        面板上看到 `instantiated=true` 会误以为它在跑；
+        这里把「哪个开关开着」直接摊出来，避免误判。
+        """
+        cfg = getattr(self, "cfg", None)
+        now = time.time()
+        last_synth = float(getattr(self, "_last_self_improve_synth", 0.0) or 0.0)
+        return {
+            # 开关状态（一眼看出「它现在能做什么」）
+            "enabled_switches": {
+                k: bool(getattr(cfg, k, False))
+                for k in ("identity_crisis", "autonomous_web", "self_improvement",
+                          "proactive_followup", "relation_inference")
+                if cfg is not None
+            },
+            "identity_stability": round(float(getattr(self, "_identity_stability", 0.0) or 0.0), 3),
+            "last_throttle_reason": str(getattr(self, "_last_throttle_reason", "") or "")[:60],
+            "self_improve_last_at": last_synth or None,
+            "self_improve_age_sec": round(now - last_synth, 1) if last_synth > 0 else None,
+        }
+
     # ==================================================================
     # 自主外联（autonomous_web）
     # ==================================================================

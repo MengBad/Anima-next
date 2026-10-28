@@ -194,6 +194,25 @@ class ForgettingEngine:
         logger.info("遗忘完成: chat=%d vector=%d", chat_removed, vector_removed)
         return {"chat": chat_removed, "vector": vector_removed}
 
+    def get_status(self) -> dict:
+        """可观测快照（2026-10-28 补，供 `/api/modules/status`）。
+
+        `ForgettingEngine` 没有任何容器属性（只有 `_run_count` / `_threshold`
+        等标量），`ModuleRegistry.live_summary()` 的属性扫描扫不到它。
+
+        「上次什么时候跑过、跑了多少次」正是这个模块唯一的可观测面：
+        遗忘是**周期性低频**动作，`_last_run` 长期不动说明它没被调度。
+        """
+        now = time.time()
+        last = float(getattr(self, "_last_run", 0.0) or 0.0)
+        return {
+            "run_count": int(getattr(self, "_run_count", 0) or 0),
+            "threshold": round(float(getattr(self, "_threshold", 0.0) or 0.0), 3),
+            "last_run_age_sec": round(now - last, 1) if last > 0 else None,
+            # 超过一天没跑 => 可疑（正常应每日/每周期跑一次）
+            "stale": bool(last > 0 and (now - last) > 86400),
+        }
+
 
 # 全局单例
 _forgetting: Optional[ForgettingEngine] = None

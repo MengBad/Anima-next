@@ -330,6 +330,50 @@ class EvolutionLoop:
         except Exception:  # noqa: BLE001 - 证据落盘失败不影响主流程
             pass
 
+    def get_status(self) -> dict:
+        """可观测快照（2026-10-28 补，供 `/api/modules/status`）。
+
+        ## 这个模块最需要被看见的是「它有没有越权」
+
+        R9 受控自我进化的**安全承诺**是：能提提案，但**永远无法自我授权**。
+        光看代码注释不够 —— 面板上应该能直接读到门禁状态：
+
+            gate_pending / gate_approved / gate_rejected
+            auto_deploy（能不能自己部署）
+            ci_dod_ready（有没有 CI 门禁 bundle）
+
+        若 `gate_approved > 0` 而没人批过，那就是安全事件，必须一眼可见。
+
+        ## 为什么不用容器扫描
+
+        `EvolutionLoop` 的字段全是指针（`_dev` / `_proposer` / `_gate`），
+        数量都为 0 ⇒ `live_summary()` 扫出 `{'x': 0}` 这种无用结果。
+        """
+        gate = getattr(self, "_gate", None)
+        out: dict = {
+            "has_dev_loop": getattr(self, "_dev", None) is not None,
+            "has_gate": gate is not None,
+            # 🔴 安全承诺：本模块**无法自我授权**。
+            # `auto_deploy` / `owner_authorized` 都是 `evolve()` 的**调用参数**
+            # （不落实例），两者同时为真才部署 ⇒ 这里没有「已开启自动部署」这种状态，
+            # 这正是设计意图。面板上写死 False 是为了让人一眼确认这一点。
+            "auto_deploy_self_granted": False,
+            "ci_dod_ready": bool(getattr(self, "_ci_dod_bundle", None)),
+        }
+        # 门禁队列（如果能读到）
+        try:
+            q = getattr(gate, "_proposals", None)
+            if isinstance(q, dict):
+                from collections import Counter
+                c = Counter(str(getattr(p, "status", "") or "?") for p in q.values())
+                out["gate_total"] = len(q)
+                out["gate_pending"] = c.get("pending", 0)
+                out["gate_approved"] = c.get("approved", 0)
+                out["gate_rejected"] = c.get("rejected", 0)
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
 
 # ---------------------------------------------------------------------------
 # WebUI / 运维装配入口（受控自我进化可视化 + Owner 审批通道）

@@ -62,6 +62,36 @@ class IntentGenerator:
             logger.warning("意图生成失败: %s", e)
             return {"intent_type": "silence", "priority": 0.0}
 
+    def get_status(self) -> dict:
+        """可观测快照（2026-10-28 补，供 `/api/modules/status`）。
+
+        ## 这个模块为什么几乎没有状态
+
+        `IntentGenerator` 是**无状态**的：每次 `generate()` 都现场拼 prompt
+        调 LLM，不缓存、不落盘、不计数。
+
+        所以 `live_summary()` 的属性扫描扫不到任何容器 —— 这是事实，不是缺陷。
+
+        ## 那还剩什么值得看
+
+        唯一有意义的是 **`llm` 有没有被注入**：
+
+            未注入 ⇒ 每次 `generate()` 都抛 `RuntimeError("LLM 未注入")`
+                    ⇒ 它被构造出来了，但实际不能用
+            （`get_intent_generator()` 无参构造时 `self.llm = None`，
+              生产里由调用方注入 —— 若某处忘了注入，这里就能看出来）
+
+        这正是「instantiated=true 但功能不可用」的典型形态，
+        面板上必须能区分，所以显式报 `llm_ready`。
+        """
+        llm = getattr(self, "llm", None)
+        return {
+            "stateless": True,          # 明确告知：没有内容可数
+            "llm_ready": llm is not None,
+            "llm_type": type(llm).__name__ if llm is not None else None,
+        }
+
+
 # 全局单例
 _intent_generator = None
 

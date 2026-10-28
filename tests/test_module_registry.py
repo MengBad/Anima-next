@@ -442,3 +442,94 @@ def test_live_summary_never_fabricates(tmp_path):
         # 有 source 就一定有内容（不能 source=attrs 但只有一个键）
         if live.get("source") == "attrs":
             assert len(live) > 1, f"{s['name']} 的 attrs 摘要为空"
+
+
+# ── 9. 33/33 全覆盖（2026-10-28 补齐 6 个纯标量模块）──────────────
+
+def test_all_modules_have_live_summary(tmp_path):
+    """**33 个模块全都要有活体摘要**，不能有空白。
+
+    补齐前有 6 个为空：
+        quirk            只有 _today_count/_daily_max（标量，非容器）
+        intent_generator 无状态（每次现场拼 prompt）
+        forgetting       只有 _run_count/_threshold（标量）
+        danger           只有时间戳标量 + 配置对象
+        life             只有时间戳 + 计数（标量）
+        evolution_loop   只有指针（_dev/_proposer/_gate）
+
+    这些模块的属性扫描结果都是空的 ⇒ 面板上只有一个「instantiated=true」。
+    修法：给它们各写一个 `get_status()`，报**有意义的标量**而非容器大小。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    st = reg.status()
+    empty = [s["name"] for s in st if not (s.get("live") or {}).get("source")]
+    assert not empty, f"以下模块没有活体摘要：{empty}"
+    assert len(st) == 33
+
+
+@pytest.mark.parametrize("name,expect_keys", [
+    ("quirk", {"today_count", "daily_max", "remaining"}),
+    ("forgetting", {"run_count", "threshold", "stale"}),
+    ("intent_generator", {"stateless", "llm_ready"}),
+    ("danger", {"enabled_switches", "identity_stability"}),
+    ("life", {"flow_count", "stale"}),
+    ("evolution_loop", {"has_gate", "auto_deploy_self_granted"}),
+])
+def test_scalar_modules_report_meaningful_fields(tmp_path, name, expect_keys):
+    """这 6 个模块必须报**有意义的标量**，不能只报容器大小。"""
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    s = next(x for x in reg.status() if x["name"] == name)
+    live = s.get("live") or {}
+    assert live.get("source") == "get_status", \
+        f"{name} 应走 get_status，实得 {live.get('source')}"
+    missing = expect_keys - set(live)
+    assert not missing, f"{name} 缺字段 {missing}（实得 {list(live)}）"
+
+
+def test_danger_exposes_switch_state(tmp_path):
+    """`danger` 必须把「哪个开关开着」摊出来。
+
+    这个模块**默认全关**，面板上看到 instantiated=true 会误以为它在跑。
+    显式报 `enabled_switches` 能一眼确认「它现在什么都没做」。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    s = next(x for x in reg.status() if x["name"] == "danger")
+    sw = (s.get("live") or {}).get("enabled_switches")
+    assert isinstance(sw, dict) and sw, "没报开关状态"
+    assert all(isinstance(v, bool) for v in sw.values())
+
+
+def test_evolution_loop_reports_no_self_grant(tmp_path):
+    """`evolution_loop` 必须明确报「无法自我授权」。
+
+    R9 的安全承诺是「能提提案，但永远无法自我授权」。
+    光靠代码注释不够 —— 面板上要能直接读到。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    s = next(x for x in reg.status() if x["name"] == "evolution_loop")
+    live = s.get("live") or {}
+    assert live.get("auto_deploy_self_granted") is False
+    assert live.get("has_gate") is True
+
+
+def test_life_reports_staleness(tmp_path):
+    """`life` 必须报「早安/晚安有没有按时跑」。
+
+    这几个都是日更动作，超过 25 小时没跑就说明调度断了 ——
+    光看 `instantiated=true` 发现不了这种「活着但不干活」。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    s = next(x for x in reg.status() if x["name"] == "life")
+    live = s.get("live") or {}
+    assert "stale" in live and isinstance(live["stale"], bool)
+    assert "flow_count" in live

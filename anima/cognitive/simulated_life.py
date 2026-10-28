@@ -149,6 +149,36 @@ class SimulatedLife:
         now = datetime.now(TZ)
         return t.date() == now.date()
 
+    def get_status(self) -> dict:
+        """可观测快照（2026-10-28 补，供 `/api/modules/status`）。
+
+        `SimulatedLife` 的字段全是**时间戳 + 计数**（`_last_morning` /
+        `_last_flow` / `_flow_count`），都是标量而非容器 ——
+        `ModuleRegistry.live_summary()` 的容器扫描扫不到它。
+
+        「今天有没有跑过早安、晚安、心流」是这个模块唯一的可观测面，
+        也是判断「它是不是还活着」最直接的方式（这几个都按小时调度）。
+        """
+        import time as _t
+        now = _t.time()
+
+        def _age(attr: str):
+            v = float(getattr(self, attr, 0.0) or 0.0)
+            return round(now - v, 1) if v > 0 else None
+
+        return {
+            "flow_count": int(getattr(self, "_flow_count", 0) or 0),
+            "morning_age_sec": _age("_last_morning"),
+            "evening_age_sec": _age("_last_evening"),
+            "flow_age_sec": _age("_last_flow"),
+            "goodnight_age_sec": _age("_last_goodnight"),
+            # 超过 25 小时没跑 => 「该跑没跑」（早安/晚安都是日更）
+            "stale": any(
+                (a is not None and a > 90000)
+                for a in (_age("_last_morning"), _age("_last_evening"))
+            ),
+        }
+
     # ------------------------------------------------------------------
     # B1: 日记回顾辅助方法
     # ------------------------------------------------------------------

@@ -81,6 +81,24 @@ class QuirkSystem:
         """返回注入 prompt 的发癫指令。"""
         return random.choice(_QUIRK_FRAGMENTS)
 
+    def get_status(self) -> dict:
+        """可观测快照（2026-10-28 补，供 `/api/modules/status`）。
+
+        这个模块原本没有任何可枚举容器，`ModuleRegistry.live_summary()`
+        的属性扫描拿不到东西 ⇒ 面板上只有一个「instantiated=true」。
+
+        它的状态全是**标量**（今日已触发次数 / 日上限 / 概率），
+        正好是「这个模块今天干活了吗」最直接的答案。
+        """
+        return {
+            "today_count": int(getattr(self, "_today_count", 0) or 0),
+            "daily_max": int(getattr(self, "_daily_max", 0) or 0),
+            "base_probability": round(float(getattr(self, "_base_prob", 0.0) or 0.0), 4),
+            # 概率类模块的判读要看「今天的额度还剩多少」
+            "remaining": max(0, int(getattr(self, "_daily_max", 0) or 0)
+                             - int(getattr(self, "_today_count", 0) or 0)),
+        }
+
 
 # 全局单例
 _quirk_system: Optional[QuirkSystem] = None
