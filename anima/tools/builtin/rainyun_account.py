@@ -480,7 +480,8 @@ async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
             if attempt:
                 logger.info("[雨云] 验证码未过，重试 %d/%d", attempt, CAPTCHA_RETRY)
                 await asyncio.sleep(INTER_ACCOUNT_GAP)
-            res = await _run_one_account(py, script, c["email"], c["password"])
+            res = await _run_one_account(py, script, c["email"], c["password"],
+                                          core=core, uid=uid)
             if res.get("ok") or res.get("reason") not in _RETRYABLE_REASONS:
                 break
 
@@ -521,7 +522,8 @@ async def _run_one_user(core: Any, uid: str, creds: list[dict]) -> dict:
 
 
 async def _run_one_account(py: str, script: str, login_name: str,
-                           password: str) -> dict:
+                           password: str, core: Any = None,
+                           uid: str = "") -> dict:
     """跑一次 runner（单个账号）。返回 `{"ok": bool, "reason": str, ...}`。"""
     import asyncio
 
@@ -541,11 +543,27 @@ async def _run_one_account(py: str, script: str, login_name: str,
             stderr=asyncio.subprocess.PIPE,
             start_new_session=True,
         )
-        out, _err = await asyncio.wait_for(
+        out, err = await asyncio.wait_for(
             proc.communicate(payload.encode("utf-8")),
             timeout=SIGN_TIMEOUT,
         )
-        return _parse_runner_output(out.decode("utf-8", "replace"), proc.returncode)
+        # 🔴 **必须记录 runner 的 stderr**（2026-10-28）。
+        #
+        # 原来写的是 `out, _err = ...`，runner 的每一步诊断
+        # （导航到哪、按钮文字、ICR 识别出的坐标、提交后的 class）
+        # **全被丢掉了** ⇒ 自动签到失败时完全是黑盒，
+        # 只能靠「手动跑一次」来猜原因。
+        #
+        # 这就是同一类 bug 反复出现的根因：
+        #   手动能跑通（看得到日志）→ 自动失败（看不到日志）→ 猜着修 → 再失败。
+        #
+        # stderr 内容不含凭证（runner 只打进度和坐标），可以安全落日志。
+        _log_runner_stderr(err)
+        parsed = _parse_runner_output(out.decode("utf-8", "replace"), proc.returncode)
+        # 失败时把 stderr 落盘一份，事后能翻（日志会被 journald 轮转掉）
+        if not parsed.get("ok"):
+            _dump_runner_stderr(core, uid, login_name, err, parsed)
+        return parsed
     except asyncio.TimeoutError:
         # 🔴 超时必须 kill：否则 Chrome 挂着占 1.2G，槽位也永不释放
         _kill_proc(proc)
@@ -565,6 +583,72 @@ def _today_str() -> str:
     except Exception:
         import datetime as _dt
         return _dt.datetime.now().strftime("%Y-%m-%d")
+
+
+#: 单次记录多少行 runner stderr（太多会淹没日志）
+_RUNNER_STDERR_MAX_LINES = 40
+
+
+def _log_runner_stderr(err: bytes) -> None:
+    """把 runner 的 stderr 落进主日志，便于事后诊断。
+
+    🔴 这些行是自动签到**唯一的可观测面** —— 不记就等于黑盒。
+    内容只有进度（导航/按钮文案/ICR 坐标/提交结果），不含账号密码。
+    """
+    if not err:
+        logger.warning("[雨云] runner 无 stderr 输出（异常）")
+        return
+    try:
+        text = err.decode("utf-8", "replace")
+    except Exception:
+        return
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return
+    # 只留最后 N 行（最靠近结果的部分）
+    shown = lines[-_RUNNER_STDERR_MAX_LINES:]
+    logger.info("[雨云] runner 日志（%d 行，显示末 %d 行）：",
+                len(lines), len(shown))
+    for ln in shown:
+        logger.info("[雨云]   %s", ln)
+
+
+def _dump_runner_stderr(core: Any, uid: str, login_name: str,
+                        err: bytes, parsed: dict) -> None:
+    """失败时把 runner 的 stderr 存到 `data/rainyun_diag/`，供事后诊断。
+
+    🔴 为什么要落盘：journald 会轮转（默认几十 MB 就丢），
+    而「自动签到为什么失败」往往要隔天才来查。
+    文件里只有进度日志（导航/按钮/ICR 坐标），**不含账号密码**。
+    """
+    try:
+        data_dir = getattr(getattr(core, "persistence", None), "data_dir", None)
+        if not data_dir:
+            return
+        d = os.path.join(str(data_dir), "rainyun_diag")
+        os.makedirs(d, exist_ok=True)
+        from datetime import datetime as _dt
+        stamp = _dt.now().strftime("%Y%m%d-%H%M%S")
+        # 文件名用 uid 后四位 + 时间（不把完整 QQ 号写进文件名）
+        fn = os.path.join(d, f"{stamp}-{str(uid)[-4:]}-{str(login_name)[:12]}.log")
+        body = (err or b"").decode("utf-8", "replace")
+        with open(fn, "w", encoding="utf-8") as fh:
+            fh.write(f"# 结果: {parsed}\n")
+            fh.write(f"# 账号: {login_name}\n")
+            fh.write(f"# 时间: {stamp}\n")
+            fh.write("# --- runner stderr ---\n")
+            fh.write(body)
+        # 只保留最近 30 份
+        try:
+            files = sorted((os.path.join(d, x) for x in os.listdir(d)
+                            if x.endswith(".log")), key=os.path.getmtime)
+            for old in files[:-30]:
+                os.remove(old)
+        except Exception:
+            pass
+        logger.info("[雨云] 失败诊断已存: %s", os.path.basename(fn))
+    except Exception:
+        logger.debug("[雨云] 诊断落盘失败（已隔离）", exc_info=True)
 
 
 def _kill_proc(proc) -> None:

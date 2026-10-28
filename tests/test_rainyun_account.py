@@ -701,7 +701,7 @@ async def test_still_runs_when_one_account_pending(core, monkeypatch, fake_runne
 
     seen = []
 
-    async def _fake(py, script, login, pwd):
+    async def _fake(py, script, login, pwd, **kw):
         seen.append(login)
         return {"ok": True, "reason": "签到成功", "points": 1}
 
@@ -723,7 +723,7 @@ async def test_retry_on_captcha_failure(core, monkeypatch, fake_runner):
 
     calls = {"n": 0}
 
-    async def _fail_captcha(py, script, login, pwd):
+    async def _fail_captcha(py, script, login, pwd, **kw):
         calls["n"] += 1
         return {"ok": False, "reason": "验证码未通过"}
 
@@ -740,7 +740,7 @@ async def test_no_retry_on_wrong_password(core, monkeypatch, fake_runner):
 
     calls = {"n": 0}
 
-    async def _bad_pwd(py, script, login, pwd):
+    async def _bad_pwd(py, script, login, pwd, **kw):
         calls["n"] += 1
         return {"ok": False, "reason": "账号或密码错误"}
 
@@ -1323,3 +1323,50 @@ def test_sign_now_description_disambiguates_from_status():
     desc = src[i:j]
     assert "rainyun_my_status" in desc, \
         "sign_now 描述里没指向 my_status，模型可能用错工具"
+
+
+# ---------------------------------------------------------------------------
+# 24. runner 的 stderr 必须被记录（这是反复修同一类 bug 的根因）
+# ---------------------------------------------------------------------------
+
+def test_runner_stderr_is_not_discarded():
+    """🔴 **这是同一个 bug 反复出现的真正原因。**
+
+    原代码：
+
+        out, _err = await asyncio.wait_for(proc.communicate(...), ...)
+             ^^^^^ 下划线 = 主动丢弃
+
+    runner 的每一步诊断（导航到哪 / 按钮文字 / ICR 坐标 / 提交后 class）
+    **全被丢掉** ⇒ 自动签到失败时完全是黑盒。
+
+    于是形成循环：
+        手动跑（看得到日志）→ 成功
+        自动跑（看不到日志）→ 失败 → 猜着修 → 再失败
+
+    实测 2026-10-28：自动签到 09:00-09:09 失败，
+    `journalctl | grep '\\[runner\\]'` **一行都没有**。
+
+    ⇒ 钉死：必须接住 err 并落到日志。
+    """
+    src = _SRC.read_text(encoding="utf-8")
+    assert "out, _err = await" not in src, "stderr 又被丢掉了"
+    assert "_log_runner_stderr(err)" in src, "没调日志函数"
+    assert "def _log_runner_stderr" in src
+
+
+def test_failed_run_dumps_diagnostics():
+    """失败时把 stderr 落盘，事后可查（journald 会轮转）。"""
+    src = _SRC.read_text(encoding="utf-8")
+    assert "def _dump_runner_stderr" in src
+    assert "_dump_runner_stderr(core, uid" in src
+
+
+def test_diagnostic_files_contain_no_credentials():
+    """🔴 诊断文件不得含密码（会长期留在磁盘上）。"""
+    src = _SRC.read_text(encoding="utf-8")
+    i = src.index("def _dump_runner_stderr")
+    j = src.index("def _kill_proc", i)
+    win = src[i:j]
+    for bad in ("password", "pwd", "pass\""):
+        assert bad not in win, f"诊断落盘里出现 {bad}"
