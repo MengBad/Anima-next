@@ -240,3 +240,134 @@ def test_role_bot_still_works_for_compat():
     from anima.cognitive.bot_social import discover_bots_from_members
     assert discover_bots_from_members(
         [{"user_id": 7, "role": "bot", "nickname": "x"}]) == {7}
+
+
+# ── 5. 🔴 评分制（2026-10-28，owner 要求）─────────────────────────
+
+def test_score_weights_are_regression_calibrated():
+    """权重必须来自实测校准，不是拍脑袋。
+
+    ## 校准依据（422 行真实成员数据，去重后 bot=8 / human=386）
+
+        特征            bot 命中   human 命中   human 误命中率
+        is_robot=True     8/8        0/386          0.0%
+        uid 前缀 3889     7/8        0/386          0.0%
+        昵称含 bot        2/8        0/386          0.0%
+        level == 0        8/8       28/386          7.3%   ← 弱
+        从未发言          1/8       28/386          7.3%   ← 弱
+        无群名片          8/8      320/386         82.9%   ← **几乎无用**
+        qq_level == 0     8/8      386/386        100.0%   ← **完全无用**
+
+    ⇒ `no_card` 只能给 2 分、`qq_level_zero` 只能给 1 分。
+      首版若按「看起来像 bot」给它们 15 分，human 会和 bot 混在一起。
+
+    ## 校准结果
+
+        bot   最低 141 分
+        human 最高  26 分      ← 间隔 115 分、零重叠
+        阈值 60 ⇒ bot 8/8 确认，真人 0/386 误判
+
+    这条测试锁死「弱信号权重必须远低于强信号」，防止有人凭感觉调权重。
+    """
+    from anima.cognitive.bot_social import _BOT_SCORE_WEIGHTS as W
+
+    # 平台真相是决定性证据
+    assert W["is_robot"] >= 100 and W["role_bot"] >= 100
+    # 强信号（实测 0% 误命中）
+    assert W["uid_known_prefix"] >= 30
+    assert W["nickname_hint"] >= 10
+    # 弱/无用信号必须压到极低
+    assert W["level_zero"] <= 20, "level_zero 只覆盖 7.3% 真人，不能给高权重"
+    assert W["never_spoke"] <= 12
+    assert W["no_card"] <= 3, "no_card 命中 82.9% 真人，几乎是噪声"
+    assert W["qq_level_zero"] <= 2, "qq_level_zero 命中 100% 真人，纯噪声"
+
+
+def test_score_threshold_sits_between_measured_bounds():
+    """确认阈值必须落在实测的 bot 下界与 human 上界之间。"""
+    from anima.cognitive.bot_social import _BOT_SCORE_CONFIRM, _BOT_SCORE_SUSPECT
+    assert 26 < _BOT_SCORE_SUSPECT <= _BOT_SCORE_CONFIRM
+    assert _BOT_SCORE_CONFIRM < 141, "阈值太高会漏掉真实 bot（实测 bot 最低 141）"
+
+
+def test_real_bot_profile_scores_confirmed():
+    """真实 bot 画像（取自生产成员数据）必须判 confirmed。"""
+    from anima.cognitive.bot_social import bot_score, classify_bot_score
+
+    # 3889024489 可怜BOT（在 552994229）
+    m1 = {"user_id": 3889024489, "nickname": "可怜BOT", "card": "",
+          "level": "0", "qq_level": 0, "is_robot": True,
+          "role": "member", "join_time": 1753071305, "last_sent_time": 1772517189}
+    s1, h1 = bot_score(m1)
+    assert s1 >= 60 and classify_bot_score(s1) == "confirmed", f"{s1} {h1}"
+
+    # 2854202507 可怜Bot（在 727631526）—— 无 3889 段，靠 is_robot + 昵称
+    m2 = {"user_id": 2854202507, "nickname": "可怜Bot", "card": "",
+          "level": "0", "qq_level": 0, "is_robot": True,
+          "role": "member", "join_time": 1709376823, "last_sent_time": 1709376823}
+    s2, h2 = bot_score(m2)
+    assert s2 >= 60 and classify_bot_score(s2) == "confirmed", f"{s2} {h2}"
+
+
+def test_hardest_real_human_stays_human():
+    """最难区分的真人（level=0 + 从未发言 + 无名片）仍须判 human。
+
+    这类样本在生产里有 28 个（如 𝐼𝑐𝑒𝑠𝑝𝑎𝑟 / 奶兽兽 / Nieve.），
+    它们满足 3 个弱信号，但缺 2 个强信号 ⇒ 26 分，远低于 60。
+    """
+    from anima.cognitive.bot_social import bot_score, classify_bot_score
+
+    m = {"user_id": 3609970062, "nickname": "𝐼𝑐𝑒𝑠𝑝𝑎𝑟", "card": "",
+         "level": "0", "qq_level": 0, "is_robot": False,
+         "role": "member", "join_time": 1787285691, "last_sent_time": 1787285691}
+    s, h = bot_score(m)
+    assert s < 60, f"最难真人被误判为 bot：{s} {h}"
+    assert classify_bot_score(s) == "human"
+
+
+def test_nickname_only_human_is_not_confirmed():
+    """昵称像 bot 的真人（昵称 15 分 + 弱信号）不得越过 60。"""
+    from anima.cognitive.bot_social import bot_score, classify_bot_score
+
+    m = {"user_id": 999, "nickname": "机器人小王", "card": "",
+         "level": "30", "qq_level": 0, "is_robot": False,
+         "role": "member", "join_time": 1, "last_sent_time": 9}
+    s, h = bot_score(m)
+    assert classify_bot_score(s) != "confirmed", f"仅昵称像就被确认：{s} {h}"
+
+
+def test_uid_prefix_alone_cannot_confirm():
+    """号段单独 40 分 < 60 ⇒ 不确认。
+
+    这是刻意的安全设计：QQ 号段属平台分配，不保证长期独占。
+    即便某天普通用户占用了 3889 段，也不会造成误判。
+    """
+    from anima.cognitive.bot_social import bot_score, classify_bot_score
+
+    m = {"user_id": 3889000001, "nickname": "普通人", "card": "名片",
+         "level": "50", "qq_level": 5, "is_robot": False,
+         "role": "member", "join_time": 1, "last_sent_time": 9}
+    s, h = bot_score(m)
+    assert s < 60, f"号段单独就确认了：{s} {h}"
+
+
+def test_score_returns_explainable_factors():
+    """评分必须能解释「凭什么」—— 每个因子带分值和名字。"""
+    from anima.cognitive.bot_social import bot_score
+
+    m = {"user_id": 3889024489, "nickname": "可怜BOT", "card": "",
+         "level": "0", "qq_level": 0, "is_robot": True,
+         "role": "member", "join_time": 1, "last_sent_time": 1}
+    s, hits = bot_score(m)
+    assert hits, "没有解释因子"
+    assert s == sum(int(x.rsplit("+", 1)[1].rstrip(")")) for x in hits), \
+        f"分数与因子之和不一致：{s} vs {hits}"
+
+
+def test_bot_score_handles_bad_input():
+    """脏输入不得抛异常。"""
+    from anima.cognitive.bot_social import bot_score, classify_bot_score
+    assert bot_score(None) == (0, [])
+    assert bot_score("not-a-dict") == (0, [])
+    assert bot_score({})[0] >= 0
+    assert classify_bot_score("garbage") == "human"

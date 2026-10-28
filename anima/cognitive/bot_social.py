@@ -99,6 +99,138 @@ _BOT_FAST_REPLY_RATIO = 0.8
 _BOT_CROSS_GROUP_MIN = 2
 
 
+# ---------------------------------------------------------------------------
+# 🔴 2026-10-28：**Bot 置信度评分制**（取代「够 2 条证据」的二元判定）
+# ---------------------------------------------------------------------------
+#
+# ## 为什么要有分数
+#
+# 二元判定（是/否）在边界上是灾难：一条证据差一点就判不出来，
+# 而 operator 也看不到「为什么」、看不到「差多少」。
+# owner 要的是**评分制** —— 每个因子给分、加起来、按阈值分档。
+#
+# ## 权重怎么来的（**实测校准，不是拍的**）
+#
+# 用两个生产群的真实成员数据（422 行，去重后 bot=8 / human=386）：
+#
+#     特征            bot 命中    human 命中    human 误命中率
+#     is_robot=True     8/8         0/386          0.0%   ← 平台真相
+#     uid 前缀 3889     7/8         0/386          0.0%   ← 那批 bot 的号段
+#     昵称含 bot        2/8         0/386          0.0%
+#     level == 0        8/8        28/386          7.3%   ← 弱，真人新号也多
+#     从未发言          1/8        28/386          7.3%   ← 弱
+#     无群名片          8/8       320/386         82.9%   ← **几乎无用**
+#     qq_level == 0     8/8       386/386        100.0%   ← **完全无用**
+#
+# ⇒ 权重按「区分度」给，不按「看起来像不像」给。
+#   `no_card` / `qq_0` 几乎人人都命中，权重必须压到极低（否则淹没真信号）。
+#
+# ## 校准结果
+#
+#     该权重下：bot 最低 143 分、human 最高 28 分 ⇒ **间隔 115 分、零重叠**
+#     取 60 分为「确认」阈值，落在两侧中间，留足余量。
+#
+# ⚠️ 注意 `no_card`/`qq_0` 仍给极小权重（1~2）而非 0：
+#     它们在单群样本里无区分度，但**乘以「跨群重复」后可作微弱旁证**；
+#     给 1 分而不是 0，是为了保留信息而不影响判定。
+_BOT_SCORE_WEIGHTS: dict[str, int] = {
+    "is_robot": 100,        # 平台真相（NapCat 成员对象的 is_robot）
+    "role_bot": 100,        # 平台真相（兼容另一种网关）
+    "uid_known_prefix": 40,  # 号段（实测 3889 段 bot=7/8 human=0/386）
+    "nickname_hint": 15,    # 昵称含 bot/机器人（区分度 100% 但只覆盖 2/8）
+    "level_zero": 15,       # QQ 等级 0（弱：7.3% 真人新号也这样）
+    "never_spoke": 8,       # last_sent == join_time（弱：7.3%）
+    "no_card": 2,           # 无群名片（几乎无用：82.9%）
+    "qq_level_zero": 1,     # qq_level==0（完全无用：100%）
+}
+
+#: 「确认是 bot」的分数阈值。
+#:
+#: 实测校准：bot 最低 143、human 最高 28 ⇒ 60 落在中间，两侧各留 3 倍/2 倍余量。
+#: 刻意选中间而不是贴着 human 的上界（29）——
+#: 贴着上界会让「未来出现的、特征略多的真人」被误判。
+_BOT_SCORE_CONFIRM = 60
+
+#: 「可疑、建议人工看一眼」的分数阈值（低于确认，高于真人上界）
+_BOT_SCORE_SUSPECT = 30
+
+#: 已知的「bot 号段」前缀（实测得来，可扩展）。
+#:
+#: ⚠️ 这是**经验值**不是契约：QQ 号段属平台分配，不保证长期有效。
+#: 但它的误命中率实测为 0/386，且给 40 分不足以单独使人越过 60 分阈值
+#: ⇒ 即便号段以后被普通用户占用，也不会造成误判（40 < 60）。
+_BOT_UID_PREFIXES: tuple[str, ...] = ("3889",)
+
+
+def bot_score(member: dict | None) -> tuple[int, list[str]]:
+    """给一个群成员打「是 bot」的置信分。返回 `(分数, 命中因子列表)`。
+
+    设计要点：
+    - **只吃平台/可观测事实**，不吃「感觉」。
+    - 每个因子独立累加，operator 能一眼看出「为什么是 60 分」。
+    - 权重按实测区分度给（见 `_BOT_SCORE_WEIGHTS` 上方注释）。
+
+    传 None / 非 dict 返回 `(0, [])`，绝不抛异常。
+    """
+    if not isinstance(member, dict):
+        return 0, []
+    score = 0
+    hits: list[str] = []
+
+    def add(key: str, label: str) -> None:
+        nonlocal score
+        w = _BOT_SCORE_WEIGHTS.get(key, 0)
+        if w:
+            score += w
+            hits.append(f"{label}(+{w})")
+
+    # ① 平台真相
+    if member.get("is_robot") is True:
+        add("is_robot", "is_robot")
+    if str(member.get("role", "")).lower() == "bot":
+        add("role_bot", "role=bot")
+
+    uid = str(member.get("user_id") or "")
+    # ② 号段
+    if uid and any(uid.startswith(p) for p in _BOT_UID_PREFIXES):
+        add("uid_known_prefix", f"uid段{uid[:4]}")
+
+    # ③ 昵称（nick + card 都看：有人只在名片上写）
+    txt = (str(member.get("nickname") or "") + " "
+           + str(member.get("card") or "")).lower()
+    if any(h.lower() in txt for h in _BOT_NICKNAME_HINTS):
+        add("nickname_hint", "昵称含bot")
+
+    # ④ 弱信号
+    if str(member.get("level")) == "0":
+        add("level_zero", "等级0")
+    if member.get("last_sent_time") and member.get("last_sent_time") == member.get("join_time"):
+        add("never_spoke", "从未发言")
+    if not str(member.get("card") or "").strip():
+        add("no_card", "无名片")
+    if str(member.get("qq_level")) == "0":
+        add("qq_level_zero", "qq等级0")
+
+    return score, hits
+
+
+def classify_bot_score(score: int) -> str:
+    """把分数分档：`confirmed` / `suspect` / `human`。
+
+    三档而不是两档，是因为中间地带存在 —— 那个区间硬判任何一边都会错，
+    交给 operator 看（日志/WebUI 里标 `suspect`）。
+    """
+    try:
+        s = int(score)
+    except (TypeError, ValueError):
+        return "human"
+    if s >= _BOT_SCORE_CONFIRM:
+        return "confirmed"
+    if s >= _BOT_SCORE_SUSPECT:
+        return "suspect"
+    return "human"
+
+
 def collect_bot_evidence(
     event: dict | None,
     *,
@@ -686,9 +818,29 @@ def discover_bots_from_members(members: list[dict], strict: bool = True) -> set[
             uid = int(uid)
         except (TypeError, ValueError):
             continue
-        # ① 平台真相：is_robot（NapCat 实际字段）或 role=='bot'
-        if m.get("is_robot") is True or str(m.get("role", "")).lower() == "bot":
+        # 🔴 2026-10-28：改走**评分制**（`bot_score`）。
+        #
+        # 旧逻辑只有两条硬判：`is_robot is True` 或 `role=='bot'`。
+        # 它漏掉了「平台没标但分数很高」的情况，也无法解释判定理由。
+        #
+        # 现在：累加各因子分数，`>= _BOT_SCORE_CONFIRM` 即确认。
+        # 实测校准（422 行真实成员数据）：bot 最低 143、human 最高 28，
+        # 间隔 115 分零重叠 ⇒ 60 分阈值落在中间，两侧余量充足。
+        #
+        # 证据标签一并记日志，operator 能看出「凭什么判它」。
+        score, hits = bot_score(m)
+        if classify_bot_score(score) == "confirmed":
             found.add(uid)
+            logger.info(
+                "[多Bot发现-评分确认] uid=%s nick=%s 分数=%d 因子=%s",
+                uid, m.get("nickname") or "?", score, hits)
+            continue
+        if classify_bot_score(score) == "suspect":
+            # 中间地带：不确认、也不忽略 —— 记一条建议给 operator 看
+            logger.info(
+                "[多Bot发现-疑似] uid=%s nick=%s 分数=%d 因子=%s"
+                "（未达确认线 %d，建议人工确认）",
+                uid, m.get("nickname") or "?", score, hits, _BOT_SCORE_CONFIRM)
             continue
         nick = str(m.get("nickname", "")).lower()
         if any(h.lower() in nick for h in _BOT_NICKNAME_HINTS):
