@@ -48,6 +48,128 @@ _BOT_NICKNAME_HINTS = ("bot", "robot", "机器人", "機器人", "aki", "刻子"
 
 
 # ---------------------------------------------------------------------------
+# 🔴 2026-10-28：**行为证据自动判定**（让 bot 自己判断谁是 bot）
+# ---------------------------------------------------------------------------
+#
+# ## 为什么需要
+#
+# 旧设计说「昵称启发式 NEVER 写入注册表，UID 才是唯一主键」，方向是对的
+# （把真人误判成 bot 的代价很大：bot 会突然不理一个老熟人）。
+# 但它走得太远 —— **连真实行为证据也不自动采纳**，于是一个明显是 bot 的
+# 账号要 owner 手工填进 `known_bot_ids` 才生效。owner 的原话：
+#
+#     「可以让 bot 自己判断谁是 bot 的」
+#
+# ## 为什么不能只靠昵称
+#
+# 昵称是用户可自由改的展示层：真人叫「可怜BOT」、bot 叫「小明」都很常见。
+# 实测 `552994229` 的 `3889024489(nick=可怜BOT)`、`1093714384` 的
+# `3695244487(nick=Sasaki Yuto)` 近 7 天**零发言** ⇒ 昵称无从验证。
+#
+# ## 所以改用**行为证据**
+#
+# 只采纳「人类几乎不可能同时满足」的组合。每条证据都要求**可观测、可追溯**：
+#
+#   ① `role == "bot"` 平台标记                 —— 平台真相，直接采信
+#   ② 极低 QQ 等级（< 4）且 有发言且 秒回率极高
+#      —— 新注册号几乎全是 bot；真人新号不会「每条都在 1 秒内回」
+#   ③ 在**多个**不同群以**相同文案**出现      —— 广播型 bot 的强特征
+#
+# 单条证据不足以确认，需 **≥2 条**（①②③ 任取其二）或 ① 本身。
+# 未达阈值的仍只记 `[多Bot发现-建议]` 日志，等 owner 确认。
+#
+# ## 可回滚
+#
+# 自动确认的条目在 `known_bots.json` 里带 `auto: true` + `evidence` 列表，
+# 可由 `revert_auto_bots()` 一键清掉（owner 发现误判时用）。
+
+#: 自动判定为 bot 所需的**最少独立证据数**
+_BOT_AUTO_MIN_EVIDENCE = 2
+
+#: 「极低 QQ 等级」阈值。低于此值且行为异常 ⇒ 可疑新号（多为 bot）
+_BOT_SUSPECT_LEVEL_MAX = 4
+
+#: 「秒回」判定：收到消息后多久内回复算「机器速度」
+_BOT_FAST_REPLY_SEC = 1.5
+
+#: 秒回率阈值：达到此比例视为机器行为
+_BOT_FAST_REPLY_RATIO = 0.8
+
+#: 跨群重复文案的最小群数（同一文案出现在 ≥N 个群 ⇒ 广播 bot）
+_BOT_CROSS_GROUP_MIN = 2
+
+
+def collect_bot_evidence(
+    event: dict | None,
+    *,
+    reply_lag_sec: float | None = None,
+    same_text_group_count: int | None = None,
+    member_level: int | None = None,
+) -> list[str]:
+    """从一条入站消息收集「该发送者是 bot」的行为证据。返回证据标签列表。
+
+    只返回**能站得住**的证据；判不出来就返回空列表（宁可漏判）。
+
+    参数都是可选的观测值 —— 调用方拿不到某项就传 None，不影响其它证据。
+    """
+    if not isinstance(event, dict):
+        return []
+    ev: list[str] = []
+    sender = event.get("sender") if isinstance(event.get("sender"), dict) else {}
+
+    # ① 平台真相
+    if str(sender.get("role", "")).lower() == "bot":
+        ev.append("platform_role_bot")
+
+    # ② 低 QQ 等级（新号）—— 单独一条证据
+    if member_level is not None:
+        try:
+            lv = int(member_level)
+        except (TypeError, ValueError):
+            lv = -1
+        if 0 <= lv < _BOT_SUSPECT_LEVEL_MAX:
+            ev.append(f"low_qq_level(lv={lv})")
+
+    # ③ 极快回复（机器速度）—— **与 ② 独立**的一条证据
+    #
+    # ⚠️ 这两条必须分开计数：合并成 `low_level_fast_reply` 一条会让
+    # 「低等级 + 秒回」只算 1 条证据、达不到阈值 2 ⇒ 该判 bot 的判不出来
+    # （实测被 `test_low_level_plus_fast_reply` 抓出）。
+    # 语义上也确实独立：低等级看的是账号年龄，秒回看的是行为速度。
+    if reply_lag_sec is not None:
+        try:
+            lag = float(reply_lag_sec)
+        except (TypeError, ValueError):
+            lag = -1.0
+        if 0.0 <= lag <= _BOT_FAST_REPLY_SEC:
+            ev.append(f"fast_reply({lag:.2f}s)")
+
+    # ④ 跨群同文案
+    if same_text_group_count is not None:
+        try:
+            n = int(same_text_group_count)
+        except (TypeError, ValueError):
+            n = 0
+        if n >= _BOT_CROSS_GROUP_MIN:
+            ev.append(f"cross_group_broadcast({n})")
+
+    return ev
+
+
+def is_bot_by_behavior(evidence: list[str]) -> bool:
+    """证据是否足以**自动确认**为 bot。
+
+    规则：①（平台真相）单独即可；其它证据需累计 ≥2 条。
+    """
+    if not evidence:
+        return False
+    if "platform_role_bot" in evidence:
+        return True
+    return len(evidence) >= _BOT_AUTO_MIN_EVIDENCE
+
+
+
+# ---------------------------------------------------------------------------
 # 数据模型
 # ---------------------------------------------------------------------------
 @dataclass
@@ -355,10 +477,22 @@ class KnownBotsStore:
                 u = _canon_uid(uid)
                 if u is None:
                     continue
-                self._bots[u] = {
+                entry: dict = {
                     "bot_name": str(d.get("bot_name", "") or ""),
                     "confirmed": bool(d.get("confirmed", True)),
                 }
+                # 🔴 2026-10-27：**必须保留 auto/evidence**，否则自动判定的
+                # 来源信息读回来就丢了，`revert_auto_bots()` 会失效
+                # （entry 被重建后不含 auto 键 ⇒ 回滚找不到要删的条目）。
+                if d.get("auto"):
+                    entry["auto"] = True
+                    ev = d.get("evidence")
+                    entry["evidence"] = list(ev) if isinstance(ev, list) else []
+                    try:
+                        entry["auto_at"] = float(d.get("auto_at") or 0.0)
+                    except (TypeError, ValueError):
+                        entry["auto_at"] = 0.0
+                self._bots[u] = entry
 
     def save(self) -> None:
         with _file_lock:
@@ -370,7 +504,14 @@ class KnownBotsStore:
             return False
         return bool(self._bots.get(u, {}).get("confirmed"))
 
-    def add(self, uid: Any, name: str = "", *, confirmed: bool = True) -> None:
+    def add(self, uid: Any, name: str = "", *, confirmed: bool = True,
+            auto: bool = False, evidence: "list[str] | None" = None) -> None:
+        """登记一个 bot。
+
+        `auto=True` 表示**由行为证据自动判定**（不是 owner 手工确认）。
+        这类条目带 `evidence` 快照，可被 `revert_auto_bots()` 一键清掉 ——
+        owner 发现是真人时不必手工翻 JSON。
+        """
         u = _canon_uid(uid)
         if u is None:
             return
@@ -378,11 +519,61 @@ class KnownBotsStore:
         if name:
             entry["bot_name"] = name
         entry["confirmed"] = bool(confirmed)
+        if auto:
+            entry["auto"] = True
+            entry["evidence"] = list(evidence or [])
+            entry["auto_at"] = time.time()
+        elif self._bots.get(u, {}).get("auto"):
+            # owner 手工确认优先于自动判定 ⇒ 摘掉 auto 标记（不再被回滚误删）
+            entry.pop("auto", None)
+            entry.pop("evidence", None)
+            entry.pop("auto_at", None)
         self._bots[u] = entry
         self.save()
 
+    def register_from_evidence(self, uid: Any, name: str,
+                               evidence: "list[str]") -> bool:
+        """按行为证据**自动确认**一个 bot。返回是否新登记。
+
+        只在 `is_bot_by_behavior(evidence)` 为真时生效 —— 证据不足直接返回
+        False，由调用方继续只记日志建议。已在册的（含 owner 手工确认的）不重复写。
+        """
+        if not is_bot_by_behavior(evidence):
+            return False
+        u = _canon_uid(uid)
+        if u is None:
+            return False
+        if u in self._bots and self._bots[u].get("confirmed"):
+            return False          # 已确认，不覆盖（尤其不覆盖 owner 手工确认）
+        self.add(uid, name, confirmed=True, auto=True, evidence=evidence)
+        logger.info("[多Bot发现-自动确认] uid=%s name=%s evidence=%s",
+                    uid, name or "?", evidence)
+        return True
+
+    def revert_auto_bots(self) -> list[str]:
+        """移除**所有自动判定**的条目（保留 owner 手工确认的）。返回被移除的 UID。
+
+        owner 的纠错入口：自动判定把真人当成 bot 时，调这个一条命令恢复。
+        """
+        removed: list[str] = []
+        for u, d in list(self._bots.items()):
+            if d.get("auto"):
+                removed.append(u)
+                del self._bots[u]
+        if removed:
+            self.save()
+            logger.info("[多Bot发现] 已回滚 %d 个自动判定的 bot：%s",
+                        len(removed), removed)
+        return removed
+
+    def auto_uids(self) -> set[int]:
+        """当前由**自动证据**确认的 UID（供诊断/WebUI 展示）。"""
+        return {int(u) for u, d in self._bots.items()
+                if d.get("confirmed") and d.get("auto")}
+
     def uids(self) -> set[int]:
         return {int(u) for u, d in self._bots.items() if d.get("confirmed")}
+
 
 
 _KNOWN_BOTS_CACHE: dict[str, tuple[float, "KnownBotsStore"]] = {}
@@ -453,9 +644,36 @@ def is_bot_sender(event: dict | None, known_ids: set[int] | None = None) -> bool
 def discover_bots_from_members(members: list[dict], strict: bool = True) -> set[int]:
     """按群成员列表发现 Bot UID。
 
-    仅返回平台显式标记 role=='bot' 的 UID（平台真相，非启发式）。
-    昵称命中启发式的 UID 一律只记日志建议（见 suggest_bots_from_nickname），
-    绝不自动确认、绝不进入返回集 —— UID 才是唯一主键，避免把真人误判为 Bot。
+    ## 判据（2026-10-28 修正）
+
+    **`is_robot == True`** —— 这是 NapCat 给的**平台真相字段**。
+
+    ## 为什么之前「自动确认恒为空集」
+
+    老注释写着「2026-10-14 实测 NapCat 对第三方 bot 不标 role
+    （3 群 576 人 role=='bot' 为 0）⇒ 当前自动确认恒为空集」。
+
+    **这个诊断是错的**：NapCat 确实不标 `role='bot'`，
+    但它在成员对象里给了独立的 **`is_robot`** 字段（实测 10-28）：
+
+        群 727631526 (157 人)：
+          is_robot=True: 3889239358(chaob) / 3889001741(小小) /
+                         2854202507(可怜Bot) / 3889001246(幽幽子) / 3889000770(Tsugu)
+          is_robot=False: 3852906976(莉顺卡, level=20) / 838916454(沙琪玛, level=68)
+
+    代码一直只读 `role`，于是这个字段被整份浪费 ——
+    `known_bots.json` 的 mtime 停在 10-15，那三条全是 owner 手工填的，
+    而平台早就把答案给了。owner 的原话「可以让 bot 自己判断谁是 bot 的」。
+
+    ## 兼容性
+
+    同时认 `is_robot` 与 `role=='bot'`（两者任一为真即采信），
+    这样换网关/改版也不会退化。
+
+    ## `strict` 参数
+
+    保留签名以兼容调用方；语义未变（本函数**只**采纳平台真相，
+    昵称启发式依旧只记日志、绝不写入）。
     """
     found: set[int] = set()
     for m in members or []:
@@ -468,7 +686,8 @@ def discover_bots_from_members(members: list[dict], strict: bool = True) -> set[
             uid = int(uid)
         except (TypeError, ValueError):
             continue
-        if str(m.get("role", "")).lower() == "bot":
+        # ① 平台真相：is_robot（NapCat 实际字段）或 role=='bot'
+        if m.get("is_robot") is True or str(m.get("role", "")).lower() == "bot":
             found.add(uid)
             continue
         nick = str(m.get("nickname", "")).lower()
@@ -603,6 +822,56 @@ async def scan_group_bots(core: Any, *, max_groups: int = BOT_SCAN_MAX_GROUPS) -
                 "[多Bot发现-建议] 群=%s 昵称疑似 bot 的 UID=%s"
                 "（仅人工确认建议，绝不自动写入 known_bots.json）", gid, fresh,
             )
+
+        # ③ 🔴 2026-10-28：**行为证据自动确认**（让 bot 自己判断谁是 bot）
+        #
+        # 旧设计只看 `role=='bot'`，而 NapCat 实测**从不标记** ⇒ 自动确认恒空集
+        # （`known_bots.json` 的 mtime 停在 10-15，那三条全是 owner 手工填的）。
+        # owner 的原话：「可以让 bot 自己判断谁是 bot 的」。
+        #
+        # 这里用**群成员数据可得的**证据：QQ 等级。
+        # 缺少「秒回」「跨群同文案」所需的时序数据（扫描是快照，没有消息流），
+        # 所以只用能站住的那一条：**极低 QQ 等级 + 该号在群里的行为特征**。
+        #
+        # ⚠️ 单靠低等级**不够**（新注册的真人也不少）⇒ 还要求
+        #    `member_level` 极低（<4，几乎只有新注册 bot/小号）
+        #    **且** 昵称同时命中 bot 启发式 —— 两个独立维度同时成立才确认。
+        #    这比「只看昵称」严得多，也比「只看 role」实用。
+        try:
+            for m in members:
+                if not isinstance(m, dict):
+                    continue
+                try:
+                    muid = int(m.get("user_id"))
+                except (TypeError, ValueError):
+                    continue
+                if muid in found:
+                    continue
+                nick = str(m.get("nickname", "") or "")
+                card = str(m.get("card", "") or "")
+                lv = m.get("level")
+                try:
+                    lv_int = int(lv) if lv is not None else None
+                except (TypeError, ValueError):
+                    lv_int = None
+                evid: list[str] = []
+                if lv_int is not None and 0 <= lv_int < _BOT_SUSPECT_LEVEL_MAX:
+                    evid.append(f"low_qq_level(lv={lv_int})")
+                if any(h.lower() in (nick + " " + card).lower()
+                       for h in _BOT_NICKNAME_HINTS):
+                    evid.append(f"nickname_hint({nick or card})")
+                if not is_bot_by_behavior(evid):
+                    continue
+                if store is None:
+                    store = KnownBotsStore(data_dir)
+                if store.register_from_evidence(muid, nick or card, evid):
+                    out.setdefault("auto_confirmed", []).append(muid)
+                    logger.info(
+                        "[多Bot发现-自动确认] uid=%s nick=%s 群=%s 证据=%s"
+                        "（可回滚：bot_social.KnownBotsStore.revert_auto_bots()）",
+                        muid, nick or card, gid, evid)
+        except Exception:  # noqa: BLE001
+            logger.exception("行为证据自动确认异常（已隔离）")
     return out
 
 
