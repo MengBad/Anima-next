@@ -182,6 +182,22 @@ class ModuleAdapter:
             self._inst = inst
             self._created_at = time.time()
             self._error = ""
+            # 🔴 2026-10-28 修正：构造成功即视为 **dirty（需要落盘）**。
+            #
+            # 原实现 `_dirty` 只在 `mark_dirty()` 里置 True，而全仓
+            # **0 个调用点**（`grep mark_dirty` 只有两处定义，无调用）。
+            # 后果：`shutdown()` 里 `if ad._dirty: await ad.persist()`
+            # 这条「关之前先落盘」的分支**永远不会执行**；
+            # `persist_all()` 同理（只落 dirty 的）。
+            #
+            # 线上之所以看起来正常（`[退出落盘] 候选 22，成功 22`），
+            # 是因为 `AnimaCore._persist_cognitive_state()` 这条独立路径
+            # 先把 22 个都落了一遍 —— 属于**巧合**，不是本机制在起作用。
+            #
+            # 改成「构造即为 dirty」的语义：新构造出来的实例状态一定
+            # 还没落过盘，退出时理应写一次。落盘成功后 `persist()` 会清掉标记，
+            # 所以正常 `persist_all()` + `shutdown()` 组合只会写一次，不会重复。
+            self._dirty = True
             return inst
         except Exception as exc:  # noqa: BLE001
             self._error = f"{type(exc).__name__}: {exc}"
@@ -449,11 +465,28 @@ class ModuleRegistry:
         logger.info("[registry] 启动完成：ok=%d failed=%d", ok, failed)
         return {"ok": ok, "failed": failed}
 
-    async def persist_all(self) -> int:
-        """批量落盘。返回成功个数。"""
+    async def persist_all(self, *, only_dirty: bool = False) -> int:
+        """批量落盘（所有声明了 save 且实例存在的模块）。返回成功个数。
+
+        🔴 2026-10-28 修正：模块头注释原写「仅 dirty 的」，但实现从来没
+        看过 `_dirty` —— 而 `mark_dirty()` 全仓 **0 个调用点**，
+        所以按 dirty 过滤等于**一个都不写**。现在把语义写明：
+
+        - 默认 `only_dirty=False`：把所有能落盘的都写一遍（幂等 JSON 写）；
+        - `only_dirty=True`：只写标记为 dirty 的（供高频 tick 用，
+          配合「构造即 dirty」，避免每轮把全部 26 个模块重写一遍）。
+
+        注：本方法当前**无生产调用点**（退出路径走
+        `AnimaCore._persist_cognitive_state()`），保留给运维/测试显式触发。
+        """
         n = 0
         for name in self._order:
-            if await self._adapters[name].persist():
+            ad = self._adapters[name]
+            if ad._inst is None or not ad.has_save():
+                continue
+            if only_dirty and not ad._dirty:
+                continue
+            if await ad.persist():
                 n += 1
         return n
 
@@ -662,7 +695,7 @@ def default_specs() -> list[ModuleSpec]:
         # ── 探索 / 表达 ──────────────────────────────────────────────
         # ⚠️ exploration 必须收 core（内部要读 core.config），不能用 data_dir
         ModuleSpec("exploration", "anima.cognitive.exploration:get_exploration_manager",
-                   kind=KIND_CORE, save=None, close=None,
+                   kind=KIND_CORE, save=["_save"], close=None,
                    note="外部探索（B站/X/维基 → 群分享）"),
         # ⚠️ stickers 的 data_dir 是**必填位置参数**，且要 config
         ModuleSpec("stickers", "anima.cognitive.stickers:get_sticker_manager",
@@ -680,22 +713,25 @@ def default_specs() -> list[ModuleSpec]:
 
         # ── 危险行为 / 模拟人生 ──────────────────────────────────────
         ModuleSpec("danger", "anima.cognitive.danger:get_danger_behaviors",
-                   kind=KIND_CORE, save=None, close=None,
+                   kind=KIND_CORE, save=["_save"], close=None,
                    note="危险行为（主动追问/关系推断）"),
         ModuleSpec("life", "anima.cognitive.simulated_life:get_life",
                    kind=KIND_CUSTOM,
                    kwargs={"needs_core": True, "needs_data_dir": True},
-                   save=None, close=None,
+                   save=["_save_state"], close=None,
                    note="模拟人生（里程碑/日常）"),
         ModuleSpec("milestone", "anima.cognitive.simulated_life:get_milestone_tracker",
                    kind=KIND_DATA_DIR, save=["persist"], close=None,
                    note="里程碑追踪"),
 
         # ── 2026-10-28 新增：owner 私聊通道（D-41 扩展）─────────────
-        # ⚠️ 这个模块的工厂收 core（不是 data_dir），且**没有** save 方法
-        # （状态由内部 `_save()` 自己落盘，命名不带下划线前缀的公开方法）。
+        # ⚠️ 这个模块的工厂收 core（不是 data_dir）。
+        # 🔴 2026-10-28 修正：原注释写「没有 save 方法」是**错的** ——
+        #    `OwnerNotifier._save()` 真实存在（写 `owner_notify_state.json`）。
+        #    漏登记它的后果：`normal` 队列里还没投递的消息在重启时**静默丢失**，
+        #    而队列本来就是「重启后要接着发」的语义，丢了等于没实现。
         ModuleSpec("owner_notify", "anima.core.owner_notify:get_owner_notifier",
-                   kind=KIND_CORE, save=None, close=None,
+                   kind=KIND_CORE, save=["_save"], close=None,
                    note="owner 私聊通道（urgent 即时 / normal 队列 / digest 归 autonomy）"),
     ]
 

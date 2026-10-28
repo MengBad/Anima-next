@@ -27,16 +27,39 @@ import re
 import subprocess
 import sys
 
+import pytest
+
 _ROOT = pathlib.Path(__file__).resolve().parents[1]
 _PKG = _ROOT / "anima"
 _ARCHIVE_DIRNAME = "_archive"
 
+#: 存在于主包内、但**只能在独立 venv 里导入**的模块（按路径分量判定）。
+#:
+#: 🔴 2026-10-28 新增：`anima/rainyun_runner/` 是**独立进程脚本目录**，
+#: 由 `tools/builtin/rainyun_account.py::_runner_paths()` 用
+#: `/opt/anima/rainyun/venv/bin/python` 以 subprocess 拉起 —— 它依赖
+#: numpy==1.26 + opencv + onnxruntime + ddddocr + selenium（约 1.2G），
+#: **刻意不装进 anima 主 venv**（`requirements.txt` 里也没有）。
+#:
+#: 实测：生产主 venv 里 `import cv2` / `import numpy` / `import selenium`
+#: 全部 ModuleNotFoundError，而 `/opt/anima/rainyun/venv` 里
+#: cv2 5.0.0 + numpy 1.26.4 齐备，每天签到成功 2/2。
+#: ⇒ 把这里算作「导入必须成功」是**判据错误**，会让守卫恒红。
+#:
+#: 正确判据：主包内代码**不得**在 import 期依赖这些（必须 try/except 降级），
+#: 而 runner 目录里的脚本本来就只在另一个解释器里跑。
+_ALT_VENV_DIRNAME = "rainyun_runner"
+
 
 def _iter_live_modules() -> list[str]:
-    """返回所有**非归档**的 anima 模块全名（去重、排序）。
+    """返回所有**需要在本解释器里可导入**的 anima 模块全名（去重、排序）。
 
-    🔴 排除按**路径分量**判定（`_archive` 出现在 parts 里），
-    不能用子串 —— `anima.webui.life_archive` 是合法活跃模块，子串判定会误伤。
+    排除两类，都按**路径分量**判定（不用子串 —— `anima.webui.life_archive`
+    是合法活跃模块，子串判定会误伤）：
+
+    · `_archive/` —— 归档死代码，零生产引用
+    · `rainyun_runner/` —— 独立 venv 脚本目录，主 venv 刻意不装它的依赖
+      （见 `_ALT_VENV_DIRNAME` 的说明）
     """
     mods: list[str] = []
     for p in _PKG.rglob("*.py"):
@@ -49,6 +72,8 @@ def _iter_live_modules() -> list[str]:
             continue
         if _ARCHIVE_DIRNAME in parts:
             continue           # 归档死代码：按分量排除
+        if _ALT_VENV_DIRNAME in parts:
+            continue           # 独立 venv 脚本：主 venv 无其依赖（设计如此）
         mods.append(".".join(parts))
     return sorted(set(mods))
 
@@ -96,6 +121,45 @@ def test_archive_is_excluded_from_scan():
     assert any("life_archive" in m for m in mods), (
         "anima.webui.life_archive 是合法活跃模块，不应被排除 —— 排除逻辑可能过度"
     )
+
+
+def test_rainyun_runner_excluded_but_present():
+    """元守卫：`rainyun_runner/` 被排除，但**文件必须还在**。
+
+    排除它的理由是「依赖只装在独立 venv」，不是「删了」。
+    若有人真的删掉 runner，签到会静默失效 —— 本测试要抓住那种情况。
+
+    同时反向自检：主包里引用 runner 的那个模块**仍须可导入**
+    （`rainyun_account.py` 只用 subprocess 调它，本身不 import runner 的依赖）。
+    """
+    mods = _iter_live_modules()
+    assert not [m for m in mods if _ALT_VENV_DIRNAME in m.split(".")], (
+        "rainyun_runner 是独立 venv 脚本目录，不应进主解释器导入集"
+    )
+    runner_dir = _PKG / _ALT_VENV_DIRNAME
+    assert runner_dir.is_dir(), "rainyun_runner 目录被删 ⇒ 雨云签到会失效"
+    for name in ("sign_in.py", "icr.py", "common.py"):
+        assert (runner_dir / name).exists(), "rainyun_runner/%s 缺失" % name
+    # 反向：调用侧必须在扫描集里（它本身不依赖 cv2/selenium）
+    assert "anima.tools.builtin.rainyun_account" in mods, (
+        "调用 runner 的模块必须在导入守卫覆盖范围内"
+    )
+
+
+def test_main_venv_does_not_need_runner_deps():
+    """runner 的重依赖**不得**出现在主 venv requirements 里。
+
+    这是「独立 venv」这个设计的前提。若有人把 opencv/selenium 加进
+    `requirements.txt`，部署体积会涨 ~1.2G，而收益为零。
+    """
+    req = (_ROOT / "requirements.txt")
+    if not req.exists():
+        pytest.skip("requirements.txt 不存在")
+    text = req.read_text(encoding="utf-8", errors="replace").lower()
+    for dep in ("opencv", "selenium", "onnxruntime", "ddddocr", "numpy"):
+        assert dep not in text, (
+            "%s 属于 rainyun_runner 独立 venv 的依赖，不应进主 requirements" % dep
+        )
 
 
 # ── `_archive` 若被引用 ⇒ 不再是死代码 ──────────────────────────────────

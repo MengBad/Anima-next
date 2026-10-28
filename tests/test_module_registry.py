@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 import warnings
 
 import pytest
@@ -533,3 +534,71 @@ def test_life_reports_staleness(tmp_path):
     live = s.get("live") or {}
     assert "stale" in live and isinstance(live["stale"], bool)
     assert "flow_count" in live
+
+
+# ── 2026-10-28 修正回归：落盘语义 ───────────────────────────────────
+
+def test_construct_marks_dirty(tmp_path):
+    """构造成功即视为 dirty。
+
+    `mark_dirty()` 全仓 0 个调用点，所以 `_dirty` 长期恒为 False，
+    导致 `shutdown()` 里「关之前先落盘」的分支**永不执行**。
+    线上 `[退出落盘] 候选 22 成功 22` 是另一条独立路径
+    （`_persist_cognitive_state`）的功劳，不是本机制在工作。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    inst = _Obj()
+    # 走真实 construct 路径：factory 必须能吃下 data_dir（KIND_DATA_DIR）
+    import types
+    mod = types.ModuleType("_regtest_mod")
+    mod.get_it = lambda data_dir=None, **kw: inst
+    sys.modules["_regtest_mod"] = mod
+    reg.register_spec(ModuleSpec("y", "_regtest_mod:get_it", save=["save"], close=None))
+    asyncio.run(reg.startup())
+    ad = reg._adapters["y"]
+    assert ad._inst is inst
+    assert ad._dirty is True, "构造后未标记 dirty ⇒ 退出时不会落盘"
+    assert asyncio.run(reg.persist_all(only_dirty=True)) == 1
+    assert inst.saved == 1
+    assert ad._dirty is False, "落盘成功后应清标记"
+
+
+def test_persist_all_only_dirty_skips_clean(tmp_path):
+    """`only_dirty=True` 时不重写已落盘的模块（避免每轮全量重写）。"""
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    inst = _Obj()
+    reg.register_spec(ModuleSpec("x", "__main__:noop", save=["save"], close=None))
+    reg._adapters["x"]._inst = inst
+    reg._adapters["x"]._dirty = True
+    assert asyncio.run(reg.persist_all(only_dirty=True)) == 1
+    assert asyncio.run(reg.persist_all(only_dirty=True)) == 0
+    assert inst.saved == 1
+
+
+def test_all_declared_saves_exist_on_real_specs(tmp_path):
+    """**声明了 save 的 spec，实例必须真有那个方法。**
+
+    这是本次遍历发现的真实缺陷形态：`owner_notify` / `life` /
+    `exploration` / `danger` 四个模块都有落盘方法，但 spec 写的是
+    `save=None` ⇒ 退出时它们的最后一段状态**静默丢失**
+    （`owner_notify` 丢的是待投递队列，等于「重启后接着发」没实现）。
+
+    断言写成「不允许声明了却没有」还不够 —— 真正要防的是
+    「实例有 save 但 spec 没登记」。用探测把两边都对齐。
+    """
+    reg = ModuleRegistry(data_dir=str(tmp_path))
+    reg.register_all(default_specs())
+    asyncio.run(reg.startup(_FakeCore(str(tmp_path))))
+    _CANDIDATES = ("save", "persist", "_save", "_save_state", "_persist", "flush")
+    problems = []
+    for s in reg.status():
+        ad = reg._adapters[s["name"]]
+        if ad._inst is None:
+            continue
+        actual = [c for c in _CANDIDATES
+                  if callable(getattr(ad._inst, c, None))
+                  and not callable(getattr(type(ad._inst), c, None)) is False]
+        actual = [c for c in _CANDIDATES if callable(getattr(ad._inst, c, None))]
+        if actual and not ad.has_save():
+            problems.append(f"{s['name']}: 有 {actual} 但 spec.save=None")
+    assert not problems, "模块有落盘方法却未登记（退出时会丢状态）：\n" + "\n".join(problems)
