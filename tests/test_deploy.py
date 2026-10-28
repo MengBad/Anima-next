@@ -140,3 +140,93 @@ def test_deploy_script_has_no_unconditional_chmod_of_production_config():
 
     # 全文件不得另有 run(...chmod...)。
     assert _runchmod_lines(tree) == inside, "自检函数之外还有 run(...chmod...)"
+
+
+# ---------------------------------------------------------------------------
+# 停机竞态：必须先确认进程退净再动 data/（2026-10-28 生产事故）
+# ---------------------------------------------------------------------------
+
+def _deploy_src() -> str:
+    from pathlib import Path
+    import _deploy
+    return Path(_deploy.__file__).read_text(encoding="utf-8")
+
+
+def test_stop_waits_for_process_exit_before_touching_data():
+    """`systemctl stop` 之后必须**显式等待进程退净**，才能动 data/ 目录。
+
+    ## 事故（2026-10-28 16:51:20）
+
+    部署时 anima 在**收到 SIGTERM 的同一秒**连抛 5 个
+    `OSError: [Errno 30] Read-only file system`：
+
+        16:51:20  SIGTERM，开始优雅停止
+        16:51:20  ERROR 心跳持久化失败 / 时间感知 / 欲望系统 / 关系引擎 / crossgroup
+        16:51:20  [registry] 关闭完成：ok=7 failed=1
+
+    ## 根因不是「磁盘只读」，是竞态
+
+    `systemctl stop` 对 `Type=simple` 只保证「发出 SIGTERM 并等主进程退出」，
+    而 Python 的优雅停止在 asyncio 里跑（`registry.shutdown()` 逐个 persist），
+    主进程退出与协程收尾之间有窗口；
+    脚本紧接着 `rm -rf data` 把整个数据目录删掉再重建，
+    进程此时若还在写 ⇒ 目录 inode 已换 ⇒ EROFS。
+
+    ⇒ 修法：轮询 `is-active` + 残留进程，两者都干净才继续。
+    """
+    src = _deploy_src()
+    i = src.index('systemctl stop anima')
+    window = src[i:i + 4000]
+
+    assert "等待进程完全退出" in window, "stop 后没有等待步骤"
+    assert "systemctl is-active" in window, "没有检查 unit 是否真的停了"
+    assert "seq 1 30" in window, "等待循环缺失或没有超时上限"
+    # 超时必须能兜底强杀，否则部署会卡死
+    assert "kill -9" in window, "超时后没有强制结束兜底"
+
+
+def test_residual_process_check_does_not_match_itself():
+    """残留进程判定**不能**用 `pgrep -f 'anima start'`。
+
+    实测（生产机）：该命令会把执行它的 shell 自己也匹配进去 ——
+    `bash -c "... pgrep -af 'anima start' ..."` 的命令行含该字符串
+    ⇒ 计数恒 ≥1 ⇒ 等待永远超时（部署每次都白等 30 秒）。
+
+    ⇒ 必须用 `pgrep -x python` + `ps -o args=` 精确比对 argv。
+    """
+    src = _deploy_src()
+    i = src.index("等待进程完全退出")
+    window = src[i:i + 3000]
+
+    assert "pgrep -fc" not in window, "还在用 pgrep -f 计数（会匹配到自身）"
+    assert "pkill -9 -f" not in window, "还在用 pkill -f（同样会误伤自身）"
+    assert "pgrep -x python" in window, "应改用 pgrep -x python 取 PID"
+    assert "-m anima start" in window, "应精确比对 argv"
+
+
+def test_data_restore_is_atomic_rename_not_rm():
+    """恢复 data/ 必须用**原子换名**，不能用 `rm -rf` + `mv`。
+
+    `rm -rf data && mv data.deploy-bak data` 有两个问题：
+      ① `rm -rf` 不可逆 —— `mv` 那步若失败（权限/中断），数据就没了，
+         只剩 `data.deploy-bak` 这个非标准名，没人知道怎么恢复；
+      ② 它把「删除」和「恢复」拆成两条命令，中间窗口里 data/ 根本不存在。
+
+    ⇒ 改成先 `mv data data.from-bundle.<ts>` 再 `mv data.deploy-bak data`，
+      全程 rename（同分区原子），任何一步失败都能手工回滚。
+    """
+    src = _deploy_src()
+    i = src.index("生产数据目录已原子恢复")
+    # 只看「恢复」这一段（往前 700 字符），不含前面 data.deploy-bak 的备份语句
+    window = src[max(0, i - 700):i + 200]
+
+    assert "mv data.deploy-bak data" in window, "没有把备份换回来"
+    assert "data.from-bundle" in window, "没有先给现有 data 改名留退路"
+    # 恢复段内不得出现「删掉整个 data 目录」的写法
+    for ln in window.splitlines():
+        code = ln.strip()
+        if code.startswith("#"):
+            continue
+        assert "rm -rf {REMOTE_ROOT}/data " not in code and \
+               'rm -rf {REMOTE_ROOT}/data"' not in code, \
+            f"仍在 rm -rf 整个 data 目录：{code}"
