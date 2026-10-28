@@ -597,20 +597,27 @@ class AnimaCore:
             from anima.core.registry import get_registry
             reg = get_registry(str(self.config.persistence.data_dir))
             n = 0
+            _seen = 0
+            _cand = 0
             for spec_name in reg.names():
+                _seen += 1
                 ad = reg._adapters.get(spec_name)
                 if ad is None or ad._inst is None or not ad.has_save():
                     continue
+                _cand += 1
                 try:
                     # persist() 是 async；此处是同步退出路径 ⇒ 用 run_until_complete
                     # 但事件循环可能已在关闭中，故优先走同步直调
-                    ok = self._persist_one_sync(ad)
-                    if ok:
+                    if self._persist_one_sync(ad):
                         n += 1
                 except Exception:  # noqa: BLE001
                     logger.debug("退出落盘 %s 失败", spec_name, exc_info=True)
-            if n:
-                logger.info("[退出落盘] 注册表已保存 %d 个模块", n)
+            # 无论成功与否都留痕 —— 用来区分三种情况：
+            #   · 注册表是空的（_seen=0）⇒ registry 没启动
+            #   · 扫到了但没实例/没 save（_cand=0）⇒ startup 没跑
+            #   · 扫到了但全失败（n=0, _cand>0）⇒ 每个模块的 save 都有问题
+            logger.info("[退出落盘] 注册表 %d 个模块，候选 %d，成功 %d",
+                        _seen, _cand, n)
         except Exception:  # noqa: BLE001
             logger.exception("注册表退出落盘异常（已隔离）")
 
