@@ -1213,6 +1213,35 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             logger.info("[装饰剥离] 出站含 emoji/颜文字 %d 处 → 已清", _deco)
     except Exception:
         logger.debug("装饰剥离失败（已隔离）", exc_info=True)
+    # 🔴 2026-10-28：**剥掉模型自造的「伪表情包标记」**。
+    #
+    # 生产实证（18:50–18:54，同一个用户连发 3 条）：
+    #   「什么离谱的 XP 组合啊喂！…[表情包:无语]」
+    #   「切，这不就是纯纯得傲娇大姐姐系吗…[表情包:无语]」
+    #   「哼，干嘛突然这种语气看着我……[表情包:无语]」
+    #
+    # 出站段结构却是 `segs=['reply','text']` —— **没有 image 段**。
+    # 也就是说：它**没有调用 `pick_sticker` 工具**（日志零匹配），
+    # `sticker_to_send` 从未被设置，那段文字只是它自己写的一个占位符。
+    #
+    # 危害：用户在 QQ 里看到的是一个**裸露的方括号标记**，
+    # 既不是表情包、也不像人话 —— 和 `【步骤1】`/`[已交付 abc]` 同一类问题：
+    # **把内部占位符当成正文发出去**。
+    #
+    # 为什么必须在这剥（而不是只靠 prompt）：
+    # 人格正本已写「不用 emoji，也不用符号画的表情」，但那是软约束 ——
+    # 模型自己发明了这个格式，prompt 里根本没有它（`grep "表情包:"` 在
+    # config/ 与 pipeline/ 下零结果）。禁一个不存在的写法只能靠事后清理。
+    #
+    # 处置：**删除标记本身，保留正文**（不整条拒发）——
+    # 那句话的内容是好的，只是尾巴上挂了个假标记。
+    try:
+        _before_stub = ctx.reply or ""
+        ctx.reply, _stub_n = _strip_fake_sticker_mark(_before_stub)
+        if _stub_n:
+            logger.info("[伪表情标记] 出站含自造占位符 %d 处 → 已剥离", _stub_n)
+    except Exception:
+        logger.debug("伪表情标记剥离失败（已隔离）", exc_info=True)
     # 时段词纠偏（见 `_PERIOD_WORD_WINDOWS` 注释）：模型不听 prompt 的第二道闸。
     # 放在所有改写之前 —— 后面几条分支可能整段替换，替换后就不需要再纠。
     try:
