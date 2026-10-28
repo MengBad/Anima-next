@@ -295,6 +295,8 @@ exploration.daily_share_limit: 0  = 当天完全不分享
 ## 相关
 
 - 定位权威：[`docs/VISION.md`](docs/VISION.md)
+- **实现层架构**：[`docs/ARCHITECTURE_CURRENT.md`](docs/ARCHITECTURE_CURRENT.md)
+- **贡献/改代码指南**：[`CONTRIBUTING.md`](CONTRIBUTING.md)
 - 阶段坐标：[`docs/PHASE_COORDINATES.md`](docs/PHASE_COORDINATES.md)
 - 工程债：[`ENGINEERING_DEBT_LEDGER.md`](ENGINEERING_DEBT_LEDGER.md)
 - 接线状态与踩坑：[`MAINTENANCE.md`](MAINTENANCE.md)
