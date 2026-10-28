@@ -432,10 +432,23 @@ class ModuleRegistry:
         return [self._adapters[n].status() for n in self._order]
 
     def summary(self) -> dict[str, Any]:
+        """汇总快照。
+
+        ## 为什么 `declared_*` 与 `with_*` 都给
+
+        实例方法形态的 save/close（如 `XBrowserSession.close`）**未构造时探测不到**，
+        所以「未 startup 就查面板」会看到 `with_close=7` 而不是 8。
+        那不是缺陷，但会误导 —— 因此同时给出 spec 声明的数量，
+        两者不一致时一眼能看出「是没构造，还是 spec 写错了」。
+        """
         st = self.status()
         return {
             "total": len(st),
             "instantiated": sum(1 for s in st if s["instantiated"]),
+            # 声明数（来自 spec，与是否构造无关）
+            "declared_save": sum(1 for s in st if s["declared_save"]),
+            "declared_close": sum(1 for s in st if s["declared_close"]),
+            # 实例真实能力（未构造的实例方法探测不到）
             "with_save": sum(1 for s in st if s["has_save"]),
             "with_close": sum(1 for s in st if s["has_close"]),
             "errors": [s for s in st if s["error"]],

@@ -371,3 +371,21 @@ def test_tool_registry_list_is_serializable():
     register_all_builtin(r, core=None)
     json.dumps(r.list_tools())      # 不可序列化会直接抛
     json.dumps(r.status())
+
+
+def test_summary_distinguishes_declared_from_actual():
+    """`summary()` 必须同时给「spec 声明数」与「实例真实能力数」。
+
+    实例方法形态的 save/close（如 `XBrowserSession.close`）**未构造时探测不到**，
+    所以「未 startup 就查面板」会看到 with_close 比 declared_close 少一个。
+    那不是缺陷，但只给一个数会误导 —— 两个都给，一眼能区分
+    「是没构造」还是「spec 写错了」。
+    """
+    reg = ModuleRegistry(data_dir="data")
+    reg.register_all(default_specs())
+    s = reg.summary()
+    assert "declared_save" in s and "declared_close" in s
+    assert s["declared_close"] >= s["with_close"], \
+        "声明数不应少于已探测到的实例能力数"
+    # 未构造时，实例方法形态探测不到 ⇒ with_* 可能小于 declared_*
+    assert s["instantiated"] == 0
