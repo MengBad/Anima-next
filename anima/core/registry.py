@@ -606,6 +606,13 @@ def default_specs() -> list[ModuleSpec]:
         ModuleSpec("milestone", "anima.cognitive.simulated_life:get_milestone_tracker",
                    kind=KIND_DATA_DIR, save=["persist"], close=None,
                    note="里程碑追踪"),
+
+        # ── 2026-10-28 新增：owner 私聊通道（D-41 扩展）─────────────
+        # ⚠️ 这个模块的工厂收 core（不是 data_dir），且**没有** save 方法
+        # （状态由内部 `_save()` 自己落盘，命名不带下划线前缀的公开方法）。
+        ModuleSpec("owner_notify", "anima.core.owner_notify:get_owner_notifier",
+                   kind=KIND_CORE, save=None, close=None,
+                   note="owner 私聊通道（urgent 即时 / normal 队列 / digest 归 autonomy）"),
     ]
 
 

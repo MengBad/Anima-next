@@ -67,6 +67,21 @@ class ParsedCommand:
 # ---------------------------------------------------------------------------
 _MAX_LINES = 14
 
+#: 🔴 2026-10-28：需要**即时**私聊 owner 的告警类型（D-41 扩展）。
+#:
+#: 判据：不处理会「继续恶化」或「已经影响功能」的。
+#: 其余归 normal（进队列，随心跳发，不打断 owner）。
+#:
+#: 加新类型前先问：这条晚 30 秒知道有关系吗？没关系就别放这儿 ——
+#: 告警发太勤会让 owner 关掉通知，那所有主动交付的价值都归零。
+_URGENT_ALERT_TYPES: frozenset[str] = frozenset({
+    "permission_drift",     # 权限漂移：治理面被改
+    "outbound_failures",    # QQ 出站失败：用户收不到消息
+    "llm_failures",         # LLM 持续失败：它答不了话
+    "circuit_open",         # 熔断打开：已停止重试
+    "data_corruption",      # 数据损坏：状态可能已坏
+})
+
 
 def _health_topic_key(text: str) -> str:
     """把 health_alerts 标题归一成主题键（剥掉计数与标点）。
@@ -406,6 +421,25 @@ class HumanAIControlSurface:
                     if _topic:
                         _existing.add(_topic)
                     made.append(a)
+                    # 🔴 2026-10-28：**同步入队到 owner 私聊**（D-41 扩展）。
+                    #
+                    # 此前这里只 `tasks.create()` ⇒ 待办躺在 WebUI 里等人来取，
+                    # 最快要等次日 09:00 的 digest（且只列前 5 条）才可能被看到。
+                    # 「权限漂移 9 次」「LLM 全挂」这类告警等不到明早。
+                    #
+                    # 用 `enqueue()` 而不是 `await notify()`：本链是**同步**的
+                    # （`detect_alerts` → `tasks.create`），await 会污染整条调用链。
+                    # 入队即返回，真正的发送由心跳 `flush()` 完成（≤30s 延迟）。
+                    try:
+                        from anima.core.owner_notify import get_owner_notifier
+                        get_owner_notifier(self._core).enqueue(
+                            "urgent" if a.get("type") in _URGENT_ALERT_TYPES else "normal",
+                            f"[健康告警] {a.get('message', '')}",
+                            source="health_alerts",
+                        )
+                    except Exception:  # noqa: BLE001
+                        # 通知失败绝不影响建单本身
+                        logger.debug("健康告警入队失败（已隔离）", exc_info=True)
                 except Exception:
                     continue
             return made

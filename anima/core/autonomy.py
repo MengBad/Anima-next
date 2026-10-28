@@ -2121,6 +2121,29 @@ class Heartbeat:
         except Exception:
             logger.debug("owner 私聊交付失败（已隔离）", exc_info=True)
 
+        # 🔴 2026-10-28：**owner 私聊队列 flush**（D-41 扩展）。
+        #
+        # `_owner_digest_tick` 的语义是「每日摘要」（日切一次 / 按主题合并 /
+        # 最多 5 条）。它处理不了**即时告警** —— QQ 出站连续失败、LLM 全挂，
+        # 等到明早 09:00 才说就晚了。
+        #
+        # 本段 flush `OwnerNotifier` 的 normal 队列：
+        #   · 每 tick 最多发 3 条（`limit=3`），不会一次倒出 20 条
+        #   · 只发私聊，群侧零变化
+        #   · owners 为空时队列保留（不清空），配好后还能补发
+        #
+        # 三层分工（见 `core/owner_notify.py` 模块 docstring）：
+        #   urgent → notify() 内立即发（60s 最短间隔）
+        #   normal → 本段 flush
+        #   digest → `_owner_digest_tick` 自己处理
+        try:
+            from anima.core.owner_notify import get_owner_notifier
+            _flushed = await get_owner_notifier(self.core).flush(now)
+            if _flushed:
+                logger.info("[owner私聊] 队列 flush %d 条", _flushed)
+        except Exception:
+            logger.debug("owner 私聊队列 flush 失败（已隔离）", exc_info=True)
+
         # 🔴 2026-10-26：**雨云每日签到提醒**（只读）。
         # 与 `_owner_digest_tick` 同一纪律：日切一次 + 持久化标记 +
         # 过了配置小时才发 + 无 owner 不伪造发送 + 任何异常只记日志。
