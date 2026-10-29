@@ -2214,8 +2214,10 @@ class Heartbeat:
                         rep.cancelled_selfcode, rep.resolved_desires,
                     )
                 # SelfCode 效果评估：只标记建议卸载，永不自动删除
+                # 🔴 2026-10-29：self_code 已下线（design §10）。此段保留为兼容开关，
+                # 但 self_code.enabled 不会再产出任何工具，evaluate_tools 必然返回空。
                 try:
-                    if bool(getattr(self.core.config.self_code, "enabled", False)):
+                    if bool(getattr(getattr(self.core.config, "self_code", None), "enabled", False)):
                         from anima.cognitive.selfcode import get_selfcode_manager
                         sug = get_selfcode_manager(self.core).evaluate_tools()
                         if sug:

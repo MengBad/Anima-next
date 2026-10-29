@@ -437,10 +437,10 @@ def start(config_path, once, identity_attestation):
             click.echo(f"Skills: 已加载 {core.skills.install_into_tools()} 个")
             from anima.skills import SkillDraftManager
             core.skill_drafts = SkillDraftManager(cfg.persistence.data_dir, core)
-        if cfg.self_code.enabled:
-            from anima.cognitive.selfcode import get_selfcode_manager
-            restored = get_selfcode_manager(core).load_installed()
-            click.echo(f"SelfCode 运行时能力: 已恢复 {restored} 个（均为此前 Owner 已批准项）")
+        if getattr(getattr(cfg, "self_code", None), "enabled", False):
+            # 🔴 2026-10-29：self_code 已下线（design §10）。开关保留只为兼容旧配置；
+            # 若仍为 true，不再加载安装的运行时工具——那条链从未成功产出过可用工具。
+            click.echo("SelfCode 已下线（生产 5 次调用 0 成功）；造能力请用 Skill。")
         click.echo(f"工具已注册: {len(core.tools.tools)} 个")
 
         # 初始化记忆（含持久化）

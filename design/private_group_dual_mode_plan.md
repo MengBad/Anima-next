@@ -410,6 +410,63 @@ bot 回落到既有兜底话术（「本喵这边刚卡了一下」）。
 教训：这台 VPS 的 LLM 依赖一条**会按源 IP 熔断的外部链路**，且 `anima.service` 未配代理。
 若再次出现「瞬间 000」，先测 `curl -x http://127.0.0.1:7890` 做对照，再去 CPA 查访问控制。
 
+## 10. self_code 下线与 Skill 替代评估（2026-10-29）
+
+### 10.1 下线依据（生产实证）
+
+| 项 | 实测 |
+|---|---|
+| 调用次数 | 5 次（2026-10-16 ~ 10-26） |
+| 成功进入待审批 | **0 次** |
+| 已安装工具 | 空（`selfcode_stats.json` = `{"tools": {}}`） |
+| workspace 产物 | 17 个 `.py`，**全部**卡在静态审查 |
+
+拒绝原因是同一个死结：
+
+```
+selfcode 受理期拒绝（需要网络出口）
+静态审查：禁止导入 aiohttp → 改用 urllib → 禁止导入 urllib → 改用 httpx → 禁止导入 httpx
+```
+
+**模型的意图（做网页抓取工具）与静态审查的禁令直接冲突**，且这个矛盾从未解开。
+叠加 `self_code.anthropic_api_key` 为空、`claude` CLI 虽有但未配 key，
+这条链在任何维度上都不具备可用性。
+
+### 10.2 下线范围
+
+| 位置 | 处置 |
+|---|---|
+| `tools/builtin/__init__.py` | 摘除 `self_code` 工具注册（`danger=True` 工具降至 1 个） |
+| `core/registry.py` | 摘除 `selfcode` ModuleSpec（模块数 33 → 32） |
+| `cognitive/danger.py` | 自升级提案不再转工程任务，只记审计事件 `self_improvement_proposal` |
+| `llm/commands.py` | `!anima selfcode` 只回一句「已下线」 |
+| `cli.py` | 不再加载已安装运行时工具 |
+| `core/autonomy.py` | `evaluate_tools` 保留但恒空 |
+
+`anima/cognitive/selfcode.py` 本体**保留未删**——它是可回滚点，且无注册后不会被调用。
+
+### 10.3 Skill 替代评估（结论：已有实现，无需新建）
+
+调研 Memoh 的 skill 机制（`internal/skills/`）后对比，**现有 `anima/skills/` 已经覆盖且更严格**：
+
+| 能力 | Memoh | 现有 `anima/skills/` |
+|---|---|---|
+| 声明式格式 | `SKILL.md`（YAML frontmatter） | `skill.yaml`（pydantic `SkillManifest` 强校验） |
+| 执行类型 | 纯指令（模型自己照做） | `prompt` / `http_get` / `tool` 三种 |
+| 权限上界 | 无显式模型 | **机械保证**：`max(技能等级, 目标工具等级)` |
+| 危险工具组合 | 无限制 | `danger` / `capability_only` / `agent_` 前缀一律拒绝 |
+| SSRF 防护 | — | `http_get` 只接受固定地址，不提供请求头/方法/重定向 |
+
+Memoh 的 `skill-creator` 值得借鉴的是**工作流约束**：用 `init_skill.py` 脚手架 +
+`quick_validate.py` 校验器保证产物合法，不指望模型自觉。
+
+**建议**（未实施，待 owner 决定）：
+1. 给 `anima/skills/` 加一个 `skill-creator` 内置 skill，教模型按 workflow 产出 `skill.yaml`
+2. 加一个校验命令（复用 `SkillManifest` 的 pydantic 校验即可）
+3. 把上述接进 `owner_agent` 的规划提示，让「做个 XX 能力」落到 Skill 而非代码
+
+**这条路的优势**：不执行代码 ⇒ 无沙箱联网矛盾；声明式 ⇒ 可审计；已有权限上界保证。
+
 ## 9. 未决
 
 - `hourly_budget` / `min_gap_sec` 的初值需要影子期数据校准

@@ -881,7 +881,11 @@ class AnimaCommandsMixin:
         at_prefix, target_id = ctx.at_prefix, ctx.target_id
         user_id, group_id, detail_type, event = (
             ctx.user_id, ctx.group_id, ctx.detail_type, ctx.event)
-        # SelfCode 效果：列表 / 评估建议卸载 / 驳回建议 / 禁用 / 删除（删除需 Owner 明确）
+        # 🔴 2026-10-29：self_code 已下线（design §10，生产 5 次调用 0 成功）。
+        # 命令保留但只回一句说明，避免 owner 以为功能还在。
+        return (f"{at_prefix}SelfCode 已下线喵。"
+                f"它在生产跑过 5 次、0 次成功——沙箱要联网而静态审查禁联网，"
+                f"这个矛盾没解开。造能力请用 Skill。")
         from anima.cognitive.selfcode import get_selfcode_manager
         mgr = get_selfcode_manager(self.core)
         parts = raw_cmd.split()

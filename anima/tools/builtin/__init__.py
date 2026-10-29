@@ -18,7 +18,7 @@ from .social import (
     make_set_group_card, make_group_ban, make_group_kick,
     make_get_user_relations, make_get_member_facts,
 )
-from .owner import make_propose_skill_draft, make_self_code, make_generate_image, make_edit_image
+from .owner import make_propose_skill_draft, make_generate_image, make_edit_image
 from .sticker import make_sticker_tools
 from .merge import make_merge_forward
 from .honor import make_group_honor
@@ -474,19 +474,11 @@ def register_all_builtin(registry, core=None) -> None:
             make_bilibili_discover(core), required=["keyword"], min_level=LEVEL_USER,
         ))
 
-        registry.register(Tool(
-            "self_code",
-            "用 agentic coder（Claude Code CLI）把自然语言目标编程成待 Owner 审批的运行时能力。"
-            "当现有工具都做不到用户想要的事时调用，例如「做个查天气的工具」「加一个每日早八提醒喝水的能力」。"
-            "候选经双 Agent 审查和沙箱自测后会在 WebUI 展示作用、风险、文件和测试；"
-            "只有 Owner 点击批准后才会安装。高危操作，仅限 owner 触发。",
-            {
-                "goal": {"type": "string",
-                         "description": "要编程实现的自然语言目标，如『做一个根据城市名查天气的工具』"},
-            },
-            make_self_code(core), required=["goal"], min_level=LEVEL_OWNER, danger=True,
-        ))
-
+        # 🔴 2026-10-29：self_code 工具已下线（design §10）。
+        # 生产实证 5 次调用 **0 成功**，全部卡在「受理期拒绝（需要网络出口）」
+        # 或静态审查的导入禁令（aiohttp/urllib/httpx）——沙箱要联网、审查禁联网，
+        # 这个矛盾从未解开，导致 17 个 workspace 产物无一能安装。
+        # 造能力改走 Skill 路线（anima/skills/，声明式、无代码执行）。
         registry.register(Tool(
             "generate_image",
             "当用户明确要求【从无到有画一张全新图片】或制作视觉素材（新图，非修改已有图）时调用。"

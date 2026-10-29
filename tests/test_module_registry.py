@@ -467,7 +467,8 @@ def test_all_modules_have_live_summary(tmp_path):
     st = reg.status()
     empty = [s["name"] for s in st if not (s.get("live") or {}).get("source")]
     assert not empty, f"以下模块没有活体摘要：{empty}"
-    assert len(st) == 33
+    # 2026-10-29：selfcode 模块下线（design §10），33 → 32。
+    assert len(st) == 32
 
 
 @pytest.mark.parametrize("name,expect_keys", [

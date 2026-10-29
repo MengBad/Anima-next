@@ -681,10 +681,7 @@ def default_specs() -> list[ModuleSpec]:
                    kind=KIND_DATA_DIR, save=["_save"],
                    close=["close_capability_manager"],
                    note="内生能力（动态工具注册）"),
-        ModuleSpec("selfcode", "anima.cognitive.selfcode:get_selfcode_manager",
-                   kind=KIND_CORE, save=None,
-                   close=["close_selfcode_manager"],
-                   note="SelfCode（生成/审查/安装工具）"),
+        # 🔴 2026-10-29：self_code 已下线（design §10，生产 5 次调用 0 成功）。
         ModuleSpec("controlled_iteration", "anima.cognitive.controlled_iteration:get_controlled_iteration",
                    kind=KIND_DATA_DIR, save=["_save"], close=None,
                    note="受控自我迭代（补丁审批）"),

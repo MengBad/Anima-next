@@ -509,27 +509,21 @@ class DangerBehaviors:
                 goal = d.goal or d.content
                 self._audit("self_improvement_trigger", goal=goal[:120])
                 logger.info("DANGER: 自升级提案生成触发 goal_len=%d", len(goal))
-                from anima.cognitive.selfcode import get_selfcode_manager
-                # 只生成 WebUI 待审批工程任务，绝不自动安装。
+                # 🔴 2026-10-29：self_code 已下线（design §10）。
+                # 自升级提案不再自动转成工程任务——那条链 0 成功率，
+                # 且现在没有 WebUI 承载审批界面。改为只记录提案供 owner 私聊查看。
                 owners = list(getattr(getattr(self.core.config, "permissions", None), "owners", []) or [])
                 if not owners:
                     self._audit("self_improvement_skipped", reason="no_owner")
-                    logger.warning("DANGER: 自升级跳过——未配置 Owner，无法创建审批任务")
+                    logger.warning("DANGER: 自升级跳过——未配置 Owner，无法通知")
                     return
-                task = await get_selfcode_manager(self.core).create_engineering_task(
-                    str(goal), int(owners[0]),
-                )
                 ds.mark_self_improvement_done(d)
                 self._audit(
-                    "self_improvement_result",
-                    task_id=getattr(task, "id", ""),
-                    status=getattr(task, "status", ""),
-                    result=(getattr(task, "status", "") or "")[:300],
+                    "self_improvement_proposal",
+                    goal=str(goal)[:200],
+                    note="self_code 已下线，提案仅记录不执行",
                 )
-                logger.info(
-                    "DANGER: 自升级提案完成 task=%s status=%s",
-                    getattr(task, "id", ""), getattr(task, "status", ""),
-                )
+                logger.info("DANGER: 自升级提案已记录（self_code 已下线，不自动执行）goal=%s", str(goal)[:80])
                 return
             # 没有现成自升级欲望 → 偶尔用 LLM 合成一个具体目标
             # B 降噪：存在未关闭故障单/core_patch 时不随机合成玩具能力。

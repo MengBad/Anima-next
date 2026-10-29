@@ -7,15 +7,25 @@ def test_parse_systemd_identity():
 
 
 def test_post_deploy_smoke_is_read_only_and_checks_critical_links():
+    """部署后冒烟必须只读，且覆盖关键链路。
+
+    2026-10-29：WebUI 整体移除后，原探针请求的 8088/api/health 等端点已不存在，
+    部署会 30s 超时误判失败。改为不依赖 WebUI 的证据链（design §5.5）。
+    """
     script = _render_post_deploy_smoke("/opt/anima")
 
-    assert "/api/health" in script
-    assert "/api/modules/status" in script
-    assert "/api/evaluation" in script
-    assert "channel_connected" in script
-    assert "heartbeat_running" in script
+    # 断言「替代 webui 的证据源」
+    assert "OneBot11 WS 已连接" in script
+    assert "failed=0" in script
+    assert "自主心跳已启动" in script
+    assert "8088" in script          # 必须确认该端口已消失
     assert "_tool_runtime_status" in script
-    assert "Authorization" in script
+    # 不得回退到已被删除的 WebUI 端点（只看可执行行，注释里的说明不算）
+    code_lines = [ln for ln in script.splitlines() if not ln.strip().startswith("#")]
+    code = "\n".join(code_lines)
+    assert "/api/health" not in code
+    assert "/api/modules/status" not in code
+    # 只读纪律
     assert "POST" not in script
     assert "DELETE" not in script
 
