@@ -5,7 +5,12 @@ register_all_builtin(registry, core) 把所有内置工具注册到 ToolRegistry
 
 from __future__ import annotations
 
+import asyncio
+import logging
+
 from anima.tools import Tool, LEVEL_READONLY, LEVEL_USER, LEVEL_ADMIN, LEVEL_OWNER
+
+logger = logging.getLogger("anima.tools.builtin")
 
 from .system import tool_time, tool_calc, tool_weather, tool_runtime_status
 from .web import tool_web_search
@@ -355,6 +360,42 @@ def register_all_builtin(registry, core=None) -> None:
         # M0.4 Pilot：filesystem.read 的 Provider。additive —— name/handler/min_level 未变。
         capability_ids=[PILOT_CAPABILITY_ID_2],
         granted_scopes={"filesystem": True},
+    ))
+    async def _tool_browse_web(url: str, max_chars: int = 6000) -> str:
+        """打开一个公开网页，抽取可见正文。"""
+        from anima.tools.browser import BrowserUnavailable, fetch_page
+        try:
+            result = await fetch_page(url, max_chars=int(max_chars or 6000))
+        except BrowserUnavailable:
+            # 前缀必须命中 _TOOL_FAILURE_PREFIXES，否则会被判成功（fail-open）
+            return "工具暂时不可用：浏览器组件没装好，打不开网页。"
+        except ValueError:
+            # 校验失败的理由已是人话，由 browser.validate_url 保证不含内部细节
+            return "错误: 这个网址不符合要求（只支持公开的 http/https 网页）。"
+        except asyncio.TimeoutError:
+            return "错误: 网页打开超时，站点可能很慢或不可达。"
+        except Exception:
+            logger.exception("browse_web 失败 url=%s", url)
+            # 🔴 绝不把异常对象写进返回值：模型可见 ⇒ 可能原样出站
+            return "错误: 网页打开失败，站点不可达或被拒绝。"
+        if not result.text.strip():
+            return f"打开了「{result.title}」，但页面没有可读正文（可能是纯脚本渲染或需要登录）。"
+        return result.render(int(max_chars or 6000))
+
+    registry.register(Tool(
+        "browse_web",
+        "打开一个**具体的网址**并读取正文。用于：用户给了链接但 search_web 查不到内容、"
+        "需要看某个页面的实际内容（公告/文档/活动页/价格页）。"
+        "**只能打开公开网页**，不能登录、不能提交表单、不能操作页面。"
+        "只是搜信息用 search_web 更快；要读某个具体页面内容才用它。",
+        {
+            "url": {"type": "string", "description": "要打开的完整网址（http/https）"},
+            "max_chars": {"type": "integer",
+                          "description": "正文最多取多少字符，默认 6000"},
+        },
+        _tool_browse_web,
+        required=["url"],
+        min_level=LEVEL_USER,
     ))
     registry.register(Tool(
         "run_python", "在安全沙箱中执行 Python 代码。可用于数学计算、数据处理、图片的几何/像素级操作（旋转/翻转/缩放/裁剪/加文字/贴图/调亮度对比度/纯色滤镜等，PIL 可用；动画 GIF 用 _edit_each_frame 处理每帧后 _save_output(frames,'out.gif') 保留动画）。注意：run_python 只能做像素/几何变换，无法理解图片内容做语义级修改（如换风格、改人物表情、改背景内容、改主体、风格迁移等）——这类需求必须用 edit_image 工具调用 Gemini 图像模型。禁止访问网络和文件系统。",

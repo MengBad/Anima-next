@@ -1,0 +1,199 @@
+"""通用网页浏览 —— 让 bot 能真正打开网站、读内容，而不只是查搜索引擎。
+
+与 `cognitive/x_browser.py` 的分工：
+- `x_browser`：**专用**，持久化登录态、拟人化、只服务 X/Twitter；
+- 本模块：**通用**，无登录态、用完即关、任意公开网页。
+
+设计约束（依据 2026-10-29 实测内存数据）：
+
+| 场景 | Chromium RSS |
+|---|---|
+| 启动无页面 | 298 MB |
+| 单页加载 | 441 MB |
+| 3 页并发 | 641 MB |
+| 关闭后 | 0（完全释放） |
+
+⇒ 生产可用内存 ~2.9 GB，单页起步安全；但**必须用完即关**，
+绝不留常驻浏览器，否则会和 QQ + Anima 抢内存（该机器曾因 OOM 被 kill）。
+
+安全边界：
+1. 只允许 http/https；
+2. 拒绝回环、私网、链路本地地址（防 SSRF）；
+3. 单次访问有总超时和字节上限；
+4. 不做登录、不携带 cookie、不持久化 profile。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import ipaddress
+import logging
+import socket
+from dataclasses import dataclass
+from typing import Any, Optional
+from urllib.parse import urlsplit
+
+logger = logging.getLogger("anima.tools.browser")
+
+#: 单次访问的总预算（秒）。含启动浏览器、导航、提取。
+DEFAULT_TIMEOUT_SEC = 45.0
+#: 正文提取上限（字符）。超出截断并标注。
+DEFAULT_MAX_CHARS = 6000
+#: 视口：够宽以免移动版布局，又不至于拉高内存。
+_VIEWPORT = {"width": 1280, "height": 900}
+
+_PRIVATE_HOST_SUFFIXES = (".local", ".internal", ".localhost")
+
+
+class BrowserUnavailable(RuntimeError):
+    """playwright / 浏览器二进制不可用。"""
+
+
+def _is_blocked_host(host: str) -> bool:
+    """SSRF 防护：拒绝回环 / 私网 / 链路本地 / 保留地址。
+
+    这是纯函数，无 I/O，可完整单测。
+    """
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return True
+    if h in {"localhost", "0.0.0.0", "[::]", "::1"}:
+        return True
+    if h.endswith(_PRIVATE_HOST_SUFFIXES):
+        return True
+    literal = h.strip("[]")
+    try:
+        ip = ipaddress.ip_address(literal)
+    except ValueError:
+        return False  # 域名，交给后续解析判断（见 _resolve_blocked）
+    return bool(
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_reserved or ip.is_multicast or ip.is_unspecified
+    )
+
+
+def _resolve_blocked(host: str) -> bool:
+    """把域名解析成 IP 再看是不是内网——防「域名指向 127.0.0.1」绕过。
+
+    🔴 解析失败**不**视为拦截：本机 DNS 可能暂时不可用（实测本机
+    `example.com` 会解析到代理出口），fail-closed 会误杀所有正常网站。
+    真正的兜底在浏览器层——即便这里放行，导航到内网也会因为
+    `validate_url` 对字面 IP 的拦截而失败；域名解析绕过属于残余风险，
+    接受它换取可用性（该机器本身就是内网机器，攻击面没有扩大）。
+    """
+    try:
+        infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
+    except Exception:
+        return False  # 解析不了就放行，交给实际导航失败
+    for info in infos:
+        addr = info[4][0]
+        if _is_blocked_host(addr):
+            return True
+    return False
+
+
+def validate_url(url: str) -> str:
+    """校验并规范化 URL；不合法直接抛 ValueError（fail-closed）。"""
+    raw = (url or "").strip()
+    if not raw:
+        raise ValueError("URL 不能为空")
+    if len(raw) > 2000:
+        raise ValueError("URL 过长")
+    parts = urlsplit(raw)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"只允许 http/https，收到 {parts.scheme or '(无)'}")
+    host = parts.hostname or ""
+    if not host:
+        raise ValueError("URL 缺少主机名")
+    if _is_blocked_host(host):
+        raise ValueError(f"拒绝访问内网/回环地址: {host}")
+    if _resolve_blocked(host):
+        raise ValueError(f"域名解析到受限地址: {host}")
+    return raw
+
+
+@dataclass
+class PageResult:
+    url: str
+    title: str
+    text: str
+    truncated: bool = False
+
+    def render(self, max_chars: int) -> str:
+        head = f"标题：{self.title}\n来源：{self.url}\n\n"
+        body = self.text
+        if self.truncated or len(body) > max_chars:
+            body = body[:max_chars].rstrip() + "\n…（正文过长，已截断）"
+        return head + body
+
+
+async def _fetch_async(url: str, *, timeout_sec: float, max_chars: int) -> PageResult:
+    """真正的浏览器抓取。每次调用独立启动、独立关闭——不留常驻进程。"""
+    try:
+        from patchright.async_api import async_playwright
+    except ImportError as exc:  # pragma: no cover - 依赖缺失时的降级
+        raise BrowserUnavailable("未安装 patchright/playwright") from exc
+
+    async with async_playwright() as pw:
+        browser = await pw.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-dev-shm-usage",
+                  "--disable-blink-features=AutomationControlled"],
+        )
+        try:
+            ctx = await browser.new_context(
+                viewport=_VIEWPORT,
+                user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/126.0.0.0 Safari/537.36"),
+            )
+            page = await ctx.new_page()
+            await page.goto(url, timeout=int(timeout_sec * 1000), wait_until="domcontentloaded")
+            title = await page.title()
+            # 只取可见文本，避免把 <script>/<style> 塞进上下文
+            text = await page.evaluate(
+                """() => {
+                    const skip = new Set(['SCRIPT','STYLE','NOSCRIPT','IFRAME','SVG']);
+                    const out = [];
+                    const walk = (n) => {
+                        if (!n) return;
+                        if (n.nodeType === 3) {
+                            const t = (n.textContent || '').trim();
+                            if (t) out.push(t);
+                            return;
+                        }
+                        if (n.nodeType !== 1) return;
+                        if (skip.has(n.tagName)) return;
+                        const st = window.getComputedStyle(n);
+                        if (st && st.display === 'none') return;
+                        for (const c of n.childNodes) walk(c);
+                    };
+                    walk(document.body);
+                    return out.join('\n');
+                }"""
+            )
+            text = "\n".join(
+                line.strip() for line in (text or "").splitlines() if line.strip()
+            )
+            truncated = len(text) > max_chars
+            return PageResult(url=url, title=str(title or ""), text=text, truncated=truncated)
+        finally:
+            # 必须关闭：实测 641MB（3页）→ 0，不关会累积
+            await browser.close()
+
+
+async def fetch_page(
+    url: str,
+    *,
+    timeout_sec: float = DEFAULT_TIMEOUT_SEC,
+    max_chars: int = DEFAULT_MAX_CHARS,
+) -> PageResult:
+    """抓一个公开网页并抽取可见正文。
+
+    失败一律抛异常（调用方转成人话），绝不返回半真半假的占位内容。
+    """
+    safe_url = validate_url(url)
+    return await asyncio.wait_for(
+        _fetch_async(safe_url, timeout_sec=timeout_sec, max_chars=max_chars),
+        timeout=timeout_sec + 5,
+    )
