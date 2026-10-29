@@ -467,6 +467,67 @@ Memoh 的 `skill-creator` 值得借鉴的是**工作流约束**：用 `init_skil
 
 **这条路的优势**：不执行代码 ⇒ 无沙箱联网矛盾；声明式 ⇒ 可审计；已有权限上界保证。
 
+## 10.4 「造能力」路由修复（2026-10-29）
+
+### 问题
+
+owner 说「帮我做个 XX 工具」时，`is_agent_task` 把它判成多步任务，
+进 `owner_agent` 的 ReAct 规划器。规划器在 61 个工具里挑 **search_web / run_python**
+草草了事，**永远想不起 propose_skill_draft**。
+
+生产实证（两次连续失败）：
+
+| 指令 | 实际路径 | 结果 |
+|---|---|---|
+| 帮我做个查天气的工具 | owner_agent + search_web | 「需要你手动提供 API Key」 |
+| 帮我做塔罗牌工具，加到能力里 | owner_agent + run_python | 「释义还在收集中」 |
+
+关键：**「加到你的能力里」这种措辞对规划器完全无效**——它不读这种暗示。
+
+### 修法
+
+新增 `intent.is_skill_creation_request(text, permission_level)`：
+命中「造/做/写/加/新增 + 工具/能力/技能/功能/插件」即**直接**走
+`propose_skill_draft`，在 `owner_agent` 之前路由。
+
+三条约束：
+1. **仅 owner**——`propose_skill_draft` 本身是 `min_level=LEVEL_OWNER`。
+2. **仅私聊**——群里出现「已创建 SkillDraft」会暴露"它不是人"（沿用既有判据）。
+3. **生图豁免**——「画一张图 / 做个表情包」有自己的交付通道，不能被 SkillDraft 劫持。
+
+### 为什么复用而不新建
+
+`propose_skill_draft` + `SkillDraftManager` **早已完整实现**：
+
+```
+create_from_request(自然语言)
+  → LLM 设计 JSON（prompt 内置可用工具清单与安全约束）
+  → _normalise_manifest + SkillManifest pydantic 校验
+  → SkillDraft(status=pending_review)
+  → mgr.approve(id, owner_id)
+```
+
+缺的**只是路由**，不是能力。所以改动面极小：一个判定函数 + handler 里 12 行分支。
+
+### 验证
+
+- 单测：`tests/test_skill_creation_route.py`（14 passed）
+- 端到端：伪 LLM 返回塔罗牌 manifest → pydantic 校验**零错误** → approve 成功
+- 边界：生图请求不误触；非 owner 被拒；`classify_request_intent` 全返回 chat（不会被 `_try_verbal_request` 提前截走）
+
+### 未做（评估后放弃）
+
+**关掉 `react.skill_route_hint`** —— 原本以为它白烧上下文，实测推翻：
+
+| 指标（28 天） | 次数 |
+|---|---|
+| 路由提示注入 | 671 |
+| `skill_web_brief` 实际调用 | **20** |
+| `search_web` 直接调用 | **7** |
+
+代码注释里「40 天 0 次调用」是**开启前**的数据。开启后联网检索的主流路径
+已从裸 `search_web` 转到技能（20:7）。关掉等于退回旧行为，**净损失**。
+
 ## 9. 未决
 
 - `hourly_budget` / `min_gap_sec` 的初值需要影子期数据校准

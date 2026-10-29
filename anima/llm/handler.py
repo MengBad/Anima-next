@@ -1137,6 +1137,22 @@ class LLMHandler(AnimaCommandsMixin):
             await self.core.gateway.send(OutboundMsg(detail_type, _vtgt, vr))
             return
 
+        # 「造能力」路由（design §10.4）：必须在 owner_agent 之前判——否则规划器
+        # 会在 61 个工具里挑 search_web/run_python 草草了事，永远想不起 propose_skill_draft。
+        # 生产实证：查天气 / 塔罗牌 两次都被 owner_agent 吃掉，产出废文本。
+        if detail_type == "private":
+            from anima.agent.intent import is_skill_creation_request
+            _perm = 4 if self._is_owner(int(user_id)) else 0
+            if is_skill_creation_request(text, _perm) and getattr(self.core, "tools", None):
+                try:
+                    _out = await self.core.tools.call(
+                        "propose_skill_draft", {"request": text}, _perm)
+                    await self.core.gateway.send(
+                        OutboundMsg("private", int(user_id), str(_out)))
+                    return
+                except Exception:
+                    logger.exception("造能力路由失败，回落正常管线")
+
         # Phase 3/4：主人多步 Agent 任务自动路由（仅真正主人，permission_level>=4）。
         # 审计 B0：is_agent_task 内部已强制 permission_level>=4，QQ 群主角色不会越权进入。
         from anima.agent.intent import is_agent_task

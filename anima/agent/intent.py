@@ -83,6 +83,43 @@ def _is_pure_image_request(text: str) -> bool:
     return True
 
 
+#: 「造能力」意图：这类请求不该进 owner_agent 的多步规划——
+#: 规划器的 ReAct 循环会在 61 个工具里挑 search_web/run_python 草草了事，
+#: 不会想起来去调 propose_skill_draft（生产实证：查天气/塔罗牌两次都跑偏）。
+#: 命中即**直接**走 SkillDraft 路径，由 pydantic 校验兜底合法性。
+#:
+#: 措辞要点：必须同时出现「造/做/加/新」+「工具/能力/技能/功能」，
+#: 单独的「做个图」不算（那是生图），「加一个提醒」不算（那是 reminder 工具）。
+_SKILL_CREATE_RE = re.compile(
+    r"(做|造|写|加|新增|创建|开发|实现)"
+    r"[^。，]{0,12}"
+    r"(工具|能力|技能|功能|插件)",
+    re.IGNORECASE,
+)
+#: 豁免：这些是「用现有工具」而非「造新工具」，交回正常管线。
+#: 生图/改图有自己的交付通道（不应被 SkillDraft 劫持）。
+_SKILL_CREATE_EXEMPT_RE = re.compile(
+    r"图片|图像|照片|相片|插画|绘画|漫画|头像|壁纸|海报|表情包|一张图|幅图|张图|原图"
+    r"|生图|画一|画个|画张",
+    re.IGNORECASE,
+)
+
+
+def is_skill_creation_request(text: str, permission_level: int) -> bool:
+    """是否是「造一个新能力」的请求（应走 SkillDraft 而非 owner_agent）。
+
+    仅 owner 可用（`propose_skill_draft` 本身是 `min_level=LEVEL_OWNER`）。
+    """
+    if permission_level < LEVEL_OWNER:
+        return False
+    t = (text or "").strip()
+    if not t or not _SKILL_CREATE_RE.search(t):
+        return False
+    if _SKILL_CREATE_EXEMPT_RE.search(t):
+        return False
+    return True
+
+
 def is_agent_task(text: str, permission_level: int) -> bool:
     """仅当权限等级达到主人且文本命中任务触发正则时，才进入 Agent 路径。"""
     if permission_level < LEVEL_OWNER:
