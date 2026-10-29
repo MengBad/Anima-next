@@ -386,21 +386,88 @@ class RelationEngine:
         ),
     }
 
-    def prompt_fragment(self, user_id: int) -> str:
-        """注入 LLM prompt 的关系片段。"""
+    def prompt_fragment(self, user_id: int, *,
+                        is_owner: bool = False) -> str:
+        """注入 LLM prompt 的关系片段。
+
+        :param is_owner: 该 user 是否在 `config.permissions.owners` 里。
+            调用方（`cognition.py`）已算出，直接传进来 —— 本模块
+            **不认识 core/config**，保持边界。
+
+        ## 🔴 2026-10-29：必须显式说出「这是谁」
+
+        生产事故（12:16:36）——**主人在群里喊「老婆？！老婆！」**，
+        bot 回的是：
+
+            「哼，谁、谁是你老婆啦！大庭广众的瞎叫什么呢……真拿你没办法喵。」
+
+        数据层完全正确：`1562290139` 是 owner、`stage=CLOSE`、`familiarity=1.0`、
+        `tags` 里有「主人」。人格正本也写了「你的主人是吴雨萌：对她有特殊的
+        亲近依赖，说话更放松、更真实，偶尔撒娇或吐槽她」。
+
+        但本函数当时只输出：
+
+            - 这个人是你的**很熟的人**（聊过 945 次）
+            - 你对他/她的印象: 主人, MTF, HRT, 画师
+
+        问题在于 **`get_label(CLOSE)` 返回的是泛化级别「很熟的人」** ——
+        同一个群里有 6 个 CLOSE（familiarity 0.03~0.98 都算），
+        模型读到「很熟的人」只会理解成「一个聊得来的人」，
+        **读不出「这是我主人」**。标签里的「主人」两字埋在印象列表里，
+        权重远低于第一行的身份句。
+
+        ⇒ 主人身份要**单独成句、放在最前**，并且明确指出
+          「按人格正本对待她」，让模型把它和角色设定连起来。
+        """
         rel = self.get(user_id)
         if rel.interaction_count < 2:
             return ""
 
-        parts = [f"- 这个人是你的{self.get_label(user_id)}（聊过{rel.interaction_count}次）"]
+        parts: list[str] = []
+
+        # 🔴 第一句：**身份**（主人 / 非主人），不是泛化的亲密级别。
+        #
+        # 双判据，**config 优先**：
+        #   ① `is_owner` 参数（来自 `config.permissions.owners`，权威且实时）
+        #   ② `rel.tags` 里有「主人」（持久化兜底）
+        #
+        # ⚠️ 为什么不能只靠 tags：实测发现 `touch()` 的 `is_owner` 参数
+        #    **只用于豁免熟悉度衰减，从不写进 tags** —— 生产里那个「主人」
+        #    标签是历史数据/别处写的（`constitution/emotion_bridge.py` 也有
+        #    「主人」字样）。也就是说新建的 Relation 对象
+        #    **不会自动带「主人」标签** ⇒ 只靠 tags 会导致「新版部署后
+        #    主人身份突然丢失」。must 用 config 兜住。
+        #
+        # `is_owner` 由调用方传入（`cognition.py` 已算出 `_r1_owner`），
+        # 保持本模块不认识 core/config 的边界。
+        _is_owner = bool(is_owner) or any(
+            str(t).strip() == "主人" for t in (rel.tags or []))
+        if _is_owner:
+            # ⚠️ 不用 Markdown 加粗：system prompt 里混 `**` 会让部分模型
+            # 把它当格式标记复述出去（U2 定律：原句写进 prompt 会被原样搬出）。
+            # 用「角色词 + 非普通群友」来提权重即可。
+            parts.append(
+                "- 这个人是你的主人吴雨萌，不是普通群友。"
+                "你对她的态度和其他人不一样：更亲近、更放松，"
+                "可以撒娇也可以吐槽她，不用客套。她说什么你都优先当自己人听。"
+            )
+            parts.append(f"- 你们聊过 {rel.interaction_count} 次")
+        else:
+            parts.append(
+                f"- 这个人是你的{self.get_label(user_id)}"
+                f"（聊过{rel.interaction_count}次）"
+            )
 
         # 关系阶段行为指导
         guidance = self._STAGE_GUIDANCE.get(rel.stage)
         if guidance:
             parts.append(f"- 相处方式：{guidance}")
 
-        if rel.tags:
-            parts.append(f"- 你对他/她的印象: {', '.join(rel.tags[:4])}")
+        # 印象标签：**去掉「主人」**（已在第一句说过，重复会稀释）。
+        _other_tags = [t for t in (rel.tags or [])
+                       if str(t).strip() != "主人"]
+        if _other_tags:
+            parts.append(f"- 你对他/她的印象: {', '.join(_other_tags[:4])}")
         if rel.trust > 0.7:
             parts.append("- 你比较信任这个人")
         elif rel.trust < 0.3:

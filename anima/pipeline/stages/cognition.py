@@ -536,7 +536,16 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     desire_ctx = desire.prompt_fragment(
         getattr(ctx, "group_id", None) if detail_type == "group" else None
     )
-    relation_ctx = relation.prompt_fragment(ctx.user_id)
+    # 🔴 2026-10-29：把 owner 身份**传进**关系片段。
+    #
+    # `_perm_owners` / `_r1_owner` 在上面的 relation.touch() 之前已经算好，
+    # 但当时只用于「豁免熟悉度衰减」，从没进过 prompt。
+    # 后果（生产 12:16:36）：主人在群里喊「老婆？！」，bot 回
+    # 「谁是你老婆啦！大庭广众的瞎叫什么呢」—— 它知道这是个 CLOSE 的
+    # 「很熟的人」，**但不知道这是主人**。
+    # 人格正本明明写了「你的主人是吴雨萌：对她有特殊的亲近依赖」，
+    # 而模型没有任何信息把「当前说话的人」和「吴雨萌」连起来。
+    relation_ctx = relation.prompt_fragment(ctx.user_id, is_owner=_r1_owner)
     notes_ctx = learning.prompt_fragment()
     world_ctx = world_model.prompt_fragment()
     scar_ctx = scar.prompt_fragment(ctx.user_id)
