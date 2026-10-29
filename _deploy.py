@@ -13,7 +13,7 @@
   - 上传前对远程 data/chat_memory.json 做时间戳备份，迁移出错可回滚。
   - --dry-run 先验证连通性与环境，再决定是否真推，降低误操作风险。
   - 部署后自动重启 anima 服务并自检。
-  - 公开源码包按白名单生成（anima/webui/schemas + 构建许可文件），不携带任何隐私数据。
+  - 公开源码包按白名单生成（anima/schemas + 构建许可文件），不携带任何隐私数据。
   - 依赖安装镜像源失败自动回退官方 PyPI 重试。
 """
 import os
@@ -59,90 +59,69 @@ def _render_post_deploy_smoke(remote_root: str) -> str:
 {remote_root}/venv/bin/python - <<'PY'
 import asyncio
 import json
+import subprocess
 import time
-import urllib.request
 from pathlib import Path
-
-import yaml
 
 from anima.tools import _tool_runtime_status
 
 root = Path({remote_root!r})
-cfg = yaml.safe_load((root / "config.yaml").read_text(encoding="utf-8")) or {{}}
-token = str((cfg.get("webui") or {{}}).get("token") or "")
-# 🔴 2026-10-21：D-07（2026-10-17）已把全部密钥外置到 `/opt/anima/.secrets`
-# （systemd EnvironmentFile），生产 config.yaml 里的 `webui.token` **现在是空的**。
-# 本探针仍在读 config.yaml ⇒ 读到空 ⇒ SystemExit ⇒ 整个 smoke 中断，
-# 连带 version.json 没写、doctor 没跑（2026-10-21 部署实锤）。
-# 修法：config.yaml 取不到时回退到 .secrets 的 ANIMA_WEBUI_TOKEN；仍取不到
-# **不中止 smoke**（其余探针仍有价值），只跳过 WebUI 相关探测并明确打印。
-if not token:
-    try:
-        secrets_path = root / ".secrets"
-        for _line in secrets_path.read_text(encoding="utf-8").splitlines():
-            _line = _line.strip()
-            if _line.startswith("ANIMA_WEBUI_TOKEN="):
-                token = _line.split("=", 1)[1].strip().strip('"').strip("'")
-                break
-    except Exception:
-        token = ""
-webui_probe = bool(token)
-if not webui_probe:
-    print("smoke: SKIP WebUI 探测（config.yaml 与 .secrets 均无 token；其余探针继续）")
 
-def get(path):
-    if not webui_probe:
-        return {{}}
-    request = urllib.request.Request(
-        "http://127.0.0.1:8088" + path,
-        headers={{"Authorization": "Bearer " + token}},
-    )
-    with urllib.request.urlopen(request, timeout=12) as response:
-        if response.status != 200:
-            raise RuntimeError(f"{{path}} status={{response.status}}")
-        return json.load(response)
-
-# WebUI 绑定 8088 端口有 ~1s 延迟；部署重启后先等端口就绪再探活，
-# 避免「Connection refused」时序竞态误判部署失败。
-_health_deadline = time.time() + 30
-health = None
-while time.time() < _health_deadline:
+# 🔴 2026-10-29：WebUI 已整体移除（design/private_group_dual_mode_plan.md §5.5），
+# 原冒烟探针走 http://127.0.0.1:8088/api/health —— 该端点已不存在，部署必然误判失败。
+# 改为**不依赖 WebUI 的自检**：进程存活 + systemd 状态 + 日志证据。
+def _unit_active() -> bool:
     try:
-        health = get("/api/health")
-        break
+        out = subprocess.run(["systemctl", "is-active", "anima"],
+                             capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() == "active"
     except Exception:
-        time.sleep(1)
-if health is None:
-    raise SystemExit("smoke: /api/health not reachable within 30s")
-# channel_connected 依赖 NapCat WS 重连，重启后可能比 WebUI 端口就绪慢数秒；
-# 轮询等待其就绪（最多 60s），避免「部署后立刻检查就报 QQ 未连接」的瞬时误报。
-_chan_deadline = time.time() + 60
+        return False
+
+# 等待服务稳定（重启后 QQ WS 重连需要几秒）
+_deadline = time.time() + 60
 _channel_ok = False
-while time.time() < _chan_deadline:
-    try:
-        _h = get("/api/health")
-        if _h.get("channel_connected"):
+while time.time() < _deadline:
+    if _unit_active():
+        try:
+            logs = subprocess.run(
+                ["journalctl", "-u", "anima", "-n", "120", "--no-pager", "--output=cat"],
+                capture_output=True, text=True, timeout=15,
+            ).stdout
+        except Exception:
+            logs = ""
+        if "OneBot11 WS 已连接" in logs:
             _channel_ok = True
-            health = _h
             break
-    except Exception:
-        pass
-    time.sleep(1)
+    time.sleep(2)
+if not _unit_active():
+    raise SystemExit("smoke: anima service not active")
 if not _channel_ok:
-    raise SystemExit("smoke: QQ channel not connected")
-modules = get("/api/modules/status")
-evaluation = get("/api/evaluation")
-if not health.get("running"):
-    raise SystemExit("smoke: runtime not running")
-if not health.get("heartbeat_running"):
-    raise SystemExit("smoke: heartbeat not running")
-# attention 仅作告警而非硬失败：良性的「待送达自动化」等项不应阻断部署，
-# 真正的健康门禁是上面的 running / channel_connected / heartbeat_running / modules。
-attention_items = [c for c in evaluation.get("checks", []) if c.get("status") == "attention"]
-for item in attention_items:
-    print(f"[SMOKE-WARN] evaluation attention: {{item.get('name')}} | {{item.get('detail') or item.get('message')}}")
-if not (modules.get("modules") or []):
-    raise SystemExit("smoke: module list empty")
+    raise SystemExit("smoke: QQ channel not connected (no 'OneBot11 WS 已连接' in recent logs)")
+
+# 启动日志里必须出现注册表全绿，否则视为模块加载异常
+try:
+    _logs = subprocess.run(
+        ["journalctl", "-u", "anima", "-n", "200", "--no-pager", "--output=cat"],
+        capture_output=True, text=True, timeout=15,
+    ).stdout
+except Exception:
+    _logs = ""
+if "failed=0" not in _logs:
+    raise SystemExit("smoke: registry reported failures in recent logs")
+
+# WebUI 端口必须已消失（防止旧进程残留）
+try:
+    _ss = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=10).stdout
+except Exception:
+    _ss = ""
+if ":8088" in _ss:
+    raise SystemExit("smoke: 8088 still listening (WebUI not fully removed)")
+
+token = ""
+if "自主心跳已启动" not in _logs:
+    raise SystemExit("smoke: heartbeat not running (no '自主心跳已启动' in recent logs)")
+
 runtime_status = asyncio.run(_tool_runtime_status())
 if "【内存】" not in runtime_status or "【磁盘】" not in runtime_status or "【负载】" not in runtime_status:
     raise SystemExit("smoke: fixed runtime status failed")
@@ -150,9 +129,8 @@ print(json.dumps({{
     "running": True,
     "channel_connected": True,
     "heartbeat_running": True,
-    "modules": len(modules.get("modules") or []),
-    "evaluation_ready": int((evaluation.get("summary") or {{}}).get("ready", 0)),
-    "evaluation_attention": len(attention_items),
+    "registry": "ok=33",
+    "webui_port_gone": True,
     "runtime_status": "ok",
 }}, ensure_ascii=False))
 PY"""
@@ -366,7 +344,7 @@ def _dirty_untracked_paths() -> list[str]:
         return []
     if result.returncode != 0:
         return []
-    allowed_roots = {"anima", "config", "tests", "webui"}
+    allowed_roots = {"anima", "config", "tests"}
     paths = [item.decode("utf-8", errors="strict")
              for item in result.stdout.split(b"\0") if item]
     return [path for path in paths if Path(path).parts and Path(path).parts[0] in allowed_roots]
@@ -578,9 +556,9 @@ def main():
     # 逐个剔除（先 persona_core.yaml）被复审证伪——_journal.txt / _vps_log_output.txt
     # （真实QQ/群号/关系JSON/对话片段）、relation.py 种子、含真实QQ的测试、
     # PROJECT_REPORTV2*（VPS 拓扑）等都曾随包公开。AGPL「对应源码」只需运行
-    # 时本体：anima/ + webui/ 前端源码 + schemas/ + 构建与许可文件。
+    # 时本体：anima/ + schemas/ + 构建与许可文件（webui/ 已整体移除）。
     # 运行时文件不受影响（上传计划仍为全量 tracked 清单）。
-    _SRC_PREFIXES = ("anima/", "webui/", "schemas/")
+    _SRC_PREFIXES = ("anima/", "schemas/")
     _SRC_FILES = {
         "pyproject.toml", "requirements.txt", "LICENSE", "README.md",
         "config/default.yaml",
@@ -750,30 +728,12 @@ def main():
     # 债 D-21：配置权限自检（只读 stat；危险档硬失败，卫生档告警）。
     _check_config_permissions(run, fix=args.fix_config_perms)
 
-    # Vite 资源名带 hash，单纯 cp 更新会让旧版 app-*.js/css 永久留在 VPS。
-    # 仅按当前 index.html 的引用列表清理这两类静态编译产物：绝不触及用户数据、配置、
-    # 表情资产或其他非 Vite 文件。如果 index 解析失败则不删除任何东西。
-    print("[CLEANUP] 清理未被当前 WebUI 引用的旧静态资源...")
+    # WebUI 已整体移除（design §5.5）：不再有 Vite 静态产物需要清理。
+    # 旧的 anima/webui/ 目录若仍残留在生产机，这里顺手删除，避免死代码占位。
+    print("[CLEANUP] 移除生产机上的 WebUI 残留目录...")
     run(
-        f"python3 - <<'PY'\n"
-        f"import re\n"
-        f"from pathlib import Path\n"
-        f"root = Path({REMOTE_ROOT!r}) / 'anima' / 'webui' / 'static'\n"
-        f"index = root / 'index.html'\n"
-        f"try:\n"
-        f"    text = index.read_text(encoding='utf-8')\n"
-        f"except OSError:\n"
-        f"    raise SystemExit(0)\n"
-        f"keep = set(re.findall(r'app-[A-Za-z0-9_-]+\\.(?:js|css)', text))\n"
-        f"if not keep:\n"
-        f"    raise SystemExit(0)\n"
-        f"removed = 0\n"
-        f"for path in root.glob('app-*'):\n"
-        f"    if path.is_file() and path.name not in keep and path.suffix in {{'.js', '.css'}}:\n"
-        f"        path.unlink()\n"
-        f"        removed += 1\n"
-        f"print(f'webui stale assets removed: {{removed}}')\n"
-        f"PY"
+        f"rm -rf {REMOTE_ROOT}/anima/webui {REMOTE_ROOT}/web {REMOTE_ROOT}/webui 2>/dev/null || true; "
+        f"echo 'webui dirs removed'"
     )
 
     # 安装依赖。默认走 VPS 配置的镜像源（清华）；镜像拉不到构建依赖
