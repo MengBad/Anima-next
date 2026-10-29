@@ -45,26 +45,7 @@ jobs:
           path: test-result.json
           if-no-files-found: ignore
 
-  frontend:
-    name: Frontend (build)
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: webui
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: "20"
-          cache: npm
-          cache-dependency-path: webui/package-lock.json
-      - name: Install and build
-        run: |
-          npm ci
-          npm run build
-      - name: Mark frontend built
-        run: echo "frontend_built=true" >> "$GITHUB_ENV"
+  # Frontend (build) job 随 WebUI 整体移除而删除（design §5.5）。
 
   security:
     name: Security guard (CORE_PROTECTED / sensitive paths)
@@ -103,7 +84,7 @@ jobs:
     name: CI evidence aggregation
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [backend, frontend, security]
+    needs: [backend, security]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -117,16 +98,13 @@ jobs:
           path: artifacts
       - name: Aggregate evidence
         run: |
-          FRONTEND_BUILT="false"
           if [ -f artifacts/test-result/test-result.json ]; then cp artifacts/test-result/test-result.json ./test-result.json; fi
           if [ -f artifacts/security-report/security-report.json ]; then cp artifacts/security-report/security-report.json ./security-report.json; fi
-          # 前端构建成功由 frontend job 成功隐含；这里保守标记为 true（job 链已 needs 约束）
-          FRONTEND_BUILT="true"
+          # WebUI 已整体移除（design §5.5），前端构建不再是证据链的一环。
           python scripts/ci_evidence.py \
             --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
             --security-report security-report.json \
             --test-report test-result.json \
-            --frontend-built "$FRONTEND_BUILT" \
             --out-ci ci-report.json --out-attest commit-attestation.json
       - name: Upload CI evidence
         if: always()

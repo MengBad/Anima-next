@@ -1,8 +1,11 @@
 """R16 闭环4：配置 / 权限漂移检测。
 
 生产环境中，owners / admins / 安全开关（require_approval_for_danger、
-capability_layer 治理面、danger 总开关、self_code 总开关）/ 公网暴露面
-（webui.host / port）属于一旦被改就会改变攻击面的敏感配置。
+capability_layer 治理面、danger 总开关、self_code 总开关）属于一旦被改
+就会改变攻击面的敏感配置。
+
+WebUI 已整体移除（design/private_group_dual_mode_plan.md §5.5），
+原先的 webui.enabled / host / port 三项不再参与漂移检测。
 
 本模块以基线快照（baseline）为锚，周期性比对运行配置；发现漂移时
 仅做只读告警（写入审计 + heartbeat 透出），绝不自动回滚——owner 经
@@ -50,9 +53,6 @@ _SENSITIVE_FIELDS = (
     ("danger.stance_propagation", "danger_stance_propagation"),
     ("self_code.enabled", "self_code_enabled"),
     ("self_code.auto_install", "self_code_auto_install"),
-    ("webui.enabled", "webui_enabled"),
-    ("webui.host", "webui_host"),
-    ("webui.port", "webui_port"),
     ("sylann.mode", "sylann_mode"),
     ("iteration.auto_repair", "iteration_auto_repair"),
 )
@@ -246,11 +246,8 @@ class ConfigDriftMonitor:
             "self_code_enabled": (False, True),
             "self_code_auto_install": (False, True),
             "iteration_auto_repair": (False, True),
-            "webui_enabled": (False, True),
         }
         if field in danger_on_relax and (before, after) == danger_on_relax[field]:
-            return "danger"
-        if field == "webui_host" and after not in (None, "127.0.0.1", "localhost"):
             return "danger"
         if field in ("owners", "admins") and len(after or ()) > len(before or ()):
             return "warning"

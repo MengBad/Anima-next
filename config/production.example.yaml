@@ -9,7 +9,7 @@
 # 为什么生产 config.yaml 不入库
 #   2026-09-18 实测：生产 config.yaml 内**明文**存有 6 处密钥 ——
 #     llm.api_key(48) · vector.embedding_api_key(51) · vector.rerank_api_key(51)
-#     · webui.token(40) · tavily.api_key(58) · x_browser.password(13)
+#     · tavily.api_key(58) · x_browser.password(13)
 #   直接追踪会把它们写进 git 历史；而本机 git 历史已丢失两次、远程是唯一第二副本。
 #
 # 历史事故（本文件存在的理由）
@@ -43,7 +43,7 @@
 #   ANIMA_TAVILY_API_KEY      -> tavily.api_key
 #
 # 🔴 无 env 注入通道的密钥（无法只靠配置外置，需要代码改动）：
-#   webui.token       —— 生产为明文 40 字符。台账 D-07。
+
 #   x_browser.password—— 生产为明文 13 字符。台账 D-07。
 
 llm:
@@ -65,11 +65,6 @@ vector:
   rerank_model: "BAAI/bge-reranker-v2-m3"
   rerank_enabled: true
   rerank_top_n: 5
-
-webui:
-  enabled: true
-  host: "0.0.0.0"
-  token: "<REDACTED —— 生产为明文，无 env 通道>"
 
 qq:
   self_id: 0                  # 生产填真实 bot QQ

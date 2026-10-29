@@ -2,7 +2,6 @@
 
 Criteria (对应用 .github/workflows/anima-ci.yml):
   backend:  pytest tests/ 全 0 fail
-  frontend: webui npm run build 通过(动 webui 时)
   security: anima_guard.py 产物; 触核心/敏感路径 -> 须 Owner 显式核可
   evidence: 候选自带 ImprovementEvidence 包(CI DoD 含 evidence)
 
@@ -13,12 +12,13 @@ from __future__ import annotations
 
 from typing import Any
 
-CI_DOD_SECTIONS = ("backend", "frontend", "security", "evidence")
+#: WebUI 已整体移除（design/private_group_dual_mode_plan.md §5.5），
+#: 前端构建不再是 DoD 的一环。
+CI_DOD_SECTIONS = ("backend", "security", "evidence")
 
 
 def check_ci_dod(*,
                  test_passed: bool | None = None,
-                 frontend_ok: bool | None = None,
                  evidence_ok: bool | None = None,
                  security_requires_owner_review: bool = False,
                  owner_acknowledged: bool = False) -> dict:
@@ -31,8 +31,6 @@ def check_ci_dod(*,
     ok = True
     if test_passed is not True:
         ok = False; reasons.append("backend: pytest 未全绿")
-    if frontend_ok is not True:
-        ok = False; reasons.append("frontend: webui 构建未通过")
     if evidence_ok is not True:
         ok = False; reasons.append("evidence: 候选无 ImprovementEvidence 包(CI DoD 必需)")
     if security_requires_owner_review and not owner_acknowledged:
@@ -41,7 +39,7 @@ def check_ci_dod(*,
         "pass": ok,
         "reasons": reasons,
         "sections": {
-            "backend": bool(test_passed), "frontend": bool(frontend_ok),
+            "backend": bool(test_passed),
             "evidence": bool(evidence_ok),
             "security_requires_owner_review": bool(security_requires_owner_review),
         },

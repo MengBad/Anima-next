@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 """M1 安全边界回归（2026-08-25 全量扫描修复）。
 
-- /vnc 不再免认证：_open_auth_routes 是真实现（_auth 调用同一函数），测它即测真实闸门。
 - 群维度「只收紧」对 owner/admin 生效（Q3 拍板）。
 - M1.3 决策：token 登录即 owner 凭证，audit reviewer=owner 非伪造，故不更改（记于 plan）。
+- /vnc 免认证用例随 WebUI 整体移除而删除（design §5.5）。
 """
 from types import SimpleNamespace
 
-from anima.webui.server import _open_auth_routes
 from anima.pipeline.stages.permission import _check_permission
 
 
@@ -18,15 +17,6 @@ def _cfg(owners=(), admins=(), banned=(), readonly=(), banned_g=None, readonly_g
         group_policies={},
     ))
 
-
-# ---- M1.1 /vnc 免认证 ----
-def test_open_auth_routes_keeps_legit_public():
-    for p in ("/login", "/api/auth/login", "/source", "/source/archive", "/assets/app.js"):
-        assert _open_auth_routes(p) is True, p
-
-def test_open_auth_routes_blocks_vnc():
-    for p in ("/vnc", "/vnc/", "/vnc/ws", "/vnc/static/x.js"):
-        assert _open_auth_routes(p) is False, f"/vnc 曾整段免认证，现必须走 _auth: {p}"
 
 # ---- M1.2 群维度只收紧（owner/admin 同样受限）----
 def test_owner_in_banned_group_is_tightened():

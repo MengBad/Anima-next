@@ -26,7 +26,6 @@ Anima-next 是一个脱离 AstrBot 的**独立全智能 QQ 机器人**：自有�
 | `anima/skills/` | Skill 清单 / 草案审批 / 内置 compose_notice（**已实现**，非 Phase 4 空壳） |
 | `anima/llm/` | LLM 客户端（重试 / 熔断 / **fallback_models** / 413 再编码后剥离）+ ReAct + 用量账本 |
 | `anima/media.py` | 大图下载 + WebP 缩放/质量阶梯 + GIF 关键帧；预算按 data URI 线缆体积估算 |
-| `anima/webui/` | aiohttp API + Vue SPA（`webui/` 源码，`npm run build` 产出 static） |
 | `config/` | `default.yaml` 模板 / `persona_core.yaml` 人格 |
 | `cli.py` / `_deploy.py` | 启动自检 / VPS 发布（默认不覆盖生产 `config.yaml`） |
 
@@ -41,7 +40,6 @@ make run                                    # python -m anima.cli start
 make doctor                                 # 环境自检（QQ/LLM/向量库）
 pytest tests/ -q                            # 以全量绿为准（2026-07-18 基线约 460+）
 pytest tests/test_xxx.py::test_func_name    # 运行单个测试
-cd webui && npm run build                   # 产出 anima/webui/static
 python -m anima init --agent --spec spec.json
 python -m anima doctor
 ```
@@ -50,11 +48,11 @@ python -m anima doctor
 
 - Python `3.12+`；关键环境变量：`ANIMA_LLM_API_KEY`、`ANIMA_LLM_ENDPOINT`、`NAPCAT_TOKEN`
 - 配置文件：`/opt/anima/config.yaml`（生产）或 `./config.yaml`（本地）；模板在 `config/default.yaml`
-- WebUI 默认 `0.0.0.0:8088`，需配 `webui.token`（≥32 位随机字符串）
+- **无 WebUI**：本地观测面板与 anima-console 已整体移除（2026-10-29）。运维只走 SSH + `systemctl` + 日志；审批走私聊自然语言（`anima/agent/approval_dialog.py`）
 - QQ 接入：`napcat_ws_url: ws://127.0.0.1:3001`
 - systemd 服务名 `anima`，部署目录 `/opt/anima`
 - 依赖：`pyproject.toml` 声明 + `requirements.txt` 精确锁定（生产用）；可选分组 qq/vector/dev/sylann/docs
-- 许可证：AGPL-3.0-only；RC 发布需干净工作树；部署生成源码归档，WebUI `/source` 公开可查
+- 许可证：AGPL-3.0-only；RC 发布需干净工作树；部署生成源码归档
 
 ## 关键注意事项
 
@@ -63,7 +61,7 @@ python -m anima doctor
 - **人格护栏**：`pipeline/stages.py` 兜底哈基米；`persona_core.yaml` anti_derailment；身份泄漏拦截。
 - **图片**：入站 `image/bface/sface`；`resolve_image` 三级兜底。**NapCat 取图必须 `get_image`**。大图先本地转码再进 LLM，413 时先再压缩后才剥图。
 - **SelfCode**：只写 `data/selfcode/` 运行时工具，**不改核心源码**；安装/删除/禁用需 Owner；`auto_install` 恒不自动装。
-- **自主自升级**：`danger.self_improvement*` 只生成 WebUI 待审工程任务，不自动安装。
+- **自主自升级**：`danger.self_improvement*` 只生成待审工程任务（审批走私聊），不自动安装。
 - **降级**：阶段 try/except；可选模块静默失败。
 - **语言**：标识符英文；注释/用户串中文。
 
@@ -76,7 +74,7 @@ VPS `/opt/anima/data/`（`chat_memory.json` / `crossgroup/` / `selfcode/` / `sel
 ### Skills（已落地）
 
 - 目录：`anima/skills/`（registry / drafts / builtin）
-- WebUI：能力页 Skill 草案预览 / 批准 / 驳回
+- 审批：Skill 草案 / 工程任务 / 自进化提案均经私聊自然语言批准（`anima/agent/approval_dialog.py`）
 - 勿再写「Skills 尚未实现 Phase 4」——那是 07-12 旧表述
 
 ### SelfCode 双 Agent（已落地）
@@ -87,7 +85,7 @@ VPS `/opt/anima/data/`（`chat_memory.json` / `crossgroup/` / `selfcode/` / `sel
 4. `create_engineering_task` → `awaiting_approval`
 5. Owner 批准 → 备份 → 热注册；运维 API：列表 / 禁用 / 删除 / 备份恢复
 
-WebUI：`/engineering` 工程候选 + **已装 SelfCode 工具**面板  
+私聊：工程候选 / 已装 SelfCode 工具均由 bot 主动报备  
 API：`/api/selfcode/tools`、`.../enable|disable`、`DELETE .../tools/{name}`、`/api/selfcode/backups/{id}/restore`
 
 ### 0.4 质量加固（已大量合入）
@@ -108,7 +106,7 @@ API：`/api/selfcode/tools`、`.../enable|disable`、`DELETE .../tools/{name}`�
 
 ## 测试与发布纪律
 
-1. 改完先 `pytest tests/ -q`；WebUI 改 `webui/` 后 `npm run build`
+1. 改完先 `pytest tests/ -q`
 2. 提交完整、工作区干净再 `_deploy.py`
 3. 部署后核对 ActiveEnterTimestamp、关键 API 200、日志无 warning
-4. 生产 `config.yaml` 默认不被覆盖；改运行参数应 SSH 改配置或 WebUI 变更集，再确认重启需求
+4. 生产 `config.yaml` 默认不被覆盖；改运行参数应 SSH 改配置，再确认重启需求

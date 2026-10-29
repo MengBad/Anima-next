@@ -74,9 +74,10 @@ class AnimaCore:
         self.native_plugins = None
         self.heartbeat = None  # P5: Heartbeat
         self.vector_memory = None  # P2/P3: VectorMemory
+
         self.sylann = None  # 可选 Sylann 适配器（默认 disabled）
         self.monitors = None
-        self.webui = None
+
         self.skill_drafts = None
         from anima.cognitive.group_presence import (
             get_group_presence,
@@ -275,16 +276,6 @@ class AnimaCore:
             set_x_browser(self)
         except Exception:
             logger.exception("X 浏览器会话初始化失败，已隔离")
-
-        if self.config.webui.enabled:
-            try:
-                from anima.webui import WebUIServer
-                self.webui = WebUIServer(self)
-                await self.webui.start()
-                logger.info("WebUI 已启动: http://%s:%s", self.config.webui.host, self.config.webui.port)
-            except Exception:
-                self.webui = None
-                logger.exception("WebUI 启动失败，已隔离")
 
         # 自动启动心跳
         if self._auto_start_heartbeat and self.heartbeat:
@@ -494,11 +485,6 @@ class AnimaCore:
                 await self.native_plugins.close()
             except Exception:
                 logger.exception("原生插件运行时关闭异常")
-        if self.webui:
-            try:
-                await self.webui.close()
-            except Exception:
-                logger.exception("WebUI 关闭异常")
         # 🔴 2026-10-28：**统一模块注册表关闭**（取代此前 7 处手写 close）。
         #
         # 原来这里是 7 段 `try: from X import close_Y; close_Y() except: ...`。

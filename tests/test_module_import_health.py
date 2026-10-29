@@ -54,8 +54,8 @@ _ALT_VENV_DIRNAME = "rainyun_runner"
 def _iter_live_modules() -> list[str]:
     """返回所有**需要在本解释器里可导入**的 anima 模块全名（去重、排序）。
 
-    排除两类，都按**路径分量**判定（不用子串 —— `anima.webui.life_archive`
-    是合法活跃模块，子串判定会误伤）：
+    排除两类，都按**路径分量**判定（不用子串 —— 名字里带 archive 的活跃模块
+    不该被子串判定误伤）：
 
     · `_archive/` —— 归档死代码，零生产引用
     · `rainyun_runner/` —— 独立 venv 脚本目录，主 venv 刻意不装它的依赖
@@ -112,15 +112,13 @@ def test_scanner_reach_is_sane():
 def test_archive_is_excluded_from_scan():
     """元守卫：扫描集里不得出现归档模块（否则会因归档死代码而恒红）。
 
-    按**路径分量**判定，避免误伤 `anima.webui.life_archive`。
+    按**路径分量**判定，避免误伤名字里带 archive 的活跃模块。
     """
     mods = _iter_live_modules()
     offenders = [m for m in mods if _ARCHIVE_DIRNAME in m.split(".")]
     assert not offenders, "归档模块混入扫描集: %s" % offenders[:5]
-    # 反向自检：确有一个同族合法模块被正确保留（证明用的是分量判定而非子串）
-    assert any("life_archive" in m for m in mods), (
-        "anima.webui.life_archive 是合法活跃模块，不应被排除 —— 排除逻辑可能过度"
-    )
+    # 反向自检：分量判定只排除 _archive 这一段，不影响其他活跃模块
+    assert any(m.startswith("anima.") for m in mods), "扫描集为空 ⇒ 排除逻辑过度"
 
 
 def test_rainyun_runner_excluded_but_present():

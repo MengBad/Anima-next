@@ -1171,14 +1171,6 @@ class DangerConfig(BaseModel):
     self_improvement_failure_window_sec: int = 7200
 
 
-class WebUIConfig(BaseModel):
-    """本地观测 API；默认关闭且仅监听回环地址。"""
-    enabled: bool = False
-    host: str = "127.0.0.1"
-    port: int = 8088
-    token: SecretStr | None = SecretStr("")
-
-
 class SecurityConfig(BaseModel):
     """会改变外部状态的工具必须经过 owner 审批。"""
     require_approval_for_danger: bool = True
@@ -1372,7 +1364,6 @@ class AnimaConfig(BaseModel):
     context: ContextConfig = Field(default_factory=ContextConfig)
     exploration: ExplorationConfig = Field(default_factory=ExplorationConfig)
     x_browser: XBrowserConfig = Field(default_factory=XBrowserConfig)
-    webui: WebUIConfig = Field(default_factory=WebUIConfig)
     proxy_mgmt: ProxyMgmtConfig = Field(default_factory=ProxyMgmtConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     contradiction: ContradictionConfig = Field(default_factory=ContradictionConfig)
@@ -1410,11 +1401,8 @@ def load_config(path: str | Path | None = None) -> AnimaConfig:
     # Tavily search key externalized (secret never in config)
     if "ANIMA_TAVILY_API_KEY" in env:
         data.setdefault("tavily", {})["api_key"] = env["ANIMA_TAVILY_API_KEY"]
-    # 🔴 D-07（2026-10-17）：补齐最后两处**无** env 通道的密钥。
-    # 此前 `webui.token` / `x_browser.password` 只能明文落 config.yaml
-    # （`deploy/check_config_drift.py` 第 4 节因此恒报 6 处明文，达不到「0 处」）。
-    if "ANIMA_WEBUI_TOKEN" in env:
-        data.setdefault("webui", {})["token"] = env["ANIMA_WEBUI_TOKEN"]
+    # 🔴 D-07（2026-10-17）：补齐**无** env 通道的密钥，避免只能明文落 config.yaml。
+    # WebUI 已整体移除（design §5.5），`ANIMA_WEBUI_TOKEN` 随之取消。
     if "ANIMA_X_BROWSER_PASSWORD" in env:
         data.setdefault("x_browser", {})["password"] = env["ANIMA_X_BROWSER_PASSWORD"]
 

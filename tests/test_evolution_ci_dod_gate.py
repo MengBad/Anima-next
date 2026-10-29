@@ -28,7 +28,7 @@ class _Dev:
 async def test_ci_dod_block_prevents_deploy():
     gate = EvolutionGate(); dev = _Dev()
     loop = EvolutionLoop(dev, gate=gate, core=None, selfcode_manager=_SC(),
-                         ci_dod_bundle={"test_passed": False, "frontend_ok": True, "evidence_ok": True})
+                         ci_dod_bundle={"test_passed": False, "evidence_ok": True})
     out = await loop.evolve("x", auto_deploy=True, owner_authorized=True)
     assert out.get("decision") == "blocked_ci_dod"
     assert dev.called is False          # 未触碰部署闭环

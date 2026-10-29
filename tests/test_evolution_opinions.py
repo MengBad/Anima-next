@@ -45,7 +45,7 @@ async def _mk_loop(bundle):
 
 async def test_evolve_blocked_attaches_ci_dod():
     import pytest
-    loop, gate, dev = await _mk_loop({"test_passed": False, "frontend_ok": True, "evidence_ok": True})
+    loop, gate, dev = await _mk_loop({"test_passed": False, "evidence_ok": True})
     out = await loop.evolve("x", auto_deploy=True, owner_authorized=True)
     assert out["decision"] == "blocked_ci_dod"
     pid = out["id"]; p = gate.get(pid)

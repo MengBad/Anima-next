@@ -18,7 +18,4 @@ self_code:
   daily_quota: 0
   coder_backend: "native"
 
-webui:
-  enabled: true
-  host: "0.0.0.0"
-  port: 8089
+

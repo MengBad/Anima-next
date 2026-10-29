@@ -48,6 +48,18 @@ _PREF_HINTS = (
 )
 
 
+def _visibility_for(ctx) -> str:
+    """本条消息产生的记忆应属于哪一级可见性。
+
+    群里说的话所有群成员都看得到 ⇒ public；
+    私聊说的话只有 owner/对话双方知道 ⇒ private（不进群聊召回）。
+    敏感内容另由 `_contains_secret` 与 secrets 通道处理（sealed）。
+    """
+    from anima.memory import visibility as _vis
+
+    return _vis.PRIVATE if _vis.channel_of(getattr(ctx, "detail_type", "")) == _vis.CHANNEL_PRIVATE else _vis.PUBLIC
+
+
 def _is_preference_text(text: str) -> bool:
     t = (text or "").strip()
     return bool(t) and any(h in t for h in _PREF_HINTS)
@@ -205,11 +217,15 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
         try:
             _soul_params_mem = ctx.meta.get("soul_params") or {}
             _mem_top_k = _soul_params_mem.get("memory_top_k", 3)
+            from anima.memory import visibility as _vis
+
             hits = await core.vector_memory.search(
                 ctx.text, top_k=_mem_top_k, threshold=0.70,
                 source_uin=ctx.user_id,
                 source_gid=ctx.group_id if ctx.detail_type == "group" else None,
                 scoped=True,
+                # 群聊不召回 private 记忆；私聊可召回 public + private。
+                channel=_vis.channel_of(ctx.detail_type),
             )
             if hits:
                 memory_lines = ["## 相关记忆"]
@@ -353,6 +369,7 @@ async def memory_stage(ctx: PipelineContext) -> StageResult:
                 salience=_base_salience,
                 source_uin=ctx.user_id,
                 source_gid=ctx.group_id,
+                visibility=_visibility_for(ctx),
             )
         except Exception:
             logger.exception("向量记忆写入失败")

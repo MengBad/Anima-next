@@ -15,7 +15,6 @@
         --commit "$GITHUB_SHA" --run-id "$GITHUB_RUN_ID" \
         --security-report security-report.json \
         --test-report test-result.json \
-        --frontend-built true \
         --out-ci ci-report.json --out-attest commit-attestation.json
 """
 from __future__ import annotations
@@ -46,7 +45,7 @@ def main() -> int:
     ap.add_argument("--run-id", default="")
     ap.add_argument("--security-report", default="security-report.json")
     ap.add_argument("--test-report", default="test-result.json")
-    ap.add_argument("--frontend-built", default="true")
+
     ap.add_argument("--out-ci", default="ci-report.json")
     ap.add_argument("--out-attest", default="commit-attestation.json")
     args = ap.parse_args()
@@ -70,10 +69,6 @@ def main() -> int:
                 "passed": passed,
                 "failed": failed,
                 "status": "pass" if (total and failed == 0) else ("fail" if failed else "unknown"),
-            },
-            "frontend_build": {
-                "ran": str(args.frontend_built).lower() == "true",
-                "status": "pass" if str(args.frontend_built).lower() == "true" else "unknown",
             },
             "security_guard": {
                 "ran": bool(sec),

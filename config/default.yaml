@@ -498,13 +498,6 @@ proxy_mgmt:
   config_path: "/usr/local/share/mihomo/config.yaml"
   subscription_timeout: 30                 # 订阅下载超时（秒）
 
-webui:
-  # 默认关闭且只监听本机；若改为非回环地址，必须设置 token 并通过反向代理加密。
-  enabled: false
-  host: "127.0.0.1"
-  port: 8088
-  token: ""
-
 security:
   require_approval_for_danger: true         # danger 工具先生成 owner 审批单，批准前绝不执行
   approval_ttl_sec: 900                     # 审批单有效期（秒，30-86400）

@@ -1223,7 +1223,7 @@ class ToolRegistry:
         M0.4.7 D-A3（R3 closure）：请求名若是一个 capability 的 schema name（且不是
         legacy 工具名），则经 ``call_capability`` 受控路由——Resolver 选 Provider、执行
         仍由本方法完成，但治理门（``capability_mode`` / allowlist）前置。集中在此唯一入口，
-        react / executor / webui 等所有调用方自动受益，杜绝 F0 同型旁路。普通 legacy 工具
+        react / executor 等所有调用方自动受益，杜绝 F0 同型旁路。普通 legacy 工具
         名 ``capability_for_schema_name`` 返回 None，逐字节走原路径，不改变普通 tool dispatch。
         """
         tool = self.tools.get(name)

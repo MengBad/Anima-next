@@ -24,6 +24,8 @@ from typing import Any, Optional
 import aiohttp
 import aiosqlite
 
+from anima.memory import visibility as _vis
+
 try:
     import sqlite_vec
     _SQLITE_VEC_AVAILABLE = True
@@ -550,11 +552,19 @@ class VectorMemory:
         salience: float = 0.5,
         source_uin: Optional[int] = None,
         source_gid: Optional[int] = None,
+        visibility: str = _vis.PUBLIC,
     ) -> bool:
-        """添加一条记忆。返回是否成功。"""
+        """添加一条记忆。返回是否成功。
+
+        `visibility` 与 `scope` 正交：scope 管归属，visibility 管可见通道
+        （见 anima/memory/visibility.py）。默认 public，旧调用点行为不变。
+        """
         await self._init_db()
         if not text.strip():
             return False
+        # 可见性落在 meta JSON 内，避免 ALTER TABLE 迁移。
+        meta = dict(meta or {})
+        meta["visibility"] = _vis.normalize(visibility)
 
         vec = None
         if self.embedding:
@@ -622,6 +632,29 @@ class VectorMemory:
             return True
 
     async def search(
+        self,
+        query: str,
+        top_k: int = 5,
+        threshold: float = 0.75,
+        source_uin: Optional[int] = None,
+        source_gid: Optional[int] = None,
+        scoped: bool = False,
+        channel: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """检索记忆，并按记忆可见性过滤。
+
+        `channel` 为空（旧调用点）⇒ 不过滤，行为与从前逐字相同。
+        过滤在打分与重排**之后**做，不参与排序，避免拉低相关度。
+        """
+        results = await self._search_raw(
+            query, top_k=top_k, threshold=threshold,
+            source_uin=source_uin, source_gid=source_gid, scoped=scoped,
+        )
+        if channel is None:
+            return results
+        return [r for r in results if _vis.admit((r.get("meta") or {}).get("visibility"), channel)]
+
+    async def _search_raw(
         self,
         query: str,
         top_k: int = 5,

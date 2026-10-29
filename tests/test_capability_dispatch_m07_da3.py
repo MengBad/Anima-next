@@ -300,12 +300,13 @@ def test_da3_call_signature_unchanged():
 
 
 def test_da3_dispatch_sites_unchanged():
-    """react / executor / webui 调用方零改动：仍用 tools.call，无 call_capability 引用。
+    """react / executor 调用方零改动：仍用 tools.call，无 call_capability 引用。
 
     D-A3 把 R3 路由集中在 ``ToolRegistry.call`` 一处，调用方（含 LLM 分发）不应
     直接感知 capability 路由——否则会出现 F0 同型旁路。
+    WebUI 已整体移除（design §5.5），调用方只剩这两处。
     """
-    for fn in ("agent/react.py", "agent/executor.py", "webui/server.py"):
+    for fn in ("agent/react.py", "agent/executor.py"):
         src = (ANIMA_DIR / fn).read_text(encoding="utf-8")
         assert "self.tools.call(" in src or "core.tools.call(" in src, \
             f"{fn} 应仍经 tools.call 分发"

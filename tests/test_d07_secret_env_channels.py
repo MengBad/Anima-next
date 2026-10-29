@@ -29,7 +29,6 @@ CHANNELS = [
     ("ANIMA_EMBEDDING_API_KEY", "vector.embedding_api_key"),
     ("ANIMA_RERANK_API_KEY", "vector.rerank_api_key"),
     ("ANIMA_TAVILY_API_KEY", "tavily.api_key"),
-    ("ANIMA_WEBUI_TOKEN", "webui.token"),                      # 2026-10-17 新增
     ("ANIMA_X_BROWSER_PASSWORD", "x_browser.password"),        # 2026-10-17 新增
 ]
 
@@ -41,8 +40,6 @@ _EMPTY_YAML = textwrap.dedent("""
       rerank_api_key: ""
     tavily:
       api_key: ""
-    webui:
-      token: ""
     x_browser:
       password: ""
 """)

@@ -14,7 +14,7 @@ from .event import (
 # 视为「拒绝/越权」的审计事件类型
 _DENY_TYPES = {
     "permission_denied", "capability_denied", "scope_denied",
-    "selfcode_rejected", "webui_task_rejected", "webui_evolution_rejected",
+    "selfcode_rejected", "owner_task_rejected", "evolution_rejected",
 }
 # 视为「运行时异常」的审计事件类型
 _ERROR_TYPES = {"exception", "runtime_error", "tool_error", "agent_failure"}

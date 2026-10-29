@@ -14,7 +14,7 @@ from unittest import mock
 import pytest
 
 from anima.core.config_drift import ConfigDriftMonitor
-from anima.core.config import AnimaConfig, PermissionConfig, SecurityConfig, WebUIConfig
+from anima.core.config import AnimaConfig, PermissionConfig, SecurityConfig
 
 
 @pytest.fixture(autouse=True)
@@ -36,7 +36,6 @@ def _cfg(**overrides):
     cfg = AnimaConfig(
         permissions=PermissionConfig(owners=[10001], admins=[10002]),
         security=SecurityConfig(require_approval_for_danger=True),
-        webui=WebUIConfig(enabled=False, host="127.0.0.1", port=8088, token="t"),
     )
     for dotted, val in overrides.items():
         node = cfg
@@ -53,16 +52,6 @@ def _fake_core(cfg):
         audit=SimpleNamespace(emit=lambda *a, **k: None),
         permission_store=SimpleNamespace(admins=lambda: list(cfg.permissions.admins)),
     )
-
-
-def _server(core):
-    from anima.webui.server import WebUIServer
-    with mock.patch("anima.webui.server.ConfigService"):
-        return WebUIServer(core)
-
-
-def _mk_request(query=None):
-    return SimpleNamespace(query=dict(query or {}))
 
 
 # --------------------------------------------------------------------------
@@ -99,12 +88,6 @@ def test_guard_relaxed_flags_danger():
     assert report["dangerous"]
 
 
-def test_webui_exposure_outside_loopback_is_danger():
-    cfg = _cfg(**{"webui.enabled": True, "webui.host": "127.0.0.1"})
-    m = ConfigDriftMonitor(cfg, actor="bootstrap")
-    exposed = _cfg(**{"webui.enabled": True, "webui.host": "0.0.0.0"})
-    item = [d for d in m.check(exposed)["items"] if d["field"] == "webui_host"][0]
-    assert item["severity"] == "danger"
 
 
 def test_owners_cleared_is_danger():
@@ -144,39 +127,3 @@ def test_repin_resets_baseline_and_clears_drift():
     assert m._baseline_actor == "owner:10001"
     # 更进一步的偏离现在被视为新漂移
     assert m.check(_cfg(**{"permissions.owners": [10001, 88888, 77777]}))["drift_detected"] is True
-
-
-# --------------------------------------------------------------------------
-# WebUI 处理器
-# --------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_config_drift_handler_returns_report():
-    cfg = _cfg(**{"permissions.owners": [10001]})
-    core = _fake_core(cfg)
-    from anima.core.config_drift import ConfigDriftMonitor
-    core.config_drift = ConfigDriftMonitor(cfg, actor="bootstrap")
-    server = _server(core)
-    resp = await server.config_drift(_mk_request())
-    body = json.loads(resp.body)
-    assert body["drift_detected"] is False
-    assert body["watched_fields"] > 0
-    assert resp.status == 200
-
-
-@pytest.mark.asyncio
-async def test_config_drift_repin_handler_rebaselines():
-    cfg = _cfg(**{"permissions.owners": [10001]})
-    core = _fake_core(cfg)
-    from anima.core.config_drift import ConfigDriftMonitor
-    m = ConfigDriftMonitor(cfg, actor="bootstrap")
-    core.config_drift = m
-    # 先制造漂移
-    core.config.permissions.owners = [10001, 55555]
-    server = _server(core)
-    before = await server.config_drift(_mk_request())
-    assert json.loads(before.body)["drift_detected"] is True
-    # owner 受控重校准
-    rep = await server.config_drift_repin(_mk_request())
-    assert json.loads(rep.body)["drift_detected"] is False
-    assert m._baseline_actor == "owner:10001"

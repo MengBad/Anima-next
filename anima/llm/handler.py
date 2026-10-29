@@ -587,6 +587,45 @@ class LLMHandler(AnimaCommandsMixin):
             logger.exception("口头发话执行异常（已隔离）")
             return None
 
+    async def _request_grant_notice(self, user_id: int, sender_name: str, text: str) -> None:
+        """非 owner 私聊：登记授权申请并私聊通知 owner（每条申请人每 10 分钟最多一次）。
+
+        频控理由：陌生人连发十条不该给 owner 刷十条通知；但**首次申请必须送达**，
+        否则「授权」这件事在体验上根本不存在。
+        """
+        core = self.core
+        queue = getattr(core, "grant_queue", None)
+        if queue is None:
+            from anima.agent.approval_dialog import GrantQueue
+
+            queue = GrantQueue()
+            core.grant_queue = queue
+
+        import time as _time
+
+        now = _time.time()
+        last = getattr(core, "_grant_notice_at", {}) or {}
+        if now - float(last.get(int(user_id), 0) or 0) < 600:
+            return
+        queue.register(int(user_id), reason=(text or "")[:60], now=now)
+        last[int(user_id)] = now
+        core._grant_notice_at = last
+
+        owners = getattr(getattr(core.config, "permissions", None), "owners", None) or []
+        if not owners:
+            return
+        name = (sender_name or "").strip() or str(user_id)
+        notice = (
+            f"有人想用完整功能喵：{name}（QQ {user_id}）。\n"
+            f"原话：{(text or '').strip()[:60]}\n"
+            f"要开权限就回「授权 {user_id}」，不开就无视。"
+        )
+        for oid in owners:
+            try:
+                await core.gateway.send(OutboundMsg("private", int(oid), notice))
+            except Exception:
+                logger.debug("授权申请通知发送失败 owner=%s", oid, exc_info=True)
+
     def _looks_like_owner_task(self, text: str, user_id: int, detail_type: str) -> bool:
         if detail_type != "private" or not self._is_owner(user_id):
             return False
@@ -1061,6 +1100,32 @@ class LLMHandler(AnimaCommandsMixin):
         # 处理 owner 命令（不进入 LLM Pipeline）
         if await self._handle_command(event, text, user_id, group_id, detail_type):
             return
+
+        # 私聊自然语言审批（design/private_group_dual_mode_plan.md §3）：
+        # owner 的一句「行 / 不行」或「授权 <QQ>」直接消费掉，不进 LLM。
+        # 🔴 只在私聊：群里出现审批问答会暴露"它不是人"（沿用下方 1085-1090 的判据）。
+        if detail_type == "private":
+            try:
+                from anima.agent import approval_dialog as _ad
+
+                _verdict = await _ad.handle_owner_private(self.core, text, int(user_id))
+                if _verdict:
+                    await self.core.gateway.send(
+                        OutboundMsg("private", int(user_id), _verdict)
+                    )
+                    return
+            except Exception:
+                logger.exception("私聊审批处理异常（已隔离）")
+
+        # 非 owner 私聊的授权申请（design §3.6）：把「他想用完整功能」这件事
+        # 推给 owner，否则 owner 永远不知道该授权谁——GrantQueue 只是登记簿，
+        # 真正的通知必须有人发。
+        if detail_type == "private" and not self._is_owner(int(user_id)):
+            try:
+                await self._request_grant_notice(int(user_id), sender_name, text)
+            except Exception:
+                logger.exception("授权申请通知异常（已隔离）")
+
         if self._looks_like_owner_task(text, int(user_id), detail_type):
             await self.core.gateway.send(OutboundMsg("private", int(user_id), await self._create_owner_task(text, int(user_id))))
             return
@@ -1147,6 +1212,7 @@ class LLMHandler(AnimaCommandsMixin):
         # 这样"未 @bot 的群消息"也能学到氛围/事实）。氛围用本地启发式（零成本），
         # 事实抽取用 asyncio.create_task 后台跑，绝不拖慢回复。
         await self._observe_crossgroup(text, user_id, group_id, detail_type, sender_name)
+
 
         # 🔴 C（2026-10-03）：**群回合关键段在此取锁**。群缓冲的**写入**必须与紧随其后
         # 的组帧**读取**（memory_stage）及出站**写回**（guardrail）处在同一把群锁内，

@@ -1254,7 +1254,7 @@ class LLMClient:
     def health(self) -> dict[str, Any]:
         now = time.time()
         # 顶层三项是**跨桶汇总**（2026-10-02）。原因：health() 的消费方
-        # `core/health_history.py:107`、`webui/server.py:1062` 都在 scope **外**调用，
+        # `core/health_history.py:107` 等调用点都在 scope **外**调用，
         # 若顶层沿用「当前 scope 所属桶」的 property 视图，就会在无 scope 时固定读到
         # background 桶 ⇒ **出站熔断被静默漏报**（监控/告警看不到用户可感的那一半）。
         # 分桶明细另见 `circuits`；需要「只看出站」的代码走 `circuit_open_until_of()`。
