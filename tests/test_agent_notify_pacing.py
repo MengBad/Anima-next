@@ -25,6 +25,7 @@
 4. 跑完但没有可展示产出 ⇒ 仍发一句完成（否则用户不知道结束了）；
 5. 有产出 ⇒ 不再单独发 `[完成]`（产物交付本身即完成信号）。
 """
+import re
 import time
 import types
 
@@ -62,7 +63,14 @@ def test_short_task_does_not_notify_steps(steps):
 
 
 def test_many_steps_notifies():
-    assert _ex(exec_age=1)._should_notify_steps(_task(steps=6, age=1)) is True
+    """🔴 2026-10-29 起：**步数再多也不逐步推送**。
+
+    这个测试原来断言 `steps=6 ⇒ True`。改的原因不是「阈值调高了」，
+    而是这类消息**被整体取消**了（owner：「这些我都感觉不太好」）。
+    步骤清单没有用户价值 —— 用户只关心结果。
+    取代它的是 `_maybe_nudge_silence`（跑太久发一句人话）。
+    """
+    assert _ex(exec_age=1)._should_notify_steps(_task(steps=6, age=1)) is False
 
 
 def test_long_elapsed_notifies_even_if_few_steps():
@@ -80,7 +88,7 @@ def test_long_elapsed_notifies_even_if_few_steps():
 
     ⇒ 现在按 `_exec_started_at`（本次执行起点）算。
     """
-    assert _ex(exec_age=90)._should_notify_steps(_task(steps=2, age=999)) is True
+    assert _ex(exec_age=90)._should_notify_steps(_task(steps=2, age=999)) is False
 
 
 def test_created_at_is_not_used_for_elapsed():
@@ -118,17 +126,26 @@ def test_garbage_task_does_not_raise():
 
 
 def test_no_completion_notice_when_output_exists():
-    """有产出 ⇒ 产物交付即完成信号，不再单独发 `[完成]`。
+    """有产出 ⇒ 产物交付即完成信号，不再单独发完成提示。
 
     生产实证序列：… [3/3] → [完成] → 产物全文
     中间那条 `[完成]` 纯属噪音。
+
+    🔴 2026-10-29：措辞已改成自然句（「弄完了，但没什么能给你看的喵」），
+    所以断言从「必须含某个字面串」改为「必须有产出判定 + 无产出分支提醒」，
+    并**额外断言不出现 `[完成]` 这种状态标签**。
     """
     import inspect
     from anima.agent import executor as ex_mod
 
     src = inspect.getsource(ex_mod.AgentExecutor.execute)
     assert "_has_output" in src, "应有产出判定"
-    assert "没有可展示的产出" in src, "无产出时应如实说明"
+    assert "没什么能给你看的" in src, "无产出时应如实说明"
+    # 只看**实际发给用户的字面量**，不看注释（注释里会引用旧文案作历史）
+    _msgs = re.findall(r'_notify\(\s*task,\s*"([^"]+)"', src) \
+          + re.findall(r'_notify\(\s*task,\s*f"([^"]+)"', src)
+    assert not any("[" in m and "]" in m for m in _msgs), \
+        f"用户消息里不该出现 [..] 状态标签：{_msgs}"
 
 
 def test_completion_notice_still_sent_without_output():
@@ -139,5 +156,8 @@ def test_completion_notice_still_sent_without_output():
     src = inspect.getsource(ex_mod.AgentExecutor.execute)
     i = src.find("if task.status == \"completed\"")
     assert i > 0
-    seg = src[i:i + 800]
-    assert "[完成]" in seg, "无产出分支仍应发完成提示"
+    seg = src[i:i + 1200]
+    assert "没什么能给你看的" in seg, "无产出分支仍应发一句提示"
+    _seg_msgs = re.findall(r'_notify\(\s*task,\s*"([^"]+)"', seg)
+    assert not any("[" in m and "]" in m for m in _seg_msgs), \
+        f"不得再用 [..] 状态标签：{_seg_msgs}"

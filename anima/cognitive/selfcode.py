@@ -1286,12 +1286,21 @@ class SelfCodeManager:
         except Exception:
             return
         _goal = str(goal or "").strip().replace("\n", " ")
+        # 🔴 2026-10-29：去掉「原因：<内部边界串>」和那行括号技术解释。
+        #
+        # 原来是：
+        #     需求：<goal>
+        #     原因：sandbox_network_denied: 静态校验拒绝 import requests
+        #     （SelfCode 沙箱禁网，需要联网抓取的工具在生成阶段就会被静态校验拒掉）
+        #     —— 如果确实要，可以让本喵用现成的联网工具试…
+        #
+        # 后三行是**给我的开发说明**，不是给用户的话。用户只需要知道：
+        # 想做什么、做不了、有没有替代办法。技术原因进日志。
+        logger.info("[selfcode] 边界拒绝 goal=%s boundary=%s",
+                    _goal[:80], str(boundary)[:200])
         body = (
-            f"本喵收到一个想做的活，但这个活本喵现在做不了喵。\n"
-            f"需求：{_goal[:90]}{'…' if len(_goal) > 90 else ''}\n"
-            f"原因：{str(boundary)[:120]}\n"
-            f"（SelfCode 沙箱禁网，需要联网抓取的工具在生成阶段就会被静态校验拒掉）\n"
-            f"—— 如果确实要，可以让本喵用现成的联网工具试，不必走自建工具。"
+            f"「{_goal[:60]}{'…' if len(_goal) > 60 else ''}」这个本喵弄不了喵。"
+            f"\n要是非弄不可，本喵可以用现成的联网工具试试看。"
         )
         for oid in owners:
             try:
@@ -1317,12 +1326,18 @@ class SelfCodeManager:
             return
         tid = str(getattr(task, "id", ""))
         _goal = str(getattr(task, "request", "") or "").strip().replace("\n", " ")
+        # 🔴 2026-10-29：这是**唯一必须保留命令**的通知 ——
+        # 安装能力是不可逆动作，必须由人明确批准，而批准**没有自然语言入口**
+        # （`!anima iterate approve` 是唯一路径）。所以命令要留。
+        #
+        # 但去掉两个纯噪音字段：
+        #   · `任务：{tid}` 与后面 `approve {tid}` 重复（同一信息出现两次）；
+        #   · `看详情：!anima iterate status` 是把「去看文档」当交付 ——
+        #     用户真要细节会自己问。
         body = (
-            f"本喵写了个新工具，等你点头才能装喵：\n"
-            f"任务：{tid}\n"
-            f"内容：{_goal[:90]}{'…' if len(_goal) > 90 else ''}\n"
-            f"看详情：!anima iterate status\n"
-            f"批准安装：!anima iterate approve {tid}"
+            f"本喵写了个新工具，得你点头才能装喵：\n"
+            f"「{_goal[:70]}{'…' if len(_goal) > 70 else ''}」\n"
+            f"同意的话发：!anima iterate approve {tid}"
         )
         for oid in owners:
             try:

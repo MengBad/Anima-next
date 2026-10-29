@@ -86,7 +86,10 @@ async def test_boundary_rejection_notifies_owner_privately():
     assert len(gw.sent) == 1
     msg = gw.sent[0]
     assert msg.detail_type == "private", "边界拒绝告知必须走私聊"
-    assert "做不了" in msg.message or "沙箱" in msg.message
+    # 🔴 2026-10-29：去掉技术细节（「原因：<内部边界串>」「沙箱禁网…」），
+    # 只说：想做什么、做不了、有没有替代办法。
+    assert "弄不了" in msg.message, "应如实说明做不了"
+    assert "现成" in msg.message or "联网" in msg.message, "应给替代办法"
     assert "失效链接查历史快照" in msg.message, "必须含原需求摘要"
 
 

@@ -201,9 +201,19 @@ async def test_enabled_submits_and_notifies_privately():
     assert len(gw.sent) == 1, "应发 1 条报备"
     msg = gw.sent[0]
     assert msg.detail_type == "private", "报备必须走私聊，不得发群"
-    assert "auto001" in msg.message, "报备必须含 task_id（便于叫停）"
-    assert "为什么" in msg.message, "报备必须说明原因"
-    assert "cancel" in msg.message, "必须给出叫停方式"
+    # 🔴 2026-10-29：报备改成**一句话**，不再含 task_id / 命令 / 字段名。
+    #
+    # 原断言（`task_id in 消息` + `"为什么" in 消息` + `"cancel" in 消息`）
+    # 锁定的正是 owner 说「感觉不太好」的那个三行工单形态。
+    # 叫停走自然语言（`llm/request_executor.py` 的 stop 意图），
+    # 不需要在消息里教 `!anima` 命令。
+    assert "auto001" not in msg.message, "报备不该露 task_id（内部标识）"
+    assert "为什么：" not in msg.message, "不该用 `为什么：` 字段名（那是日志分节符）"
+    assert "cancel" not in msg.message, "不该教 !anima 命令（叫停支持自然语言）"
+    assert "！" not in msg.message and "！anima" not in msg.message
+    assert len(msg.message.splitlines()) == 1, (
+        f"报备应是一句话，实得 {len(msg.message.splitlines())} 行：{msg.message!r}"
+    )
     names = [e[0] for e in auditor.events]
     assert "auto_trigger_started" in names, f"应写审计，实得 {names}"
 
@@ -469,7 +479,7 @@ def test_clean_quote_truncates_at_sentence_boundary():
 
 # ── 2026-10-29：步骤推送闸门不能用 created_at ───────────────────────
 
-def test_step_notify_gate_ignores_created_at():
+def test_step_notify_gate_is_disabled():
     """`created_at` 含**排队等待**时间，不能用来判「跑得够久」。
 
     生产实证（10-29 00:00~00:02，同一分钟内三条报备）：
@@ -490,13 +500,11 @@ def test_step_notify_gate_ignores_created_at():
         created_at = time.time() - 300   # 创建于 5 分钟前（排队）
 
     ex = AgentExecutor.__new__(AgentExecutor)
-    assert ex._should_notify_steps(_Task()) is False, (
-        "未记录执行起点时必须不推（fail-closed）；"
-        "用 created_at 会让所有「到期才启动」的短任务刷屏"
-    )
-    # 记录执行起点后，真正跑够 60s 才推
+    # 🔴 2026-10-29：步骤推送已**整体取消**（不再是阈值问题），
+    # 所以无论 created_at / exec_started_at 怎么设置都恒 False。
+    assert ex._should_notify_steps(_Task()) is False, "未记录执行起点 ⇒ 不推"
     ex._exec_started_at = time.time() - 90
-    assert ex._should_notify_steps(_Task()) is True
+    assert ex._should_notify_steps(_Task()) is False, "跑够 90s 也不逐步推（改为一句人话）"
     ex._exec_started_at = time.time() - 5
     assert ex._should_notify_steps(_Task()) is False
 
@@ -512,7 +520,7 @@ def test_step_notify_gate_long_task_always_notifies():
         created_at = time.time()
 
     ex = AgentExecutor.__new__(AgentExecutor)
-    assert ex._should_notify_steps(_Task()) is True
+    assert ex._should_notify_steps(_Task()) is False, "步数多也不推步骤（整体取消）"
 
 
 # ── 2026-10-29：最小间隔闸门（防心跳连拍打光配额） ───────────────────

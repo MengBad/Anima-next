@@ -95,9 +95,15 @@ async def test_notifies_owner_privately():
     assert len(gw.sent) == 1
     msg = gw.sent[0]
     assert msg.detail_type == "private", "重启打断通知必须走私聊，不得发群"
-    assert task.id in msg.message, "必须含 task_id，否则 owner 无法重跑"
-    assert "1/3" in msg.message, f"必须含进度（已 1/3 步）：{msg.message!r}"
-    assert "approve" in msg.message, "必须给出重跑方式"
+    # 🔴 2026-10-29：不再露 task_id / `!anima` 命令。
+    # 重跑靠自然语言（「接着弄那个」），命令是开发者语言。
+    assert task.id not in msg.message, "不该露 task_id（内部标识）"
+    assert "!anima" not in msg.message, "不该教命令"
+    assert "搁那儿" in msg.message or "打断了" in msg.message or "重启" in msg.message
+    # 🔴 2026-10-29：不再报「已完成 M/N 步」（内部计划进度不是用户能理解的单位），
+    # 也不再教 `!anima approve` 命令 —— 续做靠自然语言。
+    assert "1/3" not in msg.message, "不该报内部步骤进度"
+    assert "想接着弄" in msg.message, "应说明如何继续"
 
 
 async def test_notification_never_goes_to_group():

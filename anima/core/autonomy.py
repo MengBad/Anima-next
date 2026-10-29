@@ -983,6 +983,101 @@ class Heartbeat:
             break
         return out
 
+    #: 报备的「去干什么」句式。
+    #:
+    #: 🔴 2026-10-29：**报备不应该有固定模板。**
+    #: 同一个人连续三次用完全相同的句式说话（「本喵去干个活喵：…」），
+    #: 比内容本身更像机器人。这里按 `what` 的 hash 稳定取一句
+    #: （同一任务重复构造得到同一句，便于测试；不同任务自然不同）。
+    #:
+    #: ⚠️ 首版设计成 `"本喵去{what}喵"`，遇到本来就是动词开头的 `what`
+    #:    （「整理一份报告」）会拼成「本喵去整理一份报告喵」——这个还好，
+    #:    但遇到 `"想起有件事还没做完，本喵去{what}"` 就变成
+    #:    「…本喵去弄一下喵」这种**自我指涉的空话**。
+    #:    ⇒ 改成：句式只提供**语气开头**，`what` 保持完整句子独立可读。
+    _HANDOFF_LEADS = (
+        "",
+        "本喵去干个活喵：",
+        "哦对，",
+        "想起个事——",
+        "",
+    )
+    #: 原因从句的连接方式（把「为什么」压成一个自然从句，不单独成行）。
+    #:
+    #: ⚠️ 只用括号。试过「。{why}」和「——{why}。」，但 `why` 常常
+    #:    本身就是一个完整名词短语（「本喵在追的目标「X」」），
+    #:    拼成「整理报告。本喵在追的目标「X」」读起来像两句不相关的话。
+    #:    括号能明确「这是补充说明」，且不破坏主句的收尾。
+    _HANDOFF_WHY = (
+        "（{why}）",
+        "（{why}）",
+        " — {why}",
+    )
+    #: 括号里常是「时间到了」这种一句半，去掉句号更利落。
+    _HANDOFF_WHY_STRIP = "。.，, 　"
+
+    def _compose_handoff_note(self, *, what: str, why: str,
+                              task_id: str = "") -> str:
+        """把「要去做什么」写成**一句话**（替掉原来的三行工单）。
+
+        ## 为什么改（owner 原话：「你不能优化这些消息的逻辑和工作步骤」）
+
+        旧形态是一个三行工单：
+
+            本喵去干个活喵：<what>
+            为什么：<why>
+            不用回，做完本喵来汇报。想叫停就说「停掉 <task_id>」
+            （或发 !anima agent cancel <task_id>）
+
+        三个问题都不是措辞问题，而是**形态问题**：
+
+        1. `为什么：` 是一个**字段名**。真人不会在私聊里写「为什么：」，
+           那是日志的分节符。原因应该是句子的从句。
+        2. `<task_id>` 是内部标识，`!anima agent cancel` 是开发者命令。
+           而叫停**早就支持自然语言**了（`llm/request_executor.py` 的
+           `stop` 意图，正是 owner 说「能不能不用命令」之后加的）
+           ⇒ 在报备里再教一遍命令，是**倒退**。
+        3. 「不用回，做完本喵来汇报」紧跟「想叫停就…」是自相矛盾：
+           前一句说别管我，后一句教你怎么打断我。
+
+        ## 新形态
+
+        一句话说完在干什么，原因作为从句补充，**不出现 task_id / 命令 / 字段名**：
+
+            本喵去干个活喵：<what>
+            ——<why>。
+
+        或者干脆没有开头（`what` 自己就是完整句子）：
+
+            <what>（<why>）
+
+        叫停走自然语言（「别做了」「取消任务」），不需要在报备里教。
+        `task_id` 仍会返回给调用方（供审计/日志），只是**不进消息正文**。
+
+        ## 参数为什么还收 task_id
+
+        调用方可能想写进审计；本函数**刻意不把它放进正文** ——
+        这是「内部标识不外泄」的边界，由这里守住比每个调用点记住更可靠。
+        保留参数是为了签名稳定，同时显式表明「收到但不使用」。
+        """
+        _what = str(what or "").strip() or "处理点事"
+        _why = str(why or "").strip()
+        # ~「时间到了」这种理由是**废话**：报备本身已经说明「我现在去做」。
+        # 真需要解释的只有那些用户不知道的（「本喵在追的目标 X」）。
+        # 把最常见的无信息量理由直接丢掉，比塞进括号里更干净。
+        if _why in ("时间到了", "到点了", "该做了", "到期了", ""):
+            _why = ""
+        # 用 what + why 的 hash 选句式：同一任务稳定，不同任务不同
+        _h = abs(hash(_what + _why)) % 100000
+        lead = self._HANDOFF_LEADS[_h % len(self._HANDOFF_LEADS)]
+        body = (lead + _what) if lead else _what
+        if _why:
+            # 原因已经是一句话了就不再套括号（避免「（…。）」这种叠标点）
+            _why_clean = _why.rstrip(self._HANDOFF_WHY_STRIP)
+            joiner = self._HANDOFF_WHY[_h % len(self._HANDOFF_WHY)]
+            body += joiner.format(why=_why_clean)
+        return body
+
     async def _auto_trigger_tick(self, now: float) -> None:
         """P1 自主触发：自己发现该干的活，**先报备再执行**。
 
@@ -1228,9 +1323,20 @@ class Heartbeat:
             # 去掉目标模板的尾巴（` 」到推进时间了`）与内部前缀
             _what = re.sub(r"^推进这个长期目标并给出本次进展[：:]\s*", "", _what)
             _what = re.sub(r"\s*」\s*到推进时间了\s*$", "", _what)
+            # 🔴 2026-10-29：把 `request` 里的**指令腔**改成**口语**。
+            # `request` 是喂给 planner 的任务指令（「履行一个到期的承诺：
+            # 你之前说过「…」。现在把它具体做到…」），
+            # 直接念给用户听就像在读工单。
+            # 只取其中「要做的动作」这一句，丢掉元指令。
+            _what = re.sub(r"^履行一个到期的承诺[：:]\s*", "", _what)
+            _what = re.sub(r"^跟进这个承诺并给出结果[：:]\s*", "", _what)
+            _what = re.sub(r"你之前说过「(.+?)」", r"\1", _what)
+            _what = re.sub(r"现在把它具体做到.*$", "", _what)
+            _what = re.sub(r"不要只是重复这句话[。.]?$", "", _what)
             # 去掉 QQ 号（人格正本：绝不报QQ号）
             _what = re.sub(r"[（(]\s*\d{5,12}\s*[）)]", "", _what)
             _what = re.sub(r"(?<![\d.])\d{9,11}(?![\d.])", "", _what).strip()
+            _what = _what.strip("「」…。 ，,")
             _what = _what[:60] + ("…" if len(_what) > 60 else "")
             # 「为什么」这条也是合理的：用户有权知道它拿什么理由自主行动。
             # 同样去噪（QQ 号 / 目标模板尾巴），用自然句子而非字段名。
@@ -1239,16 +1345,31 @@ class Heartbeat:
             _why = re.sub(r"[（(]\s*\d{5,12}\s*[）)]", "", _why)
             _why = re.sub(r"(?<![\d.])\d{9,11}(?![\d.])", "", _why).strip()
             _why = _why[:50] + ("…" if len(_why) > 50 else "")
-            # task_id **必须保留**：它是「叫停」的唯一锚点
-            # （`test_auto_trigger.test_enabled_submits_and_notifies_privately`
-            #   明确要求报备里含 task_id，否则用户无法精确取消）。
-            # 但用自然语言说，不再以 `做什么：/为什么：/任务：` 字段名开头。
-            _body = (
-                f"本喵去干个活喵：{_what}\n"
-                f"为什么：{_why}\n"
-                f"不用回，做完本喵来汇报。想叫停就说「停掉 {task.id}」"
-                f"（或发 !anima agent cancel {task.id}）"
-            )
+            # 🔴 2026-10-29 二版：**报备就该是一句话，不是工单。**
+            #
+            # 一版只做了「去字段名 + 去 QQ 号」，但骨架没动：
+            #
+            #     本喵去干个活喵：<做了什么>
+            #     为什么：<原因>
+            #     不用回，做完本喵来汇报。想叫停就说「停掉 5ed918804c」
+            #     （或发 !anima agent cancel 5ed918804c）
+            #
+            # 三行的结构本身就是**系统在报工单**，不是人在说话。owner 的原话
+            # 是「你不能优化这些消息的逻辑和工作步骤」—— 说明问题不在措辞，
+            # 而在**这条消息的存在形态**：
+            #
+            #   · 「为什么：」是给自己看的理由，用户不需要一段独立说明；
+            #   · task_id 是内部标识。叫停**已经支持自然语言**
+            #     （`llm/request_executor.py` 的 `stop` 意图：别做了/取消任务/
+            #      停手…，正是 owner 说「能不能不用命令」后加的）
+            #     ⇒ 报备里再教一次 `!anima` 命令是**冗余且倒退**的；
+            #   · 「不用回，做完本喵来汇报」是承诺，但下一句就教用户怎么打断，
+            #     自相矛盾。
+            #
+            # 现在：一句话说清「我要去做什么」，原因作为自然从句跟在后面
+            # （不单独成行、不加字段名）。叫停靠自然语言，不再写命令。
+            _body = self._compose_handoff_note(what=_what, why=_why,
+                                               task_id=str(getattr(task, "id", "")))
             for oid in owners:
                 try:
                     await self.core.gateway.send(OutboundMsg("private", int(oid), _body[:1500]))
@@ -1368,14 +1489,21 @@ class Heartbeat:
         rows = []
         for _k, _items in list(_groups.items())[:limit]:
             _req = str(getattr(_items[0], "request", "") or "").strip().replace("\n", " ")
-            _line = "· " + (_req[:60] + "…" if len(_req) > 60 else _req)
-            if len(_items) > 1:
-                _line += "（同主题共 %d 条，此处合并）" % len(_items)
+            # 🔴 2026-10-29：去掉 `· ` 项目符号与「（同主题共 N 条，此处合并）」——
+            # 后者是**数据库说明**（告诉你我做了 group by），不是人话。
+            # 合并了就直接说一件事，不必向用户汇报合并了几条。
+            _line = _req[:60] + ("…" if len(_req) > 60 else "")
             rows.append(_line)
         more = len(_groups) - len(rows)
-        body = "本喵这边攒了 %d 件还等着处理的事喵：\n%s" % (len(_groups), "\n".join(rows))
+        # 由「本喵这边攒了 N 件还等着处理的事喵：· 项1 · 项2」改成**一段话**：
+        # 先说数量，再自然列举。数量用「有 N 件事」而非「攒了 N 件」。
+        _listed = "、".join(rows)
+        if len(_groups) == 1:
+            body = f"对了，还有件事没弄：{_listed}"
+        else:
+            body = f"对了，手头还有 {len(_groups)} 件事没弄：{_listed}"
         if more > 0:
-            body += "\n（还有 %d 件没列出来）" % more
+            body += f"（另外还有 {more} 件）"
 
         try:
             from anima.core.gateway import OutboundMsg
@@ -1688,13 +1816,16 @@ class Heartbeat:
             return
         items = res.get("items") or []
         if items:
-            lines = ["雨云签到失败："]
-            for it in items:
-                lines.append(f"· {it.get('email','')}：{it.get('reason','签到失败')}")
-            lines.append("可以稍后发「现在就签到」重试。")
-            body = "\n".join(lines)
+            # 🔴 2026-10-29：去掉 `· 项` 符号与「雨云签到失败：」标签头，
+            # 并去掉 email（账号标识不该在 QQ 里回显，user 知道是哪个号）。
+            # 改成一句话 + 自然列举原因。
+            _reasons = "；".join(
+                str(it.get("reason", "签到失败")) for it in items[:3])
+            body = f"雨云签到没成功喵：{_reasons}"
+            body += "\n想再试一次的话，跟本喵说「现在就签到」就行。"
         else:
-            body = f"雨云签到失败：{res.get('reason', '未知原因')}"
+            _r = str(res.get("reason", "") or "").strip() or "不知道哪儿出问题了"
+            body = f"雨云签到没成功喵：{_r}\n稍后想再试就跟本喵说一声。"
         try:
             await self.core.gateway.send(OutboundMsg("private", int(uid), body))
         except Exception:

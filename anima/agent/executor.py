@@ -276,7 +276,7 @@ class AgentExecutor:
         # 用这个字段把「排队」和「在跑」分开。
         self._exec_started_at = time.time()
         if time.time() < self._pause_until:
-            msg = "Agent 能力已熔断暂停（连续失败过多），请 10 分钟后再试。"
+            msg = "本喵刚才连着没弄成，先缓十分钟喵"
             await self._notify(task, msg)
             return msg
 
@@ -310,7 +310,7 @@ class AgentExecutor:
             if self._is_cancelled(task):
                 task.status = "cancelled"
                 self.store.save(task)
-                await self._notify(task, "[已取消] 主人终止了任务")
+                await self._notify(task, "好，那本喵不弄了喵")
                 self.clear_cancel(task.id)      # 2026-10-29：终结后清标记
                 return "任务已取消。"
 
@@ -327,9 +327,10 @@ class AgentExecutor:
                 logger.warning("[agent] 任务 %s 超整任务预算：%s", task.id, task.error)
                 await self._notify(
                     task,
-                    f"[超时中止] 本喵算了算，这个活已经花了 {_elapsed:.0f} 秒、"
-                    f"超过 {self.total_budget_sec:.0f} 秒的上限了，先停一下喵。\n"
-                    f"已完成 {_done}/{len(task.steps)} 步，已经做出来的东西都留着。",
+                    # 🔴 2026-10-29：去掉 `[超时中止]` 标签与「花了 X 秒 / 超过
+                    # Y 秒上限 / 已完成 M/N 步」—— 那是我自己的预算审计，
+                    # 用户不需要读秒表。只说：太久了我先停，做出来的都留着。
+                    "这个活比本喵想的花时间…先停一下喵，已经弄出来的都留着~",
                 )
                 if self.auditor:
                     try:
@@ -343,15 +344,10 @@ class AgentExecutor:
 
             batch = self._collect_batch(task, idx)
             total = len(task.steps)
-            # 🔴 2026-10-23：**步骤进度节流**。
-            #   生产实证：一个 23 秒的任务连推 6 条（报备 + 3 步 + 完成 + 产物），
-            #   在私聊里是刷屏。而「一个每 23 秒发 6 条消息的助理会被关掉」——
-            #   一旦关掉通知，前面做的所有主动交付都白费。
-            #   判据：**短任务静默跑完只报结果**；长任务才逐步报进度。
-            _notify_steps = self._should_notify_steps(task)
+            # 🔴 2026-10-29：**不再逐步推送**（见 `_should_notify_steps` 的说明）。
+            # 改为：跑太久时发**一句人话**，而不是一串步骤清单。
+            await self._maybe_nudge_silence(task)
             for step in batch:
-                if _notify_steps:
-                    await self._notify(task, f"[{step.index + 1}/{total}] {step.description}…")
                 step.status = "running"
             self.store.save(task)
 
@@ -381,7 +377,7 @@ class AgentExecutor:
                 task.error = str(e)
                 failed = True
                 self.store.save(task)
-                await self._notify(task, f"[资源超限] {e}")
+                await self._notify(task, "这个活儿太大，本喵这次弄不完喵")
                 break
             except StepFailed as e:
                 step = batch[0]
@@ -499,7 +495,7 @@ class AgentExecutor:
             self._fail_streak += 1
             if self._fail_streak >= 3:
                 self._pause_until = time.time() + 600
-                await self._notify(task, "⚠️ 连续 3 个 Agent 任务失败，能力暂停 10 分钟")
+                await self._notify(task, "本喵连着几次都没弄成…先歇十分钟缓一缓喵")
         else:
             self._fail_streak = 0
 
@@ -510,17 +506,26 @@ class AgentExecutor:
             #   最后一条 `[完成]` 夹在中间纯属噪音。
             #   改为：**有步骤产出时不再单独发 `[完成]`**（产物交付本身就是完成信号）；
             #   只有「跑完了但什么也没产出」时才发这一句（否则用户不知道结束了）。
+            #
+            # 🔴 2026-10-29：即便要发，也**不能带 `[完成]` 这种状态标签**。
+            #   那是日志的分节符，不是人说话。改成一句自然的话。
             _has_output = any(
                 len(str(getattr(s, "result", "") or "").strip()) >= 20
                 for s in (task.steps or [])
             )
             if not _has_output:
-                await self._notify(task, "[完成] 任务已全部执行（但没有可展示的产出）")
+                await self._notify(task, "弄完了，但没什么能给你看的喵")
             return "\n".join(result_parts) or "（无步骤产出）"
         if task.status == "cancelled":
             return "任务已取消。"
-        await self._notify(task, f"[失败] {task.error or '未知错误'}")
-        return f"任务失败：{task.error or '未知错误'}"
+        # 🔴 2026-10-29：`[失败] <内部错误串>` 对用户毫无意义。
+        #   错误信息是给开发者的（「transport:ClientOSError」「verify_failed」），
+        #   直接念出来既看不懂也不可行动。改成一句人话；
+        #   真正的错误串留在日志与审计里。
+        _err = str(task.error or "").strip()
+        logger.warning("[agent] 任务失败 task=%s error=%s", task.id, _err[:300])
+        await self._notify(task, "这个没弄成喵…等会儿再试试？")
+        return f"任务失败：{_err or '未知错误'}"
 
     # ------------------------------------------------------------------
     # P2-1 验收
@@ -645,68 +650,97 @@ class AgentExecutor:
         # 「主人今天有好好吃饭嘛？」。owner 的原话：「为什么要把步骤给我看」。
         #
         # 「我换了个做法」是**内部调度**，不是用户需要知道的事实；
-        # 它只该进日志（`auditor.emit("agent_replan")` 已有），
-        # 不该占用一条 QQ 消息。仅当任务本身够长（用户在等）时才报。
-        if self._should_notify_steps(task):
-            await self._notify(
-                task,
-                f"[重规划 #{task.replan_count}] 换了个做法，改为 {len(new_steps)} 步",
-            )
-        else:
-            logger.info(
-                "[重规划] task=%s #%d 「%s」未达成（%s）-> %d 步（短任务不推送）",
-                task.id, task.replan_count, failed_step.description[:30],
-                reason, len(new_steps))
+        # 它只该进日志（`auditor.emit("agent_replan")` 已有）。
+        #
+        # 🔴 2026-10-29：**彻底不推**（原来是 `_should_notify_steps` 门控，
+        # 但那个判据已恒 False）。重规划是「我自己换条路走」，
+        # 用户既不需要知道、也没法参与 —— 说「换了个做法，改为 2 步」
+        # 只是把内部状态翻译成人话，信息量为零。
+        # 真正需要用户知道的是「卡住了 / 需要你决定」，
+        # 那是 `_maybe_nudge_silence` 和最终结果消息的职责。
+        logger.info(
+            "[重规划] task=%s #%d 「%s」未达成（%s）-> %d 步（不推送）",
+            task.id, task.replan_count, failed_step.description[:30],
+            reason, len(new_steps))
         return True
 
-    #: 步骤进度推送的门槛：步数达到此值，或已耗时超过阈值，才逐步报进度。
-    #: 🔴 2026-10-23：低于门槛的任务**静默跑完只报结果**。
-    #: 依据：生产实测一个 23 秒 / 3 步的任务连推 6 条消息，私聊被刷屏；
-    #: 而「每 23 秒发 6 条的助理」会导致 owner 直接关掉通知 ——
-    #: 一旦关掉，所有主动交付的价值都归零。
+    # ══════════════════════════════════════════════════════════════════
+    # 🔴 2026-10-29 根本性改动：**步骤进度不再推送。**
+    #
+    # owner 原话：「你不能优化这些消息的逻辑和工作步骤，这些我都感觉不太好」。
+    #
+    # 之前三轮都在**调阈值**（23 秒→5 步/60 秒→改 created_at 判据），
+    # 但方向错了：问题不在「发多少条」，而在这类消息**没有用户价值**。
+    #
+    #     07:55:40  [1/3] 调用 read_group_history 读取群…
+    #     07:55:46  [2/3] 提取消息中的关键讨论主题…
+    #     11:44:00  [重规划 #1] 换了个做法，改为 2 步
+    #
+    # 用户从这些消息里**得不到任何可行动的信息**：
+    #   · 步骤描述是内部计划（「提取关键讨论主题」），不是可讨论的内容；
+    #   · 重规划说明它遇到困难 —— 用户对此无能为力，
+    #     除非他本来就能帮上忙，而那种情况他会主动问；
+    #   · 他唯一关心的是**结果**。
+    #
+    # 所以：**默认全静默**。只在一种情况下说话 ——
+    # 任务跑超时到一个「用户可能以为它死了」的程度（`LONG_SILENCE_SEC`），
+    # 此时用一句人话告诉他「还在弄」，而不是继续报步骤。
+    #
+    # 保留 `NOTIFY_STEPS_MIN_COUNT` / `_ELAPSED` 两个常量只为向后兼容
+    # （有其他代码/测试引用），实际不再参与判定。
     NOTIFY_STEPS_MIN_COUNT = 5
     NOTIFY_STEPS_MIN_ELAPSED_SEC = 60.0
+    #: 「静默太久」阈值：超过它就发**一条**人话提示（不是步骤清单）。
+    #: 180 秒的依据：低于这个时长用户还在正常等待；超过之后
+    #: 「它是不是没在干活」会成为真实疑虑。
+    LONG_SILENCE_SEC = 180.0
+    #: 静默提示的冷却：同一次执行内最多提几句（防又变成刷屏）。
+    LONG_SILENCE_MAX_HINTS = 1
 
     def _should_notify_steps(self, task: AgentTask) -> bool:
-        """本次是否值得逐步推送进度（短任务静默）。
+        """**是否逐步推送进度** —— 现在恒为 False。
 
-        判据（任一满足即推）：
-          1. 计划步数 ≥ `NOTIFY_STEPS_MIN_COUNT`（活儿本身就长）；
-          2. 本次执行已耗时 ≥ `NOTIFY_STEPS_MIN_ELAPSED_SEC`（跑着跑着变长了）。
+        保留方法（而非删掉调用点）的原因：调用点分布在
+        `execute()` 的批次循环与 `_replan_or_give_up()` 里，
+        删掉要改多处控制流；而恒 False 是**单一判据**，
+        将来若要恢复（比如给 WebUI 加一个实时进度面板）
+        只需改这里一处，不必回头找调用点。
 
-        fail-closed 取向：**判定失败时倾向于不推**（宁可少一条消息，
-        也不要because判据崩了而刷屏）。
+        历史（这是第四次修改，前三次都在调阈值）：
+          · 2026-10-23：加门槛「≥5 步 或 ≥60s」——只治了短任务
+          · 2026-10-29 早：发现用 `created_at` 算 elapsed 含排队时间，
+            改用 `_exec_started_at` —— 治了误判，但**方向仍然错**
+          · 2026-10-29 晚（本次）：owner 明确「这些感觉不太好」
+            ⇒ 不是阈值问题，是**这类消息本身没有用户价值**
 
-        ## 🔴 2026-10-29 修正：不能用 `created_at` 算耗时
+        取代它的是 `_maybe_nudge_silence()`：跑太久时发一句人话。
+        """
+        return False
 
-        原实现拿 `task.created_at`（**任务创建**时刻）算 elapsed。
-        但 `created_at` 里包含**排队/等待**时间 —— 而自主触发的任务
-        恰恰都是「到期才启动」，创建到真正执行之间可能隔几分钟。
+    async def _maybe_nudge_silence(self, task: AgentTask) -> None:
+        """任务跑太久时，发**一句人话**告诉 owner「还在弄」。
 
-        生产实证（10-29 00:00~00:02，一分钟内连发三条报备 + 一堆步骤）：
+        与旧的「逐步报进度」的区别：
 
-            id=5ed918804c created=00:00:45  完成=00:01:40  steps=2 replan=1
-            id=d1cd236057 created=00:01:17  完成=00:03:18  steps=3 replan=2
-            id=36063750df created=00:01:48  完成=00:02:24  steps=3 replan=1
+            旧：[1/3] 调用 read_group_history 读取群…     ← 内部计划
+            新：还在弄喵，比想的麻烦点                     ← 一句话
 
-        三个任务**全部只有 2~3 步**（远低于 5 步门槛），却都推了步骤 ——
-        因为 `created_at` 距执行已 >60s，判据②被误触发。
-
-        ⇒ 改用**本次执行的起始时刻** `_exec_started_at`（`execute()` 里
-          每次执行开始时写入）。没有该字段时**不推**（fail-closed）。
+        同一次执行内最多发 `LONG_SILENCE_MAX_HINTS` 句。
         """
         try:
-            total = len(getattr(task, "steps", []) or [])
-            if total >= self.NOTIFY_STEPS_MIN_COUNT:
-                return True
             _exec_start = getattr(self, "_exec_started_at", 0.0) or 0.0
             if not _exec_start:
-                return False        # 未记录执行起点 ⇒ 按「不推」处理
-            if (time.time() - float(_exec_start)) >= self.NOTIFY_STEPS_MIN_ELAPSED_SEC:
-                return True
-            return False
-        except Exception:
-            logger.debug("进度推送判定失败 ⇒ 按「不推」处理", exc_info=True)
+                return
+            elapsed = time.time() - float(_exec_start)
+            if elapsed < self.LONG_SILENCE_SEC:
+                return
+            sent = int(getattr(self, "_silence_hints_sent", 0) or 0)
+            if sent >= self.LONG_SILENCE_MAX_HINTS:
+                return
+            self._silence_hints_sent = sent + 1
+            await self._notify(task, "还在弄喵，比想的麻烦点，稍等会儿~")
+        except Exception:  # noqa: BLE001
+            logger.debug("静默提示发送失败（已隔离）", exc_info=True)
             return False
 
     # ------------------------------------------------------------------

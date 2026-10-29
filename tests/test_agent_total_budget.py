@@ -143,9 +143,13 @@ async def test_over_budget_notifies_owner():
     await ex.execute(task)
 
     joined = "\n".join(notify.msgs)
-    assert "超时中止" in joined, f"应告知 owner 超时：{joined!r}"
-    assert "上限" in joined
+    # 🔴 2026-10-29：不再带 `[超时中止]` 标签，也不再读秒表。
+    # 只说：太久了我先停，做出来的都留着。
+    assert "停一下" in joined or "花时间" in joined, f"应告知 owner 超时：{joined!r}"
+    assert "[超时中止]" not in joined, "不该用状态标签"
     assert "留着" in joined, "应说明产物保留"
+    assert "上限" not in joined, "不该念预算上限（读秒表对用户无意义）"
+    assert "已完成" not in joined, "不该报内部进度"
 
 
 async def test_over_budget_writes_audit():

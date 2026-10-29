@@ -265,9 +265,19 @@ async def test_same_topic_merged_into_one_line():
     assert len(sent) == 1
     text = sent[0].message
     assert "回复质量退化" in text
-    assert "同主题共 3 条" in text, f"应合并并标数量：{text!r}"
-    # 合并后总主题数为 2（退化 1 组 + 出站 1 条），不是 4
-    assert "攒了 2 件" in text, f"应按主题计数而非条目计数：{text!r}"
+    # 🔴 2026-10-29：不再写「（同主题共 3 条，此处合并）」——
+    # 那是**数据库说明**（告诉你我做了 group by），不是人话。
+    # 合并的效果改为用「2 件事」体现（去重后的数量）。
+    assert "同主题共" not in text, f"不该向用户汇报合并了几条：{text!r}"
+    assert text.count("回复质量退化") == 1, f"同主题应去重成一条：{text!r}"
+    # 合并后总主题数为 2（退化 1 组 + 出站 1 条），不是 4。
+    # ⚠️ 不断言「2 件」字面量 —— 措辞会随人味化调整而变（「2 件事」/「2 件事没弄」），
+    #    这里只断言**计数正确**：出现数字 2，且不出现 3 或 4（那是条目数）。
+    import re as _re
+    _nums = [int(n) for n in _re.findall(r"(?<!\d)(\d+)(?=\s*件)", text)]
+    assert _nums and _nums[0] == 2, (
+        f"应按主题计数（2）而非条目计数（4），实得 {_nums}：{text!r}"
+    )
 
 
 # ── 8. 跨重启不重复推送（2026-10-22 生产实证）─────────────────────────

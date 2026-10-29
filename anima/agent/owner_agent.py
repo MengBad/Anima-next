@@ -126,12 +126,25 @@ class OwnerAgent:
             done = sum(1 for s in (task.steps or []) if getattr(s, "status", "") == "done")
             total = len(task.steps or [])
             _req = str(getattr(task, "request", "") or "").strip().replace("\n", " ")
+            # 🔴 2026-10-29：原来是 5 行工单
+            #
+            #     本喵有个活干到一半被重启打断了喵。
+            #     任务：ea1d75f52a
+            #     内容：<内部 request>
+            #     进度：已完成 2/3 步（进度保留着，没有丢）
+            #     重跑：!anima agent approve ea1d75f52a
+            #
+            # 问题同报备：`任务：/内容：/进度：/重跑：` 是日志字段名，
+            # task_id 与 `!anima` 命令是开发者语言，而「已完成 2/3 步」
+            # 是把内部计划进度当成果汇报 —— 用户看不出一件事干到哪了。
+            #
+            # 改成一句人话：**在做什么 + 被打断了 + 会不会接着弄**。
+            # 重跑不需要教命令：用户说「继续弄那个」时，自然语言入口
+            # （`llm/request_executor.py`）会把它映射到对应意图。
             body = (
-                f"本喵有个活干到一半被重启打断了喵。\n"
-                f"任务：{tid}\n"
-                f"内容：{_req[:80]}{'…' if len(_req) > 80 else ''}\n"
-                f"进度：已完成 {done}/{total} 步（进度保留着，没有丢）\n"
-                f"重跑：!anima agent approve {tid}"
+                f"刚在弄「{_req[:40]}{'…' if len(_req) > 40 else ''}」，"
+                f"结果本喵这边重启了一下，先搁那儿了喵。"
+                f"\n想接着弄的话跟本喵说一声就行。"
             )
             try:
                 await gateway.send(OutboundMsg("private", int(task.creator), body[:1500]))

@@ -450,10 +450,25 @@ def build_daily_reminder(core: Any) -> Optional[str]:
         # 已领过 ⇒ 静默。宁可安静，也不做「今天已签到」这类自我打卡。
         return None
 
-    parts = [f"雨云今天还没签到（{state['points']} 分 + 1 张抽奖券）"]
+    # 🔴 2026-10-29：把四行清单压成**一句话 + 一个链接**。
+    #
+    # 原来是：
+    #     雨云今天还没签到（30000 分 + 1 张抽奖券）
+    #     当前积分 30100
+    #     另外还有 9 个一次性任务（合计 13000 分）；哪些能领要页面上看（问本喵「雨云状态」我会逐个探）
+    #     https://www.rainyun.com/reward/
+    #
+    # 问题：
+    #   · 「当前积分」单独一行像凑数（和「还差多少」是同一条信息）；
+    #   · 「哪些能领要页面上看（问本喵「雨云状态」我会逐个探）」是**说明书** ——
+    #     在提醒里教用户怎么用工具，把文档塞进了通知；
+    #   · URL 独立一行让整条读起来像系统告警，不像人在提醒。
+    #
+    # 现在：一句话说清「该行动了 + 值多少」，链接贴在末尾。
+    parts = [f"雨云今天还没签到喵（{state['points']} 分 + 1 张抽奖券）"]
     points = fetch_points(key)
     if points is not None:
-        parts.append(f"当前积分 {points}")
+        parts.append(f"现在攒到 {points} 分")
 
     # 🔴 这里**不做 POST 探测**：
     #   · 每天 10 个 POST 太重（2-4 秒）
@@ -471,9 +486,6 @@ def build_daily_reminder(core: Any) -> Optional[str]:
                 total += int(t.get("Points") or 0)
             except (TypeError, ValueError):
                 continue
-        parts.append(
-            f"另外还有 {len(one_off)} 个一次性任务（合计 {total} 分）；"
-            "哪些能领要页面上看（问本喵「雨云状态」我会逐个探）")
+        parts.append(f"另有 {len(one_off)} 个一次性任务能领（合计 {total} 分）")
 
-    parts.append("https://www.rainyun.com/reward/")
-    return "\n".join(parts)
+    return "，".join(parts) + "。\nhttps://www.rainyun.com/reward/"

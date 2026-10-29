@@ -108,7 +108,12 @@ async def test_executor_circuit_breaker_after_3_failures():
     # 熔断期间新任务被拒
     t4 = _task_with_steps(1)
     res = await ex.execute(t4)
-    assert "熔断" in res or "暂停" in res
+    # 🔴 2026-10-29：用户消息里不再出现「熔断/暂停 10 分钟」这类工程词。
+    # 改成一句人话（「刚才连着没弄成，先缓十分钟喵」）。
+    # 断言改为「表达了『现在做不了』这个意思」，而不是某个内部术语。
+    assert "缓" in res or "十分钟" in res or "没弄成" in res, (
+        f"应告知用户当前不可用，实得：{res!r}"
+    )
 
 
 async def test_executor_resource_limit():

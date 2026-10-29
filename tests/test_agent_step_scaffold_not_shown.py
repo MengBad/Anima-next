@@ -210,24 +210,23 @@ def test_replan_notify_is_throttled_for_short_task():
     assert ex._should_notify_steps(short) is False, "短任务不该逐步推送"
 
 
-def test_replan_notify_guarded_by_should_notify_steps():
-    """静态守护：`_replan_or_give_up` 的 `_notify` 必须在节流闸内。
+def test_replan_is_not_pushed_at_all():
+    """`_replan_or_give_up` **不再发任何消息**。
 
-    原来它无条件 `_notify`，绕过了 `_should_notify_steps` ——
-    短任务也会发一条 `[重规划 #1] …verify_failed…`。
+    历史：这个测试原来断言「`_notify` 调用前有 `_should_notify_steps` 闸门」。
+    但闸门本身已被移除 —— 因为 owner 说「这些我都感觉不太好」，
+    问题不是「重规划该不该被闸住」，而是**这条消息不该存在**：
+    「换了个做法，改为 2 步」是内部调度，用户既不需要知道也无法参与。
+
+    🔴 2026-10-29：断言改为「函数里根本没有 _notify 调用」。
     """
     import inspect
     from anima.agent.executor import AgentExecutor
 
     src = inspect.getsource(AgentExecutor._replan_or_give_up)
-    # 找到 _notify 调用处，其前面必须出现 _should_notify_steps
-    idx_notify = src.rindex("await self._notify(")
-    idx_guard = src.find("_should_notify_steps")
-    assert idx_guard != -1, "_replan_or_give_up 里的 _notify 没被节流闸包住"
-    assert idx_guard < idx_notify, "节流判据必须在 _notify 之前"
-
-
-# ── 5. 步骤元话语（工作笔记 / 写给下游的计划）───────────────────────
+    code = [ln for ln in src.splitlines() if not ln.lstrip().startswith("#")]
+    bad = [ln.strip() for ln in code if "await self._notify(" in ln]
+    assert not bad, f"重规划不该再发消息，仍有：{bad}"
 
 def test_current_step_metatalk_removed():
     """「当前步骤：…执行：…」只保留「执行：」后的真话。
