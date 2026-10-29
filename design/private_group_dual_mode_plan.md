@@ -377,6 +377,39 @@ tests/                17 个纯 webui 测试文件
 新增/删除管理员只能走私聊「授权/撤销授权」。要回到 config.yaml 管辖，需先删
 `data/permissions_override.json`。
 
+## 8.5 生产部署记录（2026-10-29）
+
+### 部署
+
+- 提交 `1894c3c8aa4d`，`dirty: false`，版本 0.3.0rc2
+- `_deploy.py` 第一次 `EXIT=1`：冒烟探针仍请求 `8088/api/health`（随 WebUI 删除而消失），
+  30s 超时误判整次部署失败——**服务其实是好的**。已改为不依赖 WebUI 的证据链
+  （systemd active + 「OneBot11 WS 已连接」+「failed=0」+「自主心跳已启动」+ 确认 8088 已消失），
+  第二次 `EXIT=0`。
+- 生产机三个 webui 目录已删；`anima-console` 服务已 `disable --now` 且 unit 已移除。
+
+### 生产验收
+
+| 项 | 结果 |
+|---|---|
+| anima 服务 | active |
+| 业务模块 | ok=33 / failed=0 |
+| QQ 连接 | OneBot11 WS 已连接 |
+| 8088 / 8443 | 均无监听（内网访问返回 000） |
+| 生产 config `webui:` 段 | 已删除，YAML 46 键校验通过 |
+
+### 期间发生的独立故障（与本次改动无关）
+
+18:58–19:39 期间 LLM 全量失败（`transport:ClientOSError` / `ServerDisconnectedError`），
+bot 回落到既有兜底话术（「本喵这边刚卡了一下」）。
+
+诊断：ping 0% 丢包，TCP 握手成功但服务端立即空回复（0.0017s）；经 mihomo 代理访问
+返回正常 401，从阿里云直连也正常 401。⇒ **CPA 侧按源 IP 临时拒绝 VPS 直连**，
+疑似 fail2ban 类自动封禁。19:39 自行恢复（响应时间从 0.0017s 变为 1.5s）。
+
+教训：这台 VPS 的 LLM 依赖一条**会按源 IP 熔断的外部链路**，且 `anima.service` 未配代理。
+若再次出现「瞬间 000」，先测 `curl -x http://127.0.0.1:7890` 做对照，再去 CPA 查访问控制。
+
 ## 9. 未决
 
 - `hourly_budget` / `min_gap_sec` 的初值需要影子期数据校准
