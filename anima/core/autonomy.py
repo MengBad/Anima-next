@@ -1076,6 +1076,11 @@ class Heartbeat:
         gate = AutoTriggerGate(
             daily_max=int(getattr(cfg, "auto_trigger_daily_max", DEFAULT_DAILY_MAX)),
             quiet_hours=_quiet, sleep_hours=_sleep,
+            # 🔴 2026-10-29：**最小间隔**（默认 30 分钟）。
+            # 生产实证：00:00:45 / 00:01:18 / 00:01:48 —— 22 秒内连发 3 个任务，
+            # 因为闸门只有「每日上限」没有「节奏」，而心跳 30 秒一拍，
+            # 每拍都会启动一个 ⇒ 10 条到期承诺在一分半钟内全部打光。
+            min_interval_sec=float(getattr(cfg, "auto_trigger_min_interval_sec", 1800.0)),
         )
 
         blocked = gate.blocked_reason(hour=_hour, state=state, now=now)
@@ -1252,6 +1257,8 @@ class Heartbeat:
             # 计数 + 主题记忆（报备成败都算已启动，避免重复启动同一件事）
             state.count_today += 1
             state.topics_today.append(picked.request)
+            # 2026-10-29：记录启动时刻，供「最小间隔」闸门用（防心跳连拍打光配额）
+            state.last_started_at = time.time()
             state.save()
             logger.warning("[自主触发] 启动任务 %s（源=%s，今日 %d/%d）",
                            task.id, picked.source, state.count_today, gate.daily_max)

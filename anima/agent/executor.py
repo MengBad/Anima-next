@@ -267,6 +267,14 @@ class AgentExecutor:
     # ------------------------------------------------------------------
 
     async def execute(self, task: AgentTask) -> str:
+        # 🔴 2026-10-29：记录**本次执行**的实际起点。
+        #
+        # `_should_notify_steps` 原来拿 `task.created_at`（任务创建时刻）
+        # 判断「跑得够久了吗」，而 `created_at` 含排队等待时间 ——
+        # 自主触发的任务都是「到期才启动」，创建到执行可能隔几分钟，
+        # 于是 2~3 步的短任务全部误判成「长任务」并刷步骤。
+        # 用这个字段把「排队」和「在跑」分开。
+        self._exec_started_at = time.time()
         if time.time() < self._pause_until:
             msg = "Agent 能力已熔断暂停（连续失败过多），请 10 分钟后再试。"
             await self._notify(task, msg)
@@ -664,17 +672,37 @@ class AgentExecutor:
 
         判据（任一满足即推）：
           1. 计划步数 ≥ `NOTIFY_STEPS_MIN_COUNT`（活儿本身就长）；
-          2. 任务已耗时 ≥ `NOTIFY_STEPS_MIN_ELAPSED_SEC`（跑着跑着变长了）。
+          2. 本次执行已耗时 ≥ `NOTIFY_STEPS_MIN_ELAPSED_SEC`（跑着跑着变长了）。
 
         fail-closed 取向：**判定失败时倾向于不推**（宁可少一条消息，
         也不要because判据崩了而刷屏）。
+
+        ## 🔴 2026-10-29 修正：不能用 `created_at` 算耗时
+
+        原实现拿 `task.created_at`（**任务创建**时刻）算 elapsed。
+        但 `created_at` 里包含**排队/等待**时间 —— 而自主触发的任务
+        恰恰都是「到期才启动」，创建到真正执行之间可能隔几分钟。
+
+        生产实证（10-29 00:00~00:02，一分钟内连发三条报备 + 一堆步骤）：
+
+            id=5ed918804c created=00:00:45  完成=00:01:40  steps=2 replan=1
+            id=d1cd236057 created=00:01:17  完成=00:03:18  steps=3 replan=2
+            id=36063750df created=00:01:48  完成=00:02:24  steps=3 replan=1
+
+        三个任务**全部只有 2~3 步**（远低于 5 步门槛），却都推了步骤 ——
+        因为 `created_at` 距执行已 >60s，判据②被误触发。
+
+        ⇒ 改用**本次执行的起始时刻** `_exec_started_at`（`execute()` 里
+          每次执行开始时写入）。没有该字段时**不推**（fail-closed）。
         """
         try:
             total = len(getattr(task, "steps", []) or [])
             if total >= self.NOTIFY_STEPS_MIN_COUNT:
                 return True
-            _start = getattr(task, "created_at", 0) or 0
-            if _start and (time.time() - float(_start)) >= self.NOTIFY_STEPS_MIN_ELAPSED_SEC:
+            _exec_start = getattr(self, "_exec_started_at", 0.0) or 0.0
+            if not _exec_start:
+                return False        # 未记录执行起点 ⇒ 按「不推」处理
+            if (time.time() - float(_exec_start)) >= self.NOTIFY_STEPS_MIN_ELAPSED_SEC:
                 return True
             return False
         except Exception:

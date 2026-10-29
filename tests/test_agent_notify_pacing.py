@@ -33,10 +33,12 @@ import pytest
 from anima.agent.executor import AgentExecutor
 
 
-def _ex():
+def _ex(exec_age=None):
     ex = AgentExecutor.__new__(AgentExecutor)
     ex.NOTIFY_STEPS_MIN_COUNT = 5
     ex.NOTIFY_STEPS_MIN_ELAPSED_SEC = 60.0
+    if exec_age is not None:
+        ex._exec_started_at = time.time() - exec_age
     return ex
 
 
@@ -53,19 +55,45 @@ def _task(steps=3, age=0.0):
 @pytest.mark.parametrize("steps", [1, 2, 3, 4])
 def test_short_task_does_not_notify_steps(steps):
     """🔴 生产实证：3 步 23 秒的任务连推 6 条 ⇒ 必须静默。"""
-    assert _ex()._should_notify_steps(_task(steps=steps, age=5)) is False
+    assert _ex(exec_age=5)._should_notify_steps(_task(steps=steps, age=5)) is False
 
 
 # ── 2. 长任务照常推送 ─────────────────────────────────────────────────
 
 
 def test_many_steps_notifies():
-    assert _ex()._should_notify_steps(_task(steps=6, age=1)) is True
+    assert _ex(exec_age=1)._should_notify_steps(_task(steps=6, age=1)) is True
 
 
 def test_long_elapsed_notifies_even_if_few_steps():
-    """跑着跑着变长了（已耗时 ≥60s）⇒ 也该让 owner 知道在推进。"""
-    assert _ex()._should_notify_steps(_task(steps=2, age=90)) is True
+    """跑着跑着变长了（**本次执行**已耗时 ≥60s）⇒ 该让 owner 知道在推进。
+
+    🔴 2026-10-29 修正：原来用 `created_at`（任务创建时刻）算 age，
+    而 `created_at` 含**排队等待**时间。自主触发的任务都是「到期才启动」，
+    创建到执行可能隔几分钟 ⇒ 2~3 步的短任务全部误判成长任务。
+
+    生产实证（10-29 00:00~00:02，同一分钟内三条报备，owner 问
+    「为什么这么多消息」）：
+        id=5ed918804c created=00:00:45 完成=00:01:40 steps=2
+        id=d1cd236057 created=00:01:17 完成=00:03:18 steps=3
+        id=36063750df created=00:01:48 完成=00:02:24 steps=3
+
+    ⇒ 现在按 `_exec_started_at`（本次执行起点）算。
+    """
+    assert _ex(exec_age=90)._should_notify_steps(_task(steps=2, age=999)) is True
+
+
+def test_created_at_is_not_used_for_elapsed():
+    """**任务创建于 90 秒前，但本次刚开跑** ⇒ 不推。
+
+    这条是上一条的对偶，专门钉住「不能用 created_at」。
+    """
+    assert _ex(exec_age=2)._should_notify_steps(_task(steps=2, age=90)) is False
+
+
+def test_missing_exec_start_means_no_notify():
+    """没记录执行起点（异常/未走 execute）⇒ fail-closed 不推。"""
+    assert _ex()._should_notify_steps(_task(steps=2, age=999)) is False
 
 
 # ── 3. 异常安全：倾向不推 ─────────────────────────────────────────────

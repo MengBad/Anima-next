@@ -117,6 +117,12 @@ class AutoTriggerState:
         self.cooldown_until: float = float(raw.get("cooldown_until") or 0.0)
         #: 当日已触发主题（去重用；日切清空，避免跨天误拦）
         self.topics_today: list[str] = list(raw.get("topics_today") or [])
+        #: 上一次自主启动的时刻（**最小间隔**闸门用；不参与日切重置）。
+        #:
+        #: 与 `count_today` 的分工：后者管「今天一共做了几件」（总量），
+        #: 这个管「距上一件过了多久」（节奏）。跨天也要保留 ——
+        #: 否则 23:59 启动一次、00:00 又能立刻启动，等于跨天绕过间隔。
+        self.last_started_at: float = float(raw.get("last_started_at") or 0.0)
 
     def save(self) -> None:
         try:
@@ -126,6 +132,7 @@ class AutoTriggerState:
                 "fail_streak": self.fail_streak,
                 "cooldown_until": self.cooldown_until,
                 "topics_today": self.topics_today[-20:],
+                "last_started_at": self.last_started_at,
             })
         except Exception:
             logger.debug("auto_trigger 状态落盘失败", exc_info=True)
@@ -158,6 +165,20 @@ class AutoTriggerGate:
     daily_max: int = DEFAULT_DAILY_MAX
     quiet_hours: Optional[tuple[int, int]] = None   # (start, end)，跨午夜
     sleep_hours: Optional[tuple[int, int]] = None   # 睡眠窗口，同 quiet
+    #: 两次自主启动之间的**最小间隔**（秒）。0 = 不限制。
+    #:
+    #: 🔴 2026-10-29 新增。生产实证（00:00:45 / 00:01:18 / 00:01:48）：
+    #: 22 秒内连发 **3 个**任务，全部 source=debt_due，owner 直接问
+    #: 「为什么这么多消息」。根因是闸门只管「每日上限」和「睡眠/免打扰」，
+    #: **没有任何最小间隔** —— 而心跳是 30 秒一拍，
+    #: 于是第一拍启动一个、第二拍再启动一个……直到打满 daily_max。
+    #:
+    #: 10 条到期承诺 + daily_max=3 ⇒ 一分半钟全部打光，
+    #: 用户在同一分钟内收到 3 条报备 + 一堆步骤/重规划。
+    #:
+    #: 「每日上限」约束的是**总量**，「最小间隔」约束的是**节奏** ——
+    #: 两者缺一不可：只限总量会导致「瞬间打满」。
+    min_interval_sec: float = 1800.0
 
     @staticmethod
     def _in_window(hour: int, win: Optional[tuple[int, int]]) -> bool:
@@ -178,6 +199,13 @@ class AutoTriggerGate:
             return f"熔断冷却中（至 {time.strftime('%m-%d %H:%M', time.localtime(state.cooldown_until))}）"
         if state.count_today >= self.daily_max:
             return f"今日自主任务已达上限（{state.count_today}/{self.daily_max}）"
+        # 最小间隔：防「心跳每 30 秒一拍 ⇒ 瞬间打满 daily_max」。
+        # 用 `last_started_at`（不是 count_today）——同一天内的**节奏**问题。
+        if self.min_interval_sec > 0:
+            _last = float(getattr(state, "last_started_at", 0.0) or 0.0)
+            if _last and (now - _last) < self.min_interval_sec:
+                _wait = int(self.min_interval_sec - (now - _last))
+                return f"距上次自主启动不足 {int(self.min_interval_sec)} 秒（还需 {_wait}s）"
         if self._in_window(hour, self.sleep_hours):
             return "睡眠时段"
         if self._in_window(hour, self.quiet_hours):
@@ -235,6 +263,163 @@ def is_followable_debt_text(text: str) -> bool:
     for f in _FILLER:
         residue = residue.replace(f, "")
     if len(residue) < 4:
+        return False
+    # 🔴 2026-10-29：**已经做完的事不是承诺。**
+    #
+    # 生产实证（10-29 00:00 的 10 条到期「承诺」全是这一类，
+    # owner 收到 3 条报备后直接问「为什么这么多消息」）：
+    #
+    #     「哼，这还要问呀？让我瞅瞅……你今天早就已经签过到啦，
+    #       积分安安稳稳地躺在账户里呢喵~」        ← 已完成的对话
+    #     「切，说得好像本喵稀罕你喜欢似的……少来这套肉麻的话，哼！」  ← 表白回应
+    #     「要我来帮你○吗」                      ← 问句
+    #     「“嘿....嘿嘿....我...我会一直默默看着你...”」 ← 病娇台词
+    #
+    # `debts.json` 记的是「bot 上一轮说了什么」（`text` 字段），
+    # 不是「bot 答应了什么」。没有这道闸，整段闲聊都会被当成待办。
+    #
+    # 判据（任一命中即判定「不可跟进」）：
+    #   ① 已完成/已发生：已签过、已经...啦、早就、完成、搞定、弄好、好啦
+    #   ② 纯问句（无祈使内容）：整句以问号结尾且无「帮/给/找/做」等动作词
+    #   ③ 纯情绪/剧情台词：含大量省略号+省略字（我..我会）、或纯语气收尾
+    import re as _re2
+    _DONE_MARKERS = (
+        "已经", "早就", "已完成", "完成啦", "搞定", "弄好", "好啦", "弄完",
+        "签过到", "签过", "安安稳稳", "躺在账户", "办妥", "办好了",
+    )
+    if any(mk in t for mk in _DONE_MARKERS):
+        return False
+    # ①·b **「正在进行/已经动手」的叙述也不是待办。**
+    #
+    # 生产漏网两条：
+    #     「哼，还挺会使唤人的……本喵就勉为其难帮你在后台**记下了**。
+    #       以后每天自动签到，积分跑不掉的喵~」          ← 「记下了」= 动作已完成
+    #     「急什么急，这就帮你去戳雨云的服务器了……刚才网速有点卡，
+    #       本喵再试一下喵~」                            ← 正在做，且已做了一轮
+    #
+    # 判据：句中出现完成体助词「…了」紧跟在动作之后。
+    #
+    # ⚠️ 不能用「有未来标记就放行」做豁免 —— 「这就帮你去戳雨云的服务器**了**」
+    #    同时含「这就」和「了」，而语义是**已经在做了**（后面还接
+    #    「刚才网速有点卡，本喵再试一下」，说明上一轮已发生过）。
+    #    未来标记只豁免**明确的未来时**（明天/下周/待会），
+    #    「这就去/这就给/马上」属于「立刻执行」，不算未来。
+    _FUTURE_MARKERS = ("明天", "后天", "下周", "等下", "等一下", "待会",
+                       "稍后", "回头", "晚点", "改天")
+    if _re2.search(r"(?:记下|帮|弄|做|搞|查|问|戳|签到|整理|处理|弄好|办好)了", t) \
+            and not any(mk in t for mk in _FUTURE_MARKERS):
+        return False
+    # ①·b2 **回溯叙述**：讲「刚才发生了什么」= 已经在做，不是待办。
+    #
+    # 生产最后一条漏网：
+    #     「急什么急，这就帮你去戳雨云的服务器了……**刚才**网速有点卡，
+    #       本喵**再试一下**喵~」
+    # 「刚才」明确指之前发生过的事，「再试一下」指上一轮已试过。
+    # 这是**过程叙述**，不是一个待兑现的承诺。
+    _RETRO_MARKERS = ("刚才", "刚刚", "上次", "之前试", "又试", "再试一下",
+                      "试过了", "已经试")
+    if any(mk in t for mk in _RETRO_MARKERS):
+        return False
+    # ①·c **攻略/说明书体**：多行编号列表或大段科普，不是个人承诺。
+    #
+    # 生产漏网：「给萌新推荐强力的指挥官:\n1，阿塔尼斯 v0 达拉姆大主教…」
+    # 这是 bot 在**科普**，不是在答应谁去做事。
+    #
+    # ⚠️ 编号分隔符必须是**中文标点也支持**的：原文用的是全角「1，」
+    #    首版只写了 `\d+[，,、.]` 却要求 ≥2 行，而这条只有 1 个编号行
+    #    ⇒ 漏网。改成：有换行 + 任一编号行 + 「推荐/攻略/选择/建议」这类科普词。
+    _has_numbered = _re2.search(r"^\s*\d+\s*[，,、.）)]", t, _re2.M) is not None
+    _GUIDE_WORDS = ("推荐", "攻略", "选择", "建议", "教程", "介绍", "以下是", "列表")
+    if "\n" in t and _has_numbered and any(w in t for w in _GUIDE_WORDS):
+        return False
+    # ② 纯问句：结尾是问号，且没有可执行的动作词
+    _ACTION_WORDS = ("帮", "给", "找", "做", "查", "写", "画", "捏", "翻", "发",
+                     "整理", "提醒", "安排", "生成", "搜索", "查一下")
+    if t.rstrip().endswith(("？", "?")) and not any(w in t for w in _ACTION_WORDS):
+        return False
+    # ③ 剧情/口吃台词：`我..我`、`嘿...嘿` 这类（省略号夹单字 ≥3 次）
+    if len(_re2.findall(r"[^\s…\.]{1,2}(?:…|\.{2,})", t)) >= 3:
+        return False
+    if _re2.search(r"[\u4e00-\u9fff]\.{2,}[\u4e00-\u9fff]", t):
+        return False
+    # ④ **必须含明确的执行意图**，否则不是承诺。
+    #
+    # 「有实义宾语」≠「有可执行的事」：
+    #     「你还没绑定过雨云账号呢喵」     ← 陈述，没有「要去做 X」
+    #     「急什么急，这就给你翻出来喵~」   ← 有动作词但**没说翻什么**
+    # 这两条在旧的「剩下的字 ≥4」判据下都通过了，但都不可执行 ——
+    # 生产上它们各自启动了一个必然后续「无法执行」的任务。
+    #
+    # 判据：出现**动作词 + 具体宾语**才算。
+    # 这里的宾语用「名词性词尾/量词/引号内容」近似，不做完整分词
+    # （项目没有分词依赖，引入它的成本远大于收益，且此闸只求保守）。
+    #
+    # ⚠️ 动作词表**不能只列「产出物」类动词**（找/画/写/生成）——
+    #    真实承诺里还有大量**社交/信息类**动作：
+    #        「帮你去群里问问有没有人有MC服务器」 ← 问
+    #        「晚上给大家分享干货」              ← 分享
+    #        「下周三提醒大家交作业」            ← 交
+    #    首版只列了产出类，把这三条真承诺误拦成 False
+    #    （被 `test_followable_debt_accepts_real_promises` 抓住）。
+    #
+    # 🔴 但**单字动词太宽**：`说`/`去`/`下`/`发` 在闲聊里到处都是
+    #   （「说得好像本喵稀罕你」「这就帮你去戳雨云的服务器了」），
+    #   用它当判据会把整段对话都放行。所以分两档：
+    #     · `_STRONG_VERB`（≥2 字，语义明确）：单独出现即可
+    #     · `_WEAK_VERB`（单字，歧义大）：必须**同时**有明确宾语
+    _STRONG_VERB = ("生成", "整理", "安排", "提醒", "绑定", "翻译", "统计",
+                    "汇总", "对比", "推荐", "预约", "记账", "订票", "更新",
+                    "分享", "教", "查")
+    _WEAK_VERB = ("找", "翻", "捏", "画", "做", "写", "发", "搜", "下", "买",
+                  "订", "签", "跑", "修", "问", "说", "讲", "聊", "交", "带", "算")
+    _has_strong = any(v in t for v in _STRONG_VERB)
+    _has_weak = any(v in t for v in _WEAK_VERB)
+    if not (_has_strong or _has_weak):
+        return False
+    # 宾语线索：引号内容 / 量词短语（「找张最搞笑的」）/
+    # 具体物名 / 「MC服务器」「干货」「作业」这类**实义名词短语**
+    #
+    # ⚠️ 首版只列了「图/表/报告/文档」这几种**产出物**，漏掉了
+    #    「作业 / 服务器 / 干货 / 番剧」这类**日常名词** ——
+    #    导致「下周三提醒大家交作业」「帮你去群里问问有没有人有MC服务器」
+    #    「晚上给大家分享干货」三条真承诺被判 False。
+    #
+    # 🔴 但「动作词后接 ≥2 汉字」这条兜底**太宽**：任何闲聊都满足
+    #   （「说**得好像本喵稀罕你**」「帮你去戳**雨云的服务器**」）。
+    #   所以拆成两级：
+    #     · `_has_object_explicit`：命中具体物名表 / 引号 / 量词短语 —— 强证据
+    #     · 弱宾语兜底只对 `_STRONG_VERB` 生效（「分享**干货**」「翻译**这段**」）
+    _has_object_explicit = bool(
+        _re2.search(r"[「『“\"].{1,40}[」』”\"]", t)
+        or _re2.search(r"[一二三四五六七八九十几\d]?\s*[张个份条篇段只支副幅]\s*[^\s，。！？…]{1,10}", t)
+        or _re2.search(r"(?:图|表|单|账号|文档|文件|报告|总结|清单|方案|数据|链接|"
+                       r"记录|笔记|邮件|消息|视频|歌|文章|代码|脚本|配置|"
+                       r"作业|服务器|干货|番剧|剧|票|价|地址|电话|位置|行程|"
+                       r"时间|日期|天气|路线|菜谱|价格|余额|积分|签到|订单)", t)
+    )
+    _has_weak_object = bool(
+        _has_strong and _re2.search(r"(?:" + "|".join(_STRONG_VERB) + r")"
+                                    r"[^。！？\n]{0,6}?[\u4e00-\u9fff]{2,}", t)
+    )
+    _has_object = _has_object_explicit or _has_weak_object
+    # 「这就给你 X喵~」这种**没有宾语**的空头支票 ⇒ 不可跟进
+    if not _has_object:
+        return False
+    # ⑤ **把球踢回给用户的不是承诺。**
+    #
+    # 生产最后一条漏网的：
+    #     「你还没绑定过雨云账号呢喵。要想绑定的话，把你的雨云登录名和密码
+    #       告诉我，我帮你记下来，以后就能天天帮你自动签到领积分啦~」
+    # 它有动作词（绑定/记/签到）+ 宾语（账号/积分），前面四条判据全过，
+    # 但语义是**「等你把密码给我」** —— 球在用户脚下，
+    # 自动启动一个任务去「跟进」它，只会得到「请提供密码」的空转。
+    #
+    # 线索（任一命中即不可跟进）：
+    #   · 「告诉我 / 发我 / 给我 / 你先 / 你得先」——要求用户先动作；
+    #   · 「你的 X」+ 条件句（「要想 X 的话」）——条件未满足。
+    _ASK_USER = ("告诉我", "发我", "给我发", "你先", "你得先", "需要你", "请提供",
+                 "要想", "如果想", "的话，把")
+    if any(mk in t for mk in _ASK_USER):
         return False
     return True
 
@@ -324,13 +509,51 @@ def collect_debt_triggers(core: Any, now: Optional[float] = None) -> list[AutoTr
         if not is_followable_debt_text(text):
             logger.info("[自主触发] 跳过不可跟进的承诺（语气词/过短）：%s", text[:40])
             continue
+        # 🔴 2026-10-29：**`content` 是 bot 自己说过的话，不是「待办事项」。**
+        #
+        # 生产实证（10-29 00:00:45 报备，owner 直接问「为什么这么多消息」）：
+        #
+        #     本喵去干个活喵：跟进这个承诺并给出结果：
+        #         等下，本喵这就给你找张最搞笑的……喏，看这个喵~
+        #     为什么：你之前答应过这件事，现在到时间了：
+        #         等下，本喵这就给你找张最搞笑的……喏，看这个喵~
+        #
+        # 两行**一模一样**：因为 `text` 被同时拼进了 `request` 和 `reason`。
+        # 而 `content` 本身是**上一轮 bot 的整句回复**（`debt.py` 把它当
+        # 「我答应了什么」的载体），里面还常带语气词、表情、未完成的半句
+        # （「……喏，看这个喵~」），把它当任务描述喂给 planner，
+        # planner 只能反过来复述这句话 —— 于是任务变成「复述我上一句话」。
+        #
+        # 处置：
+        #   · `request` 用**祈使式任务指令** + 引用原话（明确「这是你说过的」，
+        #     而不是「这是要做的」）；
+        #   · `reason` 说清**为什么现在做**，不再重复同一段文本。
+        _quote = _clean_quote(text)
         out.append(AutoTriggerDecision(
             source="debt_due",
-            request=f"跟进这个承诺并给出结果：{text[:300]}",
-            reason=f"你之前答应过这件事，现在到时间了：{text[:120]}",
+            request=(f"履行一个到期的承诺：你之前说过「{_quote}」。"
+                     f"现在把它具体做到（该找的东西找到 / 该做的事做完），"
+                     f"然后把实际结果告诉对方。不要只是重复这句话。"),
+            reason=f"这句话是之前答应过、现在到期该兑现的",
             topic=topic_key(text),
         ))
     return out
+
+
+def _clean_quote(text: str, limit: int = 80) -> str:
+    """把 bot 的原话整理成可引用的短句（去掉语气尾巴与省略号堆叠）。"""
+    import re as _re
+    s = _re.sub(r"\s+", " ", str(text or "")).strip()
+    # 截到最后一个完整分句（避免「等下，本喵这就给你找张最搞笑的……」这种悬空）
+    for sep in ("。", "！", "？", "；"):
+        _i = s.find(sep)
+        if 0 < _i < limit:
+            s = s[:_i]
+            break
+    s = _re.sub(r"[…\.]{2,}", "…", s).strip("… ")
+    if len(s) > limit:
+        s = s[:limit].rstrip() + "…"
+    return s
 
 
 def collect_health_triggers(core: Any) -> list[AutoTriggerDecision]:

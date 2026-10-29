@@ -307,6 +307,14 @@ class AutonomyConfig(BaseModel):
     #    开启前请确认：整任务预算（task_agent.total_budget_sec）已生效。
     auto_trigger_enabled: bool = False       # 总开关（默认关，需显式开启）
     auto_trigger_daily_max: int = 3          # 每日自主启动上限
+    #: 两次自主启动之间的**最小间隔**（秒）。0 = 不限制。
+    #:
+    #: 🔴 2026-10-29 新增。`daily_max` 约束**总量**，本字段约束**节奏** ——
+    #: 只有总量没有节奏时，心跳（30s 一拍）会在几十秒内把配额全部打光：
+    #: 生产实证 10-29 00:00:45 / 00:01:18 / 00:01:48，22 秒连发 3 个任务，
+    #: owner 在同一分钟收到 3 条报备 + 一堆步骤消息。
+    #: 默认 30 分钟：一天最多也才 48 次，配合 daily_max=3 完全够用。
+    auto_trigger_min_interval_sec: float = 1800.0
 
 
 class DriftConfig(BaseModel):
