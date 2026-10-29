@@ -59,6 +59,7 @@ def _render_post_deploy_smoke(remote_root: str) -> str:
 {remote_root}/venv/bin/python - <<'PY'
 import asyncio
 import json
+import re
 import subprocess
 import time
 from pathlib import Path
@@ -110,6 +111,16 @@ except Exception:
 if "failed=0" not in _logs:
     raise SystemExit("smoke: registry reported failures in recent logs")
 
+# 模块数从日志里**实测**，不写死常量——写死会让「模块悄悄少一个」永远发现不了
+# （2026-10-29 selfcode 下线后 33→32，写死的 33 曾让冒烟报告失真）。
+_reg_ok = 0
+for _line in _logs.splitlines():
+    _m = re.search(r"启动完成：ok=([0-9]+) failed=0", _line)
+    if _m:
+        _reg_ok = int(_m.group(1))
+if _reg_ok < 30:
+    raise SystemExit(f"smoke: registry ok count suspiciously low: {{_reg_ok}}")
+
 # WebUI 端口必须已消失（防止旧进程残留）
 try:
     _ss = subprocess.run(["ss", "-tlnp"], capture_output=True, text=True, timeout=10).stdout
@@ -129,7 +140,7 @@ print(json.dumps({{
     "running": True,
     "channel_connected": True,
     "heartbeat_running": True,
-    "registry": "ok=33",
+    "registry": f"ok={{_reg_ok}}",
     "webui_port_gone": True,
     "runtime_status": "ok",
 }}, ensure_ascii=False))
