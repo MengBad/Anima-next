@@ -139,6 +139,170 @@ class XBrowserSession:
         except Exception:  # noqa: BLE001
             logger.debug("X 统计落盘失败（忽略）", exc_info=True)
 
+    # -- 磁盘回收 ----------------------------------------------------------
+
+    #: Chromium 缓存目录上限。生产实测 2026-10-29 达 **1.2G**（其中
+    #: `Default/Cache/Cache_Data` 一项 870M），而 `data/` 总占用 1.7G —— 
+    #: 磁盘 30G 虽未告警，但这个目录**只增不减**，属于确定性泄漏。
+    PROFILE_CACHE_MAX_BYTES = 256 * 1024 * 1024
+    #: 下载图片目录上限（生产实测 495 个文件 / 25M，从 9-02 累积至今）。
+    DOWNLOADED_MAX_BYTES = 64 * 1024 * 1024
+    #: 删缓存时**绝不碰**的路径分量 —— 这些丢了就要重新登录/重新解验证。
+    _PROFILE_KEEP = frozenset({
+        "Cookies", "Cookies-journal", "Local Storage", "IndexedDB",
+        "Session Storage", "Preferences", "Login Data", "Web Data",
+        "Local State", "Network",
+    })
+
+    def _dir_bytes(self, path: Path) -> int:
+        total = 0
+        try:
+            for p in path.rglob("*"):
+                try:
+                    if p.is_file():
+                        total += p.stat().st_size
+                except OSError:
+                    continue
+        except OSError:
+            return total
+        return total
+
+    def _prune_profile_cache(self, dry_run: bool = False) -> dict:
+        """清理 Chromium profile 里的**纯缓存**（保留登录态）。
+
+        ## 为什么必须区分「缓存」与「状态」
+
+        `profile/` 既装缓存（`Cache` / `Code Cache` / `GPUCache` /
+        `Service Worker` / `Dawn*Cache`）也装**登录态**
+        （`Cookies` / `Local Storage` / `IndexedDB` / `Network`）。
+        直接 `rmtree(profile)` 会把 X 登录态一起删掉 —— 那要重新过登录、
+        再过验证码，代价远大于省下的 1.2G。
+
+        ⇒ 只删**已知纯缓存**子目录，且用白名单而不是黑名单
+          （新出现的目录默认保留，宁可不清也不误删登录态）。
+
+        返回 `{"before": bytes, "after": bytes, "removed": bytes, "kept_dirs": [...]}`。
+        """
+        import shutil
+
+        profile = self.profile_dir
+        result: dict = {"before": 0, "after": 0, "removed": 0, "kept_dirs": []}
+        if not profile.exists():
+            return result
+        result["before"] = self._dir_bytes(profile)
+        if result["before"] <= self.PROFILE_CACHE_MAX_BYTES:
+            result["after"] = result["before"]
+            return result
+
+        #: 只清这些名字（Chromium 的纯缓存目录）。
+        _PURE_CACHE = ("Cache", "Cache_Data", "Code Cache", "GPUCache",
+                       "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache",
+                       "ShaderCache", "GrShaderCache", "GraphiteDawnCache",
+                       "Service Worker")
+        freed = 0
+        for p in sorted(profile.rglob("*"), key=lambda x: -len(x.parts)):
+            if not p.is_dir() or p.name not in _PURE_CACHE:
+                continue
+            # 白名单双保险：路径上出现任何「登录态」分量就跳过
+            if any(part in self._PROFILE_KEEP for part in p.parts):
+                result["kept_dirs"].append(str(p.relative_to(profile)))
+                continue
+            try:
+                size = self._dir_bytes(p)
+                if not dry_run:
+                    shutil.rmtree(p, ignore_errors=True)
+                freed += size
+            except OSError:
+                continue
+        result["removed"] = freed
+        result["after"] = self._dir_bytes(profile) if not dry_run else result["before"] - freed
+        if freed and not dry_run:
+            logger.info("[x_browser] 清理 Chromium 缓存 %.1fMB（%.1fMB → %.1fMB）",
+                        freed / 1048576, result["before"] / 1048576,
+                        result["after"] / 1048576)
+        return result
+
+    def _prune_downloaded(self, dry_run: bool = False) -> dict:
+        """按 **mtime 从旧到新** 裁剪 `downloaded/`，保留最近的图。
+
+        生产实测 495 个文件 / 25M（2026-09-02 起累积，零清理）。
+        文件名是 URL 的 hash ⇒ 同一张图不会重复堆积，但**不同图会无限累积**。
+
+        保留策略：超限时按最旧优先删，删到低于上限的 80%
+        （留余量，避免每次调用都触发一次删除）。
+        """
+        dest = self.data_dir / "downloaded"
+        result: dict = {"before": 0, "after": 0, "removed": 0, "deleted": 0}
+        if not dest.exists():
+            return result
+        files: list[tuple[float, int, Path]] = []
+        total = 0
+        try:
+            for p in dest.iterdir():
+                try:
+                    st = p.stat()
+                    if p.is_file():
+                        files.append((st.st_mtime, st.st_size, p))
+                        total += st.st_size
+                except OSError:
+                    continue
+        except OSError:
+            return result
+        result["before"] = total
+        if total <= self.DOWNLOADED_MAX_BYTES:
+            result["after"] = total
+            return result
+        target = int(self.DOWNLOADED_MAX_BYTES * 0.8)
+        files.sort(key=lambda x: x[0])          # 最旧在前
+        for _mt, size, p in files:
+            if total <= target:
+                break
+            if not dry_run:
+                try:
+                    p.unlink()
+                except OSError:
+                    continue
+            total -= size
+            result["deleted"] += 1
+        result["removed"] = result["before"] - total
+        result["after"] = total
+        if result["deleted"] and not dry_run:
+            logger.info("[x_browser] 清理下载图 %d 张（%.1fMB → %.1fMB）",
+                        result["deleted"], result["before"] / 1048576,
+                        result["after"] / 1048576)
+        return result
+
+    def prune_disk(self, dry_run: bool = False) -> dict:
+        """统一磁盘回收入口（profile 缓存 + 下载图）。绝不抛。"""
+        out: dict = {}
+        try:
+            out["profile"] = self._prune_profile_cache(dry_run=dry_run)
+        except Exception:  # noqa: BLE001
+            logger.debug("profile 缓存清理失败（忽略）", exc_info=True)
+        try:
+            out["downloaded"] = self._prune_downloaded(dry_run=dry_run)
+        except Exception:  # noqa: BLE001
+            logger.debug("下载图清理失败（忽略）", exc_info=True)
+        return out
+
+    def get_status(self) -> dict:
+        """给注册表/WebUI 的活体摘要（只读、零 I/O 大扫描）。"""
+        try:
+            dl = self.data_dir / "downloaded"
+            n_dl = sum(1 for _ in dl.iterdir()) if dl.exists() else 0
+        except OSError:
+            n_dl = 0
+        return {
+            "enabled": self.enabled,
+            "profile_mb": round(self._dir_bytes(self.profile_dir) / 1048576, 1),
+            "profile_cap_mb": self.PROFILE_CACHE_MAX_BYTES // 1048576,
+            "downloaded_count": n_dl,
+            "images_downloaded": int(self._stats.get("images_downloaded", 0) or 0),
+            "daily_used": int(self._daily.get("count", 0) or 0),
+            "has_context": self._context is not None,
+        }
+
+
     def _bump_stats(self, key: str, delta: int = 1) -> None:
         """累加一个统计并落盘。所有 *_stats[...] 写入都应经此函数（保证可追溯）。"""
         self._stats[key] = self._stats.get(key, 0) + delta
@@ -792,6 +956,18 @@ class XBrowserSession:
                 pass
             self._context = None
             self._playwright = None
+        # 🔴 2026-10-29：**关闭时回收磁盘**（profile 缓存 + 下载图）。
+        #
+        # 生产实测：`data/x_browser/profile` 达 1.2G（Cache_Data 单项 870M），
+        # `downloaded/` 495 个文件 / 25M（9-02 起零清理）。
+        # 两处都只会增长，而此前**没有任何清理调用点** ——
+        # 只有在 close 里做才能保证「每次重启清一次」，且不影响搜索热路径。
+        #
+        # 放线程池：`rglob` 扫 1.2G 目录在事件循环里会卡住几百 ms（watchdog 会记 lag）。
+        try:
+            await asyncio.get_running_loop().run_in_executor(None, self.prune_disk)
+        except Exception:  # noqa: BLE001 - 清缓存失败绝不能影响退出
+            logger.debug("x_browser 磁盘清理失败（忽略）", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

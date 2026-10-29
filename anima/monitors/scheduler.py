@@ -86,6 +86,19 @@ class MonitorScheduler:
 
     async def tick(self) -> None:
         now = time.time()
+        # 🔴 2026-10-29：**清理已删除订阅的残留计数**。
+        #
+        # `_fail_streak` / `_anomaly_notified_at` / `_next` 三个 dict
+        # 以 `sub.id` 为键，但订阅被删除时**没有任何清理点** ——
+        # 只写了 `pop` 在「查询成功」分支（那是清零，不是删键）。
+        # 后果：每建一个订阅就永久留一条记录，长期运行后
+        # `_anomaly_notified_at` 只增不减（订阅增删频繁时尤其明显）。
+        #
+        # 每 tick 用活跃 id 集合做一次差集，顺手清掉。
+        _live_ids = set(self.store.items.keys())
+        for _d in (self._fail_streak, self._anomaly_notified_at, self._next):
+            for _k in [k for k in _d if k not in _live_ids]:
+                _d.pop(_k, None)
         for sub in list(self.store.items.values()):
             if not sub.enabled or now < self._next.get(sub.id, 0): continue
             self._next[sub.id] = now + max(30, sub.poll_interval_sec)

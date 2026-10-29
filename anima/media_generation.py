@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 import uuid
 from pathlib import Path
 
 from anima.core.persistence import PersistenceProvider
 from anima.llm.usage import scoped_llm
+
+logger = logging.getLogger(__name__)
 
 # P2-F：图片格式魔数以具名常量单源（与 media.py 取图解析口径一致），避免重复魔数。
 _PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
@@ -42,11 +45,82 @@ def _normalise_images(value) -> list[str]:
 
 
 class ImageGenerationManager:
+    #: `generated/` 保留天数。生产实测 2026-10-29：29M / 34 个目录，
+    #: 最老 2026-08-31 —— **没有清理机制，只增不减**。
+    #:
+    #: 为什么不能删完：出站消息里引用的是本地绝对路径，
+    #: QQ 客户端可能延迟取图（转发/引用/撤销重发），删太早会变成裂图。
+    #: 30 天足够覆盖任何重发窗口，同时把增长钉在一个可预期上限。
+    GENERATED_RETENTION_DAYS = 30
+
     def __init__(self, core):
         self.core = core
         self.persistence = PersistenceProvider(core.config.persistence.data_dir)
         # P2-F：额度「判定→生成→消耗」整体串行，封死并发 check-then-act 超配额（TOCTOU）。
         self._render_lock = asyncio.Lock()
+
+    def prune_generated(self, retention_days: int | None = None,
+                        dry_run: bool = False) -> dict:
+        """按**日期目录名**清理 `generated/` 下过期图片。绝不抛。
+
+        `generated/` 的布局是 `generated/<YYYY-MM-DD>/image_*.png`，
+        直接读目录名判断年龄，比 stat 每个文件便宜且不受 mtime 被复制影响。
+
+        返回 `{"before_dirs","after_dirs","removed_dirs","removed_files","removed_bytes"}`。
+        """
+        import time
+        from datetime import date, timedelta
+
+        out = {"before_dirs": 0, "after_dirs": 0, "removed_dirs": 0,
+               "removed_files": 0, "removed_bytes": 0}
+        try:
+            data_dir = Path(getattr(getattr(self.core.config, "persistence", None),
+                                    "data_dir", "data") or "data")
+            root = data_dir / "generated"
+            if not root.is_dir():
+                return out
+            days = int(retention_days if retention_days is not None
+                       else self.GENERATED_RETENTION_DAYS)
+            if days <= 0:
+                return out
+            cutoff = date.today() - timedelta(days=days)
+            dirs = [d for d in root.iterdir() if d.is_dir()]
+            out["before_dirs"] = len(dirs)
+            for d in dirs:
+                try:
+                    day = date.fromisoformat(d.name)
+                except ValueError:
+                    continue          # 非日期目录（人工放的），不碰
+                if day >= cutoff:
+                    continue
+                try:
+                    for f in d.rglob("*"):
+                        if f.is_file():
+                            out["removed_files"] += 1
+                            try:
+                                out["removed_bytes"] += f.stat().st_size
+                            except OSError:
+                                pass
+                            if not dry_run:
+                                f.unlink(missing_ok=True)
+                    if not dry_run:
+                        for f in sorted(d.rglob("*"), reverse=True):
+                            if f.is_dir():
+                                f.rmdir()
+                        d.rmdir()
+                except OSError:
+                    continue
+                out["removed_dirs"] += 1
+            out["after_dirs"] = (out["before_dirs"] - out["removed_dirs"]
+                                 if not dry_run else out["before_dirs"])
+            if out["removed_dirs"] and not dry_run:
+                logger.info("[出图] 清理 generated/ %d 个过期目录（保留 %d 天），"
+                            "释放 %.1fMB",
+                            out["removed_dirs"], days,
+                            out["removed_bytes"] / 1048576)
+        except Exception:  # noqa: BLE001 - 清理失败绝不能影响出图
+            logger.debug("generated/ 清理失败（忽略）", exc_info=True)
+        return out
 
     @scoped_llm("image_generation", "generate")
     async def generate(self, prompt: str) -> str:

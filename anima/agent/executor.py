@@ -228,6 +228,20 @@ class AgentExecutor:
     def request_cancel(self, task_id: str) -> None:
         self._cancel[task_id] = True
 
+    def clear_cancel(self, task_id: str) -> None:
+        """任务终结后清掉取消标记。
+
+        🔴 2026-10-29：`_cancel` 此前**只写不删** ——
+        `request_cancel` 置位后没有任何清理点，而 `task_id` 是每任务唯一
+        ⇒ 每取消一次就永久留一条。长期运行（生产已连续跑 2 个月）
+        这个 dict 会随取消次数单调增长。
+
+        注意不能「读到就删」：任务在循环里每步都会调 `_is_cancelled`，
+        中途删掉会让剩余的步骤**不再感知取消**（取消形同失效）。
+        必须在任务**真正终结**（cancelled/completed/failed）之后调用。
+        """
+        self._cancel.pop(task_id, None)
+
     def _is_cancelled(self, task: AgentTask) -> bool:
         if self._cancel.get(task.id):
             return True
@@ -289,6 +303,7 @@ class AgentExecutor:
                 task.status = "cancelled"
                 self.store.save(task)
                 await self._notify(task, "[已取消] 主人终止了任务")
+                self.clear_cancel(task.id)      # 2026-10-29：终结后清标记
                 return "任务已取消。"
 
             # 🔴 P0-1 整任务预算检查（放在每步开头，粒度足够且不打断在跑的步骤）
@@ -467,6 +482,9 @@ class AgentExecutor:
             task.status = "completed"
             task.error = ""
         self.store.save(task)
+        # 2026-10-29：任务终结（完成/失败）后清掉取消标记，避免 `_cancel` 无界增长。
+        # 放在 `store.save` 之后：状态已落盘，此时标记没有保留价值。
+        self.clear_cancel(task.id)
 
         # 熔断统计
         if task.status == "failed":

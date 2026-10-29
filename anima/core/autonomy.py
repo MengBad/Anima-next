@@ -2030,6 +2030,24 @@ class Heartbeat:
                         logger.info("audit 保留期清理 %d 个过期审计文件", removed_audit)
             except Exception as e:
                 logger.warning("audit 清理失败（已忽略）: %s", e)
+            # 🔴 2026-10-29：**出图目录保留期清理**。
+            #
+            # 生产实测（08:52）：`data/generated/` 29M / 34 个日期目录，
+            # 最老 2026-08-31 —— 从上线起**零清理**，只增不减。
+            # 与上面 audit.prune 同类，此前只补了 audit、漏了 generated。
+            #
+            # 保留 30 天：出站消息引用的是本地绝对路径，QQ 端可能延迟取图
+            # （转发/引用/撤销重发），删太早会变裂图；30 天覆盖任何重发窗口。
+            try:
+                gen = getattr(self.core, "image_generation", None)
+                if gen is not None and hasattr(gen, "prune_generated"):
+                    _pruned = gen.prune_generated()
+                    if _pruned.get("removed_dirs"):
+                        logger.info("generated/ 保留期清理 %d 个目录（%.1fMB）",
+                                    _pruned["removed_dirs"],
+                                    _pruned.get("removed_bytes", 0) / 1048576)
+            except Exception as e:
+                logger.warning("generated/ 清理失败（已忽略）: %s", e)
 
         # Token 预算检查
         if self.token_budget and self._tokens_today >= self.token_budget:
