@@ -151,26 +151,29 @@ async def _fetch_async(url: str, *, timeout_sec: float, max_chars: int) -> PageR
             await page.goto(url, timeout=int(timeout_sec * 1000), wait_until="domcontentloaded")
             title = await page.title()
             # 只取可见文本，避免把 <script>/<style> 塞进上下文
+            # 🔴 JS 里不能把换行转义直接写进 Python 三引号——会变成真换行，
+            # 浏览器收到 JS 语法错误（2026-10-29 生产实测：Invalid or unexpected token）。
+            # 改用 String.fromCharCode(10) 拼分隔符，彻底避开多层转义。
             text = await page.evaluate(
-                """() => {
-                    const skip = new Set(['SCRIPT','STYLE','NOSCRIPT','IFRAME','SVG']);
-                    const out = [];
-                    const walk = (n) => {
-                        if (!n) return;
-                        if (n.nodeType === 3) {
-                            const t = (n.textContent || '').trim();
-                            if (t) out.push(t);
-                            return;
-                        }
-                        if (n.nodeType !== 1) return;
-                        if (skip.has(n.tagName)) return;
-                        const st = window.getComputedStyle(n);
-                        if (st && st.display === 'none') return;
-                        for (const c of n.childNodes) walk(c);
-                    };
-                    walk(document.body);
-                    return out.join('\n');
-                }"""
+                "() => {"
+                "  const skip = new Set(['SCRIPT','STYLE','NOSCRIPT','IFRAME','SVG']);"
+                "  const out = [];"
+                "  const walk = (n) => {"
+                "    if (!n) return;"
+                "    if (n.nodeType === 3) {"
+                "      const t = (n.textContent || '').trim();"
+                "      if (t) out.push(t);"
+                "      return;"
+                "    }"
+                "    if (n.nodeType !== 1) return;"
+                "    if (skip.has(n.tagName)) return;"
+                "    const st = window.getComputedStyle(n);"
+                "    if (st && st.display === 'none') return;"
+                "    for (const c of n.childNodes) walk(c);"
+                "  };"
+                "  walk(document.body);"
+                "  return out.join(String.fromCharCode(10));"
+                "}"
             )
             text = "\n".join(
                 line.strip() for line in (text or "").splitlines() if line.strip()
