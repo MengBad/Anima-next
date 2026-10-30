@@ -1807,6 +1807,15 @@ class Heartbeat:
             else:
                 fail += 1
 
+            # 成功也告诉本人（2026-10-30 owner 要求）。
+            # 此前成功是静默的：签成了谁也不知道，owner 只能靠查日志确认。
+            # 今天实测就是这样——2 个账号全成功，却一条通知都没有。
+            if res.get("ok"):
+                try:
+                    await self._notify_rainyun_success(uid, res)
+                except Exception:
+                    logger.debug("[雨云签到] 成功通知失败 user=%s", uid[-4:], exc_info=True)
+
             # 失败时通知该用户本人（不通知 owner —— 别人不该知道谁绑了账号）
             if not res.get("ok"):
                 try:
@@ -1823,47 +1832,47 @@ class Heartbeat:
         except Exception:
             logger.debug("雨云签到审计写入失败", exc_info=True)
 
-        # 2026-10-30: also tell the owner the RESULT of auto checkin.
-        # Previously only the bound user got failure notices, so owner got nothing
-        # and the 09:00 reminder still told them to sign manually.
-        try:
-            await self._notify_rainyun_signin_summary(ok, fail, skipped)
-        except Exception:
-            logger.debug("[雨云签到] 汇总通知失败", exc_info=True)
+        # 2026-10-30: each bound user is notified individually (success AND failure),
+        # so no owner-level summary here — it would duplicate the same information.
 
-    async def _notify_rainyun_signin_summary(self, ok: int, fail: int, skipped: int) -> None:
-        """把自动签到的汇总结果告诉 owner。
+    async def _notify_rainyun_success(self, uid: str, res: dict) -> None:
+        """把成功结果告诉**绑定者本人**。
 
-        与 `_notify_rainyun_failure` 的分工：
-        - 那个只告诉**绑定者本人**失败原因（不泄露谁绑了号）；
-        - 本函数告诉 **owner 总体结果**，不提任何账号标识。
+        2026-10-30 owner 要求：成功也要各自通知。
+        此前成功是静默的——签成了谁也不知道（当天实测 2/2 成功，零通知）。
 
-        为什么必须发：owner 收到的「今天还没签到」提醒来自另一条只读逻辑，
-        它不知道自动签到跑没跑成。不报结果 ⇒ owner 永远得手动去确认。
+        纪律：
+        - **不回显邮箱**（账号标识不该出现在 QQ 里）；
+        - 带上积分/抽奖券变化，让「签到了」这件事可核对；
+        - 多账号时逐条发，每条只说属于这个账号的结果。
         """
         try:
             from anima.core.gateway import OutboundMsg
         except Exception:
             return
-        owners = getattr(getattr(self.core.config, "permissions", None), "owners", None) or []
-        if not owners:
-            return
 
-        if ok > 0 and fail == 0 and skipped == 0:
-            body = f"雨云自动签到已完成喵：{ok} 个账号都签好了。"
-        elif ok > 0:
-            body = (f"雨云自动签到：{ok} 个成功，{fail} 个失败，{skipped} 个跳过。"
-                    "失败的我已经单独告诉本人了。")
-        elif fail > 0:
-            body = (f"雨云自动签到没成功喵：{fail} 个失败，{skipped} 个跳过。"
-                    "需要的话我再试一次。")
-        else:
-            body = f"雨云自动签到今天跳过了 {skipped} 个账号（未到条件或配额）。"
-        for oid in owners:
-            try:
-                await self.core.gateway.send(OutboundMsg("private", int(oid), body))
-            except Exception:
-                logger.debug("[雨云签到] 汇总发送失败 owner=%s", oid, exc_info=True)
+        bits = []
+        points = res.get("points") or res.get("score_added") or res.get("reward_points")
+        if isinstance(points, (int, float)) and points:
+            bits.append(f"+{int(points)} 分")
+        tickets = res.get("tickets") or res.get("lottery_tickets")
+        if isinstance(tickets, (int, float)) and tickets:
+            bits.append(f"{int(tickets)} 张抽奖券")
+        items = res.get("items") or []
+        for it in items[:3]:
+            msg = str(it.get("message") or it.get("reason") or "").strip()
+            if msg and msg not in bits:
+                bits.append(msg)
+
+        tail = ("，".join(bits) + "。") if bits else "。"
+        body = f"雨云今天签到成功了喵{tail}"
+        if len(items) > 1:
+            body = f"雨云今天签好了 {len(items)} 个账号喵{tail}"
+
+        try:
+            await self.core.gateway.send(OutboundMsg("private", int(uid), body))
+        except Exception:
+            logger.debug("[雨云签到] 成功通知发送失败", exc_info=True)
 
     async def _notify_rainyun_failure(self, uid: str, res: dict) -> None:
         """把失败原因**只告诉本人**（不告诉 owner，避免泄露「谁绑了账号」）。"""
