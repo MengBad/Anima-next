@@ -1117,6 +1117,22 @@ class LLMHandler(AnimaCommandsMixin):
             except Exception:
                 logger.exception("私聊审批处理异常（已隔离）")
 
+        # 补丁（core_patch）的自然语言审批：owner 回「批准/驳回/落地/看看」。
+        # 此前只能敲 !anima iterate approve <id>——收到「补丁写好了」的通知后
+        # 回一句人话是没用的，那句话走正常对话，bot 不知道在批什么。
+        if detail_type == "private":
+            try:
+                from anima.agent import patch_dialog as _pd
+
+                _verdict = _pd.handle_private(self.core, text, int(user_id))
+                if _verdict:
+                    await self.core.gateway.send(
+                        OutboundMsg("private", int(user_id), _verdict)
+                    )
+                    return
+            except Exception:
+                logger.exception("补丁审批处理异常（已隔离）")
+
         # 非 owner 私聊的授权申请（design §3.6）：把「他想用完整功能」这件事
         # 推给 owner，否则 owner 永远不知道该授权谁——GrantQueue 只是登记簿，
         # 真正的通知必须有人发。
