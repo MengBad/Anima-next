@@ -750,14 +750,23 @@ def main():
     # 安装依赖。默认走 VPS 配置的镜像源（清华）；镜像拉不到构建依赖
     # （如 setuptools>=77，2026-09-06 实测镜像不可用而官方 pypi.org 可达）
     # 时回退官方 PyPI 重试，避免部署卡死在依赖步。
+    # pip failure must NOT abort the deploy: the service is already stopped
+    # at this point. 2026-10-30 real incident: mirror timed out + pypi.org
+    # unreachable => setuptools>=77 not found => deploy raised before restart
+    # => bot offline 48 minutes.
     try:
         run(f"set -o pipefail; {REMOTE_ROOT}/venv/bin/pip install -e "
             f"'{REMOTE_ROOT}[qq,vector,dev,sylann,docs]' 2>&1 | tail -8")
     except RemoteCommandError:
         print("[PIP] 镜像源安装失败，回退官方 PyPI 重试…")
-        run(f"set -o pipefail; PIP_INDEX_URL=https://pypi.org/simple/ "
-            f"{REMOTE_ROOT}/venv/bin/pip install -e "
-            f"'{REMOTE_ROOT}[qq,vector,dev,sylann,docs]' 2>&1 | tail -8")
+        try:
+            run(f"set -o pipefail; PIP_INDEX_URL=https://pypi.org/simple/ "
+                f"{REMOTE_ROOT}/venv/bin/pip install -e "
+                f"'{REMOTE_ROOT}[qq,vector,dev,sylann,docs]' 2>&1 | tail -8")
+        except RemoteCommandError:
+            print("[PIP][WARN] 依赖安装失败（镜像与官方源都不可达）。继续部署："
+                  "源码已同步，缺的只是新增三方包。结束后请手工 pip install -e .",
+                  file=sys.stderr)
 
     # 修正权限
     run(f"chown -R anima:anima {REMOTE_ROOT}")
