@@ -1444,11 +1444,15 @@ class Heartbeat:
         if not getattr(cfg, "owner_digest_enabled", True):
             return
         # 时刻门控：过了配置小时才发（不是整点触发，避免心跳抖动漏发）。
+        # 2026-10-30: use the injected `now`, not the wall clock.
+        # The old version ignored the parameter, so the function was untestable:
+        # a test passing now=0.0 still judged by real time and failed after 23:00.
+        # It also disagreed with `_bj_date_str(now)` used below for the day cut.
         import datetime as _dt
         try:
-            _now_dt = _dt.datetime.now(_BJ)
+            _now_dt = _dt.datetime.fromtimestamp(float(now), _BJ)
         except Exception:
-            _now_dt = _dt.datetime.now()
+            _now_dt = _dt.datetime.now(_BJ)
         if _now_dt.hour < int(getattr(cfg, "owner_digest_hour", 9)):
             return
         # 日切一次

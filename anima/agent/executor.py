@@ -600,6 +600,13 @@ class AgentExecutor:
         """尝试重规划；返回 True 表示已替换剩余计划、外层可继续循环。"""
         if not self._replan_available(task):
             return False
+        # 2026-10-30 P0：把这次失败记进 task，下一轮 plan 能看到「上次为什么不行」。
+        # 此前每轮重规划都是**从零开始想**，失败原因只进 context 字典、不进规划器视野
+        # ⇒ 容易在同一个坑里重复摔（对齐 Memoh 用 output_tail 反馈的做法）。
+        task.failure_log.append(
+            f"第{failed_step.index + 1}步「{failed_step.description[:60]}」"
+            f"未达成（{reason}）：{(error or '')[:200]}"
+        )
         done = [s.description for s in task.steps
                 if s.status == "done" and s.index < failed_step.index]
         remaining = [s.description for s in task.steps[failed_step.index + 1:]
@@ -609,6 +616,7 @@ class AgentExecutor:
                 request=task.request, done=done,
                 failed_step_desc=failed_step.description,
                 error=error, remaining=remaining, reason=reason,
+                history=list(task.failure_log),
             )
         except Exception:
             logger.exception("重规划失败（已隔离，按原失败处理）")

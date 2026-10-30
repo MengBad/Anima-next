@@ -74,16 +74,20 @@ class TaskPlanner:
 
     async def replan(self, *, request: str, done: list[str], failed_step_desc: str,
                      error: str, remaining: list[str],
-                     reason: str = "step_failed") -> list[Step]:
+                     reason: str = "step_failed",
+                     history: list[str] | None = None) -> list[Step]:
         """为失败步骤产出替代方案。
 
         reason:
           - step_failed：工具重试耗尽
           - verify_failed：执行成功但独立验收判定不成立
+
+        history（2026-10-30 P0）：此前失败过的尝试摘要。传给规划器，
+        让它看到「这条路已经走过了」，而不是每轮从零开始想。
         """
         planned = await self._decompose_replan(
             request=request, done=done, failed_step_desc=failed_step_desc,
-            error=error, remaining=remaining, reason=reason,
+            error=error, remaining=remaining, reason=reason, history=history,
         )
         steps = self._to_steps(planned)
         for s in steps:
@@ -115,7 +119,8 @@ class TaskPlanner:
     @scoped_llm("agent", "replan")
     async def _call_llm_replan(self, *, request: str, done: list[str],
                                failed_step_desc: str, error: str,
-                               remaining: list[str], reason: str) -> str:
+                               remaining: list[str], reason: str,
+                               history: list[str] | None = None) -> str:
         kind = "执行成功但未通过验收" if reason == "verify_failed" else "执行失败"
         payload = (
             f"原始请求：{request}\n"
@@ -124,6 +129,11 @@ class TaskPlanner:
             f"失败原因：{error}\n"
             f"原计划剩余步骤：{remaining or '（无）'}"
         )
+        # 2026-10-30 P0：把历次失败一并给规划器，避免在同一个坑里重复摔。
+        if history:
+            payload += "\n此前已经失败过的尝试（不要原样重复）：\n" + "\n".join(
+                f"- {h}" for h in history[-5:]
+            )
         messages = [
             {"role": "system", "content": _REPLAN_SYSTEM_PROMPT},
             {"role": "user", "content": payload},
@@ -134,7 +144,8 @@ class TaskPlanner:
     @staticmethod
     def _fallback_replan(*, request: str, done: list[str], failed_step_desc: str,
                          error: str, remaining: list[str],
-                         reason: str = "step_failed") -> list[dict]:
+                         reason: str = "step_failed",
+                         history: list[str] | None = None) -> list[dict]:
         """确定性兜底：换一种方式再试 + 保留原剩余步骤 + 诚实收尾。"""
         if reason == "verify_failed":
             alt = f"换用不同方式重做：{failed_step_desc}（上次结果未通过验收）"

@@ -43,7 +43,10 @@ class AgentTask:
     id: str
     request: str
     creator: int
-    status: str = "planning"       # planning|executing|completed|failed|cancelled|interrupted
+    status: str = "planning"       # planning|executing|waiting_user|completed|failed|cancelled|interrupted
+    #: `waiting_user`（2026-10-30，P0 执行闭环）：agent 卡在「需要 owner 决定」上。
+    #: 与 `failed` 的区别 —— 它没失败，只是缺少只有人才能给的信息。
+    #: 由 ask_user 工具置位，owner 回答后由 executor 恢复为 executing。
     #: `interrupted`（2026-10-21 新增）：进程重启打断了正在执行的任务。
     #: 与 `failed` 的区别 ——**它不是任务本身的失败**，进度与已完成步骤都保留，
     #: 可经 approve 重跑。此前这类一律判 `failed` 且静默无通知。
@@ -53,6 +56,12 @@ class AgentTask:
     error: str = ""
     # P2-1：已发生的重规划次数（上限由 executor 把关，防无界重试）
     replan_count: int = 0
+    #: 2026-10-30 P0：ask_user 提的问题（status=waiting_user 时非空）。
+    #: 结构见 anima/agent/ask_user.py::Question。owner 答复后清空并恢复执行。
+    pending_question: dict = field(default_factory=dict)
+    #: 失败历史：每轮重规划失败的原因。让下一轮 plan 能看到「上次为什么不行」，
+    #: 而不是在同一个坑里重复摔（对齐 Memoh 的 output_tail 反馈）。
+    failure_log: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=time.time)
     updated_at: float = field(default_factory=time.time)
 
@@ -85,6 +94,8 @@ def _task_from(raw: dict) -> AgentTask:
         context=dict(raw.get("context", {}) or {}),
         error=str(raw.get("error", "")),
         replan_count=int(raw.get("replan_count", 0)),
+        pending_question=dict(raw.get("pending_question", {}) or {}),
+        failure_log=[str(x) for x in (raw.get("failure_log", []) or [])],
         created_at=float(raw.get("created_at", time.time())),
         updated_at=float(raw.get("updated_at", time.time())),
     )

@@ -1117,6 +1117,22 @@ class LLMHandler(AnimaCommandsMixin):
             except Exception:
                 logger.exception("私聊审批处理异常（已隔离）")
 
+        # ask_user 的回答（P1 执行闭环）：任务挂在 waiting_user 时，
+        # owner 的下一句话就是答案，必须优先消费——否则它会走正常聊天，
+        # 任务永远等不到人回答（这正是改造前「问了也白问」的根因）。
+        if detail_type == "private":
+            try:
+                from anima.agent import ask_user as _au
+
+                _ans = _au.resolve_reply(self.core, text)
+                if _ans:
+                    await self.core.gateway.send(
+                        OutboundMsg("private", int(user_id), _ans)
+                    )
+                    return
+            except Exception:
+                logger.exception("ask_user 回答处理异常（已隔离）")
+
         # 补丁（core_patch）的自然语言审批：owner 回「批准/驳回/落地/看看」。
         # 此前只能敲 !anima iterate approve <id>——收到「补丁写好了」的通知后
         # 回一句人话是没用的，那句话走正常对话，bot 不知道在批什么。

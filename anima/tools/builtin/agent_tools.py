@@ -12,11 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import os
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("anima.tools.agent")
 
 from anima.agent.audit import get_auditor
 from anima.agent.guardrails import (
@@ -279,6 +282,31 @@ def register_agent_tools(registry, core=None) -> None:
     """注册 Owner/Admin 专属 Agent 工具。仅在 core 可用时调用。"""
     if core is None:
         return
+
+    # 2026-10-30 P1：结构化提问。私聊专属 —— 群里问「用哪个 API」
+    # 会暴露它不是人（沿用 09-28 人视角审计的判据）。
+    try:
+        from anima.agent.ask_user import make_ask_user_tool
+
+        registry.register(Tool(
+            "ask_user",
+            "（仅主人·仅私聊）**在你缺关键信息、无法自己决定时调用**，"
+            "暂停任务并向主人提一个或多个问题。"
+            "例：需要选 API、需要账号密码、需要在两种方案间取舍。"
+            "不要把选择题写进普通回复文本里——用这个工具，它才会真正等到回答。",
+            {
+                "questions": {
+                    "type": "array",
+                    "description": "一次要问的问题列表（最多 4 个）",
+                },
+            },
+            make_ask_user_tool(core),
+            required=["questions"],
+            min_level=LEVEL_OWNER,
+            private_only=True,
+        ))
+    except Exception:  # noqa: BLE001 - 工具注册失败不该拖垮启动
+        logger.debug("ask_user 注册失败（已隔离）", exc_info=True)
 
     registry.register(Tool(
         "agent_http_request",
