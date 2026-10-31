@@ -1261,6 +1261,25 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     except Exception:
         logger.debug("身份边界注入失败", exc_info=True)
 
+    # 2026-10-31 P1-A：私聊里强制使用 ask_user。
+    #
+    # A/B 实测（真实模型 + 60 个工具 schema）：
+    #   原始提示   ask_user 命中 2/4
+    #   加硬规则   ask_user 命中 3/4
+    # 差异样本：「帮我写个脚本监控服务器状态」—— 原始提示下模型直接吐了一段
+    # Python 代码（没保存、没执行，等于白干）；加规则后正确反问。
+    #
+    # 只注入私聊：群聊里出现结构化提问会暴露"它不是人"。
+    if getattr(ctx, "detail_type", "") == "private":
+        _ask_rule = (
+            "## 需要主人补充信息时\n"
+            "只要你**需要主人补一句话才能继续**（问对象是谁、问选哪个方案、"
+            "问要什么参数），就必须调用 `ask_user` 工具，**不许用文字反问**。\n"
+            "文字反问会让任务丢掉上下文：主人回你时，你已经不在那个任务里了。\n"
+            "自查：回复里若出现「告诉我」「是吗」「哪位」「什么名字」「发我」"
+            "这类追问，说明你在等人回答 —— 那就该用 ask_user。"
+        )
+        add_system_fragment("ask_user_rule", _ask_rule, 3)
     ctx.system_prompt, system_stats = composer.compose_system(
         ctx.system_prompt, system_fragments, system_suffix,
     )

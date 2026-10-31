@@ -1143,6 +1143,28 @@ async def _run_danger_behaviors(ctx: "PipelineContext") -> None:
 
 async def guardrail_stage(ctx: PipelineContext) -> StageResult:
     """输出护栏 —— 过滤危险/机械回复。"""
+    # 2026-10-31 P1-C：反问兜底。
+    #
+    # A/B 实测：加硬规则后 ask_user 命中 3/4，仍有 1/4 用文字反问。
+    # 任务丢失对 owner 完全无感（回复通顺，只是那条任务没了）。
+    # 这里在出站前最后一道判断：若回复是「文字反问 + 零工具调用 + 有任务意图」，
+    # 就转成结构化等待（挂 pending_question），而不是把文字发出去。
+    try:
+        from anima.agent.ask_backstop import build_pending_question, is_ask_back
+
+        _trace = ctx.meta.get("tool_trace") or []
+        _why = is_ask_back(
+            ctx.reply,
+            detail_type=getattr(ctx, "detail_type", ""),
+            tool_calls=len(_trace),
+        )
+        if _why:
+            ctx.meta["pending_question"] = build_pending_question(ctx.reply)
+            ctx.meta["ask_back_reason"] = _why
+            logger.info("[反问兜底] 转结构化等待 reason=%s len=%d",
+                        _why, len(ctx.reply or ""))
+    except Exception:
+        logger.debug("反问兜底判断失败（已隔离）", exc_info=True)
     ctx.reply = _clean_transport_text(ctx.reply)
     ctx.reply = _strip_speaker_labels(ctx.reply)
 
