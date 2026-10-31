@@ -283,6 +283,49 @@ def register_agent_tools(registry, core=None) -> None:
     if core is None:
         return
 
+    # 2026-10-31 P2：后台任务观察与控制。
+    # 后台执行本来就存在（OwnerAgent.submit 即 asyncio.create_task），
+    # 缺的是「看得到进度 / 能叫停」这一层。
+    try:
+        from anima.agent import background as bg
+
+        registry.register(Tool(
+            "list_tasks",
+            "（仅主人·仅私聊）列出最近的 Agent 任务及其状态与进度。",
+            {"limit": {"type": "integer", "description": "最多几条，默认 10"}},
+            functools.partial(bg.list_tasks, core),
+            min_level=LEVEL_OWNER, private_only=True,
+        ))
+
+        registry.register(Tool(
+            "get_task_status",
+            "（仅主人·仅私聊）读某个 Agent 任务的详细状态：进度/重规划次数/错误。",
+            {"task_id": {"type": "string", "description": "任务 id"}},
+            functools.partial(bg.get_task_status, core),
+            required=["task_id"], min_level=LEVEL_OWNER, private_only=True,
+        ))
+
+        registry.register(Tool(
+            "wait_task",
+            "（仅主人·仅私聊）等一个 Agent 任务结束或停住。返回 completed/failed/idle/timeout。"
+            "任务不会因等待超时被取消，可以再等一次。idle 表示长时间无进展。",
+            {
+                "task_id": {"type": "string", "description": "任务 id"},
+                "timeout_sec": {"type": "number", "description": "本次等待秒数，默认 120，上限 300"},
+            },
+            functools.partial(bg.wait_task, core),
+            required=["task_id"], min_level=LEVEL_OWNER, private_only=True,
+        ))
+
+        registry.register(Tool(
+            "kill_task",
+            "（仅主人·仅私聊）取消一个正在跑的 Agent 任务。",
+            {"task_id": {"type": "string", "description": "任务 id"}},
+            functools.partial(bg.kill_task, core),
+            required=["task_id"], min_level=LEVEL_OWNER, private_only=True,
+        ))
+    except Exception:  # noqa: BLE001
+        logger.debug("后台任务工具注册失败（已隔离）", exc_info=True)
     # 2026-10-30 P1：结构化提问。私聊专属 —— 群里问「用哪个 API」
     # 会暴露它不是人（沿用 09-28 人视角审计的判据）。
     try:
