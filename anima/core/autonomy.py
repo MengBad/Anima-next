@@ -2388,26 +2388,28 @@ class Heartbeat:
         except Exception:
             logger.debug("owner 私聊队列 flush 失败（已隔离）", exc_info=True)
 
-        # 🔴 2026-10-26：**雨云每日签到提醒**（只读）。
-        # 与 `_owner_digest_tick` 同一纪律：日切一次 + 持久化标记 +
-        # 过了配置小时才发 + 无 owner 不伪造发送 + 任何异常只记日志。
-        # 为什么只提醒不自动领：领取接口要过人机验证（腾讯 TCaptcha），
-        # 见 `anima/tools/builtin/rainyun.py` 的模块 docstring。
-        try:
-            await self._rainyun_reminder_tick(now)
-        except Exception:
-            logger.debug("雨云签到提醒失败（已隔离）", exc_info=True)
-
-        # 🔴 2026-10-26：**雨云多人自动签到**（方案 B，每人绑自己的账号）。
-        # 与上面的 `_rainyun_reminder_tick` 是两件事：
-        #   · reminder 用 owner 的 API Key 查只读状态，只提醒
-        #   · 这个真的替**每个绑定了账号的用户**跑一次浏览器签到
-        # 纪律同样照抄 owner_digest：日切一次 + 持久化标记 + 过了配置小时才跑
+        # 2026-10-31: ORDER MATTERS — auto checkin FIRST, reminder SECOND.
+        #
+        # Yesterday the reminder ran first, so "signin already ran today" was
+        # still false when it checked, and owner got BOTH:
+        #   09:00:21 "you have not checked in yet"
+        #   09:01:00 auto checkin actually succeeded
+        # Running signin first lets the reminder see the mark and stand down.
+        #
+        # signin：真的替**每个绑定了账号的用户**跑一次浏览器签到
+        # 纪律照抄 owner_digest：日切一次 + 持久化标记 + 过了配置小时才跑
         # + 任何异常只记日志（不能让签到失败拖垮心跳）。
         try:
             await self._rainyun_signin_tick(now)
         except Exception:
             logger.debug("雨云自动签到失败（已隔离）", exc_info=True)
+
+        # reminder：**只读**兜底提醒。自动签到跑过就自动让位（见函数内判定）；
+        # 只有完全没配自动签到时，它才会提醒 owner 手动去签。
+        try:
+            await self._rainyun_reminder_tick(now)
+        except Exception:
+            logger.debug("雨云签到提醒失败（已隔离）", exc_info=True)
 
         # 🔴 P1 自主触发（2026-10-21）：它自己发现该干的活，**先报备再执行**。
         # owner 明确否掉「提议制」（不批就不动），要求直接执行；这里按确认的
