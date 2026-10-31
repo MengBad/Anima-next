@@ -86,10 +86,19 @@ def workspace_root(project_root: str | Path) -> Path:
 
 
 def new_workspace(project_root: str | Path, task_id: str = "") -> Path:
-    """为一次执行创建独立工作区。"""
+    """为一次执行创建独立工作区。
+
+    2026-10-31: 建好后 chmod 0777。沙箱内以 `--ro-bind / /` 挂载时
+    目录属主仍是宿主机用户（anima），而 bwrap 内进程的 uid 映射可能不同，
+    不加权限会 `OSError: [Errno 30] Read-only file system`（生产验收实测）。
+    """
     tid = (task_id or uuid.uuid4().hex[:10]).strip()
     ws = workspace_root(project_root) / tid
     ws.mkdir(parents=True, exist_ok=True)
+    try:
+        os.chmod(ws, 0o777)
+    except Exception:
+        logger.debug("工作区 chmod 失败（已隔离）: %s", ws, exc_info=True)
     return ws
 
 
@@ -116,20 +125,30 @@ def build_command(
         "--dev", "/dev",
         "--proc", "/proc",
         "--tmpfs", "/tmp",
-        "--tmpfs", "/run",
-        "--bind", str(ws), str(ws),     # 只有工作区可写
+        # 2026-10-31: **不要 mask /run**。
+        # /etc/resolv.conf 是 -> /run/systemd/resolve/stub-resolv.conf 的软链，
+        # 把 /run 换成空 tmpfs ⇒ 软链悬空 ⇒ 沙箱内 DNS 全废：
+        #   URLError: [Errno -3] Temporary failure in name resolution
+        # 表现为「联网功能存在但什么都连不上」，比直接禁网更难排查。
         "--unshare-pid",                # 独立 PID 命名空间
         "--die-with-parent",            # 父进程死则子进程死，防泄漏
         "--new-session",
     ]
 
-    # mask 敏感路径：文件用 /dev/null，目录用空 tmpfs
+    # mask 敏感路径：文件用 /dev/null，目录用空 tmpfs。
+    #
+    # 2026-10-31: **顺序很重要** —— workspace 位于 data 之下，
+    # 所以 `--bind ws` 必须放在 `--tmpfs data` **之后**，否则被覆盖成空，
+    # 沙箱里连自己的 main.py 都打不开（生产验收实测 exit=2）。
     for rel in HIDDEN_PATHS:
         target = root / rel
         if target.is_dir():
             cmd.extend(["--tmpfs", str(target)])
         elif target.exists():
             cmd.extend(["--ro-bind", "/dev/null", str(target)])
+
+    # 工作区最后挂回 —— 覆盖在 masked 的 data 之上，只有它可写
+    cmd.extend(["--bind", str(ws), str(ws)])
 
     # pip 用官方源：清华源对本机 403（2026-10-31 实测），必须覆盖
     cmd.extend([
@@ -170,10 +189,15 @@ async def execute(
             pass
 
     t0 = time.time()
+    # 2026-10-31: **必须设 cwd=ws**。不设的话子进程继承宿主机当前目录
+    # （/opt/anima），而它在沙箱内是 --ro-bind 只读 ⇒ 任何相对路径写入都报
+    #   OSError: [Errno 30] Read-only file system
+    # 实测：cwd 不设 exit=1，设 cwd=ws exit=0。
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        cwd=str(ws),
         preexec_fn=_limit_memory if os.name != "nt" else None,
     )
     try:
