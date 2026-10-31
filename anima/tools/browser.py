@@ -75,20 +75,46 @@ def _is_blocked_host(host: str) -> bool:
 def _resolve_blocked(host: str) -> bool:
     """把域名解析成 IP 再看是不是内网——防「域名指向 127.0.0.1」绕过。
 
-    🔴 解析失败**不**视为拦截：本机 DNS 可能暂时不可用（实测本机
-    `example.com` 会解析到代理出口），fail-closed 会误杀所有正常网站。
-    真正的兜底在浏览器层——即便这里放行，导航到内网也会因为
-    `validate_url` 对字面 IP 的拦截而失败；域名解析绕过属于残余风险，
-    接受它换取可用性（该机器本身就是内网机器，攻击面没有扩大）。
+    🔴 2026-10-31: **不要拦代理保留段**。本机走 mihomo，很多正常站点
+    （example.com / pypi.org）会被解析到 198.18.x.x（RFC2544 基准测试段）。
+    实测 pypi.org -> 198.18.0.31，若按 `_is_blocked_host` 判为 reserved
+    就会被误杀 —— 生产验收时 pypi.org / example.com 全被拦。
+
+    因此这里只拦**真正的内网**（private / loopback / link-local），
+    放行 reserved 段（那正是代理出口的常态）。
+    字面 IP 的严格拦截仍在 `_is_blocked_host` 里保留。
     """
+    # 2026-10-31: 用**网段前缀**判，不用 ipaddress 的分类位。
+    #
+    # 实测坑：198.18.0.0/15（RFC2544 基准测试段，正是 mihomo 代理出口）
+    # 在 Python 里 is_private=True —— 用它判就把代理出口全拦了：
+    #   pypi.org     -> 198.18.0.31  is_private=True  ⇒ 误拦
+    #   example.com  -> 198.18.2.56  is_private=True  ⇒ 误拦
+    # 而真正的内网地址必须继续拦。所以显式列出**必须拒绝的网段**。
+    _DENY_NETS = tuple(ipaddress.ip_network(n) for n in (
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "192.168.0.0/16",
+        "127.0.0.0/8",
+        "169.254.0.0/16",      # 云元数据
+        "0.0.0.0/8",
+        "100.64.0.0/10",       # CGNAT
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+    ))
     try:
         infos = socket.getaddrinfo(host, None, proto=socket.IPPROTO_TCP)
     except Exception:
         return False  # 解析不了就放行，交给实际导航失败
     for info in infos:
-        addr = info[4][0]
-        if _is_blocked_host(addr):
-            return True
+        try:
+            ip = ipaddress.ip_address(str(info[4][0]).strip("[]"))
+        except ValueError:
+            continue
+        for net in _DENY_NETS:
+            if ip.version == net.version and ip in net:
+                return True
     return False
 
 
@@ -264,11 +290,16 @@ async def _run_actions(page: Any, actions: list[dict]) -> list[str]:
             await page.screenshot(path="__shot.png")
             log.append(f"{i}. 已截图")
         elif op == "get_text":
+            # 2026-10-31: 必须跳过 STYLE。百度首页实测抓到 260608 字，
+            # 前 400 字全是 <style> 里的 CSS —— 因为只跳了 SCRIPT/NOSCRIPT，
+            # 而内联 <style data-for="result"> 是正常 DOM 节点。
             text = await page.evaluate(
-                "() => { const s=new Set(['SCRIPT','STYLE','NOSCRIPT']);"
+                "() => { const s=new Set(['SCRIPT','STYLE','NOSCRIPT','SVG','IFRAME']);"
                 "const o=[]; const w=(n)=>{if(!n)return;"
                 "if(n.nodeType===3){const t=(n.textContent||'').trim();if(t)o.push(t);return;}"
                 "if(n.nodeType!==1)return; if(s.has(n.tagName))return;"
+                "const st=window.getComputedStyle(n);"
+                "if(st&&(st.display==='none'||st.visibility==='hidden'))return;"
                 "for(const c of n.childNodes)w(c);}; w(document.body);"
                 "return o.join(String.fromCharCode(10)); }"
             )
