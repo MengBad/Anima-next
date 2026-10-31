@@ -1279,7 +1279,13 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
             "自查：回复里若出现「告诉我」「是吗」「哪位」「什么名字」「发我」"
             "这类追问，说明你在等人回答 —— 那就该用 ask_user。"
         )
-        add_system_fragment("ask_user_rule", _ask_rule, 3)
+        # 🔴 2026-10-31：优先级**必须是高分**。
+        # compose_system 按 (priority, 注入序) **升序删除** —— 数字越小越先被砍。
+        # 首版写 3，生产实测当场被裁：
+        #   Context system budget: dropped=ask_user_rule tokens=15864/16000
+        # 规则被丢 ⇒ 模型照旧用文字反问 ⇒ 整条改造失效。
+        # 95 = 接近系统护栏级别，只在极端超预算时才让位。
+        add_system_fragment("ask_user_rule", _ask_rule, 95)
     ctx.system_prompt, system_stats = composer.compose_system(
         ctx.system_prompt, system_fragments, system_suffix,
     )

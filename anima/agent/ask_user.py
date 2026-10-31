@@ -260,6 +260,34 @@ def clear_stale(core: Any, *, now: float = 0.0) -> bool:
             return True
     return False
 
+
+
+def prearm_from_reply(core: Any, reply_text: str, *, detail_type: str = "",
+                      tool_calls: int = 0, user_id: int = 0) -> bool:
+    """在**发回复之前**就挂起 pending，抢在 owner 下一句进来之前。
+
+    ## 为什么需要预挂
+
+    guardrail 里挂 pending 发生在**出站之后**，而 owner 看到回复往往几秒内
+    就回话（实测 17:54:06 收到反问 → 17:54:15 就说「suzume」，间隔 9 秒）。
+    若挂起要等出站完成，下一句进来时 _active_agent_task 还是空的，
+    那句回答被当成新任务 ⇒ 又从零开始搜一遍。
+
+    本函数在生成完成、发送之前调用，把窗口提前。
+    """
+    from anima.agent.ask_backstop import build_pending_question, is_ask_back
+
+    why = is_ask_back(reply_text, detail_type=detail_type, tool_calls=tool_calls)
+    if not why:
+        return False
+    try:
+        attach_pending(core, build_pending_question(reply_text), user_id=user_id)
+        logger.info("[反问兜底] 预挂起成功 reason=%s", why)
+        return True
+    except Exception:
+        logger.debug("预挂起失败（交给出站后兜底）", exc_info=True)
+        return False
+
 def resolve_reply(core: Any, text: str) -> Optional[str]:
     """owner 私聊里的一句话是否是「回答 pending question」。
 
