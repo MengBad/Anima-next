@@ -304,6 +304,23 @@ _DIGITS_SAFE_CONTEXT = (
 _DIGITS_DANGEROUS_CONTEXT = ("QQ", "qq", "Qq", "uid", "UID", "账号", "帐号",
                              "群号", "号码", "id", "ID", "电话", "手机", "号码是")
 
+#: 2026-10-31：**URL 与英文计量词**。推特/网页正文天然带这些数字，
+#: 之前一律按账号拦，导致「搜到了却整条拒发」。
+#: 生产实证：11:15:20 x_search ok=True result_len=978，
+#: 11:15:25 出站被拦 reason=account_digits:187*** len=141 —— 什么都没发出去。
+_DIGITS_SAFE_EN_CONTEXT = (
+    "Tweets", "tweets", "Tweet", "tweet", "Likes", "likes", "Like", "like",
+    "Followers", "followers", "Following", "following", "Views", "views",
+    "Retweets", "retweets", "Retweet", "retweet", "Replies", "replies",
+    "Posts", "posts", "Post", "post", "ID", "id=", "#", "No.", "no.",
+)
+
+#: 命中位置落在这些 URL 形态里 ⇒ 是资源编号，不是账号。
+_URL_DIGITS_RE = re.compile(
+    r"https?://[^\s]*\d[^\s]*"      # 完整 URL（含协议）
+    r"|\b(?:x\.com|twitter\.com|t\.co)/[^\s]*\d[^\s]*"   # 裸推特链接
+)
+
 #: 模型「把内部任务当正文发出来」的典型开头/标记。
 #: 生产实证（10-25 17:41:33）：
 #:   「（遵照）…的指令，思考华初是谁。」「要求：」「回复草稿：」
@@ -323,14 +340,31 @@ _LEAK_MARKERS: tuple[str, ...] = (
 def _is_account_like_digits(text: str, m: "re.Match[str]") -> bool:
     """判断命中位置的长数字串是**账号**（危险）还是**数量**（正常）。"""
     digits = m.group(0)
-    before = text[max(0, m.start() - 8):m.start()]
+    # 2026-10-31：上下文窗口从 8 扩到 16 —— "Followers " 是 10 个字符，
+    # 8 位窗口把它整段切掉，导致英文计量词判定永远不命中。
+    before = text[max(0, m.start() - 16):m.start()]
     after = text[m.end():m.end() + 4]
 
     # 明确危险上下文优先：QQ / uid / 账号 + 长数字
     if any(k in before for k in _DIGITS_DANGEROUS_CONTEXT):
         return True
+
+    # 2026-10-31：URL 里的数字是资源编号（推文 status id、图片 id），不是账号。
+    # 先判 URL 再判其他，否则 https://x.com/.../status/1849... 会被当成 QQ 号。
+    _line_start = text.rfind("\n", 0, m.start()) + 1
+    _line_end = text.find("\n", m.end())
+    _line = text[_line_start:_line_end if _line_end > 0 else len(text)]
+    for _u in _URL_DIGITS_RE.finditer(_line):
+        _s = _line_start + _u.start()
+        _e = _line_start + _u.end()
+        if _s <= m.start() and m.end() <= _e:
+            return False
+
     # 明确安全上下文：数量词/序数词/单位词之后
     if any(k in before for k in _DIGITS_SAFE_CONTEXT):
+        return False
+    # 2026-10-31：英文计量词（推特/网页常见）
+    if any(k in before for k in _DIGITS_SAFE_EN_CONTEXT):
         return False
     # 数字后面紧跟单位（MB/块/元…）也安全
     if any(after.startswith(k) for k in ("MB", "GB", "KB", "块", "元", "万",
