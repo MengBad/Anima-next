@@ -1159,8 +1159,18 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             tool_calls=len(_trace),
         )
         if _why:
-            ctx.meta["pending_question"] = build_pending_question(ctx.reply)
+            _pq = build_pending_question(ctx.reply)
+            ctx.meta["pending_question"] = _pq
             ctx.meta["ask_back_reason"] = _why
+            # 关键：必须真的挂到 core 上，否则 owner 的回答接不上。
+            # 生产实证：未挂时 resolve_reply 恒 None，owner 回「SUZUME」
+            # 被当成新任务重来一次。
+            _core = ctx.meta.get("core")
+            if _core is not None:
+                from anima.agent.ask_user import attach_pending, clear_stale
+
+                clear_stale(_core)
+                attach_pending(_core, _pq, user_id=getattr(ctx, "user_id", 0) or 0)
             logger.info("[反问兜底] 转结构化等待 reason=%s len=%d",
                         _why, len(ctx.reply or ""))
     except Exception:

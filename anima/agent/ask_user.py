@@ -25,6 +25,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from typing import Any, Literal, Optional
 
 logger = logging.getLogger("anima.agent.ask_user")
@@ -149,6 +150,115 @@ def parse_answer(text: str, question: dict) -> Optional[dict]:
         return {"kind": "text", "text": t}
     return None
 
+
+
+
+# ── 挂起任务注册表（2026-10-31）────────────────────────────────────────
+#
+# 为什么需要：ask_user.resolve_reply 读 core._active_agent_task，
+# 但**没有任何地方写它** —— 生产实证：owner 回答后 resolve_reply 恒返回
+# None，那句回答被当成新对话，任务彻底丢失：
+#   17:14 你：找个画师联系方式 -> 它反问「你要找哪位」
+#   17:17 你：SUZUME            -> 被当新任务，再搜一次，再反问
+#
+# 本函数在 guardrail 判定为「反问」时把任务挂上，
+# 由 ask_user.resolve_reply 在 owner 下一句话时消费并恢复。
+
+#: 挂起多久后自动放弃（秒）。超时后不再拦截正常聊天。
+PENDING_TTL_SEC = 1800.0
+
+
+def attach_pending(core: Any, pending_question: dict, *, user_id: int = 0) -> Any:
+    """把 pending 挂到 core，返回承载它的任务对象。
+
+    优先挂到正在执行的 AgentTask（让它恢复后能继续跑）；
+    没有活跃任务时，建一个最小的「对话态任务」承载 pending。
+    """
+    import time as _t
+    import uuid as _u
+
+    agent = getattr(core, "agent", None)
+    store = getattr(agent, "store", None) if agent is not None else None
+
+    task = None
+    if store is not None:
+        try:
+            items = list((getattr(store, "items", None) or {}).values())
+            live = [t for t in items
+                    if getattr(t, "status", "") in ("executing", "waiting_user")]
+            if live:
+                live.sort(key=lambda t: getattr(t, "updated_at", 0) or 0)
+                task = live[-1]
+        except Exception:
+            task = None
+
+    if task is None:
+        task = _ChatTask(
+            id=_u.uuid4().hex[:10],
+            request=str(pending_question.get("questions", [{}])[0].get("text", ""))[:120],
+            creator=int(user_id or 0),
+            status="waiting_user",
+            created_at=_t.time(),
+            updated_at=_t.time(),
+        )
+
+    task.pending_question = dict(pending_question)
+    task.pending_question["_attached_at"] = _t.time()
+    task.status = "waiting_user"
+    core._active_agent_task = task
+
+    # 有 store 就落盘，重启后仍能被 ask_user.resolve_reply 找到
+    if store is not None and hasattr(store, "save"):
+        try:
+            store.save(task)
+        except Exception:
+            logger.debug("pending 任务落盘失败（内存仍生效）", exc_info=True)
+
+    logger.info("[反问兜底] 已挂起等待回答 task=%s", getattr(task, "id", "?"))
+    return task
+
+
+@dataclass
+class _ChatTask:
+    """没有活跃 AgentTask 时的最小承载物。只用于挂 pending_question。"""
+
+    id: str
+    request: str
+    creator: int
+    status: str
+    created_at: float
+    updated_at: float
+    pending_question: dict = field(default_factory=dict)
+    steps: list = field(default_factory=list)
+    error: str = ""
+    replan_count: int = 0
+
+
+def clear_stale(core: Any, *, now: float = 0.0) -> bool:
+    """清理过期 pending。返回是否清掉了东西。"""
+    import time as _t
+
+    task = getattr(core, "_active_agent_task", None)
+    if task is None:
+        return False
+    pq = getattr(task, "pending_question", None) or {}
+    if not pq:
+        return False
+    ts = float(now or _t.time())
+    # _attached_at 显式写 0.0 是合法值（表示"很久以前挂的"），
+    # 不能用 "if attached" 判 —— 那会把 0 当成"没有时间戳"而漏清。
+    if "_attached_at" in pq:
+        attached = float(pq.get("_attached_at") or 0)
+        if ts - attached > PENDING_TTL_SEC:
+            task.pending_question = {}
+            try:
+                task.status = "completed"
+            except Exception:
+                pass
+            core._active_agent_task = None
+            logger.info("[反问兜底] pending 超时清除 task=%s", getattr(task, "id", "?"))
+            return True
+    return False
 
 def resolve_reply(core: Any, text: str) -> Optional[str]:
     """owner 私聊里的一句话是否是「回答 pending question」。

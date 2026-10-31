@@ -70,8 +70,17 @@ def is_ask_back(
     """
     if str(detail_type or "") != "private":
         return None
-    if int(tool_calls or 0) > 0:
-        return None          # 调了工具 = 在干活，不是干等
+    # 🔴 2026-10-31 修正：**不再**因为「调过工具」就放行。
+    #
+    # 原假设「调了工具 = 在干活」被生产证伪。真实模式是：
+    #   17:14:03 你：帮我去推特上找一个画师的联系方式
+    #   17:14:32 x_search ok=True result_len=1396   ← 盲目搜了一次
+    #   17:14:38 还是反问「先把画师的名字交出来呀」
+    #   17:17:06 你：SUZUME                          ← 本该是「回答」
+    #   17:17:36 又搜一次、又反问「再发详细点」      ← 被当成新任务重来
+    # ⇒ 搜索白做，且任务彻底丢失（owner 完全无感）。
+    #
+    # 反问说明它在等人，不管前面有没有乱试。所以这里不看 tool_calls。
 
     t = (text or "").strip()
     if not t or len(t) > 500:

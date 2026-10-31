@@ -31,11 +31,26 @@ def test_group_never_converts():
     assert r is None
 
 
-def test_tool_calls_disable_backstop():
-    """调了工具说明在干活，不是干等。"""
+def test_tool_calls_do_not_disable_backstop():
+    """2026-10-31 修正：调过工具不该豁免。
+
+    生产实证（17:14）：它盲目搜了一次 → 搜到无关结果 → 才反问「是哪个」。
+    若因为 tool_calls>0 就放行，任务彻底丢失，owner 完全无感：
+      17:14 你：找个画师联系方式 → 它搜一次 → 反问「哪位」
+      17:17 你：SUZUME          → 又被当新任务，再搜一次，再反问
+    """
     r = is_ask_back("帮我查一下，是哪位？",
                     detail_type="private", tool_calls=1)
-    assert r is None
+    assert r is not None, "调过工具仍应兜底 —— 反问说明它在等人"
+
+
+def test_real_production_sample():
+    """17:14:38 那条真实回复必须被兜住。"""
+    text = ("行啦行啦，先把那个画师的名字或者主页交出来呀！"
+            "刚才在X上胡乱翻了一圈，满屏都是些乱七八糟的画展和公告，"
+            "根本不知道你要找的是哪位大触嘛喵~")
+    r = is_ask_back(text, detail_type="private", tool_calls=1)
+    assert r is not None, "这是真实漏网样本，必须兜住"
 
 
 def test_pure_chat_question_not_converted():
