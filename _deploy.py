@@ -100,14 +100,24 @@ if not _unit_active():
 if not _channel_ok:
     raise SystemExit("smoke: QQ channel not connected (no 'OneBot11 WS 已连接' in recent logs)")
 
-# 启动日志里必须出现注册表全绿，否则视为模块加载异常
-try:
-    _logs = subprocess.run(
-        ["journalctl", "-u", "anima", "-n", "200", "--no-pager", "--output=cat"],
-        capture_output=True, text=True, timeout=15,
-    ).stdout
-except Exception:
-    _logs = ""
+# 启动日志里必须出现注册表全绿，否则视为模块加载异常。
+#
+# 2026-10-31: 必须轮询等待。重启后 journalctl -n 200 取到的大多还是**旧进程**
+# 的日志（实测跨度 13:15 -> 13:55），新进程的「启动完成」还没写出来就判了失败
+# —— 服务其实是好的（ok=32 failed=0），冒烟却 exit=1。
+_logs = ""
+_reg_deadline = time.time() + 60
+while time.time() < _reg_deadline:
+    try:
+        _logs = subprocess.run(
+            ["journalctl", "-u", "anima", "-n", "200", "--no-pager", "--output=cat"],
+            capture_output=True, text=True, timeout=15,
+        ).stdout
+    except Exception:
+        _logs = ""
+    if "启动完成：ok=" in _logs and "failed=0" in _logs:
+        break
+    time.sleep(2)
 if "failed=0" not in _logs:
     raise SystemExit("smoke: registry reported failures in recent logs")
 
