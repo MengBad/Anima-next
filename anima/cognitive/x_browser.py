@@ -422,8 +422,22 @@ class XBrowserSession:
         - firefox：gecko 指纹，X 认真正 Firefox，对无头脚本化访问更宽容，适合被
           chromium 风控拦截时切换。需对应 playwright firefox 二进制已安装。
         """
+        # 2026-10-31: cannot only check `is None`. After the browser is recycled
+        # or crashes, `_context` stays non-None as a zombie. Returning early then
+        # uses a dead object and fails with "Target page, context or browser has
+        # been closed" forever (production: cookie ok at 09:00:20, timeline failed
+        # at 10:00:46, owner search failed at 10:33:39, never recovered).
         if self._context is not None:
-            return
+            try:
+                _ = self._context.pages  # cheap liveness probe; zombie raises
+                return
+            except Exception:
+                logger.warning("[x_browser] 上下文已失效，重建浏览器会话")
+                try:
+                    await self.close()
+                except Exception:
+                    logger.debug("[x_browser] 关闭僵尸上下文失败（继续重建）", exc_info=True)
+                self._context = None
         from patchright.async_api import async_playwright
         pw = await async_playwright().start()
         engine = str(getattr(self.config, "browser_engine", "chromium") or "chromium").strip().lower()
