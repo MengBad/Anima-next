@@ -283,6 +283,45 @@ def register_agent_tools(registry, core=None) -> None:
     if core is None:
         return
 
+    # 2026-10-31 P3：受限执行环境。
+    # 对齐 Memoh：网络放开，但沙箱内看不到密钥/数据/配置（实测 ls 为空）。
+    try:
+        from anima.agent import sandbox_exec as sbe
+
+        async def _run_python_net(code: str, timeout_sec: float = 300) -> str:
+            """在工作区沙箱里跑 Python（可联网、可装包）。"""
+            import pathlib as _pl
+            root = _pl.Path(__file__).resolve().parents[3]
+            try:
+                res = await sbe.run_python(
+                    root, code, timeout_sec=float(timeout_sec or 300),
+                    python_bin=str(getattr(getattr(core, "config", None),
+                                    "private_execution", None) and
+                                    getattr(core.config.private_execution,
+                                            "python_bin", "") or ""),
+                )
+            except sbe.SandboxError:
+                return "工具暂时不可用：沙箱组件未就绪。"
+            except Exception:
+                logger.exception("run_python_net 失败")
+                return "错误: 沙箱执行失败。"
+            return res.render()
+
+        registry.register(Tool(
+            "run_python_net",
+            "（仅主人·仅私聊）在**隔离工作区**里运行 Python，**可以联网、可以 pip 装包**。"
+            "用于需要真实执行的任务：调 API、装依赖、写脚本、处理数据。"
+            "沙箱内读不到主人的密钥与记忆数据，只有自己的工作区。"
+            "带内存上限与超时，跑飞了会被杀掉。",
+            {
+                "code": {"type": "string", "description": "要执行的 Python 代码"},
+                "timeout_sec": {"type": "number", "description": "超时秒，默认 300"},
+            },
+            _run_python_net,
+            required=["code"], min_level=LEVEL_OWNER, private_only=True,
+        ))
+    except Exception:  # noqa: BLE001
+        logger.debug("受限执行工具注册失败（已隔离）", exc_info=True)
     # 2026-10-31 P2：后台任务观察与控制。
     # 后台执行本来就存在（OwnerAgent.submit 即 asyncio.create_task），
     # 缺的是「看得到进度 / 能叫停」这一层。
