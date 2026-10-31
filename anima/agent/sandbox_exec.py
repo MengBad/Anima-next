@@ -158,6 +158,20 @@ def build_command(
         "--setenv", "TMPDIR", "/tmp",
     ])
 
+    # 2026-10-31 P4 复盘：沙箱内**跑不了** Playwright，不要再试。
+    # RLIMIT_AS 是进程级限制，而 playwright 是 python -> node driver -> chromium
+    # 三级进程树，子进程继承同一上限。实测：
+    #   512MB  -> node 直接 FatalOOM
+    #   1024MB -> Connection closed while reading from the driver
+    #   1536MB -> BrowserType.launch: Connection closed
+    #   2048MB -> launch 超时（3.9G 机器上 2G 也被吃满）
+    # ⇒ 浏览器改在宿主机跑（anima/tools/browser.py），安全靠动作白名单。
+    browsers = Path.home() / ".cache" / "ms-playwright"
+    for cand in (browsers, root / ".cache" / "ms-playwright"):
+        if cand.is_dir():
+            cmd.extend(["--setenv", "PLAYWRIGHT_BROWSERS_PATH", str(cand)])
+            break
+
     cmd.append("--")
     cmd.extend(inner)
     return cmd
@@ -242,6 +256,13 @@ async def run_python(
     ws = new_workspace(project_root, task_id)
     script = ws / "main.py"
     script.write_text(code, encoding="utf-8")
+    # 2026-10-31 P4：默认用**项目 venv 的解释器**，不是系统 python3。
+    # 系统 python3 没有 playwright/patchright（实测 ModuleNotFoundError），
+    # 用它跑浏览器代码必然失败。venv 里三者齐备。
+    if not python_bin:
+        project_py = Path(project_root) / "venv" / "bin" / "python"
+        if project_py.exists():
+            python_bin = str(project_py)
     py = python_bin or os.environ.get("ANIMA_SANDBOX_PYTHON", "") or "python3"
     return await execute(
         project_root, [py, str(script)],

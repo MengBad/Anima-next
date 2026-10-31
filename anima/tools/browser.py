@@ -185,6 +185,128 @@ async def _fetch_async(url: str, *, timeout_sec: float, max_chars: int) -> PageR
             await browser.close()
 
 
+
+
+# ── 交互动作（2026-10-31 P4）─────────────────────────────────────────────
+#
+# 为什么在宿主机跑而不是沙箱：
+#   RLIMIT_AS 是进程级限制，playwright 是 python -> node -> chromium
+#   三级进程树，子进程继承同一上限。实测 512MB FatalOOM、1024/1536MB
+#   driver 断连、2048MB launch 超时。沙箱里跑不起来。
+#
+# 安全边界改为**动作白名单**：只允许 navigate/click/fill/upload/get_text
+# 五个动作，不开放任意 JS 执行。这与 Memoh 的 browser 工具组同构。
+
+#: 允许的动作。任何不在此列的 op 一律拒绝。
+ALLOWED_OPS = frozenset({"navigate", "click", "fill", "upload", "get_text", "screenshot"})
+#: 单次交互的步骤上限，防一条命令里塞几百步。
+MAX_OPS = 12
+
+
+def validate_actions(actions: Any) -> list[dict]:
+    """校验动作列表。不合法直接抛 ValueError（fail-closed）。"""
+    if not isinstance(actions, list) or not actions:
+        raise ValueError("actions 必须是非空数组")
+    if len(actions) > MAX_OPS:
+        raise ValueError(f"一次最多 {MAX_OPS} 个动作")
+    out: list[dict] = []
+    for i, a in enumerate(actions):
+        if not isinstance(a, dict):
+            raise ValueError(f"第 {i+1} 个动作格式不对")
+        op = str(a.get("op") or "").strip()
+        if op not in ALLOWED_OPS:
+            raise ValueError(f"第 {i+1} 个动作不支持: {op or '(空)'}")
+        if op == "navigate":
+            url = str(a.get("url") or "").strip()
+            if not url:
+                raise ValueError(f"第 {i+1} 个 navigate 缺少 url")
+            # 复用现有 SSRF 校验
+            validate_url(url)
+            out.append({"op": op, "url": url})
+        elif op in ("click", "fill"):
+            sel = str(a.get("selector") or "").strip()
+            if not sel:
+                raise ValueError(f"第 {i+1} 个 {op} 缺少 selector")
+            item = {"op": op, "selector": sel}
+            if op == "fill":
+                item["value"] = str(a.get("value") or "")
+            out.append(item)
+        elif op == "upload":
+            sel = str(a.get("selector") or "").strip()
+            files = a.get("files")
+            if not sel or not isinstance(files, list) or not files:
+                raise ValueError(f"第 {i+1} 个 upload 缺少 selector 或 files")
+            out.append({"op": op, "selector": sel, "files": [str(f) for f in files]})
+        else:
+            out.append({"op": op})
+    return out
+
+
+async def _run_actions(page: Any, actions: list[dict]) -> list[str]:
+    """按顺序执行动作，返回每步的结果描述。"""
+    log: list[str] = []
+    for i, a in enumerate(actions, 1):
+        op = a["op"]
+        if op == "navigate":
+            await page.goto(a["url"], timeout=30000, wait_until="domcontentloaded")
+            title = await page.title()
+            log.append(f"{i}. 打开 {a['url']}（标题：{title[:50]}）")
+        elif op == "click":
+            await page.click(a["selector"], timeout=15000)
+            log.append(f"{i}. 点击 {a['selector']}")
+        elif op == "fill":
+            await page.fill(a["selector"], a.get("value", ""), timeout=15000)
+            log.append(f"{i}. 填入 {a['selector']}")
+        elif op == "upload":
+            await page.set_input_files(a["selector"], a["files"], timeout=15000)
+            log.append(f"{i}. 上传 {len(a['files'])} 个文件到 {a['selector']}")
+        elif op == "screenshot":
+            await page.screenshot(path="__shot.png")
+            log.append(f"{i}. 已截图")
+        elif op == "get_text":
+            text = await page.evaluate(
+                "() => { const s=new Set(['SCRIPT','STYLE','NOSCRIPT']);"
+                "const o=[]; const w=(n)=>{if(!n)return;"
+                "if(n.nodeType===3){const t=(n.textContent||'').trim();if(t)o.push(t);return;}"
+                "if(n.nodeType!==1)return; if(s.has(n.tagName))return;"
+                "for(const c of n.childNodes)w(c);}; w(document.body);"
+                "return o.join(String.fromCharCode(10)); }"
+            )
+            body = "\n".join(x.strip() for x in (text or "").splitlines() if x.strip())
+            log.append(f"{i}. 正文（{len(body)} 字）：\n{body[:2000]}")
+    return log
+
+
+async def run_actions(
+    actions: Any,
+    *,
+    timeout_sec: float = 60.0,
+) -> str:
+    """在宿主机浏览器里执行一串动作。返回逐步骤结果。"""
+    steps = validate_actions(actions)
+    try:
+        from patchright.async_api import async_playwright
+    except ImportError as exc:
+        raise BrowserUnavailable("未安装 patchright/playwright") from exc
+
+    async def _go() -> list[str]:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(
+                headless=True,
+                args=["--no-sandbox", "--disable-dev-shm-usage",
+                      "--disable-blink-features=AutomationControlled"],
+            )
+            try:
+                ctx = await browser.new_context(viewport=_VIEWPORT)
+                page = await ctx.new_page()
+                return await _run_actions(page, steps)
+            finally:
+                await browser.close()
+
+    log = await asyncio.wait_for(_go(), timeout=timeout_sec + 10)
+    return "\n".join(log)
+
+
 async def fetch_page(
     url: str,
     *,

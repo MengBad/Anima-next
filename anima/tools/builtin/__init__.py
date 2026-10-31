@@ -361,6 +361,37 @@ def register_all_builtin(registry, core=None) -> None:
         capability_ids=[PILOT_CAPABILITY_ID_2],
         granted_scopes={"filesystem": True},
     ))
+    async def _tool_browse_web_act(actions: Any, timeout_sec: float = 60) -> str:
+        """在浏览器里执行一串交互动作。"""
+        from anima.tools.browser import BrowserUnavailable, run_actions
+        try:
+            return await run_actions(actions, timeout_sec=float(timeout_sec or 60))
+        except BrowserUnavailable:
+            return "工具暂时不可用：浏览器组件没装好。"
+        except ValueError:
+            return "错误: 动作列表不合法（只支持 navigate/click/fill/upload/get_text/screenshot）。"
+        except asyncio.TimeoutError:
+            return "错误: 浏览器操作超时。"
+        except Exception:
+            logger.exception("browse_web_act 失败")
+            return "错误: 浏览器操作失败。"
+
+    registry.register(Tool(
+        "browse_web_act",
+        "（仅主人·仅私聊）在真实浏览器里**操作网页**：打开、点击、填写、上传文件、取正文、截图。"
+        "按顺序一次执行多个动作，共用同一个浏览器会话。"
+        "用于搜图、填表单、需要点击才能看到内容的站点。"
+        "只读正文用 browse_web 更快；需要「点/传/填」才用它。",
+        {
+            "actions": {"type": "array",
+                         "description": "动作数组，如 [{op:navigate,url:...},{op:upload,selector:...,files:[...]},{op:click,selector:...},{op:get_text}]"},
+            "timeout_sec": {"type": "number", "description": "总超时秒，默认 60"},
+        },
+        _tool_browse_web_act,
+        required=["actions"],
+        min_level=LEVEL_OWNER,
+        private_only=True,
+    ))
     async def _tool_browse_web(url: str, max_chars: int = 6000) -> str:
         """打开一个公开网页，抽取可见正文。"""
         from anima.tools.browser import BrowserUnavailable, fetch_page
