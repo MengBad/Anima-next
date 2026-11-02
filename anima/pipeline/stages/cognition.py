@@ -550,6 +550,33 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
     world_ctx = world_model.prompt_fragment()
     scar_ctx = scar.prompt_fragment(ctx.user_id)
 
+    # 2026-11-02 A 方案：工作模式。
+    #
+    # 为什么「不像 Memoh」——定位差异：
+    #   Memoh 是**任务驱动**：用户说一句就进 agent 循环，没有「只聊天」出口。
+    #   本 bot 是**对话驱动**：先判是不是聊天，命中才进 agent；且每轮注入
+    #   人格/情绪/欲望/群氛围，tokens 常到 15.5k/16k，预算大量花在「怎么扮演猫娘」。
+    #   近 3 天实测：私聊 15 条只有 5 次进 agent.planner（1/3）。
+    #
+    # 方案：任务类指令 → 工作模式 → 不注入情绪/欲望/关系/伤痕，保留说话风格。
+    try:
+        from anima.agent.intent import is_agent_task as _is_task
+
+        # 与 handler.py:1208 同一判据：owner 名单里的人在「任务类句子」下进工作模式。
+        # 不用通用权限解析 —— 生产里没有 resolve_level 这类函数，
+        # permissions 只暴露 PermissionStore（admins 增删），owner 判定在 handler 内联。
+        _perms = getattr(getattr(core, "config", None), "permissions", None)
+        _owners = tuple(getattr(_perms, "owners", None) or ())
+        _lvl = 4 if int(ctx.user_id or 0) in _owners else 0
+        if _is_task(ctx.text or "", _lvl):
+            desire_ctx = ""
+            relation_ctx = ""
+            scar_ctx = ""
+            ctx.meta["work_mode"] = True
+            logger.info("[工作模式] 任务指令，已关闭情绪/欲望/关系注入")
+    except Exception:
+        logger.debug("工作模式判定失败（已隔离）", exc_info=True)
+
     ctx.system_prompt = assemble_persona_system(
         time_context=time_ctx,
         desire_context=desire_ctx,
