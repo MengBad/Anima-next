@@ -1124,7 +1124,24 @@ class LLMHandler(AnimaCommandsMixin):
             try:
                 from anima.agent import ask_user as _au
 
+                # 🔴 2026-11-02：**无条件**清理过期 pending，不要等新的反问出现。
+                #
+                # 原来是 guardrail 里 `if _why: clear_stale(...)` —— 只有又产生
+                # 一次反问才清理。结果 10-31 17:54 挂的任务活到 11-02 19:54，
+                # 中间两次对话都被它劫持：
+                #   11-02 11:20 你：suzume        -> 它答「按现在就签到来」
+                #   11-02 19:54 你：华为云任务...  -> 又挂到同一个 2 天前的 pending
+                # 挂在每条私聊入口上，才和「有没有新反问」解耦。
+                _au.clear_stale(self.core)
+
                 _ans = _au.resolve_reply(self.core, text)
+                if _ans:
+                    await self.core.gateway.send(
+                        OutboundMsg("private", int(user_id), _ans)
+                    )
+                    return
+            except Exception:
+                logger.exception("ask_user 回答处理异常（已隔离）")
                 if _ans:
                     await self.core.gateway.send(
                         OutboundMsg("private", int(user_id), _ans)

@@ -15,6 +15,24 @@ from anima.tools import LEVEL_OWNER
 # 修正误触发：原正则把「给我…做（为机器人没有机德）」中的「做」误判为动作，
 # 实际是「做为/作为」的一部分。这里从动作集合中剔除裸「做」，并用 _FALSE_POSITIVE_RE
 # 排除「做为/作为/叫做/叫作」等不构成真实动作指令的词汇巧合。
+#: 「依据某份文档/链接，去执行任务」这类句式。
+#:
+#: 2026-11-02 生产实证：owner 私聊发
+#:   「根据这个文件https://.../SKILL.md，执行华为云获取积分的任务」
+#: 旧正则要求**开头就是动作词**（帮我/请/去…），这句以「根据」开头 ⇒ 判为
+#: 普通聊天 ⇒ 零工具调用、只回一句反问，任务从未执行。
+#: 补一条独立判据：**依据类引导词 + 动作词**，且允许中间夹 URL。
+#: 注意：**允许跨越一个逗号**。真实句子是
+#:   「根据这个文件https://.../SKILL.md，执行华为云获取积分的任务」
+#: URL 后面紧跟中文逗号，若用 [^。，] 排除逗号就永远匹配不上。
+#: 这里放宽到「最多一段非句号内容」，仍禁用句号，避免跨句误判。
+_DOC_DRIVEN_RE = re.compile(
+    r"(根据|按照|依据|参照|照着|按)\s*"
+    r"[^。]{0,100}?"
+    r"(执行|完成|处理|做|跑|跟进|落地|实施)",
+    re.IGNORECASE,
+)
+
 TASK_TRIGGER_RE = re.compile(
     r"(帮我|请|麻烦|去|给我|我想让你|帮我看|帮我查)"
     r".{0,18}"
@@ -125,7 +143,10 @@ def is_agent_task(text: str, permission_level: int) -> bool:
     if permission_level < LEVEL_OWNER:
         return False
     t = (text or "").strip()
-    if not TASK_TRIGGER_RE.search(t):
+    # 2026-11-02：依据类句式（「根据这份文档执行任务」）独立成判据。
+    # 它与 TASK_TRIGGER_RE 是**或**关系：前者要求开头有动作词，后者允许
+    # 以「根据/按照/依据」引导、中间夹 URL 或文件名。
+    if not (TASK_TRIGGER_RE.search(t) or _DOC_DRIVEN_RE.search(t)):
         return False
     # 仍命中但纯属「做为/作为」等词汇巧合时，不放行。
     if _FALSE_POSITIVE_RE.search(t):
