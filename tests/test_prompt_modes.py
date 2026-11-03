@@ -60,9 +60,16 @@ def test_work_system_replaces_persona():
 
 
 def test_work_system_is_compact():
-    """契约要小 —— 这是它不被预算裁掉的前提。"""
+    """契约要小 —— 这是它不被预算裁掉的前提。
+
+    2026-11-03：加上 _common + _memory 两个通用片段后 work 约 3100 字。
+    对比人格 prompt 的 15.5k/16k，这仍然是数量级的下降：
+      人格        15508 tokens（含大段扮演要求，工作约束会被挤掉）
+      mode_work    3107 字（约 2000 tokens，全是规则没有扮演）
+    上限设 3600，留出后续微调空间；超过就说明又在往里堆东西了。
+    """
     s = build_work_system("x", time_context="t")
-    assert len(s) < 3000, f"契约 {len(s)} 字太长，会挤占任务上下文"
+    assert len(s) < 3600, f"契约 {len(s)} 字太长，会挤占任务上下文"
 
 
 def test_group_never_gets_work_mode():

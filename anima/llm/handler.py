@@ -1220,9 +1220,16 @@ class LLMHandler(AnimaCommandsMixin):
             #   `security.require_approval_for_danger` 约束。
             target_id = int(group_id) if detail_type == "group" else int(user_id)
             if detail_type == "private":
+                # 2026-11-03：把 prompt_mode 带进 session —— 执行代理据此把
+                # system prompt 换成 anima/prompts 的模式契约（Memoh 的 mode_* 做法），
+                # 而不是继续用「你是哈基米（猫娘）」去执行任务。
                 task = await self.core.agent.submit(
                     text, int(user_id), auto_run=True,
-                    session={"detail_type": "private", "target_id": target_id},
+                    session={
+                        "detail_type": "private",
+                        "target_id": target_id,
+                        "prompt_mode": "work",
+                    },
                 )
                 try:
                     await self.core.gateway.send(OutboundMsg(

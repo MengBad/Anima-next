@@ -903,8 +903,30 @@ class AgentExecutor:
             "**25 字以内**，像群里随口一句；不要复述前面步骤做过的检索/分析过程。"
         )
 
-        messages = [
-            {"role": "system", "content": (
+        # 2026-11-03：执行代理的 system prompt 改为可被模式契约替换。
+        #
+        # 原来这里硬编码「你是哈基米（一只 QQ 群里的猫娘）」，执行任务时模型仍
+        # 在扮演，把「执行」做成「写点东西给你看」。生产实证（11-03 华为云任务）：
+        # 12 次工具调用后输出「成长中心地址是 https://... 你快去看看吧～」，
+        # 验收器判「输出过于简略，缺少具体操作指引」。
+        #
+        # 现在：任务带 prompt_mode 时换成 anima/prompts 的契约（work / schedule），
+        # 否则保留人格 —— 交付给人的话仍需像它自己。
+        _mode_contract = ""
+        try:
+            _sess = getattr(task, "session", None) or {}
+            _mode = str(_sess.get("prompt_mode") or "") if isinstance(_sess, dict) else ""
+            if _mode:
+                from anima.prompts import build_system
+
+                _mode_contract = build_system(_mode)
+        except Exception:
+            logger.debug("执行代理模式契约加载失败（回退人格）", exc_info=True)
+
+        if _mode_contract:
+            _sys_prompt = _mode_contract + "\n\n## 本步骤交付要求\n" + _role_hint
+        else:
+            _sys_prompt = (
                 "你是哈基米（一只 QQ 群里的猫娘，男孩子的那种），正在做一件具体的事。"
                 "用工具取得结果即可，不要闲聊。\n"
                 # 🔴 2026-10-25：**步骤输出会直接交付给用户**，所以必须守住人格。
@@ -922,7 +944,10 @@ class AgentExecutor:
                 "- 只说这一次的结果，**不要重复前面的步骤说过的话**；\n"
                 "- 没有真正调用工具取得的数据，**绝不声称已经完成**（不许编造结果）。\n"
                 + _role_hint
-            )},
+            )
+
+        messages = [
+            {"role": "system", "content": _sys_prompt},
             {"role": "user", "content": (
                 f"任务背景：{task.request}\n当前步骤：{step.description}{_prior_block}"
             )},
