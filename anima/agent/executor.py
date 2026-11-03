@@ -40,6 +40,23 @@ from anima.tools import LEVEL_OWNER, tool_result_ok
 
 logger = logging.getLogger("anima.agent.executor")
 
+#: 只有**主人本人**能提供的东西。命中即认为「该问了」而不是「该判失败」。
+#: 2026-11-03 生产实证（华为云任务）：任务记录里写着
+#:   「需要用户登录状态（Cookie/Token）才能获取积分数据」
+#: 然后直接判 failed —— 主人全程不知道要自己做什么。
+_NEED_HUMAN_RE = re.compile(
+    r"(登录|登陆|密码|账号|帐号|验证码|人机验证|滑块|Cookie|Token|令牌|授权|扫码)"
+    r"|(需要.{0,8}(用户|主人|本人))"
+    r"|(未提供|无法获取|缺少|缺失).{0,12}(凭证|登录态|权限|密钥|账号)"
+    ,
+    re.IGNORECASE,
+)
+
+
+def _needs_human(text: str) -> bool:
+    """这段失败原因是不是「需要主人出手」而非「能力不够」。"""
+    return bool(_NEED_HUMAN_RE.search(str(text or "")))
+
 
 class StepFailed(Exception):
     """单步失败（重试耗尽）。"""
@@ -292,6 +309,23 @@ class AgentExecutor:
         task.error = ""
         self.store.save(task)
 
+        # 🔴 2026-11-03：**把任务挂到 core 上**，ask_user 工具才有落点。
+        #
+        # 生产实证（11-03 华为云任务）：模型缺登录态、缺账号，
+        # 但它**既没有问主人、也没有中途汇报**，闷头跑完 4 步判 failed。
+        # 根因：ask_user 工具读 core._active_agent_task，而**从没有地方写它**；
+        # executor 也不知道自己在跑哪个 task，于是「主动询问」这条路根本不存在。
+        _core = getattr(self, "core", None)
+        if _core is not None:
+            try:
+                _core._active_agent_task = task
+            except Exception:
+                logger.debug("挂载 _active_agent_task 失败（已隔离）", exc_info=True)
+
+        # 开工时告诉主人一句「在做什么」—— 此前只有「跑太久」才吭声，
+        # 短任务（4 步 / 2 分钟）全程静默，主人不知道它在干什么。
+        await self._announce_start(task)
+
         budget = ResourceBudget()
         result_parts: list[str] = list(task.context.get("result_parts") or [])
         failed = False
@@ -399,6 +433,10 @@ class AgentExecutor:
                 step = batch[0]
                 step.status = "done"
                 step.result = results[0][:4000]
+                # 2026-11-03：每步报一句（失败必报，成功隔步报）。
+                # 放在验收**之前**先报「工具层面完成」，验收不过会再报一次失败，
+                # 主人能看到「做了但没过」而不是只有最后那条 failed。
+                await self._report_step(task, step, True)
                 task.context[f"step_{step.index}_result"] = results[0][:2000]
                 ok, vreason = True, ""
                 if step.verify:
@@ -410,6 +448,12 @@ class AgentExecutor:
                     step.error = f"验收未通过：{vreason}"
                     task.current_step = step.index
                     self.store.save(task)
+                    await self._report_step(task, step, False)
+                    # 2026-11-03：验收失败若是「缺主人才能给的东西」，
+                    # 先**主动问**，而不是重规划绕路或直接判失败。
+                    if await self._maybe_ask_for_blocker(task, step, step.error):
+                        failed = False
+                        break
                     if await self._replan_or_give_up(
                             task, step, step.error, "verify_failed"):
                         executed += 1
@@ -724,6 +768,93 @@ class AgentExecutor:
         取代它的是 `_maybe_nudge_silence()`：跑太久时发一句人话。
         """
         return False
+
+    async def _announce_start(self, task: AgentTask) -> None:
+        """开工时说一句「要做什么、几步」。
+
+        2026-11-03：此前只有 `_maybe_nudge_silence`（跑太久）才吭声，
+        4 步 / 2 分钟的短任务全程静默 —— 主人发完消息只收到一句
+        「这就去办」，然后什么都不再发生，直到 failed 才知道没成。
+        """
+        try:
+            steps = list(getattr(task, "steps", None) or [])
+            n = len(steps)
+            if n == 0:
+                return
+            first = str(getattr(steps[0], "description", "") or "").strip()[:40]
+            msg = f"本喵开工了：一共 {n} 步，先做「{first}」"
+            await self._notify(task, msg)
+            self._progress_sent = 1
+        except Exception:
+            logger.debug("开工播报失败（已隔离）", exc_info=True)
+
+    async def _report_step(self, task: AgentTask, step: Step, ok: bool) -> None:
+        """每步结束报一句结果。**失败必报**，成功则隔一步报一次。
+
+        克制点：
+          · 失败一定说（这是主人最需要知道的）
+          · 成功隔步报，避免 5 步刷 5 条
+          · 全部成功时最后统一汇报，不逐条念清单
+        """
+        try:
+            idx = int(getattr(step, "index", 0) or 0) + 1
+            total = len(getattr(task, "steps", None) or [])
+            desc = str(getattr(step, "description", "") or "").strip()[:40]
+
+            if not ok:
+                err = str(getattr(step, "error", "") or "").strip()[:80]
+                await self._notify(
+                    task, f"第 {idx}/{total} 步「{desc}」没成：{err or '原因不明'}"
+                    f"\n本喵继续做剩下的。"
+                )
+                return
+
+            # 成功：隔一步报一次（第 1、3、5… 步）
+            if idx % 2 == 1 and idx < total:
+                await self._notify(task, f"第 {idx}/{total} 步「{desc}」好了")
+        except Exception:
+            logger.debug("步骤播报失败（已隔离）", exc_info=True)
+
+    async def _maybe_ask_for_blocker(self, task: AgentTask, step: Step, reason: str) -> bool:
+        """卡住时**主动问主人**，而不是闷头判失败。
+
+        2026-11-03 生产实证（华为云任务）：它明确写下
+          「需要用户登录状态（Cookie/Token）才能获取积分数据」
+          然后……直接判 failed。主人什么都没收到，也不知道自己该做什么。
+
+        判据（保守，避免为小事打断）：
+          · 原因里出现「登录 / 密码 / 账号 / 验证码 / Cookie / Token / 授权」
+            —— 这些是**只有主人能给**的东西
+          · 或出现「缺 / 需要 / 未提供 / 无法获取」+ 上述词之一
+
+        返回 True 表示已挂起等待，调用方应停止本步并不判失败。
+        """
+        try:
+            text = f"{reason} {getattr(step, 'result', '') or ''}"
+            if not _needs_human(text):
+                return False
+
+            core = getattr(self, "core", None)
+            if core is None:
+                return False
+
+            from anima.agent.ask_user import make_ask_user_tool
+
+            _ask = make_ask_user_tool(core)
+            desc = str(getattr(step, "description", "") or "")[:60]
+            out = await _ask([{
+                "text": f"卡住了喵：「{desc}」需要主人出手。要我现在怎么做？",
+                "kind": "text",
+                "options": [],
+                "allow_custom": True,
+            }])
+            await self._notify(task, out)
+            logger.info("[执行代理] 卡在需要人的地方，已主动询问 task=%s",
+                        getattr(task, "id", "?"))
+            return True
+        except Exception:
+            logger.debug("主动询问失败（已隔离）", exc_info=True)
+            return False
 
     async def _maybe_nudge_silence(self, task: AgentTask) -> None:
         """任务跑太久时，发**一句人话**告诉 owner「还在弄」。
