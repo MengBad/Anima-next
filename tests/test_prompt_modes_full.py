@@ -95,3 +95,26 @@ def test_executor_switches_by_prompt_mode():
 def test_handler_passes_work_mode():
     src = HANDLER.read_text(encoding="utf-8")
     assert chr(34) + "prompt_mode" + chr(34) + ": " + chr(34) + "work" + chr(34) in src
+
+def test_executor_reads_session_from_context():
+    """session 在 task.context["session"]，不是 task.session。
+
+    生产实证（2026-11-03 21:58 task=4728f69707）：
+      首版读 task.session ⇒ 恒为 None ⇒ prompt_mode 取不到
+      ⇒ 工作契约从未生效，模型仍在用「你是哈基米（猫娘）」执行任务
+      ⇒ 任务里 session 字段为 null
+    """
+    src = EXECUTOR.read_text(encoding="utf-8")
+    idx = src.find("_mode_contract")
+    assert idx > 0
+    block = src[idx:idx + 1200]
+    assert 'getattr(task, "session"' not in block, \
+        "不能直接读 task.session —— 该字段不存在"
+    assert 'context' in block and 'get("session")' in block, \
+        "应从 task.context[\"session\"] 读"
+
+
+def test_executor_logs_mode_switch():
+    """切换模式时要留日志，否则「没生效」和「没触发」分不清。"""
+    src = EXECUTOR.read_text(encoding="utf-8")
+    assert "[执行代理] system prompt 已切到模式契约" in src

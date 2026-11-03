@@ -912,14 +912,23 @@ class AgentExecutor:
         #
         # 现在：任务带 prompt_mode 时换成 anima/prompts 的契约（work / schedule），
         # 否则保留人格 —— 交付给人的话仍需像它自己。
+        # 2026-11-03：session 存在 task.context["session"]，不是 task.session。
+        # AgentTask 没有 session 字段（state.py:167 用 context={"session": ...}）。
+        # 首版读错位置 ⇒ prompt_mode 永远取不到 ⇒ 工作契约从未生效；
+        # 生产实测该任务 session 字段为 null，模型仍在用「你是哈基米（猫娘）」执行。
         _mode_contract = ""
         try:
-            _sess = getattr(task, "session", None) or {}
+            _ctx = getattr(task, "context", None) or {}
+            _sess = (_ctx.get("session") or {}) if isinstance(_ctx, dict) else {}
             _mode = str(_sess.get("prompt_mode") or "") if isinstance(_sess, dict) else ""
             if _mode:
                 from anima.prompts import build_system
 
                 _mode_contract = build_system(_mode)
+                logger.info(
+                    "[执行代理] system prompt 已切到模式契约 %s（%d 字）",
+                    _mode, len(_mode_contract),
+                )
         except Exception:
             logger.debug("执行代理模式契约加载失败（回退人格）", exc_info=True)
 
