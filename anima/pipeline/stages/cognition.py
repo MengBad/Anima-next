@@ -585,6 +585,27 @@ async def cognition_stage(ctx: PipelineContext) -> StageResult:
         scar_context=scar_ctx,
     )
 
+    # 2026-11-03：工作模式**整体替换** system prompt，不是往上叠补丁。
+    #
+    # 照抄 Memoh 的 mode_* 契约做法：各模式互不叠加，运行时选一份渲染。
+    # 之前把「必须真做」当 fragment 加进人格 prompt，会被 15.5k/16k 预算
+    # 裁掉（生产实证 dropped=ask_user_rule），或被大段扮演要求稀释。
+    # 这里换成独立契约 anima/prompts/mode_work.md，命中即整体替换。
+    if ctx.meta.get("work_mode"):
+        try:
+            from anima.prompts import build_work_system
+
+            _work_sys = build_work_system(ctx.system_prompt, time_context=time_ctx)
+            if _work_sys:
+                ctx.system_prompt = _work_sys
+                ctx.meta["prompt_mode"] = "work"
+                logger.info(
+                    "[工作模式] system prompt 已整体替换为 mode_work（%d 字）",
+                    len(_work_sys),
+                )
+        except Exception:
+            logger.debug("工作模式 prompt 组装失败（回退人格 prompt）", exc_info=True)
+
     # 人格模板与末尾身份/角色护栏不可裁；可选认知片段由统一预算器挑选。
     context_cfg = getattr(getattr(core, "config", None), "context", None)
     composer = ContextComposer.from_config(context_cfg)

@@ -39,6 +39,9 @@ include = ["anima*"]
 
 [tool.setuptools.package-data]
 "anima.webui" = ["static/*"]
+# 2026-11-03：模式契约（Memoh 式 mode_* 分离）。不声明的话 .md 不会被打包，
+# 部署后 load_mode() 读不到文件，工作模式会静默回退到人格 prompt。
+"anima.prompts" = ["*.md"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

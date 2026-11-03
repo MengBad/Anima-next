@@ -55,10 +55,16 @@ def test_rule_priority_high_enough():
 def test_rule_only_in_private():
     """规则只在私聊注入。"""
     src = COGNITION.read_text(encoding="utf-8")
-    idx = src.find("ask_user_rule")
-    assert idx > 0
-    window = src[max(0, idx - 900):idx]
-    assert "private" in window, "ask_user_rule 没有私聊隔离"
+    # 2026-11-03：定位**注入行本身**，不要用裸 find("ask_user_rule")——
+    # 它会先命中注释（工作模式那段的说明里也提到 ask_user_rule），
+    # 于是 window 截到的是注释而不是代码，断言失效。
+    idx = src.find('add_system_fragment("ask_user_rule"')
+    assert idx > 0, "找不到 ask_user_rule 注入点"
+    window = src[max(0, idx - 1200):idx]
+    code_lines = [ln for ln in window.splitlines()
+                  if ln.strip() and not ln.strip().startswith("#")]
+    code = "\n".join(code_lines)
+    assert "private" in code, "ask_user_rule 没有私聊隔离"
 
 
 # ── 环节 2：规则内容 ──────────────────────────────────────────────────
