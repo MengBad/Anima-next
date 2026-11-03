@@ -40,8 +40,21 @@ from typing import Any, Optional
 
 logger = logging.getLogger("anima.agent.sandbox_exec")
 
-#: 每次执行的内存上限（MB）。生产 3.9G，主进程 + NapCat 已占约 1G。
-DEFAULT_MEMORY_MB = 512
+#: 每次执行的**物理内存**软上限（MB）。
+#:
+#: ⚠️ 2026-11-03 重要结论：**不要用 RLIMIT_AS 限制 Playwright**，它测的是
+#: 虚拟地址空间而不是物理内存。实测：
+#:   node 启动瞬间 VmPeak = 1.27 GB，但 VmRSS 只有 43 MB
+#:   chromium 需要预留更大虚拟空间
+#: ⇒ RLIMIT_AS 设 512MB / 1G / 1.5G / 2G / 4G **全部 FatalOOM 或 driver 断连**，
+#:   而宿主机不加限制时 Playwright 正常（"OK: Example Domain"）。
+#:
+#: 生产代价：11-03 华为云任务里它选了 run_python_net 想截图，
+#: 5 次全部失败，最后**自己误判成「华为云有反爬脚本」**。
+#:
+#: 现状：不再设 RLIMIT_AS（见 _limit_memory）。内存由 Linux OOM killer 兜底，
+#: 时间由 DEFAULT_TIMEOUT_SEC 兜底。这个值仅用于日志与未来 cgroup 改造。
+DEFAULT_MEMORY_MB = 2048
 #: 单次执行超时（秒）。装包类任务 300s 够用。
 DEFAULT_TIMEOUT_SEC = 300.0
 #: 输出截断，防撑爆上下文。
@@ -195,10 +208,24 @@ async def execute(
     mem_bytes = max(64, int(memory_mb)) * 1024 * 1024
 
     def _limit_memory():
-        """子进程内存硬上限。RLIMIT_AS 超限时 malloc 直接失败。"""
+        """子进程内存限制。
+
+        🔴 2026-11-03：**不用 RLIMIT_AS**。
+
+        RLIMIT_AS 卡的是虚拟地址空间，而 node/chromium 启动瞬间就要预留
+        1.27GB 虚拟内存（实测 VmPeak=1.27GB，VmRSS 仅 43MB）。
+        加了它 Playwright 必然 FatalOOM，512MB/1G/1.5G/2G/4G 全部失败；
+        不加限制时宿主机直跑正常。
+
+        于是改为只用 RLIMIT_DATA 卡堆内存 —— 它对 Python 侧有效，
+        对 node/chromium 这种「预留大、实占小」的进程不会误杀。
+        物理内存总量的兜底交给 Linux OOM killer 与 timeouts。
+        """
         try:
             import resource
-            resource.setrlimit(resource.RLIMIT_AS, (mem_bytes, mem_bytes))
+            # 堆上限放宽到 2 倍，只防「Python 代码里无限 append」这类失控。
+            heap = max(mem_bytes * 2, 2048 * 1024 * 1024)
+            resource.setrlimit(resource.RLIMIT_DATA, (heap, heap))
         except Exception:
             pass
 

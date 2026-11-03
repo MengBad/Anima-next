@@ -287,8 +287,27 @@ async def _run_actions(page: Any, actions: list[dict]) -> list[str]:
             await page.set_input_files(a["selector"], a["files"], timeout=15000)
             log.append(f"{i}. 上传 {len(a['files'])} 个文件到 {a['selector']}")
         elif op == "screenshot":
-            await page.screenshot(path="__shot.png")
-            log.append(f"{i}. 已截图")
+            # 2026-11-03：原来写相对路径 "__shot.png"，落在进程 cwd，
+            # 且日志只写「已截图」不带路径 ⇒ 调用方拿不到文件，等于白截。
+            # 生产实证：华为云任务里 browse_web_act 明明执行了 screenshot，
+            # 验收器却判「未能生成包含积分入口的截图文件」。
+            # 改成写绝对路径并把路径回给调用方。
+            import pathlib as _pl
+            import time as _t
+
+            out_dir = _pl.Path("/opt/anima/data/screenshots")
+            try:
+                out_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                out_dir = _pl.Path("/tmp")
+            shot = out_dir / f"shot_{int(_t.time() * 1000)}.png"
+            await page.screenshot(path=str(shot), full_page=True)
+            size = 0
+            try:
+                size = shot.stat().st_size
+            except Exception:
+                pass
+            log.append(f"{i}. 已截图：{shot}（{size} 字节）")
         elif op == "get_text":
             # 2026-10-31: 必须跳过 STYLE。百度首页实测抓到 260608 字，
             # 前 400 字全是 <style> 里的 CSS —— 因为只跳了 SCRIPT/NOSCRIPT，
