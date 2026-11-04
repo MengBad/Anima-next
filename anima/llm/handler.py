@@ -1132,6 +1132,10 @@ class LLMHandler(AnimaCommandsMixin):
                 #   11-02 11:20 你：suzume        -> 它答「按现在就签到来」
                 #   11-02 19:54 你：华为云任务...  -> 又挂到同一个 2 天前的 pending
                 # 挂在每条私聊入口上，才和「有没有新反问」解耦。
+                # 2026-11-04：先捞回重启后失联的挂起任务，再判过期。
+                # 顺序反了的话，重启前的 pending 从没进过内存，clear_stale
+                # 看不到它，于是既不清也不答 —— 主人的话直接白说。
+                _au.adopt_pending_from_store(self.core)
                 _au.clear_stale(self.core)
 
                 _ans = _au.resolve_reply(self.core, text)

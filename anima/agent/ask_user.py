@@ -234,6 +234,50 @@ class _ChatTask:
     replan_count: int = 0
 
 
+def adopt_pending_from_store(core: Any) -> Any:
+    """从持久层找回 waiting_user 的任务，重新挂到 core 上。
+
+    2026-11-04 生产事故（01f70c6a75）：任务 16:21 挂起等主人回答，
+    服务 16:53 重启 —— _active_agent_task 只活在内存里，重启即丢。
+    主人 22:59 回「给二维码给我」时 resolve_reply 读到 None，
+    那句话被当普通聊天，任务永远等不到回答（磁盘上却一直是 waiting_user）。
+
+    只捞未过期的；过期的交给 clear_stale。
+    """
+    import time as _t
+
+    agent = getattr(core, 'agent', None)
+    store = getattr(agent, 'store', None) if agent is not None else None
+    if store is None:
+        return None
+    try:
+        items = list((getattr(store, 'items', None) or {}).values())
+    except Exception:
+        return None
+
+    now = _t.time()
+    best = None
+    for t in items:
+        if getattr(t, 'status', '') != 'waiting_user':
+            continue
+        pq = getattr(t, 'pending_question', None) or {}
+        if not pq or not (pq.get('questions') or []):
+            continue
+        if '_attached_at' in pq:
+            attached = float(pq.get('_attached_at') or 0)
+            if now - attached > PENDING_TTL_SEC:
+                continue
+        prev = getattr(best, 'updated_at', 0) or 0 if best is not None else -1
+        if (getattr(t, 'updated_at', 0) or 0) > prev:
+            best = t
+
+    if best is None:
+        return None
+    core._active_agent_task = best
+    logger.info('[ask_user] 从持久层找回挂起任务 task=%s', getattr(best, 'id', '?'))
+    return best
+
+
 def clear_stale(core: Any, *, now: float = 0.0) -> bool:
     """清理过期 pending。返回是否清掉了东西。"""
     import time as _t
@@ -252,7 +296,10 @@ def clear_stale(core: Any, *, now: float = 0.0) -> bool:
         if ts - attached > PENDING_TTL_SEC:
             task.pending_question = {}
             try:
-                task.status = "completed"
+                # 2026-11-04：原来标 completed —— 问题没答、任务没跑完，
+                # 标成完成是在撒谎，还掩盖了「主人回来时任务已经死了」。
+                task.status = "expired"
+                task.error = task.error or "等待回答超时（超过 30 分钟），需要重新发起"
             except Exception:
                 pass
             core._active_agent_task = None
@@ -295,6 +342,10 @@ def resolve_reply(core: Any, text: str) -> Optional[str]:
     这是 P1 的闭环关键：没有人来解析回复，ask_user 就只是「问了但收不到」。
     """
     current = getattr(core, "_active_agent_task", None)
+    if current is None:
+        # 2026-11-04：内存里没有不等于没有 —— 服务重启会清掉 _active_agent_task，
+        # 但磁盘上的 waiting_user 任务还在。不捞回来，主人的回答就白说了。
+        current = adopt_pending_from_store(core)
     if current is None:
         return None
     pending = getattr(current, "pending_question", None) or {}
@@ -343,9 +394,10 @@ def resolve_reply(core: Any, text: str) -> Optional[str]:
     # 于是「问了也白问」以另一种形式复现：回答被消费，任务静默停摆。
     try:
         _agent = getattr(core, "agent", None)
-        if _agent is not None and hasattr(_agent, "resume"):
-            _agent.resume(current)
-        elif _agent is not None and hasattr(_agent, "_run"):
+        # 2026-11-04：OwnerAgent 根本没有 resume 方法 —— 原来那个 hasattr 分支
+        # 是死代码，而且就算有也会是协程（不 await 等于没跑）。
+        # 统一走 _run，并把它丢进事件循环。
+        if _agent is not None and hasattr(_agent, "_run"):
             import asyncio as _aio
             _aio.create_task(_agent._run(current))
             logger.info("[ask_user] 已重新拉起任务 task=%s", getattr(current, "id", "?"))
