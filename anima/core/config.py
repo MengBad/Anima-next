@@ -899,6 +899,14 @@ class TaskAgentConfig(BaseModel):
     max_parallel: int = 2
     #: 整任务总预算（秒）。0 = 不限制（不推荐，仅用于排障）。
     total_budget_sec: float = 300.0
+    #: 观察驱动（2026-11-04）。计划驱动做不完真实任务：先规划 4 步就锁死，
+    #: 第 2 步没账号就判失败，replan_count 恒为 0（生产四个任务全 0）。
+    #: 开启后新任务（无 steps）走 ObserveLoop：看现状 -> 决定动作 -> 再看的循环，
+    #: 用磁盘事实（截图尺寸/文件体积/HTTP）判完成，不再让 LLM 读文本猜。
+    #: 旧任务（磁盘上有 steps）继续走原路径，互不影响。
+    observe_mode: bool = True
+    observe_max_rounds: int = 40
+    observe_budget_sec: float = 1800.0
 
 
 class OwnerBrowserConfig(BaseModel):

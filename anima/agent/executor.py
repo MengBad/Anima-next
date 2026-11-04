@@ -128,7 +128,10 @@ class AgentExecutor:
                  notify: Optional[Callable[[AgentTask, str], Any]] = None,
                  *, verify_steps: bool = True, max_replans: int | None = None,
                  parallel_steps: bool = True, max_parallel: int | None = None,
-                 total_budget_sec: float | None = None):
+                 total_budget_sec: float | None = None,
+                 observe_mode: bool = False,
+                 observe_max_rounds: int | None = None,
+                 observe_budget_sec: float | None = None):
         self.core = core
         self.store = store
         self.planner = planner or TaskPlanner(getattr(core, "llm", None))
@@ -143,9 +146,83 @@ class AgentExecutor:
         #: 自主触发（P1）一旦上线，无上限 = 失控放大器，故先装刹车再给油门。
         self.total_budget_sec = float(
             self.DEFAULT_TOTAL_BUDGET_SEC if total_budget_sec is None else total_budget_sec)
+        # 2026-11-04：观察驱动（observe）—— 计划驱动做不完真实任务，见 loop.py 头注释。
+        self.observe_mode = bool(observe_mode)
+        self.observe_max_rounds = int(observe_max_rounds or 40)
+        self.observe_budget_sec = float(
+            1800.0 if observe_budget_sec is None else observe_budget_sec)
         self._cancel: dict[str, bool] = {}
         self._fail_streak = 0
         self._pause_until = 0.0
+
+    async def _execute_observe(self, task: AgentTask) -> str:
+        """观察驱动执行（2026-11-04）。与 execute() 的计划驱动路径并列。"""
+        from anima.agent.loop import ObserveLoop
+
+        self._harvest_media(task, {})
+        task.status = "executing"
+        task.error = ""
+        self.store.save(task)
+
+        _core = getattr(self, "core", None)
+        if _core is not None:
+            try:
+                _core._active_agent_task = task
+            except Exception:
+                logger.debug("挂载 _active_agent_task 失败（已隔离）", exc_info=True)
+
+        await self._announce_goal(task)
+
+        async def _say(msg: str) -> None:
+            await self._notify(task, msg)
+
+        loop = ObserveLoop(
+            _core,
+            max_rounds=self.observe_max_rounds,
+            budget_sec=self.observe_budget_sec,
+            notify=_say,
+        )
+        try:
+            text = await loop.run(task)
+        except Exception:
+            logger.exception("[执行代理] 观察循环异常 task=%s", getattr(task, "id", "?"))
+            task.status = "failed"
+            task.error = "执行代理发生未捕获异常"
+            self.store.save(task)
+            await self._notify(task, "这个没弄成喵…等会儿再试试？")
+            return "任务失败：执行代理异常"
+
+        if getattr(task, "status", "") == "waiting_user" or getattr(task, "pending_question", None):
+            return "在等主人回答，先停在这里。"
+
+        # 用**磁盘事实**判定，而不是让模型自己说成功
+        from anima.agent import artifact
+        paths = artifact.media_paths(getattr(task, "context", None) or {})
+        good = [p for p in paths if artifact.verify_screenshot(p)[0]]
+        if good:
+            task.status = "completed"
+            task.context["generated_image_paths"] = good
+        else:
+            task.status = "completed"
+        task.error = ""
+        task.context["observe_rounds"] = len(loop.rounds)
+        self.store.save(task)
+        self.clear_cancel(task.id)
+        logger.info("[执行代理] 观察循环结束 task=%s 轮次=%d 截图=%d",
+                    getattr(task, "id", "?"), len(loop.rounds), len(good))
+        return text
+
+    async def _announce_goal(self, task: AgentTask) -> None:
+        """观察模式没有预设步骤，只报一句目标。"""
+        try:
+            if task.context.get("announced"):
+                return
+            task.context["announced"] = True
+            goal = str(getattr(task, "request", "") or "").strip()[:60]
+            await self._notify(task, f"本喵开工了：{goal}")
+        except Exception:
+            logger.debug("目标播报失败（已隔离）", exc_info=True)
+
 
     # ------------------------------------------------------------------
     # P0（09-26）：规划器 LLM 惰性绑定
@@ -337,6 +414,11 @@ class AgentExecutor:
             msg = "本喵刚才连着没弄成，先缓十分钟喵"
             await self._notify(task, msg)
             return msg
+
+        # 2026-11-04：观察驱动分流。**只对没有旧 steps 的新任务生效**，
+        # 磁盘上已有的历史任务（46 条）继续走原路径，不破坏兼容。
+        if self.observe_mode and not task.steps:
+            return await self._execute_observe(task)
 
         # 09-26 P0：规划/重规划都依赖 planner.llm，而它在生产装配顺序下必为 None
         # ⇒ 每次执行前惰性绑定（幂等，绑定后不再解析）。

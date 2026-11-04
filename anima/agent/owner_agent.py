@@ -81,6 +81,10 @@ class OwnerAgent:
             # 🔴 2026-10-21 P0-1：整任务总预算（默认 300s）。此前无上限，
             # 理论最坏 20×180s=60min；自主触发（P1）前必须先有刹车。
             total_budget_sec=getattr(_cfg, "total_budget_sec", None),
+            # 2026-11-04：观察驱动 —— 计划驱动做不完真实任务，见 loop.py
+            observe_mode=bool(getattr(_cfg, "observe_mode", True)),
+            observe_max_rounds=getattr(_cfg, "observe_max_rounds", None),
+            observe_budget_sec=getattr(_cfg, "observe_budget_sec", None),
         )
 
     async def _notify(self, task: AgentTask, message: str) -> None:
