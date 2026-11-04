@@ -63,11 +63,13 @@
 
 ## 登录类站点
 
-需要登录时：`browse_credential` 取账号 -> `browse_web_act` 一次做完
-（navigate / wait / 切密码登录 / fill / press Enter / get_text / screenshot）。
-拿不到凭据就想别的办法（扫码、让主人截图确认），**不要把同一个问题反复问**。
-具体选择器见工具返回值与报错，别照抄猜。
+华为云成长中心是**中国站**，登录必须带 `?locale=zh-cn`：
+`https://auth.huaweicloud.com/authui/login.html?locale=zh-cn`
+不带就落到**国际站**（全英文），中国站账号登不进去。
 
+中国站默认就是密码登录，直接填：账号 `input[name=userAccount]`，
+密码 `input[placeholder=密码]`，回车提交。账号用 `browse_credential` 取，
+拿不到就想别的办法，别反复问同一个问题。
 ## 主人已经回答过，就别再问一遍
 
 任务上下文会带【主人已经回答过的问题】。那是**已经生效的指令**：
