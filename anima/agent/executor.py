@@ -562,6 +562,17 @@ class AgentExecutor:
             return "\n".join(result_parts) or "（无步骤产出）"
         if task.status == "cancelled":
             return "任务已取消。"
+
+        # 🔴 2026-11-04：**等待人回答不是失败**。
+        #
+        # 生产实证（12:05:41 task=13e8368520）：它正确识别出「缺登录态」并主动
+        # 询问了主人，但 70ms 后又发一条「这个没弄成喵…等会儿再试试？」，
+        # 原因是这里把任何非 completed/cancelled 的状态都当失败。
+        # `waiting_user` 掉进这条分支 ⇒ 主人回「二维码发我」时任务已是 failed，
+        # 再也接不上了。
+        if task.status == "waiting_user" or getattr(task, "pending_question", None):
+            return "在等主人回答，先停在这里。"
+
         # 🔴 2026-10-29：`[失败] <内部错误串>` 对用户毫无意义。
         #   错误信息是给开发者的（「transport:ClientOSError」「verify_failed」），
         #   直接念出来既看不懂也不可行动。改成一句人话；

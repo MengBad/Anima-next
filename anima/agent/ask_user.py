@@ -307,8 +307,23 @@ def resolve_reply(core: Any, text: str) -> Optional[str]:
     if answer is None:
         return None
 
+    got_early = answer.get("label") or answer.get("text") or ",".join(answer.get("labels") or [])
     current.pending_question = {}
     current.status = "executing"
+    # 2026-11-04：把主人的回答**写进任务上下文**，重规划时才能看到。
+    # 否则「二维码发我」这句话只变成一句回执，任务本身完全不知道。
+    try:
+        _ctx = getattr(current, "context", None)
+        if isinstance(_ctx, dict):
+            _log = list(_ctx.get("user_answers") or [])
+            _log.append({
+                "question": str(q.get("text") or "")[:200],
+                "answer": str(got_early or "")[:300],
+            })
+            _ctx["user_answers"] = _log[-10:]
+            _ctx["last_user_answer"] = str(got_early or "")[:300]
+    except Exception:
+        logger.debug("写入 user_answers 失败（已隔离）", exc_info=True)
     try:
         store = getattr(getattr(core, "agent", None), "store", None)
         if store is not None:
@@ -319,6 +334,24 @@ def resolve_reply(core: Any, text: str) -> Optional[str]:
     logger.info("[ask_user] task=%s 收到回答 kind=%s",
                 getattr(current, "id", "?"), answer.get("kind"))
     got = answer.get("label") or answer.get("text") or ",".join(answer.get("labels") or [])
+
+    # 🔴 2026-11-04：**回答之后必须继续跑任务**。
+    #
+    # 生产实证（12:05:53）：主人回「二维码发我」，这里只回了
+    #   「好喵，按「二维码发我」来。」然后就没有然后了 ——
+    # 任务状态被改成 executing，但没有任何代码把它重新拉起来。
+    # 于是「问了也白问」以另一种形式复现：回答被消费，任务静默停摆。
+    try:
+        _agent = getattr(core, "agent", None)
+        if _agent is not None and hasattr(_agent, "resume"):
+            _agent.resume(current)
+        elif _agent is not None and hasattr(_agent, "_run"):
+            import asyncio as _aio
+            _aio.create_task(_agent._run(current))
+            logger.info("[ask_user] 已重新拉起任务 task=%s", getattr(current, "id", "?"))
+    except Exception:
+        logger.exception("回答后重启任务失败（已隔离）")
+
     return f"好喵，按「{got}」来。"
 
 
