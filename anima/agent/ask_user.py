@@ -452,6 +452,20 @@ def make_ask_user_tool(core: Any):
         except Exception:
             logger.debug("ask_user 持久化失败（内存仍生效）", exc_info=True)
 
+
+        # 2026-11-04 生产事故（285f251b52）：问题被正确挂起并落盘，
+        # 但**从没发到主人手机上** —— 这里只 return 给模型，模型收到
+        # "想请你定一下喵：…" 就当自己说过了，再回一句别的收尾。
+        # 主人什么都没看见，任务却停在 waiting_user 等一个他不知情的回答。
+        # 工具自己发出这一句，问才算真的问出去。
+        try:
+            gateway = getattr(core, "gateway", None)
+            if gateway is not None:
+                from anima.llm.handler import OutboundMsg as _OM
+                await gateway.send(_OM("private", int(getattr(current, "creator", 0) or 0),
+                                       render_qq(norm)))
+        except Exception:
+            logger.exception("ask_user 主动推送问题失败（已隔离）")
         logger.info("[ask_user] task=%s 挂起等待回答，问题数=%d",
                     getattr(current, "id", "?"), len(norm))
         return render_qq(norm)

@@ -144,3 +144,38 @@ def test_clear_stale_uses_updated_at_when_no_attached_at():
 
     assert au.clear_stale(core) is True
     assert t.status == "expired"
+
+
+class _GW:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, msg):
+        self.sent.append(msg)
+
+
+@pytest.mark.asyncio
+async def test_ask_user_tool_pushes_question_to_owner():
+    """回归 285f251b52：问题挂起了、落盘了，但**从没发到主人手上**。
+
+    工具原本只 return 给模型，模型看见「想请你定一下喵」就当自己说过了。
+    主人什么都没收到，任务却停在 waiting_user 等一个他不知情的回答。
+    """
+    core = _Core(_Store([]))
+    core.gateway = _GW()
+    task = AgentTask(id="t-push", request="x", creator=1562290139)
+    task.status = "executing"
+    core._active_agent_task = task
+
+    ask = au.make_ask_user_tool(core)
+    out = await ask([{"text": "要账号密码", "kind": "text", "options": []}])
+
+    assert "要账号密码" in out, "返回值里没有渲染后的问题"
+    assert len(core.gateway.sent) == 1, "问题没有主动推送给主人"
+    pushed = core.gateway.sent[0]
+    assert "要账号密码" in str(pushed.message)
+    assert pushed.detail_type == "private"
+    assert int(pushed.target_id) == 1562290139
+
+    assert task.status == "waiting_user"
+    assert task.pending_question.get("_attached_at"), "没写时间戳，会永不过期"
