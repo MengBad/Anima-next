@@ -110,6 +110,29 @@ class ObserveLoop:
             out.append(Observation(kind="screenshot", path=p, ok=ok, note=why))
         return out
 
+    def _harvest(self, tools: Any, task: Any) -> None:
+        """把本轮工具产出的媒体路径从 call context 收回任务上下文。"""
+        try:
+            if not hasattr(tools, "get_call_context"):
+                return
+            got = tools.get_call_context().get("generated_image_paths") or []
+        except Exception:
+            return
+        if not isinstance(got, list) or not got:
+            return
+        ctx = getattr(task, "context", None)
+        if not isinstance(ctx, dict):
+            return
+        bucket = ctx.get("generated_image_paths")
+        if not isinstance(bucket, list):
+            bucket = []
+            ctx["generated_image_paths"] = bucket
+        seen = {str(x) for x in bucket}
+        for p in got:
+            sp = str(p or "")
+            if sp and sp not in seen:
+                seen.add(sp)
+                bucket.append(sp)
     def render_observations(self, obs: list) -> str:
         if not obs:
             return "（还没有任何截图/文件产物）"
@@ -191,6 +214,17 @@ class ObserveLoop:
 
             prompt = self.build_prompt(task, obs)
             loop = self._make_react(tools, llm)
+            # 2026-11-04：必须注入调用上下文并回收媒体 —— 否则工具产出的截图
+            # 只写进 get_call_context() 的临时 dict，reset 后永久丢失，
+            # 观察循环永远看不到产物（生产实测 108s / 3 轮 / new=0）。
+            ctx_token = None
+            if hasattr(tools, "set_call_context"):
+                try:
+                    from anima.tools import LEVEL_OWNER
+                    base = tools.get_call_context() if hasattr(tools, "get_call_context") else {}
+                    ctx_token = tools.set_call_context(**{**base, "permission_level": LEVEL_OWNER})
+                except Exception:
+                    ctx_token = None
             try:
                 reply = await asyncio.wait_for(
                     loop.run([{"role": "user", "content": prompt}],
@@ -203,6 +237,14 @@ class ObserveLoop:
             except Exception:
                 logger.exception("[观察循环] 第 %d 轮异常", i)
                 reply = "(这一轮出错了)"
+            finally:
+                # 必须先回收再 reset（reset 之后 context 就变了）
+                self._harvest(tools, task)
+                if ctx_token is not None and hasattr(tools, "reset_call_context"):
+                    try:
+                        tools.reset_call_context(ctx_token)
+                    except Exception:
+                        logger.debug("reset_call_context 失败（已隔离）", exc_info=True)
 
             traced = [str(t.get("name")) for t in (getattr(loop, "tool_trace", None) or [])
                       if isinstance(t, dict) and t.get("name")]

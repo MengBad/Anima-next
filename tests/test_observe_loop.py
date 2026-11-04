@@ -188,3 +188,55 @@ def test_prompt_includes_history():
     prompt = loop.build_prompt(_Task(), [])
     assert "打开了登录页" in prompt
     assert "browse_web_act" in prompt
+
+def test_harvest_collects_media_from_call_context():
+    """回归：工具产出的截图必须被收回 task.context，否则循环看不到产物。
+
+    生产实测（P1 首跑）：108 秒 / 3 轮 / new=0 —— 截图写进了
+    get_call_context() 的临时 dict，reset 后永久丢失。
+    """
+    class _Tools:
+        def __init__(self, paths):
+            self._paths = paths
+
+        def get_call_context(self):
+            return {"generated_image_paths": list(self._paths)}
+
+    class _T:
+        def __init__(self):
+            self.context = {}
+
+    t = _T()
+    loop = ObserveLoop(core=object(), llm=object(), tools_for=lambda: object(),
+                       react_factory=lambda a, b: None)
+    loop._harvest(_Tools(["/a/shot_1.png", "/a/shot_2.png"]), t)
+
+    assert t.context["generated_image_paths"] == ["/a/shot_1.png", "/a/shot_2.png"]
+
+
+def test_harvest_is_idempotent_and_dedups():
+    class _Tools:
+        def get_call_context(self):
+            return {"generated_image_paths": ["/a/shot_1.png"]}
+
+    class _T:
+        def __init__(self):
+            self.context = {"generated_image_paths": ["/a/shot_1.png"]}
+
+    t = _T()
+    loop = ObserveLoop(core=object(), llm=object(), tools_for=lambda: object(),
+                       react_factory=lambda a, b: None)
+    loop._harvest(_Tools(), t)
+    loop._harvest(_Tools(), t)
+
+    assert t.context["generated_image_paths"] == ["/a/shot_1.png"]
+
+
+def test_harvest_never_raises():
+    class _Bad:
+        def get_call_context(self):
+            raise RuntimeError("boom")
+
+    loop = ObserveLoop(core=object(), llm=object(), tools_for=lambda: object(),
+                       react_factory=lambda a, b: None)
+    loop._harvest(_Bad(), type("T", (), {"context": {}})())
