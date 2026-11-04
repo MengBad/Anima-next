@@ -179,3 +179,36 @@ async def test_ask_user_tool_pushes_question_to_owner():
 
     assert task.status == "waiting_user"
     assert task.pending_question.get("_attached_at"), "没写时间戳，会永不过期"
+
+
+def test_user_answers_are_injected_into_step_prompt():
+    """回归 e7d6a67518：主人答了「我用二维码扫描登录」，模型看不到，重复问账号。
+
+    ask_user 把回答写进 task.context["user_answers"]，此前全仓零读者。
+    """
+    import inspect
+
+    import anima.agent.executor as ex
+
+    src = inspect.getsource(ex)
+    assert "user_answers" in src
+    idx = src.find("_answers_block")
+    assert idx != -1, "没有把 user_answers 拼进 step 上下文"
+    # 必须在 messages 构造之前拼好
+    msg_idx = src.find("messages = [")
+    assert msg_idx > idx, "注入发生在 messages 构造之后，等于没注入"
+    block = src[idx: msg_idx]
+    assert "主人已经回答过的问题" in block
+    assert "不要重复问" in block
+
+
+def test_user_answers_resent_to_every_step():
+    """每一步都要带上，不能只有第一步。"""
+    import inspect
+
+    import anima.agent.executor as ex
+
+    src = inspect.getsource(ex)
+    idx = src.find("_answers_block")
+    tail = src[idx: idx + 2500]
+    assert "{_answers_block}" in tail, "只算出来没拼进 prompt"

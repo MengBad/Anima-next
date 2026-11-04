@@ -1168,10 +1168,34 @@ class AgentExecutor:
                 + _role_hint
             )
 
+        # 2026-11-04 生产事故（e7d6a67518）：主人答「我用二维码扫描登录」，
+        # 任务被重新拉起，但模型**看不到这句话** —— ask_user 把回答写进
+        # task.context["user_answers"]，而全仓没有任何读者。于是它又调一遍
+        # browse_credential、又拿到「没配置账号」、又问一遍同样的问题。
+        # 主人连说两次「二维码发我」，它两次都在问账号密码。
+        _answers_block = ""
+        try:
+            _ans = list((task.context or {}).get("user_answers") or [])
+            if _ans:
+                _lines = []
+                for _a in _ans[-3:]:
+                    _q = str((_a or {}).get("question") or "")[:120]
+                    _r = str((_a or {}).get("answer") or "")[:200]
+                    if _r:
+                        _lines.append(f"- 问：{_q}\n  主人答：{_r}") 
+                if _lines:
+                    _answers_block = (
+                        "\n\n【主人已经回答过的问题 —— 必须照这个做，不要重复问】\n"
+                        + "\n".join(_lines)
+                    )
+        except Exception:
+            logger.debug("读取 user_answers 失败（已隔离）", exc_info=True)
+
         messages = [
             {"role": "system", "content": _sys_prompt},
             {"role": "user", "content": (
-                f"任务背景：{task.request}\n当前步骤：{step.description}{_prior_block}"
+                f"任务背景：{task.request}\n当前步骤：{step.description}"
+                f"{_prior_block}{_answers_block}"
             )},
         ]
         try:
