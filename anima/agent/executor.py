@@ -68,33 +68,39 @@ class StepFailed(Exception):
 SECRET_TOOLS = frozenset({"browse_credential"})
 
 #: 脱敏占位文本 —— 模型与磁盘看到的是这一句，不是密码。
-_SECRET_PLACEHOLDER = "（凭证已取到，内容不落盘、不回显）"
+_SECRET_PLACEHOLDER = "（已隐去）"
 
 
-def step_tool_name(step: Any) -> str:
-    """本步用到的、属于凭证类的工具名；没有则空串。
-
-    显式 tool_name 步骤看 tool_name；ReAct 步骤看 tools_called。
-    """
-    name = str(getattr(step, "tool_name", "") or "")
-    if name in SECRET_TOOLS:
-        return name
-    for called in (getattr(step, "tools_called", None) or []):
-        if str(called) in SECRET_TOOLS:
-            return str(called)
-    return ""
+def _secret_values() -> list[str]:
+    """当前所有已知凭证的**值**，长的在前（先替换长的，避免被短值切碎）。"""
+    try:
+        from anima.tools.credentials import load_secrets
+        vals = {v for v in load_secrets().values() if v and len(v) >= 6}
+        return sorted(vals, key=len, reverse=True)
+    except Exception:
+        return []
 
 
-def redact_tool_result(tool_name: str, text: str) -> str:
-    """凭证类工具的输出脱敏。纯函数，可单测。
+def redact_tool_result(tool_name: str, text: str, *, values: list[str] | None = None) -> str:
+    """从任意文本里**剔除凭证值**。纯函数，可单测。
 
     2026-11-06 生产泄漏：browse_credential 返回「账号：x / 密码：y」被
     step.result 与 task.context[step_N_result] 原样收下，经 store.save()
     落进 /opt/anima/data/agent_tasks.json —— 密码明文上盘。
+
+    2026-11-06 二次生产事故（01f70c6a75）：第一版按「本步调用过凭证工具」
+    就**整段清空** step.result。但 ReAct 一步里常同时调 browse_credential、
+    browse_web_act、search_web —— 于是整步的登录结果被抹成一句占位符，
+    验收器看不到页面状态，判「FAIL 未说明已登录」，任务卡死在第二步。
+    ⇒ 改为**只剔除值本身**：密码/账号被抹掉，页面状态等正文原样保留。
     """
-    if (tool_name or "") in SECRET_TOOLS and text:
-        return _SECRET_PLACEHOLDER
-    return text
+    body = str(text or "")
+    if not body:
+        return body
+    for val in (values if values is not None else _secret_values()):
+        if val and val in body:
+            body = body.replace(val, _SECRET_PLACEHOLDER)
+    return body
 
 
 class AgentExecutor:
@@ -467,14 +473,12 @@ class AgentExecutor:
             if len(batch) == 1:
                 step = batch[0]
                 step.status = "done"
-                step.result = redact_tool_result(
-                    step_tool_name(step), results[0])[:4000]
+                step.result = redact_tool_result(None, results[0])[:4000]
                 # 2026-11-03：每步报一句（失败必报，成功隔步报）。
                 # 放在验收**之前**先报「工具层面完成」，验收不过会再报一次失败，
                 # 主人能看到「做了但没过」而不是只有最后那条 failed。
                 await self._report_step(task, step, True)
-                task.context[f"step_{step.index}_result"] = redact_tool_result(
-                    step_tool_name(step), results[0])[:2000]
+                task.context[f"step_{step.index}_result"] = redact_tool_result(None, results[0])[:2000]
                 ok, vreason = True, ""
                 if step.verify:
                     checked, ok, vreason = await self._verify_step(step, task)
@@ -538,10 +542,8 @@ class AgentExecutor:
                 # 并行批次不逐项验收（都是确定性显式工具调用，验收交给后续步骤）
                 for step, result in zip(batch, results):
                     step.status = "done"
-                    step.result = redact_tool_result(
-                        step_tool_name(step), result)[:4000]
-                    task.context[f"step_{step.index}_result"] = redact_tool_result(
-                        step_tool_name(step), result)[:2000]
+                    step.result = redact_tool_result(None, result)[:4000]
+                    task.context[f"step_{step.index}_result"] = redact_tool_result(None, result)[:2000]
                     result_parts.append(f"步骤{step.index + 1}: {step.description} ✓（并行）")
                 task.current_step = batch[-1].index + 1
                 self.store.save(task)
@@ -831,6 +833,11 @@ class AgentExecutor:
             n = len(steps)
             if n == 0:
                 return
+            # 2026-11-06：回答完主人之后任务被重新拉起，会**再播一次**「本喵开工了：
+            # 一共 4 步」，看起来像从头重来。只在首次执行时播。
+            if task.context.get("announced"):
+                return
+            task.context["announced"] = True
             first = str(getattr(steps[0], "description", "") or "").strip()[:40]
             msg = f"本喵开工了：一共 {n} 步，先做「{first}」"
             await self._notify(task, msg)
@@ -884,6 +891,17 @@ class AgentExecutor:
             if not _needs_human(text):
                 return False
 
+            # 2026-11-06 生产事故（01f70c6a75）：主人答「你来操作」后任务重跑同一步，
+            # 同一步又因同样的原因卡住 —— 于是把**一模一样的问题**再问一遍，
+            # 再答、再问，死循环。同一问题（按步骤描述记）只问一次；第二次卡住
+            # 就直接判失败并说清卡在哪，让主人自己去补前提。
+            _asked = list(task.context.get("asked_blockers") or [])
+            _key = str(getattr(step, "description", "") or "")[:60]
+            if _key and _key in _asked:
+                logger.info("[执行代理] 同一问题已问过，不再重复问 task=%s step=%s",
+                            getattr(task, "id", "?"), _key)
+                return False
+
             core = getattr(self, "core", None)
             if core is None:
                 return False
@@ -892,6 +910,13 @@ class AgentExecutor:
 
             _ask = make_ask_user_tool(core)
             desc = str(getattr(step, "description", "") or "")[:60]
+            try:
+                _log = list(task.context.get("asked_blockers") or [])
+                if desc and desc not in _log:
+                    _log.append(desc)
+                task.context["asked_blockers"] = _log[-10:]
+            except Exception:
+                logger.debug("登记 asked_blockers 失败（已隔离）", exc_info=True)
             out = await _ask([{
                 "text": f"卡住了喵：「{desc}」需要主人出手。要我现在怎么做？",
                 "kind": "text",

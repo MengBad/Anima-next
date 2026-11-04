@@ -380,6 +380,32 @@ def register_agent_tools(registry, core=None) -> None:
                 "questions": {
                     "type": "array",
                     "description": "一次要问的问题列表（最多 4 个）",
+                    # 2026-11-06 生产事故：原本只写了 type=array，没有 items。
+                    # 模型于是传了 ["要不要我继续"]（字符串数组），被
+                    # normalize_questions 判「第 1 个问题格式不对」并抛异常，
+                    # ask_user 直接失败 ⇒ 问了等于没问，任务照样卡死。
+                    # 把元素结构写进 schema，模型才知道该传对象。
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "text": {"type": "string",
+                                     "description": "问题本身的文字"},
+                            "kind": {"type": "string",
+                                     "enum": ["text", "single_select", "multi_select"],
+                                     "description": "题型，默认 text"},
+                            "options": {"type": "array",
+                                        "description": "选择题的选项；kind=text 时留空",
+                                        "items": {"type": "object",
+                                                  "properties": {
+                                                      "label": {"type": "string"},
+                                                      "description": {"type": "string"},
+                                                  },
+                                                  "required": ["label"]}},
+                            "allow_custom": {"type": "boolean",
+                                             "description": "是否允许自由作答，默认 true"},
+                        },
+                        "required": ["text"],
+                    },
                 },
             },
             make_ask_user_tool(core),
