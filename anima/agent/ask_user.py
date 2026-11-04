@@ -263,10 +263,16 @@ def adopt_pending_from_store(core: Any) -> Any:
         pq = getattr(t, 'pending_question', None) or {}
         if not pq or not (pq.get('questions') or []):
             continue
+        # 2026-11-04：老任务的 pending_question 里**没有** _attached_at
+        # （只有 attach_pending 才写）。只看它就等于把老任务当永不过期，
+        # 于是 16:21 的问题在 23:03 还活着，把主人的新任务当成对它回答。
+        # 没有时间戳时用 task.updated_at 兜底。
         if '_attached_at' in pq:
             attached = float(pq.get('_attached_at') or 0)
-            if now - attached > PENDING_TTL_SEC:
-                continue
+        else:
+            attached = float(getattr(t, 'updated_at', 0) or 0)
+        if now - attached > PENDING_TTL_SEC:
+            continue
         prev = getattr(best, 'updated_at', 0) or 0 if best is not None else -1
         if (getattr(t, 'updated_at', 0) or 0) > prev:
             best = t
@@ -291,8 +297,12 @@ def clear_stale(core: Any, *, now: float = 0.0) -> bool:
     ts = float(now or _t.time())
     # _attached_at 显式写 0.0 是合法值（表示"很久以前挂的"），
     # 不能用 "if attached" 判 —— 那会把 0 当成"没有时间戳"而漏清。
+    # 没有 _attached_at 时用 updated_at 兜底（老任务没这个字段）
     if "_attached_at" in pq:
         attached = float(pq.get("_attached_at") or 0)
+    else:
+        attached = float(getattr(task, "updated_at", 0) or 0)
+    if True:
         if ts - attached > PENDING_TTL_SEC:
             task.pending_question = {}
             try:
@@ -419,10 +429,21 @@ def make_ask_user_tool(core: Any):
         if current is None:
             return "错误: 当前没有正在执行的任务，ask_user 无处挂载。"
 
-        if getattr(current, "pending_question", None):
-            return "错误: 上一个问题还没回答，先处理那个。"
+        _prev = getattr(current, "pending_question", None) or {}
+        if _prev and (_prev.get("questions") or []):
+            # 2026-11-04：只挡**未过期**的旧问题。过期的不挡 —— 否则一条
+            # 陈年 pending 会让之后每次 ask_user 都返回"上一个还没回答"，
+            # 模型收到这句就懵了（生产实证 23:03:52 原样发给了主人）。
+            import time as _t3
+            _at = float(_prev.get("_attached_at") or 0)
+            if not _at:
+                _at = float(getattr(current, "updated_at", 0) or 0)
+            if _t3.time() - _at <= PENDING_TTL_SEC:
+                return "错误: 上一个问题还没回答，先处理那个。"
+            current.pending_question = {}
 
-        current.pending_question = {"questions": norm}
+        import time as _t2
+        current.pending_question = {"questions": norm, "_attached_at": _t2.time()}
         current.status = "waiting_user"
         store = getattr(core, "agent", None)
         try:

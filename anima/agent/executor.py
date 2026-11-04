@@ -895,6 +895,13 @@ class AgentExecutor:
             # 同一步又因同样的原因卡住 —— 于是把**一模一样的问题**再问一遍，
             # 再答、再问，死循环。同一问题（按步骤描述记）只问一次；第二次卡住
             # 就直接判失败并说清卡在哪，让主人自己去补前提。
+            # 2026-11-04：模型自己已经用 ask_user 工具问过了，就不要再问一遍。
+            # 生产实证 23:03:47（工具问）→ 23:03:52（这里又问），主人收到两条。
+            if getattr(task, "pending_question", None):
+                logger.info("[执行代理] 模型已自行提问，跳过阻塞询问 task=%s",
+                            getattr(task, "id", "?"))
+                return True
+
             _asked = list(task.context.get("asked_blockers") or [])
             _key = str(getattr(step, "description", "") or "")[:60]
             if _key and _key in _asked:

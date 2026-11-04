@@ -107,3 +107,40 @@ def test_clear_stale_keeps_fresh():
 
     assert au.clear_stale(core) is False
     assert t.status == "waiting_user"
+
+def test_adopt_skips_task_without_attached_at_but_old():
+    """回归 01f70c6a75：老任务 pending 里没有 _attached_at。
+
+    只看 _attached_at 会把它当永不过期，于是 16:21 的问题在 23:03 还活着，
+    把主人的新任务当成对它的回答。必须用 updated_at 兜底。
+    """
+    t = AgentTask(id="old", request="x", creator=1)
+    t.status = "waiting_user"
+    t.pending_question = {"questions": [{"text": "q", "kind": "text", "options": []}]}
+    t.updated_at = time.time() - (au.PENDING_TTL_SEC + 120)   # 没有 _attached_at
+    core = _Core(_Store([t]))
+
+    assert au.adopt_pending_from_store(core) is None, "过期的老任务被捞回来了"
+
+
+def test_adopt_keeps_task_without_attached_at_if_fresh():
+    t = AgentTask(id="fresh", request="x", creator=1)
+    t.status = "waiting_user"
+    t.pending_question = {"questions": [{"text": "q", "kind": "text", "options": []}]}
+    t.updated_at = time.time() - 30
+    core = _Core(_Store([t]))
+
+    got = au.adopt_pending_from_store(core)
+    assert got is not None and got.id == "fresh"
+
+
+def test_clear_stale_uses_updated_at_when_no_attached_at():
+    t = AgentTask(id="old2", request="x", creator=1)
+    t.status = "waiting_user"
+    t.pending_question = {"questions": [{"text": "q", "kind": "text", "options": []}]}
+    t.updated_at = time.time() - (au.PENDING_TTL_SEC + 60)
+    core = _Core(_Store([t]))
+    core._active_agent_task = t
+
+    assert au.clear_stale(core) is True
+    assert t.status == "expired"
