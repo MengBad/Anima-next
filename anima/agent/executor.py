@@ -62,6 +62,41 @@ class StepFailed(Exception):
     """单步失败（重试耗尽）。"""
 
 
+#: 返回值本身是秘密的工具。它们的输出**绝不进任务持久层**。
+#: 与 `Tool.secret_result` 声明同义；executor 另列一份是因为 ReAct 路径
+#: 由模型自选工具，拿不到 Tool 元数据。
+SECRET_TOOLS = frozenset({"browse_credential"})
+
+#: 脱敏占位文本 —— 模型与磁盘看到的是这一句，不是密码。
+_SECRET_PLACEHOLDER = "（凭证已取到，内容不落盘、不回显）"
+
+
+def step_tool_name(step: Any) -> str:
+    """本步用到的、属于凭证类的工具名；没有则空串。
+
+    显式 tool_name 步骤看 tool_name；ReAct 步骤看 tools_called。
+    """
+    name = str(getattr(step, "tool_name", "") or "")
+    if name in SECRET_TOOLS:
+        return name
+    for called in (getattr(step, "tools_called", None) or []):
+        if str(called) in SECRET_TOOLS:
+            return str(called)
+    return ""
+
+
+def redact_tool_result(tool_name: str, text: str) -> str:
+    """凭证类工具的输出脱敏。纯函数，可单测。
+
+    2026-11-06 生产泄漏：browse_credential 返回「账号：x / 密码：y」被
+    step.result 与 task.context[step_N_result] 原样收下，经 store.save()
+    落进 /opt/anima/data/agent_tasks.json —— 密码明文上盘。
+    """
+    if (tool_name or "") in SECRET_TOOLS and text:
+        return _SECRET_PLACEHOLDER
+    return text
+
+
 class AgentExecutor:
     MAX_STEPS = 20
     MAX_TOOL_RETRIES = 3
@@ -432,12 +467,14 @@ class AgentExecutor:
             if len(batch) == 1:
                 step = batch[0]
                 step.status = "done"
-                step.result = results[0][:4000]
+                step.result = redact_tool_result(
+                    step_tool_name(step), results[0])[:4000]
                 # 2026-11-03：每步报一句（失败必报，成功隔步报）。
                 # 放在验收**之前**先报「工具层面完成」，验收不过会再报一次失败，
                 # 主人能看到「做了但没过」而不是只有最后那条 failed。
                 await self._report_step(task, step, True)
-                task.context[f"step_{step.index}_result"] = results[0][:2000]
+                task.context[f"step_{step.index}_result"] = redact_tool_result(
+                    step_tool_name(step), results[0])[:2000]
                 ok, vreason = True, ""
                 if step.verify:
                     checked, ok, vreason = await self._verify_step(step, task)
@@ -501,8 +538,10 @@ class AgentExecutor:
                 # 并行批次不逐项验收（都是确定性显式工具调用，验收交给后续步骤）
                 for step, result in zip(batch, results):
                     step.status = "done"
-                    step.result = result[:4000]
-                    task.context[f"step_{step.index}_result"] = result[:2000]
+                    step.result = redact_tool_result(
+                        step_tool_name(step), result)[:4000]
+                    task.context[f"step_{step.index}_result"] = redact_tool_result(
+                        step_tool_name(step), result)[:2000]
                     result_parts.append(f"步骤{step.index + 1}: {step.description} ✓（并行）")
                 task.current_step = batch[-1].index + 1
                 self.store.save(task)

@@ -24,6 +24,8 @@ from __future__ import annotations
 import pathlib
 import re
 
+import pytest
+
 SANDBOX = (pathlib.Path(__file__).resolve().parent.parent
            / "anima" / "agent" / "sandbox_exec.py")
 BROWSER = (pathlib.Path(__file__).resolve().parent.parent
@@ -56,15 +58,50 @@ def test_documents_the_vmpeak_evidence():
     assert "反爬" in src, "缺少「被误判成反爬」这个事故记录"
 
 
+def _screenshot_impl_code() -> str:
+    """取「截图实现」的代码行（注释不算）。
+
+    2026-11-06 重构后截图逻辑从 `_run_actions` 的内联分支搬进了
+    `_do_screenshot()`，原来的「按 elif 分支切 1600 字」锚点失效。
+    这里同时认两种形状，锚在**函数**上而不是行号上，重构不再误伤。
+    """
+    src = BROWSER.read_text(encoding="utf-8")
+    for marker in ("async def _do_screenshot(", 'elif op == "screenshot":'):
+        idx = src.find(marker)
+        if idx > 0:
+            block = src[idx:idx + 1600]
+            return "\n".join(ln for ln in block.splitlines()
+                             if ln.strip() and not ln.strip().startswith("#"))
+    raise AssertionError("找不到截图实现（_do_screenshot / elif screenshot 都没有）")
+
+
 def test_screenshot_returns_real_path():
     """截图必须写绝对路径并把路径回给调用方。"""
-    src = BROWSER.read_text(encoding="utf-8")
-    idx = src.find('elif op == "screenshot":')
-    assert idx > 0
-    block = src[idx:idx + 1600]
-    # 只看代码行，跳过注释（注释里说明了「原来用 __shot.png」，不该被判成还在用）
-    code = "\n".join(ln for ln in block.splitlines()
-                     if ln.strip() and not ln.strip().startswith("#"))
+    code = _screenshot_impl_code()
     assert "__shot.png" not in code, "还在用相对路径 __shot.png"
     assert "shot_" in code, "没有生成带时间戳的截图名"
     assert "已截图：" in code, "日志里没带路径"
+
+
+@pytest.mark.asyncio
+async def test_screenshot_publishes_path_to_call_context(monkeypatch, tmp_path):
+    """行为验证：截图后路径必须进 generated_image_paths（否则私聊发不出图）。"""
+    from anima.tools import browser as br
+    from anima.tools import get_call_context
+
+    class _Page:
+        async def screenshot(self, path: str, full_page: bool = False) -> None:
+            pathlib.Path(path).write_bytes(b"fake-png")
+
+    monkeypatch.setattr(br, "_screenshot_dir", lambda: tmp_path)
+    monkeypatch.setattr(br, "_publish_generated_image",
+                        lambda p: get_call_context().setdefault(
+                            "generated_image_paths", []).append(str(p)))
+
+    line = await br._do_screenshot(_Page(), 3)
+
+    assert "已截图：" in line
+    shots = list(tmp_path.glob("shot_*.png"))
+    assert len(shots) == 1, "没生成带时间戳的截图文件"
+    assert shots[0].is_absolute()
+    assert str(shots[0]) in line, "日志里没带绝对路径"

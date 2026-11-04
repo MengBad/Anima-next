@@ -381,7 +381,10 @@ def register_all_builtin(registry, core=None) -> None:
         "（仅主人·仅私聊）在真实浏览器里**操作网页**：打开、点击、填写、上传文件、取正文、截图。"
         "按顺序一次执行多个动作，共用同一个浏览器会话。"
         "用于搜图、填表单、需要点击才能看到内容的站点。"
-        "只读正文用 browse_web 更快；需要「点/传/填」才用它。",
+        "只读正文用 browse_web 更快；需要「点/传/填」才用它。"
+        "浏览器现在是**持久 profile**：登录一次后登录态（cookie/localStorage）跨任务保留，"
+        "可以直接打开需要登录的站点继续操作，不必每次让主人重新给 Cookie。"
+        "要账号密码自己登，用 browse_credential 取。",
         {
             "actions": {"type": "array",
                          "description": "动作数组，如 [{op:navigate,url:...},{op:upload,selector:...,files:[...]},{op:click,selector:...},{op:get_text}]"},
@@ -391,6 +394,42 @@ def register_all_builtin(registry, core=None) -> None:
         required=["actions"],
         min_level=LEVEL_OWNER,
         private_only=True,
+    ))
+
+    async def _tool_browse_credential(site: str) -> str:
+        """取站点登录账号密码（模型可见文本，别处不落 —— 见 credentials 模块头）。"""
+        from anima.tools.credentials import (
+            SITE_MAP, get_credential, keys_for_site, normalize_site,
+        )
+        credential = get_credential(site)
+        if credential is not None:
+            user, password = credential
+            return f"账号：{user}\n密码：{password}"
+        # 🔴 未命中只说**键名**，绝不复述任何读到的值（含密码/部分密码）。
+        keys = keys_for_site(site)
+        if keys is None:
+            supported = "、".join(f"{name}（{pair[0]} / {pair[1]}）"
+                                  for name, pair in SITE_MAP.items())
+            return (f"没有配置 {site} 的账号密码。"
+                    f"支持的站点：{supported}。请让主人把对应的键写进 .secrets。")
+        return (f"没有配置 {normalize_site(site)} 的账号密码。"
+                f"请让主人把 {keys[0]} 和 {keys[1]} 写进 .secrets。")
+
+    registry.register(Tool(
+        "browse_credential",
+        "取站点登录账号密码，用于在浏览器里自行填写登录。仅主人私聊可用。"
+        "返回账号与密码明文，直接拿去 browse_web_act 的 fill 动作填登录表单。"
+        "site 传站点名，如 huawei / gitcode / gitee（也认「华为云」「码云」这类中文别名）。"
+        "未配置时返回该站点需要补的 .secrets 键名。",
+        {
+            "site": {"type": "string",
+                      "description": "站点名：huawei / gitcode / gitee（支持中文别名，如「华为云」「码云」）"},
+        },
+        _tool_browse_credential,
+        required=["site"],
+        min_level=LEVEL_OWNER,
+        private_only=True,
+        secret_result=True,
     ))
     async def _tool_browse_web(url: str, max_chars: int = 6000) -> str:
         """打开一个公开网页，抽取可见正文。"""

@@ -22,7 +22,12 @@ from anima.capability.index import CapabilityIndex
 from anima.capability.scopes import PermissionScopes, exec_permitted
 
 logger = logging.getLogger("anima.tools")
-_CALL_CONTEXT: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar("anima_tool_context", default={})
+# 2026-11-06：default 从 {} 改成 None。共享的可变默认值会让「无上下文调用」
+# 把数据写进进程级同一个 dict 并永久滞留（截图/生图路径都会漏进去，且
+# 永远不会被任何读者取走）。None 表示「当前确实没有上下文」。
+_CALL_CONTEXT: contextvars.ContextVar[Optional[dict[str, Any]]] = (
+    contextvars.ContextVar("anima_tool_context", default=None)
+)
 _TOOL_FAILURE_PREFIXES = (
     "工具执行错误", "错误:", "[沙箱]", "联网搜索失败", "天气查询失败",
     "查询失败", "暂时不可用", "工具暂时不可用",
@@ -374,7 +379,11 @@ def _audit_result_preview(text: str) -> str:
 
 
 def get_call_context() -> dict[str, Any]:
-    return _CALL_CONTEXT.get()
+    ctx = _CALL_CONTEXT.get()
+    if ctx is None:
+        # 无上下文时返回**临时**空 dict：写它不会污染进程级状态。
+        return {}
+    return ctx
 
 
 def tool_result_ok(result: object) -> bool:
@@ -456,7 +465,8 @@ class Tool:
                  capability_only: bool = False,
                  priority: int = 5,
                  private_only: bool = False,
-                 template: str = ""):
+                 template: str = "",
+                 secret_result: bool = False):
         self.name = name
         self.description = description
         self.parameters = parameters  # JSON Schema properties
@@ -490,6 +500,9 @@ class Tool:
         # 普通内置工具没有模板 → 空字符串（字段仍在，供事后恢复轨迹；不省略、不猜）。
         # 声明式 Skill 由 SkillRegistry 在 _make_tool 时填入 execution.template。
         self.template = template or ""
+        # --- 返回值本身是秘密（凭证类）。审计预览与任务持久层据此脱敏。---
+        # 由工具自声明，而不是维护一份会漏的硬编码名单。
+        self.secret_result = bool(secret_result)
 
     def to_openai_schema(self) -> dict:
         required = self.required if self.required is not None else list(self.parameters.keys())
@@ -1065,7 +1078,10 @@ class ToolRegistry:
 
     def get_call_context(self) -> dict[str, Any]:
         """读取当前任务上下文；用于把工具生成的受控媒体回传给出站层。"""
-        return _CALL_CONTEXT.get()
+        ctx = _CALL_CONTEXT.get()
+        if ctx is None:
+            return {}
+        return ctx
 
     def reset_call_context(self, token: contextvars.Token) -> None:
         _CALL_CONTEXT.reset(token)
@@ -1370,7 +1386,8 @@ class ToolRegistry:
         replay_meta = {} if exec_meta is not None else {
             "request": _audit_request(args),
             "template": tool.template,
-            "result_preview": _audit_result_preview(text),
+            "result_preview": ("" if getattr(tool, "secret_result", False)
+                               else _audit_result_preview(text)),
         }
         self._audit("tool_executed", tool=tool.name, ok=ok, result_len=len(text), **replay_meta)
         if exec_meta is not None:
