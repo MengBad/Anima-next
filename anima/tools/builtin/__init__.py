@@ -452,6 +452,28 @@ def register_all_builtin(registry, core=None) -> None:
             return f"打开了「{result.title}」，但页面没有可读正文（可能是纯脚本渲染或需要登录）。"
         return result.render(int(max_chars or 6000))
 
+    # 2026-11-06 Memoh 委派：把需要容器/桌面/浏览器的重活交给执行后端。
+    # 只在 owner 私聊可用 —— 群里说「我让 Memoh 去做」会暴露它不是人。
+    try:
+        from anima.tools.memoh import make_delegate_tool
+        registry.register(Tool(
+            "ask_memoh",
+            "（仅主人·仅私聊）把需要**真实执行环境**的活交给执行后端。它有一台完整 Linux 桌面（图形界面、Chromium、终端），能登录网站、点按钮、跑命令、多步自我纠错。返回**事实性结果**（未经人格改写），你要用自己的语气转述给用户。",
+            {
+                "task": {"type": "string",
+                          "description": "要它做的具体任务：目标、网址、验收标准"},
+                "timeout_sec": {"type": "number",
+                                "description": "最长等多久（秒），默认 600"},
+            },
+            make_delegate_tool(core),
+            required=["task"],
+            min_level=LEVEL_OWNER,
+            private_only=True,
+            secret_result=True,
+        ))
+    except Exception:
+        logger.debug("ask_memoh 注册失败（已隔离）", exc_info=True)
+
     registry.register(Tool(
         "browse_web",
         "打开一个**具体的网址**并读取正文。用于：用户给了链接但 search_web 查不到内容、"
