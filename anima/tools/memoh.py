@@ -42,6 +42,74 @@ POLL_INTERVAL = 4.0
 #: 全局串行锁：同一时刻只跑一个委派，避免容器并发吃爆内存。
 _DELEGATE_LOCK = asyncio.Lock()
 
+#: 每日委派配额（成本与内存双约束）。0 = 不限制。
+DAILY_QUOTA = 40
+
+#: 配额计数落盘文件（跨重启保留）。
+QUOTA_FILE = "/opt/anima/data/memoh_quota.json"
+
+
+class QuotaExceeded(RuntimeError):
+    """今日委派次数用尽。"""
+
+
+def _quota_path():
+    import pathlib
+    return pathlib.Path(QUOTA_FILE)
+
+
+def _load_quota() -> dict:
+    import json as _json
+    import pathlib
+    try:
+        p = _quota_path()
+        if p.is_file():
+            return _json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        logger.debug("读配额失败（已隔离）", exc_info=True)
+    return {}
+
+
+def _save_quota(data: dict) -> None:
+    import json as _json
+    try:
+        p = _quota_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(_json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(p)
+    except Exception:
+        logger.debug("写配额失败（已隔离）", exc_info=True)
+
+
+def _today() -> str:
+    import time as _t
+    return _t.strftime("%Y-%m-%d")
+
+
+def check_quota() -> tuple[bool, int, int]:
+    """返回 (是否还有额度, 已用, 上限)。"""
+    if DAILY_QUOTA <= 0:
+        return True, 0, 0
+    data = _load_quota()
+    day = _today()
+    if data.get("date") != day:
+        return True, 0, DAILY_QUOTA
+    used = int(data.get("used") or 0)
+    return used < DAILY_QUOTA, used, DAILY_QUOTA
+
+
+def consume_quota() -> int:
+    """记一次委派，返回今日已用次数。"""
+    if DAILY_QUOTA <= 0:
+        return 0
+    data = _load_quota()
+    day = _today()
+    used = int(data.get("used") or 0) if data.get("date") == day else 0
+    used += 1
+    _save_quota({"date": day, "used": used})
+    return used
+
 
 class MemohUnavailable(RuntimeError):
     """Memoh 后端不可用。"""
@@ -102,6 +170,10 @@ async def delegate(task: str, *, timeout: float = DEFAULT_TIMEOUT,
     if not prompt:
         raise ValueError("任务描述不能为空")
 
+    ok, used, cap = check_quota()
+    if not ok:
+        raise QuotaExceeded("今日已用 %d/%d" % (used, cap))
+
     async with _DELEGATE_LOCK:
         token = await asyncio.to_thread(_login)
         if not token:
@@ -138,6 +210,7 @@ async def delegate(task: str, *, timeout: float = DEFAULT_TIMEOUT,
             await asyncio.sleep(POLL_INTERVAL)
             text = await asyncio.to_thread(_latest_assistant, token, session_id)
             if text:
+                consume_quota()
                 logger.info("[memoh] 委派完成 session=%s 字数=%d", session_id, len(text))
                 return text
 
@@ -170,6 +243,8 @@ def make_delegate_tool(core=None):
             t = DEFAULT_TIMEOUT
         try:
             result = await delegate(task, timeout=t)
+        except QuotaExceeded:
+            return "工具暂时不可用：今天的委派额度用完了，明天再来。"
         except MemohUnavailable as exc:
             logger.warning("[memoh] 委派失败：%s", exc)
             return "工具暂时不可用：执行后端没响应，稍后再试。"

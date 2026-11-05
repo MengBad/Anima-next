@@ -116,3 +116,45 @@ async def test_success_path_writes_memory(monkeypatch):
     out = await mm.make_delegate_tool(object())("做件事")
     assert out == "后端结果"
     assert sess.get("r") == "后端结果"
+
+
+def test_quota_allows_within_limit(monkeypatch, tmp_path):
+    """配额未用完时放行。"""
+    monkeypatch.setattr(mm, "QUOTA_FILE", str(tmp_path / "q.json"))
+    monkeypatch.setattr(mm, "DAILY_QUOTA", 3)
+    ok, used, cap = mm.check_quota()
+    assert ok and used == 0 and cap == 3
+
+
+def test_quota_blocks_after_limit(monkeypatch, tmp_path):
+    """连续消费到上限后被拦。"""
+    monkeypatch.setattr(mm, "QUOTA_FILE", str(tmp_path / "q.json"))
+    monkeypatch.setattr(mm, "DAILY_QUOTA", 2)
+    mm.consume_quota()
+    mm.consume_quota()
+    ok, used, cap = mm.check_quota()
+    assert not ok, "超限仍放行"
+    assert used == 2 and cap == 2
+
+
+def test_quota_resets_next_day(monkeypatch, tmp_path):
+    """跨天自动重置。"""
+    monkeypatch.setattr(mm, "QUOTA_FILE", str(tmp_path / "q.json"))
+    monkeypatch.setattr(mm, "DAILY_QUOTA", 1)
+    mm.consume_quota()
+    assert mm.check_quota()[0] is False
+    monkeypatch.setattr(mm, "_today", lambda: "2099-01-01")
+    ok, used, _ = mm.check_quota()
+    assert ok and used == 0
+
+
+@pytest.mark.asyncio
+async def test_tool_reports_quota_exhausted(monkeypatch):
+    async def boom(*a, **k):
+        raise mm.QuotaExceeded("今日已用 40/40")
+
+    monkeypatch.setattr(mm, "delegate", boom)
+    out = await mm.make_delegate_tool()("做事")
+    assert out.startswith("工具暂时不可用")
+    assert "额度" in out
+    assert "40" not in out, "不该把内部计数细节抛给模型"
