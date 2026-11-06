@@ -856,7 +856,8 @@ def _run_pytest(root: Path, tests: list[str], *, timeout: int = 120) -> tuple[bo
     args.extend(existing)
     try:
         proc = subprocess.run(
-            args, cwd=str(root), capture_output=True, text=True, timeout=timeout,
+            args, cwd=str(root), capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=timeout,
         )
         out = (proc.stdout or "") + "\n" + (proc.stderr or "")
         return proc.returncode == 0, out[-4000:]
@@ -888,7 +889,8 @@ def _ensure_anima_ownership(paths: list[Path]) -> None:
             # 仅在看起来是 Linux 服务环境时尝试
             subprocess.run(
                 ["chown", "-R", "anima:anima", str(p)],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=30,
             )
         except Exception:
             logger.debug("chown 跳过/失败 path=%s", path, exc_info=True)
@@ -901,11 +903,13 @@ def _try_restart_anima() -> str:
         if data.is_dir():
             subprocess.run(
                 ["chown", "-R", "anima:anima", str(data)],
-                capture_output=True, text=True, timeout=30,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=30,
             )
         proc = subprocess.run(
             ["systemctl", "restart", "anima"],
-            capture_output=True, text=True, timeout=60,
+            capture_output=True, text=True, encoding="utf-8",
+            errors="replace", timeout=60,
         )
         if proc.returncode == 0:
             return "systemctl restart anima: OK"
@@ -933,6 +937,7 @@ def _apply_unified_diff_or_raise(original: str, diff_text: str) -> str:
             proc = subprocess.run(
                 ["patch", "-p1", "--batch", "--reject-file=-", str(src)],
                 input=body, text=True, capture_output=True, timeout=15, cwd=tmp,
+                encoding="utf-8", errors="replace",
             )
             if proc.returncode == 0:
                 return src.read_text(encoding="utf-8")

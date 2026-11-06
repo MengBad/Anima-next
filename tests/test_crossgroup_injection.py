@@ -52,7 +52,20 @@ class _FakeCore:
     def __init__(self, enabled=True):
         cfg = AnimaConfig()
         cfg.crossgroup.enabled = enabled
+        # 🔴 2026-11-06：`cognition_stage` 新增了「群内在场状态」注入
+        # （`core.group_presence.fragment(ctx.group_id)`）。测试桩一直没这个属性
+        # ⇒ 每轮抛 AttributeError 被 `logger.exception` 隔离，污染测试输出；
+        # 同时 composer 用默认 16000 token 预算会把「当前群氛围」「跨群记忆」
+        # 这些低优先级片段裁掉 ⇒ 两个测试长期红。
+        # 给桩补上空的 group_presence，并把预算调大（测试不测裁剪行为）。
         self.config = cfg
+        cfg.context.system_token_budget = 100000
+
+    class _GroupPresence:
+        def fragment(self, group_id):
+            return ""
+
+    group_presence = _GroupPresence()
 
 
 @pytest.mark.asyncio

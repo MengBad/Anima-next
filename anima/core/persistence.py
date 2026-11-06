@@ -102,15 +102,43 @@ class PersistenceProvider:
         """是否有待落盘的延迟写。"""
         return bool(self._deferred)
 
+    #: 单个 JSON 文件的**读取上限**（字节）。超限时视为异常，留证后返默认值。
+    #:
+    #: 🔴 2026-11-06：本地开发副本 `data/desires.json` 曾膨胀到 **5.09 GB**
+    #: （旧版本无 `max_desires` 裁剪时累积的欲望条目）。`json.load` 无界读取
+    #: ⇒ 全量测试卡死在 `test_core.py` 的 `AnimaCore.start()`，
+    #: 连跑 40 分钟都出不来（faulthandler 定位到 `json/__init__.py:298 load`）。
+    #: 生产同文件只有 3.4KB / 10 条，但**读取路径不该信任文件大小** ——
+    #: 任何一次历史数据膨胀、日志误写或磁盘异常都会让进程在启动时挂死。
+    #:
+    #: 64MB 的依据：生产最大的 JSON 是 health_history.json 约 9.2MB，
+    #: 留 6 倍余量；真有业务需要更大应改成分片存储，而不是抬高这里。
+    MAX_JSON_READ_BYTES = 64 * 1024 * 1024
+
     def read_json(self, rel_path: str, default: Any = None) -> Any:
-        """读取 JSON 文件；不存在则返回 default。基于 mtime 缓存。"""
+        """读取 JSON 文件；不存在/损坏/**异常超大**则返回 default。基于 mtime 缓存。"""
         p = self.data_dir / rel_path
         if not p.exists():
             return default
         try:
-            mtime = p.stat().st_mtime
+            st = p.stat()
+            mtime = st.st_mtime
         except OSError:
             mtime = 0.0
+        else:
+            # 🔴 超限保护：必须在 `json.load` **之前**判，否则 5GB 已经读进内存了。
+            # 与「损坏留证」同一处置：改名 .oversize.bak（不删数据）+ 返 default。
+            if st.st_size > self.MAX_JSON_READ_BYTES:
+                try:
+                    p.replace(p.with_name(p.name + ".oversize.bak"))
+                    logger.error(
+                        "[persistence] JSON 异常超大 %.1fMB > 上限 %.0fMB，"
+                        "已留证 .oversize.bak 并返回默认值：%s",
+                        st.st_size / 1048576,
+                        self.MAX_JSON_READ_BYTES / 1048576, rel_path)
+                except OSError:
+                    logger.error("[persistence] JSON 异常超大且留证失败：%s", rel_path)
+                return default
         # 检查缓存
         with self._cache_lock:
             cached = self._read_cache.get(rel_path)

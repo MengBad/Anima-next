@@ -135,7 +135,8 @@ class GitHubSignalSource:
         try:
             out = subprocess.run(
                 [_GH_BIN, "auth", "status"],
-                capture_output=True, text=True, timeout=10,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace", timeout=10,
             )
             return out.returncode == 0
         except Exception:  # noqa: BLE001 - gh 缺失 -> 回退 REST
