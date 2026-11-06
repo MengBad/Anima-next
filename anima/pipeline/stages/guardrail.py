@@ -602,6 +602,30 @@ def _has_image_delivery_evidence(ctx: "PipelineContext") -> bool:
     return False
 
 
+#: 声称「我去查/搜一下」的措辞。本回合没有任何工具调用却这么说 = 空头承诺。
+#: 生产实证 2026-11-06 21:57：用户发「A Rusty Dream」，bot 回
+#: 「是首歌吗？本喵没听过这个名儿，搜一下瞅瞅喵」——日志里
+#: `[技能路由提示] 注入 skill=skill_web_brief` 有，但 `tool_choice: auto`
+#: 是软约束，模型没真调工具，只嘴上说搜。与「编造出图/编造完成」同族。
+_SEARCH_INTENT_RE = re.compile(
+    r"(?:搜一下|查一下|搜搜|查查|我去搜|我去查|找找看|瞅瞅|看看是什么|"
+    r"搜搜看|查一查|我查查|我搜搜|稍等.{0,4}搜|等下.{0,4}查)"
+)
+
+
+def _looks_like_fake_search_promise(reply: str, ctx: "PipelineContext") -> bool:
+    """回复声称要去搜/查，但本回合**零工具调用**（2026-11-06）。
+
+    与 `_looks_like_fake_image_claim` 同构：都是「说了要做但没做」。
+    判据刻意保守：只要有任一活动证据就不拦（宁可漏判，不误伤真的调了工具
+    但结果为空的情况）。
+    """
+    text = str(reply or "")
+    if not text or not _SEARCH_INTENT_RE.search(text):
+        return False
+    return not _has_activity_evidence(ctx)
+
+
 def _looks_like_fake_image_claim(reply: str, ctx: "PipelineContext") -> bool:
     """回复声称要交图/已交图，但本回合没有图片产出（2026-10-26）。
 
@@ -1261,6 +1285,25 @@ async def guardrail_stage(ctx: PipelineContext) -> StageResult:
             return StageResult.CONTINUE
     except Exception:
         logger.debug("编造出图检测失败（已隔离）", exc_info=True)
+
+    # 🔴 2026-11-06：**声称要搜却没搜**。
+    #
+    # 生产实证：用户发「A Rusty Dream」，bot 回「本喵没听过这个名儿，搜一下瞅瞅喵」，
+    # 但本回合零工具调用 —— `[技能路由提示] 注入 skill=skill_web_brief` 只是
+    # prompt 软约束，`tool_choice: auto` 不保证真调。用户等不到后续，等于被放鸽子。
+    #
+    # 处置与「编造出图」一致：**改写成诚实的话**（不拒发，否则像死机）。
+    # 不硬塞工具调用（那会绕过 pipeline 权限/预算），只把空头承诺换成如实说明。
+    try:
+        if _looks_like_fake_search_promise(ctx.reply, ctx):
+            logger.error(
+                "[虚假搜索承诺拦截] 声称要搜但本回合零工具调用，已改写 len=%d",
+                len(ctx.reply or ""))
+            ctx.meta["fake_search_promise_blocked"] = True
+            ctx.reply = "这个本喵没查过，不好瞎说喵。你想让本喵去搜的话，直说一声「搜一下」就行。"
+            return StageResult.CONTINUE
+    except Exception:
+        logger.debug("虚假搜索承诺检测失败（已隔离）", exc_info=True)
 
     # 🔴 2026-10-25：**emoji / 颜文字出站兜底**。
     #
