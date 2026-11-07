@@ -898,6 +898,14 @@ class LLMClient:
     def _is_failoverable_status(status: int | None) -> bool:
         return status is None or status in {408, 409, 425, 429, 500, 502, 503, 504}
 
+    def _is_model_gone(self) -> bool:
+        """主模型已下架时切候选是唯一正确解，即使 HTTP 码是 400。"""
+        if self.last_status != 400:
+            return False
+        err = str(getattr(self, "last_error", "") or "").lower()
+        return ("model_not_found" in err or "unknown provider" in err
+                or "does not support" in err)
+
     @staticmethod
     def _is_empty_completion(data: Any) -> bool:
         """判定「HTTP 200 但补全为空」——上游降级，必须可 failover。
@@ -1059,7 +1067,7 @@ class LLMClient:
             if self._empty_completion:
                 continue
             # 鉴权、参数、载荷等非瞬态问题切模型没有意义，也不能无限尝试。
-            if not self._is_failoverable_status(self.last_status):
+            if not self._is_failoverable_status(self.last_status) and not self._is_model_gone():
                 break
 
         self.failure_count += 1
