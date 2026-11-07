@@ -350,7 +350,24 @@ class OwnerAgent:
         #     这类多半是「发给 1562290139 就好」这种没有上下文词的形态；
         #     打码保留句子结构，读起来仍通顺。
         text = cls._BARE_QQ_RE.sub("***", text)
-        # 3) 压掉净化后留下的空行堆
+        # 3) **DSML 工具调用块**（`<｜DSML｜｜ calls> … </｜DSML｜｜ calls>`）
+        #    以及 `[Memoh] ` 前缀。
+        #
+        # 🔴 2026-11-07：`ask_memoh` 把重活交给 Memoh 容器，Memoh 的 assistant
+        # 消息里混着 `<｜DSML｜｜ invoke name="exec">…` 这类**执行端工具标记**。
+        # 这些标记经 `_latest_assistant` 原样返回 → 进 ReAct 的 tool result →
+        # 被模型当成"自己该说的话"复述进交付正文 → 直达 QQ（Agent 交付走
+        # gateway.send，**绕过 pipeline**，对话层护栏完全不生效）。
+        # 生产实证 14:29~14:36 连续 4 条消息里出现整段 DSML 标记和
+        # 「[Memoh] 我先去取回那个文件」这种助手腔前缀。
+        #
+        # 整块删（不是只删标签）——里面的 command 参数含内部路径，同样不能外泄。
+        text = re.sub(
+            r"<｜DSML｜｜\s*calls>.*?</｜DSML｜｜\s*calls>",
+            "", text, flags=re.S)
+        text = re.sub(r"<｜DSML｜｜[^>]*>", "", text)
+        text = re.sub(r"(?m)^\s*\[Memoh\]\s*", "", text)
+        # 3b) 压掉净化后留下的空行堆
         text = re.sub(r"\n{3,}", "\n\n", text).strip()
         # 4) 只剩标点/空白 ⇒ 视为无产物
         if not re.search(r"[\w\u4e00-\u9fff]", text):

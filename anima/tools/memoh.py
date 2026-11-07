@@ -156,8 +156,25 @@ def _latest_assistant(token: str, session_id: str) -> str:
                  if isinstance(p, dict) and str(p.get("type") or "") == "text"]
         joined = "".join(texts).strip()
         if joined:
-            return joined
+            return _strip_backend_scaffolding(joined)
     return ""
+
+
+#: Memoh（及类似执行后端）回传正文里的工具调用标记。
+#: 这些是**执行端的内部协议**，不是给最终用户看的话；一旦混进
+#: ReAct 的 tool result，模型会把它当成"自己刚说过的话"复述出去。
+def _strip_backend_scaffolding(text: str) -> str:
+    """剥掉执行后端的 DSML/工具标记，只留人话正文。"""
+    import re as _re
+    t = str(text or "")
+    if not t:
+        return ""
+    # 整块工具调用（含内部 command 参数）直接删
+    t = _re.sub(r"<｜DSML｜｜\s*calls>.*?</｜DSML｜｜\s*calls>", "", t, flags=_re.S)
+    t = _re.sub(r"<｜DSML｜｜[^>]*>", "", t)
+    t = _re.sub(r"(?m)^\s*\[Memoh\]\s*", "", t)
+    t = _re.sub(r"\n{3,}", "\n\n", t).strip()
+    return t
 
 
 async def delegate(task: str, *, timeout: float = DEFAULT_TIMEOUT,
