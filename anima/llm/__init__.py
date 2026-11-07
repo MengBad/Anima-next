@@ -185,6 +185,7 @@ class LLMClient:
         #: `_post` 进入时按 outbound 计算；非出站恒 None（旁路/后台不受限）。
         self._outbound_deadline: Optional[float] = None
         self.retry_backoff_sec = max(0.0, min(float(retry_backoff_sec), 5.0))
+        self._skip_retry = False
         self.fallback_models = [
             str(item).strip() for item in (fallback_models or [])
             if str(item).strip() and str(item).strip() != model
@@ -1224,6 +1225,9 @@ class LLMClient:
                     body = await response.text()
                     self._set_error(f"http_{response.status}:{body[:160]}")
                     retryable = response.status in {408, 409, 425, 429, 500, 502, 503, 504}
+                    # 429: skip same-model retry, fail over to next candidate.
+                    if response.status == 429:
+                        self._skip_retry = True
                     if not retryable:
                         logger.error("LLM API 不可重试错误 %d: %.300s", response.status, body)
                         return None
@@ -1236,6 +1240,9 @@ class LLMClient:
                 logger.exception("LLM 请求异常")
                 return None
 
+            if self._skip_retry:
+                self._skip_retry = False
+                break
             if attempt < _retries:
                 if (self._outbound_deadline is not None
                         and self._outbound_deadline - time.perf_counter()
