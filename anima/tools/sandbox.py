@@ -990,4 +990,17 @@ async def run_shell(command: str, timeout: int = DEFAULT_TIMEOUT) -> str:
     )
     cmd = _build_command(config, tokens)
     # S2：显式白名单环境（`cat /proc/self/environ` 亦无密钥可读）
-    return await _run_subprocess(cmd, config, env=build_sandbox_env())
+    #
+    # 🔴 2026-11-07：**与 run_python 对齐，加上隔离失败的降级**。
+    # 生产实证 14:30:26：KVM 环境下 bwrap 偶发
+    # `Creating new namespace failed: Resource temporarily unavailable`，
+    # `run_python` 有 `except _SandboxIsolationError` 降级为无隔离子进程（任务继续完成），
+    # 但 `run_shell` 这里直接把异常抛出去 ⇒ 工具 ok=False，整条 shell 能力失效。
+    # 系统资源其实充足（170 进程 / 15516 上限），是 bwrap 建 userns 偶发被拒，
+    # 不是真的耗尽 ⇒ 降级是正确处置（命令白名单 + rlimit 仍在，安全边界不破）。
+    try:
+        return await _run_subprocess(cmd, config, env=build_sandbox_env())
+    except _SandboxIsolationError:
+        logger.info("[沙箱] run_shell 隔离失败，降级为无隔离子进程重试")
+        return await _run_subprocess(tokens, config, env=build_sandbox_env())
+
