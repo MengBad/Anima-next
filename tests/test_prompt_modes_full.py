@@ -63,9 +63,12 @@ def test_build_system_orders_common_before_contract():
     s = build_system("work", time_context="T")
     assert s.startswith("T")
     i_common = s.find("指令优先级")
-    i_contract = s.find("工作模式契约")
+    # "工作模式契约" 只存在于被剥掉的 HTML 开发者注释里；
+    # 契约正文以 "## 你是谁" 起头（见 test_work_prompt_no_dev_notes.py）。
+    i_contract = s.find("## 你是谁")
     assert i_common > 0 and i_contract > 0
     assert i_common < i_contract
+    assert "<!--" not in s
 
 
 def test_build_system_excludes_persona():

@@ -58,12 +58,31 @@ _CACHE: dict[str, str] = {}
 _INCLUDE_RE = re.compile(r"\{\{include:(\w+)\}\}")
 
 
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
+
+
 def _read(name: str) -> str:
-    """读一个片段文件，带进程内缓存。missing 返回空串。"""
+    """读一个片段文件，带进程内缓存。missing 返回空串。
+
+    🔴 2026-11-07：**必须剥掉 HTML 注释**。
+    `mode_work.md` / `_common.md` 等文件开头有大段开发者笔记
+    （「照抄 Memoh `mode_chat.md` 结构」「Memoh 原文要点：…」），
+    注释里以为「HTML 注释不会进 system prompt」—— 但 `_read()` 以前是
+    直接 `read_text().strip()` **原样返回**，这些注释逐字进了 system。
+
+    生产实证 14:29~14:36：work 模式下模型收到的 system 里明写着
+    「工作模式契约（照抄 Memoh…）」「Memoh 的做法是模式整体替换」，
+    于是它自称 Memoh、回话带 `[Memoh] ` 前缀、用执行代理腔混搭猫娘口癖。
+    owner 原话：「现在这个 agent 基于 memoh 的项目」—— 这个感受是准确的，
+    不是错觉：prompt 里真的写了。
+
+    U2 定律：写进 prompt 的原句会被原样搬进出站。开发者笔记不该进 prompt。
+    """
     if name in _CACHE:
         return _CACHE[name]
     try:
         text = (_PROMPT_DIR / name).read_text(encoding="utf-8").strip()
+        text = _HTML_COMMENT_RE.sub("", text).strip()
     except Exception:
         logger.warning("prompt 片段读取失败: %s", name, exc_info=True)
         text = ""

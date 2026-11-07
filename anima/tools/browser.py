@@ -364,13 +364,81 @@ class PageResult:
     title: str
     text: str
     truncated: bool = False
+    #: SPA 是否渲染稳定（2026-11-07）。False ⇒ 正文可能是空壳，必须如实标注。
+    settled: bool = True
+    visible_chars: int = 0
 
     def render(self, max_chars: int) -> str:
-        head = f"标题：{self.title}\n来源：{self.url}\n\n"
+        head = f"标题：{self.title}\n来源：{self.url}\n"
+        if not self.settled:
+            # 不假装成功：让下游模型知道「这份正文不可信，别拿它下结论」。
+            head += (f"\n⚠️ 页面可能未渲染完成（可见文字仅 {self.visible_chars} 字，"
+                     "JS 尚未出内容）。以下正文可能为空壳，请勿据此判断页面内容；"
+                     "可稍后重试或改用截图查看。\n")
+        head += "\n"
         body = self.text
         if self.truncated or len(body) > max_chars:
             body = body[:max_chars].rstrip() + "\n…（正文过长，已截断）"
         return head + body
+
+
+#: SPA 渲染等待参数（2026-11-07）。
+#:
+#: 生产实证：华为云 `/grow` 是纯 JS 页面，`page.goto(...,
+#: wait_until="domcontentloaded")` 一返回就截图 ⇒ PNG 恒定 5407 字节
+#: （空白页），`browse_web` 抓到的 5875 字全是空壳，后续
+#: `click(selector)` 找不到元素直接 15s 超时。同任务里正常渲染的截图是
+#: 416319 / 36485 字节 —— 差别就在 JS 有没有跑完。
+#:
+#: 为什么不用 `networkidle`：SPA 常有轮询 / websocket / 埋点长连接，
+#: 网络永远不 idle，会白等到超时。改用「可见正文稳定」判据。
+SPA_SETTLE_TIMEOUT_MS = 8000      # 最多等 8 秒
+SPA_SETTLE_POLL_MS = 400          # 每 400ms 采样一次
+SPA_SETTLE_MIN_CHARS = 40         # 至少要有这么些可见文字才算渲染出内容
+SPA_SETTLE_STABLE_ROUNDS = 2      # 连续几次采样不变才认为稳定
+
+
+async def _settle_spa(page: Any) -> tuple[bool, int]:
+    """等 SPA 的可见正文渲染稳定。返回 (是否稳定, 最终可见字数)。
+
+    判据：连续 SPA_SETTLE_STABLE_ROUNDS 次采样，可见文字长度不变且
+    ≥ SPA_SETTLE_MIN_CHARS。超时返回 (False, 当前字数) —— 调用方据此
+    **如实标注**「页面可能未渲染完」，不假装成功。
+    """
+    import asyncio as _aio
+
+    js = (
+        "() => {"
+        "  const s = new Set(['SCRIPT','STYLE','NOSCRIPT','SVG','IFRAME']);"
+        "  let n = 0;"
+        "  const w = (x) => {"
+        "    if (!x) return;"
+        "    if (x.nodeType === 3) { n += (x.textContent || '').trim().length; return; }"
+        "    if (x.nodeType !== 1 || s.has(x.tagName)) return;"
+        "    const st = window.getComputedStyle(x);"
+        "    if (st && (st.display === 'none' || st.visibility === 'hidden')) return;"
+        "    for (const c of x.childNodes) w(c);"
+        "  };"
+        "  w(document.body);"
+        "  return n;"
+        "}"
+    )
+    deadline = _aio.get_event_loop().time() + SPA_SETTLE_TIMEOUT_MS / 1000.0
+    last, stable = -1, 0
+    while _aio.get_event_loop().time() < deadline:
+        try:
+            n = int(await page.evaluate(js) or 0)
+        except Exception:
+            n = 0
+        if n == last and n >= SPA_SETTLE_MIN_CHARS:
+            stable += 1
+            if stable >= SPA_SETTLE_STABLE_ROUNDS:
+                return True, n
+        else:
+            stable = 0
+        last = n
+        await _aio.sleep(SPA_SETTLE_POLL_MS / 1000.0)
+    return False, max(last, 0)
 
 
 async def _fetch_async(url: str, *, timeout_sec: float, max_chars: int) -> PageResult:
@@ -378,6 +446,9 @@ async def _fetch_async(url: str, *, timeout_sec: float, max_chars: int) -> PageR
     async with _persistent_session() as ctx:
         page = await _first_page(ctx)
         await page.goto(url, timeout=int(timeout_sec * 1000), wait_until="domcontentloaded")
+        # 🔴 2026-11-07：DOMContentLoaded 对纯 JS 页面等于「空壳」。
+        # 必须再等正文渲染稳定，否则抓回来的是空页面（华为云 /grow 实证）。
+        settled, visible_chars = await _settle_spa(page)
         title = await page.title()
         # 只取可见文本，避免把 <script>/<style> 塞进上下文
         # 🔴 JS 里不能把换行转义直接写进 Python 三引号——会变成真换行，
@@ -408,7 +479,9 @@ async def _fetch_async(url: str, *, timeout_sec: float, max_chars: int) -> PageR
             line.strip() for line in (text or "").splitlines() if line.strip()
         )
         truncated = len(text) > max_chars
-        return PageResult(url=url, title=str(title or ""), text=text, truncated=truncated)
+        return PageResult(url=url, title=str(title or ""), text=text,
+                          truncated=truncated, settled=settled,
+                          visible_chars=visible_chars)
 
 
 # ── 截图落盘 + 回传私聊 ─────────────────────────────────────────────────
@@ -536,6 +609,11 @@ def validate_actions(actions: Any) -> list[dict]:
 
 async def _do_screenshot(page: Any, index: int) -> str:
     """截图落到绝对路径，并把路径回传给私聊出站层。返回一行人类可读日志。"""
+    # 🔴 2026-11-07：截图前也等 SPA 渲染稳定。
+    # 生产实证：华为云 /grow 空白页截图恒定 5407 字节，连发 3 张给用户，
+    # 用户看到的全是白图，bot 却据此说「渲染出来是空白」——
+    # 其实是自己没等 JS 跑完就拍了。
+    settled, nchars = await _settle_spa(page)
     shot = _screenshot_dir() / f"shot_{int(time.time() * 1000)}.png"
     await page.screenshot(path=str(shot), full_page=True)
     size = 0
@@ -546,6 +624,9 @@ async def _do_screenshot(page: Any, index: int) -> str:
     # 2026-11-03：截图落在进程 cwd、日志不带路径 ⇒ 调用方拿不到文件。
     # 2026-11-06：再把绝对路径塞进 generated_image_paths，让 QQ 出站层真正发图。
     _publish_generated_image(shot)
+    if not settled:
+        return (f"{index}. 已截图：{shot}（{size} 字节）"
+                f"⚠️ 页面可能未渲染完成（可见文字仅 {nchars} 字），此图可能是空壳")
     return f"{index}. 已截图：{shot}（{size} 字节）"
 
 
@@ -556,8 +637,17 @@ async def _run_actions(page: Any, actions: list[dict]) -> list[str]:
         op = a["op"]
         if op == "navigate":
             await page.goto(a["url"], timeout=30000, wait_until="domcontentloaded")
+            settled, nchars = await _settle_spa(page)
             title = await page.title()
-            log.append(f"{i}. 打开 {a['url']}（标题：{title[:50]}）")
+            if settled:
+                log.append(f"{i}. 打开 {a['url']}（标题：{title[:50]}，可见文字 {nchars} 字）")
+            else:
+                # 空壳页面：如实告诉模型，别让它对着不存在的元素 click
+                log.append(
+                    f"{i}. 打开 {a['url']}（标题：{title[:50]}）"
+                    f"⚠️ 页面可能未渲染完成，可见文字仅 {nchars} 字；"
+                    "后续点击/取正文很可能失败，建议先加 wait 或改用截图。"
+                )
         elif op == "click":
             await page.click(a["selector"], timeout=15000)
             log.append(f"{i}. 点击 {a['selector']}")

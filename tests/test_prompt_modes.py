@@ -55,7 +55,12 @@ def test_work_system_replaces_persona():
     """工作模式必须整体替换 —— 人格文本不能残留。"""
     s = build_work_system("PERSONA_PLACEHOLDER", time_context="T")
     assert "PERSONA_PLACEHOLDER" not in s, "人格 prompt 被叠加进工作模式了"
-    assert "工作模式契约" in s
+    # 🔴 2026-11-07：原来断言 "工作模式契约" in s —— 那串字只存在于
+    # mode_work.md 开头的 HTML **开发者注释**里（「工作模式契约（照抄 Memoh…）」）。
+    # 注释被 _read() 原样拼进 system 是 bug（模型因此自称 Memoh），
+    # 现已在 _read() 里剥掉。改断言真正的契约正文标识。
+    assert "## 你是谁" in s
+    assert "<!--" not in s, "开发者注释不该进 system prompt"
     assert s.startswith("T"), "时间上下文应在最前"
 
 
