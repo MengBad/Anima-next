@@ -1526,3 +1526,32 @@ def test_echo_branch_does_not_use_undefined_mem():
     # 但必须有心跳 + 自己取的 _mem
     assert "core.heartbeat = Heartbeat(" in win
     assert "get_chat_memory" in win, "echo 分支应自己取 chat_memory"
+
+
+# ---------------------------------------------------------------------------
+# 28. 登录判定不能用固定 3 秒（2026-11-24 你自己的账号踩到）
+# ---------------------------------------------------------------------------
+
+def test_login_result_uses_polling_not_fixed_sleep():
+    """🔴 真实事故：用户 1562290139 的账号登录明明成功了，
+    runner 却报「验证码未通过」。
+
+    独立诊断：等 12 秒 → URL 已到 `/dashboard`（成功）
+    runner：只等 3 秒 → URL 仍在 `/auth/login` → 误判失败
+    ⇒ 白跑 66 秒 + 给用户发假失败通知。
+
+    ⇒ 必须轮询 URL（最多 25 秒），不是固定 sleep 3。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    i = src.index("# 5. 判定登录结果")
+    win = src[i:i + 900]
+    assert "for _ in range(25)" in win, "登录判定没用轮询"
+    assert '"/auth/login" not in cur' in win or "'/auth/login' not in cur" in win
+
+
+def test_captcha_return_value_is_captured():
+    """`_solve_captcha` 的返回值不能再被丢弃（老 bug 复现）。"""
+    src = _RUNNER.read_text(encoding="utf-8")
+    assert "captcha_ok = _solve_captcha(driver)" in src
+    assert "        _solve_captcha(driver)\n" not in src, \
+        "又出现丢弃返回值的调用"

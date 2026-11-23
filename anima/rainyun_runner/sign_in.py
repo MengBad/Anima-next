@@ -697,15 +697,30 @@ def main() -> None:
         _log("已点击登录")
 
         # 4. 处理验证码（bug#2 修复版）
-        _solve_captcha(driver)
-        time.sleep(3)
+        captcha_ok = _solve_captcha(driver)
+        # 🔴 **不能忽略返回值**（2026-11-24 实测又踩一次）：
+        # 如果验证码明确失败（tcOperation 不是 show-success），
+        # 后面的「等 3 秒 + 看 URL」会因为 SPA 跳转慢而误判。
+        # 但也不能一看 captcha_ok=False 就断定失败 —— 有时无验证码
+        # 直接登录成功。⇒ 先看返回值，再**轮询 URL** 给足时间。
 
-        # 5. 判定登录结果
-        try:
-            driver.switch_to.default_content()
-        except Exception:
-            pass
-        cur = driver.current_url
+        # 5. 判定登录结果：轮询最多 25 秒，别用固定 3 秒。
+        #
+        # 实测（2026-11-24，用户 1562290139）：
+        #   独立诊断脚本等 12 秒 → URL 已到 /dashboard（登录成功）
+        #   runner 只等 3 秒 → URL 仍在 /auth/login → 误报「验证码未通过」
+        #   ⇒ 白跑了 66 秒还给用户发假失败通知。
+        cur = ""
+        for _ in range(25):
+            try:
+                driver.switch_to.default_content()
+            except Exception:
+                pass
+            cur = driver.current_url
+            if "/auth/login" not in cur:
+                break
+            time.sleep(1)
+
         if "/auth/login" in cur:
             # 还在登录页 ⇒ 失败。区分「密码错」与「验证码没过」
             reason = "验证码未通过"
