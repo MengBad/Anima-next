@@ -1447,3 +1447,59 @@ def test_chrome_and_driver_versions_match():
     if v_chrome and v_driver:
         assert v_chrome.group(1) == v_driver.group(1), \
             f"Chrome {v_chrome.group(1)} vs driver {v_driver.group(1)} 版本不一致"
+
+
+# ---------------------------------------------------------------------------
+# 27. LLM 停用 ≠ 雨云签到停用（2026-11-24 owner 明确要求）
+# ---------------------------------------------------------------------------
+
+def test_heartbeat_starts_in_echo_mode():
+    """🔴 **12 天没签上的真实原因。**
+
+    2026-11-12 有人清空了 `.secrets` 里的三个 LLM 密钥（同秒停了服务）。
+    之后重启时走 `else: echo 模式` 分支——而**心跳启动块整个嵌在
+    `if provider_key_text:` 里**，于是 `core.heartbeat` 根本没被创建。
+
+    雨云自动签到跑在 `Heartbeat._tick` 里 ⇒ **跟着一起停摆**。
+
+    owner 明确要求：「我本身就是要停止 LLM 的，但在 LLM 停的时候
+    雨云签到不停，同时还是会发成功或失败的信息给用户。」
+
+    ⇒ echo 分支里也必须启动心跳（不带 LLM 依赖）。
+    """
+    src = (_ROOT / "anima" / "cli.py").read_text(encoding="utf-8")
+    # 找到 else: echo 模式那段
+    i = src.index('click.echo("LLM 未配置，使用 echo 模式")')
+    # 往后 3000 字符内必须出现心跳创建
+    win = src[i:i + 3000]
+    assert "core.heartbeat = Heartbeat(" in win, \
+        "echo 模式下没启动心跳 ⇒ 雨云签到不会跑"
+    assert "_auto_start_heartbeat = True" in win
+
+
+def test_rainyun_signin_does_not_need_llm():
+    """雨云签到本身不能依赖 LLM（纯浏览器任务）。
+
+    `_rainyun_signin_tick` 里不应出现任何 LLM 调用。
+    """
+    src = (_ROOT / "anima" / "core" / "autonomy.py").read_text(encoding="utf-8")
+    i = src.index("async def _rainyun_signin_tick")
+    # 到下一个同缩进方法定义为止
+    j = src.index("\n    async def ", i + 10)
+    body = src[i:j]
+    for bad in ("self.llm", "llm.complete", "await self.core.llm",
+                "generate_text", "chat_completion"):
+        assert bad not in body, f"_rainyun_signin_tick 依赖了 LLM：{bad}"
+
+
+def test_tick_sections_are_isolated():
+    """`_tick` 各段必须有 try/except 隔离，否则 echo 模式下某段抛异常
+    会中断后续（含雨云签到）。
+
+    这里只断言「雨云签到那段被 try 包着」。
+    """
+    src = (_ROOT / "anima" / "core" / "autonomy.py").read_text(encoding="utf-8")
+    i = src.index("await self._rainyun_signin_tick(now)")
+    # 往前找最近的 try:
+    window = src[max(0, i - 300):i]
+    assert "try:" in window, "雨云签到调用没有被 try 包住"

@@ -522,6 +522,39 @@ def start(config_path, once, identity_attestation):
     else:
         click.echo("LLM 未配置，使用 echo 模式")
         _register_echo_handler(core)
+        # 🔴 2026-11-24：**LLM 停用 ≠ 心跳停用**。
+        #
+        # 原本整个心跳启动块都嵌在 `if provider_key_text:` 里，
+        # 于是「清空 LLM 密钥」会连带把雨云自动签到一起停掉
+        # （它在 `Heartbeat._tick` 里）——实测 11-12 之后 12 天没签上。
+        # owner 明确要求：「LLM 停的时候雨云签到不停」。
+        #
+        # ⇒ 在 echo 分支里**同样启动心跳**。需要 LLM 的环节
+        # （自主发言 / 探索 / 生成）在 `_tick` 内各自 try/except，
+        # echo 模式下自然跳过；雨云签到是纯浏览器任务，不受影响。
+        if cfg.autonomy.enabled:
+            from anima.core.autonomy import Heartbeat
+            core.heartbeat = Heartbeat(
+                core,
+                tick_sec=cfg.autonomy.heartbeat_tick_sec,
+                cooldown_sec=cfg.autonomy.cooldown_sec,
+                daily_max=cfg.autonomy.daily_max_per_group,
+                ratio_max=cfg.autonomy.ratio_max,
+                token_budget=cfg.autonomy.token_budget_per_day,
+                active_reply_prob=cfg.autonomy.active_reply_prob,
+                active_silence_min_sec=cfg.autonomy.active_silence_min_sec,
+                active_global_cooldown_sec=cfg.autonomy.active_global_cooldown_sec,
+                active_min_group_messages=cfg.autonomy.active_min_group_messages,
+                active_daily_max_per_group=cfg.autonomy.active_daily_max_per_group,
+                active_context_score_threshold=cfg.autonomy.active_context_score_threshold,
+                active_feedback_window_sec=cfg.autonomy.active_feedback_window_sec,
+                active_feedback_min_samples=cfg.autonomy.active_feedback_min_samples,
+                active_feedback_min_acceptance=cfg.autonomy.active_feedback_min_acceptance,
+                data_dir=cfg.persistence.data_dir,
+            )
+            mem.set_group_callback(core.heartbeat.count_message)
+            core._auto_start_heartbeat = True
+            click.echo("自主心跳: 已在 echo 模式下启动（雨云签到照常运行）")
 
     if once:
         click.echo("冒烟测试：配置加载 + 适配器绑定成功，立即退出。")

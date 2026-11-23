@@ -28,6 +28,7 @@ from .sticker import make_sticker_tools
 from .merge import make_merge_forward
 from .honor import make_group_honor
 from .agent_tools import register_agent_tools
+from .etalien import register_etalien_tools
 from .reminder import register_reminder_tools
 from .repo import register_repo_tools
 from .code_exec import make_code_exec_tool
@@ -546,6 +547,9 @@ def register_all_builtin(registry, core=None) -> None:
 
         # Phase 2：Owner/Admin 专属 Agent 通用工具（受护栏 + 审计门控）
         register_agent_tools(registry, core)
+
+        # 外星仔 PVE 刷额度（OWNER + 私聊）
+        register_etalien_tools(registry, core)
 
         registry.register(Tool(
             "propose_skill_draft",
