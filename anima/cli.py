@@ -552,7 +552,19 @@ def start(config_path, once, identity_attestation):
                 active_feedback_min_acceptance=cfg.autonomy.active_feedback_min_acceptance,
                 data_dir=cfg.persistence.data_dir,
             )
-            mem.set_group_callback(core.heartbeat.count_message)
+            # 🔴 `mem` 只在上面的 `if provider_key_text:` 分支里创建过
+            # （cli.py 的 chat_memory 初始化），echo 模式下这个局部变量
+            # **不存在** —— 直接用会 `UnboundLocalError` 把启动整个打挂
+            # （2026-11-24 实测：服务反复 auto-restart，日志
+            #  `cannot access local variable 'mem'`）。
+            # ⇒ 这里自己取一次；失败就跳过这个可选回调，不影响心跳本身。
+            try:
+                from anima.memory.chat_memory import get_chat_memory
+                _mem_path = f"{cfg.persistence.data_dir}/chat_memory.json"
+                _mem = get_chat_memory(persist_path=_mem_path)
+                _mem.set_group_callback(core.heartbeat.count_message)
+            except Exception:
+                click.echo("心跳群消息计数回调: 跳过（无 chat_memory）")
             core._auto_start_heartbeat = True
             click.echo("自主心跳: 已在 echo 模式下启动（雨云签到照常运行）")
 

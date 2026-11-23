@@ -1503,3 +1503,26 @@ def test_tick_sections_are_isolated():
     # 往前找最近的 try:
     window = src[max(0, i - 300):i]
     assert "try:" in window, "雨云签到调用没有被 try 包住"
+
+
+def test_echo_branch_does_not_use_undefined_mem():
+    """🔴 2026-11-24 实测崩溃：echo 分支里用了 `mem`，但它是
+    `if provider_key_text:` 分支的局部变量 ⇒
+    `UnboundLocalError: cannot access local variable 'mem'`
+    ⇒ 服务反复 auto-restart，启动直接失败。
+
+    ⇒ echo 分支必须自己取 chat_memory（或跳过该可选回调）。
+    """
+    src = (_ROOT / "anima" / "cli.py").read_text(encoding="utf-8")
+    i = src.index('click.echo("LLM 未配置，使用 echo 模式")')
+    # echo 分支到下一个顶层 if 之间（用 "\n    if once:" 精确切）
+    j = src.index("\n    if once:", i)
+    win = src[i:j]
+    # 不得出现裸的 `mem.set_group_callback`（`_mem.` 是允许的：
+    # echo 分支自己取的局部变量）
+    import re as _re
+    assert not _re.search(r"(?<!_)mem\.set_group_callback", win), \
+        "echo 分支直接用了未定义的 mem"
+    # 但必须有心跳 + 自己取的 _mem
+    assert "core.heartbeat = Heartbeat(" in win
+    assert "get_chat_memory" in win, "echo 分支应自己取 chat_memory"
