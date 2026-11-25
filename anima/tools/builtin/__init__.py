@@ -760,10 +760,11 @@ def register_all_builtin(registry, core=None) -> None:
     #    见 `anima/tools/builtin/rainyun.py` 的模块 docstring。
     registry.register(Tool(
         "rainyun_status",
-        "查询雨云积分任务状态（每日签到是否可领、当前积分、还有哪些一次性任务）。只读。",
+        "查询雨云积分任务状态（每日签到是否可领、当前积分、还有哪些一次性任务）。只读。"
+        "只能在私聊里用（private_only），群聊里任何人都不该看到积分数字。",
         {},
         make_rainyun_status(core),
-        min_level=LEVEL_OWNER,
+        min_level=LEVEL_OWNER, private_only=True,
     ))
 
     # --- 雨云多人绑定签到（2026-10-26，方案 B）---
