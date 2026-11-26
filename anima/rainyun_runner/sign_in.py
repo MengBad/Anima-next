@@ -118,7 +118,7 @@ DEFAULT_CHROMEDRIVER = ("/opt/anima/.cache/selenium/chromedriver/"
                         "linux64/156.0.8078.47/chromedriver")
 
 #: 各阶段超时（秒）
-WAIT_LOGIN_FORM = 20
+WAIT_LOGIN_FORM = 45
 WAIT_CAPTCHA = 25
 WAIT_AFTER_LOGIN = 20
 
@@ -528,63 +528,105 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
         _emit({"ok": False, "reason": "页面加载超时", "points": None}, 1)
         return
 
-    # 找签到按钮（"领取奖励" 表示还没签，"去完成" 表示已签）
+    # 找签到按钮 —— 🔴 **不用绝对 XPath，用文案匹配**。
+    #
+    # 2026-11-26 页面改版实证：
+    #   旧：span[2]/a 文案「领取奖励」→ XPath 结构性失效
+    #   新：SPAN.badge.badge-success.badge-pill 文案「去签到」
+    #       父容器 DIV「每日签到 去签到」
+    #
+    # 绝对 XPath（`//*[@id="app"]/div[1]/div[3]/...`）层层依赖 DOM 结构，
+    # 雨云一改版就全废（这次直接导致 2 个账号签到失败）。
+    # ⇒ 改为找包含签到关键词的可点元素（a/button/span），按文案判定。
+    #
+    # 文案语义：
+    #   「领取奖励」/「去签到」 → 还没签，点它
+    #   「已完成」/「去完成」   → 已签（或任务完成）
+    # 🔴 2026-11-26 二次改版实证：
+    #   BUTTON.card-header.daily-check-in-task「每日签到 去签到 积分或抽奖券」
+    #   里面的 SPAN.badge-success「去签到」
+    #   ⇒ 必须点**整个 BUTTON**，点里面的 span 不生效。
+    #   API Status=1（可领）时按钮是「去签到」；Status=2（已领）显示「已完成」。
+    #   ⚠️ 页面其它任务也有「已完成」，绝不能用 DONE_WORDS 匹配 ——
+    #      上次就是误命中别的任务，报了「今日已签到」但 API 说可领。
+    CLAIM_WORDS = ("去签到", "领取奖励", "立即签到")
+
     clicked = False
     btn_text = ""
     btn_found = False
-    try:
-        earn = driver.find_element(
-            By.XPATH,
-            '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/'
-            'div/div[1]/div/div[1]/div/div[1]/div/span[2]/a',
-        )
-        btn_text = (earn.text or "").strip()
-        btn_found = True
-        _log(f"签到按钮文字: [{btn_text}]")
-        if btn_text == "领取奖励":
-            earn.click()
-            clicked = True
-            time.sleep(2)
-            # 🔴 **必须检查验证码结果**。
-            # 实测事故（2026-10-27）：验证码没通过（`tcOperation` 仍是
-            # `tc-opera pointer` 而非 `show-success`），但这里忽略了返回值，
-            # 直接报 ok=True「签到成功」⇒ 第二次谎报。
-            # 而且按钮仍是「领取奖励」，说明雨云侧根本没签上。
-            captcha_ok = _solve_captcha(driver)
-            if not captcha_ok:
-                _log("验证码未通过，本次签到失败")
-                _emit({"ok": False, "reason": "验证码未通过",
-                       "points": None}, 1)
-    except Exception as exc:
-        # 🔴 **找不到按钮 ≠ 已签到**。
-        # 实测事故（用户 1371704917，2026-10-27）：XPath 取不到按钮
-        # （页面改版/加载慢/没进到积分页），这里只记了一行日志，
-        # 下面 `if not clicked` 就当成「今日已签到」返回 ok=True
-        # ⇒ 用户以为签上了，实际根本没签，而且 `last_sign` 被写成今天
-        # ⇒ 之后每天都被短路「今天已签过了」，永久卡死。
-        _log(f"找签到按钮失败: {type(exc).__name__}，重试一次")
-        # 再给一次机会：可能 SPA 还没渲染完
+
+    def _find_sign_button():
+        """返回 (element, text)；找不到返回 (None, "")。
+
+        🔴 不能让 `execute_script` 返回 DOM element —— Selenium 对嵌套在
+        dict 里的 WebElement 序列化不可靠。做法：JS 里给命中的元素打一个
+        临时属性 `_dsh_sign_target=1`，返回文本；Python 侧再用 CSS 选择器
+        把元素取回来，最后清掉临时属性。
+        """
+        txt = driver.execute_script("""
+            var words = %s;
+            document.querySelectorAll('[data-dsh-sign-target]').forEach(function(e){
+                e.removeAttribute('data-dsh-sign-target');
+            });
+            var found = [];
+            document.querySelectorAll('button,a,span,div').forEach(function(e){
+                var t = (e.innerText || '').trim();
+                if (!t || t.length > 30) return;
+                // 必须含「每日签到」+ 领取词，避免误命中其它任务的「已完成」
+                if (t.indexOf('每日签到') < 0) return;
+                var hasClaim = false;
+                for (var i=0;i<words.length;i++) {
+                    if (t.indexOf(words[i]) >= 0) { hasClaim = true; break; }
+                }
+                if (!hasClaim) return;
+                var r = e.getBoundingClientRect();
+                if (r.width <= 0 || r.height <= 0) return;
+                // 🔴 2026-11-26 实证：点整个 BUTTON 没反应，
+                //    必须点里面的 SPAN.badge「去签到」才会弹验证码。
+                //    点 badge 实测 captcha iframe 出现。
+                var score = (e.tagName === 'SPAN' && (e.className||'').toString().indexOf('badge')>=0
+                             ? 0 : 1000) + r.width*r.height;
+                found.push({el:e, txt:t, score:score});
+            });
+            if (!found.length) return '';
+            found.sort(function(a,b){return a.score - b.score;});
+            found[0].el.setAttribute('data-dsh-sign-target','1');
+            return found[0].txt;
+        """ % json.dumps(CLAIM_WORDS, ensure_ascii=False))
+        if not txt:
+            return None, ""
         try:
-            _goto_reward(driver)
-            earn = driver.find_element(
-                By.XPATH,
-                '//*[@id="app"]/div[1]/div[3]/div[2]/div/div/div[2]/div[2]/div/div/'
-                'div/div[1]/div/div[1]/div/div[1]/div/span[2]/a',
-            )
-            btn_text = (earn.text or "").strip()
-            btn_found = True
-            _log(f"重试后按钮文字: [{btn_text}]")
-            if btn_text == "领取奖励":
-                earn.click()
-                clicked = True
-                time.sleep(2)
-                captcha_ok = _solve_captcha(driver)
-                if not captcha_ok:
-                    _log("验证码未通过，本次签到失败")
-                    _emit({"ok": False, "reason": "验证码未通过",
-                           "points": None}, 1)
-        except Exception as exc2:
-            _log(f"重试仍失败: {type(exc2).__name__}")
+            el = driver.find_element(By.CSS_SELECTOR, "[data-dsh-sign-target='1']")
+            # 用完就清，避免下次误命中
+            driver.execute_script(
+                "document.querySelectorAll('[data-dsh-sign-target]')"
+                ".forEach(function(e){e.removeAttribute('data-dsh-sign-target');});")
+            return el, str(txt)
+        except Exception:
+            return None, ""
+
+    for attempt in range(2):
+        try:
+            if attempt:
+                _log("第一次没找到按钮，重新导航再试")
+                _goto_reward(driver)
+            earn, btn_text = _find_sign_button()
+            if earn is not None:
+                btn_found = True
+                _log(f"签到按钮文字: [{btn_text}]")
+                if any(w in btn_text for w in CLAIM_WORDS):
+                    earn.click()
+                    clicked = True
+                    time.sleep(2)
+                    captcha_ok = _solve_captcha(driver)
+                    if not captcha_ok:
+                        _log("验证码未通过，本次签到失败")
+                        _emit({"ok": False, "reason": "验证码未通过",
+                               "points": None}, 1)
+                break
+            _log("没找到签到按钮（文案匹配），重试一次")
+        except Exception as exc:
+            _log(f"找签到按钮失败: {type(exc).__name__}，重试一次")
 
     # 读积分
     time.sleep(3)
@@ -602,8 +644,9 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     # 🔴 三态判定：签了 / 确实已签 / **状态未知**
     if clicked:
         _emit({"ok": True, "points": points, "reason": "签到成功"}, 0)
-    elif btn_found and btn_text != "领取奖励":
-        # 按钮存在且文案不是「领取奖励」⇒ 真的已签（如「去完成」）
+    elif btn_found and not any(w in btn_text for w in CLAIM_WORDS):
+        # 找到「每日签到」按钮但文案不含领取词（如「每日签到 已完成」）
+        # ⇒ 真的已签。⚠️ 必须含「每日签到」前缀（找按钮时已保证）。
         _emit({"ok": True, "points": points, "reason": "今日已签到"}, 0)
     else:
         # 按钮都没找到 ⇒ **不能假设已签到**。

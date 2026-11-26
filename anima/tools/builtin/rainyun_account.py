@@ -380,7 +380,7 @@ def _current_user_id() -> str:
 _RUNNER_REL = os.path.join("anima", "rainyun_runner", "sign_in.py")
 
 #: 单账号签到超时（秒）。浏览器启动+登录+验证码约 40-90s，给足余量。
-SIGN_TIMEOUT = 120
+SIGN_TIMEOUT = 180
 
 
 def _runner_paths(core: Any) -> tuple[str, str]:
