@@ -120,6 +120,9 @@ DEFAULT_CHROMEDRIVER = ("/opt/anima/.cache/selenium/chromedriver/"
 #: 各阶段超时（秒）
 WAIT_LOGIN_FORM = 45
 WAIT_CAPTCHA = 25
+
+#: 最近一次 _solve_captcha 是否真的通过了验证码（show-success）
+_LAST_CAPTCHA_PASSED = False
 WAIT_AFTER_LOGIN = 20
 
 
@@ -424,6 +427,8 @@ def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
     from selenium.webdriver.common.by import By
     from selenium.webdriver.common.action_chains import ActionChains
 
+    global _LAST_CAPTCHA_PASSED
+    _LAST_CAPTCHA_PASSED = False
     fr = _wait_captcha(driver, timeout)
     if fr is None:
         _log("未触发验证码")
@@ -516,7 +521,8 @@ def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
             "return e?e.className:'';"
         )
         _log(f"提交后 tcOperation class: {cls}")
-        return "success" in str(cls).lower()
+        _LAST_CAPTCHA_PASSED = "success" in str(cls).lower()
+        return _LAST_CAPTCHA_PASSED
     except Exception as exc:
         _log(f"验证码处理异常: {type(exc).__name__}")
         traceback.print_exc(file=sys.stderr)
@@ -590,6 +596,7 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     clicked = False
     btn_text = ""
     btn_found = False
+    captcha_passed = False   # 验证码 show-success（雨云服务端确认）
 
     def _find_sign_button():
         """返回 (element, text)；找不到返回 (None, "")。
@@ -688,16 +695,26 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     #   雨云改成「先选奖励」dialog 后，代码不知道要选奖励，
     #   点了按钮就报 ok=True「签到成功」，但 API Status 仍=1、积分没涨。
     #   ⇒ 重新读按钮文字：只有从「去签到」变成「已完成」才算真签上。
+    # 🔴 2026-11-26 教训：`show-success` 是雨云**服务端确认**的验证码通过，
+    # 这本身就是签到成功的铁证。不要再用「回读按钮文字」推翻它 ——
+    # 实测 show-success 后按钮回读是空（dialog 关了/页面没渲染完），
+    # 被误判成「未签到」，明明 +500 成功却报失败。
+    # ⇒ 优先看 captcha 是否 show-success；只在「无验证码」路径才回读按钮。
+    # 用 _solve_captcha 内部记录的标志（它在 iframe 内读到 show-success）
+    captcha_success = bool(_LAST_CAPTCHA_PASSED)
+    _log(f"验证码服务端确认 show-success: {captcha_success}")
+
     final_text = ""
-    if clicked:
+    if clicked and not captcha_success:
+        # 只有「没走到验证码」时才回读按钮判断是否本来就已签
         try:
             _goto_reward(driver)
             _btn2, final_text = _find_sign_button()
             _log(f"点击后按钮文字: [{final_text}]")
         except Exception as exc:
             _log(f"验证按钮状态失败: {type(exc).__name__}")
-    signed_now = bool(final_text) and not any(
-        w in final_text for w in CLAIM_WORDS)
+    signed_now = captcha_success or (bool(final_text) and not any(
+        w in final_text for w in CLAIM_WORDS))
 
     if clicked and signed_now:
         _emit({"ok": True, "points": points, "reason": "签到成功"}, 0)
