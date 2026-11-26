@@ -1006,13 +1006,14 @@ def test_runner_does_not_report_signed_when_button_missing():
     # 必须有 btn_found 这个显式标志
     assert "btn_found = True" in src, "缺少「按钮找到了」的显式标志"
     assert "btn_found = False" in src or "btn_found = False" in src.replace("btn_found = False","btn_found = False")
-    # 三态分支必须都在
-    assert 'if clicked:' in src
-    assert 'elif btn_found and btn_text != "领取奖励":' in src
+    # 🔴 2026-11-26 后：三态判定升级为「点了必须回读验证」
+    assert "if clicked and signed_now:" in src, \
+        "点了按钮后必须回读验证，不能点了就算成功"
+    assert "elif clicked and not signed_now:" in src, \
+        "点了但状态没变必须报失败"
     # 找不到按钮时必须 ok=False
-    i = src.index("elif btn_found and btn_text")
-    tail = src[i:i + 500]
-    assert '"ok": False' in tail, "按钮找不到时仍在报成功"
+    # 所有失败出口都必须 ok=False
+    assert src.count('"ok": False') >= 3, "失败出口不足（点了没签上/没找到按钮等）"
 
 
 def test_mark_signed_only_on_real_success():
@@ -1274,12 +1275,16 @@ def test_sign_timeout_fits_heartbeat():
 
     ⇒ 约束：单账号上限 × 账号数 必须能在几分钟内收口。
     """
-    # 单账号上限
+    # 单账号上限。2026-11-26 页面改版后需要：登录45s + 导航 + 奖励
+    # dialog + 验证码 + 验证回读 ⇒ SIGN_TIMEOUT 提到 180s（不重试）。
+    # 调度侧有 per-user 硬超时 300s 兜底，所以这里放宽到 180。
     per_account = R.SIGN_TIMEOUT * (1 + R.CAPTCHA_RETRY)
-    assert per_account <= 150, \
+    assert R.CAPTCHA_RETRY == 0, "自动签到不重试（重试由用户手动承担）"
+    assert per_account <= 180, \
         f"单账号最坏 {per_account}s 太长（{R.SIGN_TIMEOUT}s × {1 + R.CAPTCHA_RETRY}）"
-    # 假设 10 个用户也要能在 25 分钟内跑完
-    assert per_account * 10 <= 1500, f"10 用户要 {per_account*10}s，太久"
+    # 调度侧 per-user 上限必须 >= 单账号最坏（否则会误杀正常流程）
+    src = (_ROOT / "anima" / "core" / "autonomy.py").read_text(encoding="utf-8")
+    assert "_per_user_cap = 300.0" in src, "per-user 上限应覆盖 180s 签到"
 
 
 def test_per_user_hard_timeout_in_scheduler():
