@@ -379,6 +379,42 @@ def _icr_positions(bg_img, target_img):
     return _match_positions(bg_img, target_img)
 
 
+def _handle_reward_dialog(driver) -> bool:
+    """处理 2026-11-26 新增的「选择今日奖励」dialog。
+
+    返回 True 表示点了奖励（或没有 dialog），False 表示 dialog 存在但没处理。
+
+    🔴 雨云把签到改成「先选奖励再领」：
+        BUTTON.daily-check-in__reward「500 积分 / 可提现或抵扣续费」
+        BUTTON.daily-check-in__reward「抽奖券 × 1 / 适用于普通奖池」
+    默认选 **500 积分**（owner 历来电签积分）。
+    """
+    from selenium.webdriver.common.by import By
+    try:
+        rewards = driver.find_elements(By.CSS_SELECTOR,
+                                       "button.daily-check-in__reward")
+    except Exception:
+        rewards = []
+    if not rewards:
+        _log("无奖励选择 dialog（旧版流程）")
+        return True
+    _log(f"检测到奖励选择 dialog，{len(rewards)} 个选项")
+    for btn in rewards:
+        try:
+            txt = (btn.text or "").strip()
+            _log(f"  选项: {txt[:30]!r}")
+            if "积分" in txt:
+                # dialog 只有 3 个按钮（× / 500积分 / 抽奖券），
+                # 点「500 积分」本身就是「选择并领取」，没有单独确认按钮。
+                btn.click()
+                _log("已选「500 积分」")
+                time.sleep(4)
+                return True
+        except Exception as exc:
+            _log(f"  选项点击失败: {type(exc).__name__}")
+    return False
+
+
 def _solve_captcha(driver, timeout: float = WAIT_CAPTCHA) -> bool:
     """处理验证码。返回 True 表示通过（或无需处理）。"""
     import urllib.request
@@ -618,6 +654,13 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
                     earn.click()
                     clicked = True
                     time.sleep(2)
+                    # 🔴 2026-11-26 改版：点「去签到」后不是直接验证码，
+                    #    而是弹出**奖励选择 dialog**：
+                    #      每日签到 / 选择今日奖励 /
+                    #        BUTTON.daily-check-in__reward「500 积分」
+                    #        BUTTON.daily-check-in__reward「抽奖券 × 1」
+                    #    必须先选一个奖励（默认 500 积分）再确认。
+                    _handle_reward_dialog(driver)
                     captcha_ok = _solve_captcha(driver)
                     if not captcha_ok:
                         _log("验证码未通过，本次签到失败")
@@ -641,9 +684,28 @@ def _finish_sign_in(driver, user: str, points_from_api=None) -> None:
     except Exception:
         pass
 
-    # 🔴 三态判定：签了 / 确实已签 / **状态未知**
+    # 🔴 **必须验证点击结果，不能点了就算成功**（2026-11-26 惨痛教训）：
+    #   雨云改成「先选奖励」dialog 后，代码不知道要选奖励，
+    #   点了按钮就报 ok=True「签到成功」，但 API Status 仍=1、积分没涨。
+    #   ⇒ 重新读按钮文字：只有从「去签到」变成「已完成」才算真签上。
+    final_text = ""
     if clicked:
+        try:
+            _goto_reward(driver)
+            _btn2, final_text = _find_sign_button()
+            _log(f"点击后按钮文字: [{final_text}]")
+        except Exception as exc:
+            _log(f"验证按钮状态失败: {type(exc).__name__}")
+    signed_now = bool(final_text) and not any(
+        w in final_text for w in CLAIM_WORDS)
+
+    if clicked and signed_now:
         _emit({"ok": True, "points": points, "reason": "签到成功"}, 0)
+    elif clicked and not signed_now:
+        # 点了按钮但按钮仍是「去签到」⇒ **没签上**（如没选奖励 dialog）
+        _log("点了按钮但状态未变，判定为未签到")
+        _emit({"ok": False, "reason": "验证码未通过",
+               "points": points}, 1)
     elif btn_found and not any(w in btn_text for w in CLAIM_WORDS):
         # 找到「每日签到」按钮但文案不含领取词（如「每日签到 已完成」）
         # ⇒ 真的已签。⚠️ 必须含「每日签到」前缀（找按钮时已保证）。
