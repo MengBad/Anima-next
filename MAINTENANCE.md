@@ -1,7 +1,7 @@
 # Anima-next 维护文档（MAINTENANCE）
 
 > 面向维护/运维/接管者。本文档细分到各模块/子模块，并给出部署、运维、监控、备份、恢复与故障处置的完整操作路径。
-> 主线参考：[README.md](README.md)、[DEPLOYMENT_OPERATOR_GUIDE.md](DEPLOYMENT_OPERATOR_GUIDE.md)、[RELEASE_POLICY.md](RELEASE_POLICY.md)、[PROJECT_STATE.md](PROJECT_STATE.md)、[AGENTS.md](AGENTS.md)。
+> 主线参考：[README.md](README.md)、[DEPLOYMENT_OPERATOR_GUIDE.md](DEPLOYMENT_OPERATOR_GUIDE.md)、[RELEASE_POLICY.md](docs/archive/RELEASE_POLICY.md)、[PROJECT_STATE.md](docs/archive/PROJECT_STATE.md)、[AGENTS.md](AGENTS.md)。
 
 **关键事实**（以源码为准，勿信过时快照）：
 - 版本 `0.3.0rc2`（`anima/__init__.py` 是唯一部署版本源；pyproject 亦写 0.3.0rc2）。

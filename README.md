@@ -249,23 +249,44 @@ exploration.daily_share_limit: 0  = 当天完全不分享
 
 ---
 
-## 目录里那些历史文档
+## 文档地图
 
-根目录有一批 `.md`，**大部分已过期**，开头通常有 `> [HISTORICAL]` 标记：
+**根目录只保留 8 个当前有效文档**，其余全部移入 `docs/archive/`。
 
-| 文件 | 状态 |
+### ✅ 当前有效
+
+| 文件 | 用途 |
 |---|---|
-| `README.md`（本文件） | ✅ 当前 |
-| `docs/VISION.md` | ✅ 定位权威 |
-| `docs/PHASE_COORDINATES.md` | ✅ 阶段编号 |
-| `ENGINEERING_DEBT_LEDGER.md` | ✅ 未决事项 |
-| `MAINTENANCE.md` | ✅ 接线状态 / 踩坑记录 |
-| `ARCHITECTURE.md` / `ANIMA_AUDIT.md` | ⚠️ 历史参考 |
-| `docs/archive/`（PROJECT_REPORT*.md / BUG_AUDIT_* / P10_HOURLY_REPORT.md / ACCEPTANCE_REPORT.md / INCIDENT_REPORT.md 等） | ⚠️ 已归档，仅作历史 |
+| `README.md` | 本文件 · 项目入口 |
+| `AGENTS.md` | AI 编码代理工作指引 |
+| `CONTRIBUTING.md` | 贡献与改代码指南 |
+| `MAINTENANCE.md` | 接线状态 / 踩坑记录 / 运维 |
+| `ENGINEERING_DEBT_LEDGER.md` | 工程债台账（唯一） |
+| `DEPLOYMENT_OPERATOR_GUIDE.md` | 部署操作 |
+| `SECURITY_CREDENTIAL_ROTATION_CHECKLIST.md` | 凭据轮换清单 |
+| `CHANGELOG.md` | 变更日志 |
+| `docs/VISION.md` | 定位权威 |
+| `docs/ARCHITECTURE_CURRENT.md` | **当前实现架构**（2026-10-28） |
+| `docs/PHASE_COORDINATES.md` | 阶段编号 |
+| `docs/ROADMAP.md` | **唯一路线图** |
+| `docs/rfc/` | 理论层 RFC（RFC-0100 系列） |
+| `design/` | 设计稿（被代码注释引用，勿删） |
+| `capability_contracts/` | 能力契约（被 `anima/tools/` 引用，勿删） |
 
-**别把历史文档当现状。** 有疑问以 `README.md` + `docs/VISION.md` + 代码为准。
+### 📦 已归档（`docs/archive/`）
 
-> 2026-11-27：根目录历史报告已统一移入 `docs/archive/`，根目录只保留当前有效文档。
+历史记录，**仅作参考，不是现状**：
+
+| 目录/文件 | 内容 |
+|---|---|
+| `docs/archive/governance/` | 40 个 M0.4.x / M0.5 治理阶段文档（2026-08） |
+| `docs/archive/ARCHITECTURE-historical.md` / `ROADMAP-historical.md` | 停更于 8 月的旧版 |
+| `docs/archive/PROJECT_REPORT*.md` / `BUG_AUDIT_*` / `P10_*` / `ACCEPTANCE_REPORT` / `INCIDENT_REPORT` | 阶段性报告 |
+| `docs/archive/AGENT_IDENTITY` / `ANIMA_AUDIT` / `PROJECT_STATE` / `RELEASE_POLICY` 等 | 均已标 `[HISTORICAL]` |
+
+**别把历史文档当现状。** 有疑问以 `README.md` + `docs/VISION.md` + `docs/ARCHITECTURE_CURRENT.md` + 代码为准。
+
+> 2026-11-27：根目录 19 个 md 精简到 8 个；40 个 M0.4.x/M0.5 治理文档、旧版架构/路线图、阶段性报告全部移入 `docs/archive/`。
 
 ---
 
