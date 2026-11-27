@@ -1806,22 +1806,37 @@ class Heartbeat:
                 fail += 1
                 continue
 
+            # 失败时重试一次（2026-11-27 owner 要求）。
+            # 🔴 只重试**可恢复**的失败（登录超时/验证码未过/页面超时）——
+            #    密码错误、未绑定这类确定性失败重试也是白费 1.2G 内存。
+            #    等 5 分钟是为了避开雨云侧限流/临时风控，也给资源回收时间。
+            #
+            # ⚠️ 重试必须在**计数/通知之前**：否则重试成功也会按第一次的
+            #    失败计入 fail、并发失败通知（实测逻辑陷阱）。
+            if not res.get("ok"):
+                _why = str(res.get("reason") or "")
+                _retryable = ("超时" in _why or "验证码" in _why
+                              or "页面加载" in _why)
+                if _retryable:
+                    logger.info("[雨云签到] user=%s 5 分钟后重试一次（%s）",
+                                uid[-4:], _why[:20])
+                    await asyncio.sleep(300)
+                    try:
+                        res = await asyncio.wait_for(
+                            run_sign_in(self.core, uid), timeout=_per_user_cap)
+                    except Exception:
+                        logger.debug("[雨云签到] 重试异常（已隔离）", exc_info=True)
+
+            # 🔴 计数与通知基于**最终结果**（重试后可能已经成功）
             if res.get("ok"):
                 ok += 1
-            else:
-                fail += 1
-
-            # 成功也告诉本人（2026-10-30 owner 要求）。
-            # 此前成功是静默的：签成了谁也不知道，owner 只能靠查日志确认。
-            # 今天实测就是这样——2 个账号全成功，却一条通知都没有。
-            if res.get("ok"):
                 try:
                     await self._notify_rainyun_success(uid, res)
                 except Exception:
                     logger.debug("[雨云签到] 成功通知失败 user=%s", uid[-4:], exc_info=True)
-
-            # 失败时通知该用户本人（不通知 owner —— 别人不该知道谁绑了账号）
-            if not res.get("ok"):
+            else:
+                fail += 1
+                # 通知该用户本人（不通知 owner —— 别人不该知道谁绑了账号）
                 try:
                     await self._notify_rainyun_failure(uid, res)
                 except Exception:

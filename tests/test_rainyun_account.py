@@ -1560,3 +1560,37 @@ def test_captcha_return_value_is_captured():
     assert "captcha_ok = _solve_captcha(driver)" in src
     assert "        _solve_captcha(driver)\n" not in src, \
         "又出现丢弃返回值的调用"
+
+
+# ---------------------------------------------------------------------------
+# 29. A+B+C：60s 登录 + 10s 间隔 + 失败重试 + cookie 失效重登
+# ---------------------------------------------------------------------------
+
+def test_login_wait_is_60s():
+    """11-27 失败账号是「cookie 失效后重新登录，页面加载超时」。
+    45s 不够（雨云登录页偶发慢）⇒ 提到 60s。
+    """
+    src = _RUNNER.read_text(encoding="utf-8")
+    assert "WAIT_LOGIN_FORM = 60" in src
+
+
+def test_inter_account_gap_is_10s():
+    """两个账号之间留 10s，让 Chrome 完全退出、内存回收。"""
+    assert R.INTER_ACCOUNT_GAP == 10
+
+
+def test_scheduler_retries_recoverable_failures():
+    """调度侧失败后 5 分钟重试一次，只重试可恢复的失败。"""
+    src = (_ROOT / "anima" / "core" / "autonomy.py").read_text(encoding="utf-8")
+    i = src.index("async def _rainyun_signin_tick")
+    win = src[i:i + 9000]
+    assert "await asyncio.sleep(300)" in win, "失败后没有等 5 分钟重试"
+    assert '"超时" in _why' in win, "重试判据缺少超时"
+    assert '"验证码" in _why' in win, "重试判据缺少验证码"
+
+
+def test_cookie_invalid_triggers_relogin():
+    """cookie 失效 ⇒ 清除 + 走完整登录流程（不是直接失败）。"""
+    src = _RUNNER.read_text(encoding="utf-8")
+    assert "cookie 已失效，清除后重新登录" in src
+    assert "common.clear_cookies(user)" in src

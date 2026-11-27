@@ -748,7 +748,7 @@ def _kill_proc(proc) -> None:
 MAX_QUEUE_WAITERS = 3
 
 #: 同一用户多账号之间的间隔（秒）。让 Chrome 完全退出、内存回收。
-INTER_ACCOUNT_GAP = 3
+INTER_ACCOUNT_GAP = 10
 
 #: 验证码未通过时的重试次数。
 #: 实测验证码是**概率触发**的，一次不过不代表下次不过。

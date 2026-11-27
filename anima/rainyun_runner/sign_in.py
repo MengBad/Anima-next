@@ -118,7 +118,7 @@ DEFAULT_CHROMEDRIVER = ("/opt/anima/.cache/selenium/chromedriver/"
                         "linux64/156.0.8078.47/chromedriver")
 
 #: 各阶段超时（秒）
-WAIT_LOGIN_FORM = 45
+WAIT_LOGIN_FORM = 60
 WAIT_CAPTCHA = 25
 
 #: 最近一次 _solve_captcha 是否真的通过了验证码（show-success）
