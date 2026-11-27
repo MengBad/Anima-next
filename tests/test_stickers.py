@@ -6,6 +6,42 @@ from anima.cognitive.stickers import StickerManager
 from anima.pipeline import PipelineContext
 
 
+class _ConfirmStickerLLM:
+    """测试替身：配合假视觉，让 collect 得到 is_sticker=True（对齐「只发视觉确认条目」新契约）。"""
+    pass
+
+
+class _ConfirmVision:
+    async def classify(self, llm, data, img, model=""):
+        # labels/category 留空，避免触发自过审改变 status 语义；只把 is_sticker 确认为 True。
+        return {"is_sticker": True, "labels": [], "category": "unknown", "emotion": ""}
+
+    async def select(self, *a, **k):
+        return -1
+
+
+import pytest as _pytest
+
+
+@_pytest.fixture(autouse=True)
+def _collect_confirms_sticker(monkeypatch):
+    """本文件多数用例直接 collect 而不给 llm；新契约下这类条目 is_sticker=None 不再可发。
+    这里统一注入假视觉，让它们代表「已确认为表情包」的条目，保持各用例原有断言意图。"""
+    import anima.cognitive.stickers as _sm
+    import anima.cognitive.vision as _vision
+
+    _orig_collect = StickerManager.collect
+
+    async def _collect(self, images, src_user, src_group, ctx_text="", *args, **kwargs):
+        if kwargs.get("llm") is None and len(args) < 4:
+            kwargs["llm"] = _ConfirmStickerLLM()
+        return await _orig_collect(self, images, src_user, src_group, ctx_text, *args, **kwargs)
+
+    monkeypatch.setattr(StickerManager, "collect", _collect)
+    monkeypatch.setattr(_vision, "get_vision_manager", lambda *a, **k: _ConfirmVision())
+    yield
+
+
 class FakeLLM:
     def __init__(self, labels=None):
         self.labels = labels or ["无语", "狗头"]

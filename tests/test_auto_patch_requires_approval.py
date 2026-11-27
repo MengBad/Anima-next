@@ -222,7 +222,8 @@ async def test_send_failure_does_not_raise_and_patch_survives(tmp_path, monkeypa
 
 
 async def test_no_patch_means_no_awaiting_status(tmp_path, monkeypatch):
-    """LLM 给不出补丁 ⇒ 任务判 failed，而不是停在待审骗 owner。"""
+    """LLM 给不出补丁 ⇒ 2026-11-27 起降级为 diagnosis_ready（诊断待办），
+    不标 failed 堆僵尸单，也绝不停在 awaiting_approval 让 owner 白审一个空补丁。"""
     core = _core(tmp_path, sent=_Sent())
     it = ControlledIteration(str(tmp_path), ticket_cooldown_sec=0)
     task = _seed_core_patch(it, core, tmp_path)   # 不打桩：下面自己打「返回空」
@@ -235,7 +236,10 @@ async def test_no_patch_means_no_awaiting_status(tmp_path, monkeypatch):
     await it.maybe_auto_repair(core)
 
     got = core.tasks.get(task.id)
-    assert got.status == "failed", (
-        f"给不出补丁应判 failed（实得 {got.status!r}）——"
-        "绝不能停在 awaiting_approval 让 owner 白审一个空补丁"
+    assert got.status == "diagnosis_ready", (
+        f"给不出补丁应降级为 diagnosis_ready（实得 {got.status!r}）——"
+        "既不能停在 awaiting_approval 让 owner 白审空补丁，"
+        "也不再标 failed 堆僵尸单（交给 Agent/人工接手）"
     )
+    # 诊断状态不会被自动候选反复捞起
+    assert got.status not in {"awaiting_approval", "planned", "approved_pending_apply", "failed"}

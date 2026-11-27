@@ -163,3 +163,66 @@ def test_long_formal_text_not_lighthearted():
     long_text = ("请帮我分析一下这个架构设计中的依赖关系，"
                  "以及各层之间的耦合程度应该如何降低")
     assert _looks_lighthearted(_Ctx(long_text, "formal")) is False
+
+# ── 3. 圆括号括注与本地路径（2026-11-27 生产实证）────────────────────
+
+@pytest.mark.parametrize("raw,expect", [
+    # 真实事故原文（19:20:00 群 727631526）
+    ("别啊主人！从windows飞出去会摔坏的，快回来钻被窝喵～ （附带表情）",
+     "别啊主人！从windows飞出去会摔坏的，快回来钻被窝喵～"),
+    ("好的呀(附带表情)", "好的呀"),
+    ("开心（带表情）", "开心"),
+    ("嗯嗯（配上表情包）", "嗯嗯"),
+])
+def test_strips_paren_sticker_notes(raw, expect):
+    out, n = _strip_fake_sticker_mark(raw)
+    assert n >= 1, f"应剥离，实得 {n}"
+    assert out.strip() == expect.strip()
+
+
+def test_normal_parenthetical_kept():
+    """正文里的正常括注不能被误删。
+
+    判据只认「附带/带/配上… + 表情类词」的固定搭配，
+    笑 / 来自某处 / 大概吧 这些必须原样保留。
+    """
+    for t in (
+        "哈哈（笑）",
+        "这个说法（来自Vocaloid Wiki）",
+        "应该快到了（大概吧）",
+        "唱得不错（真的）",
+    ):
+        out, n = _strip_fake_sticker_mark(t)
+        assert n == 0, f"误伤了正常括注：{t}"
+        assert out == t
+
+
+def test_strips_img_tag_with_local_path():
+    """出站正文混入 img src=file:// 必须整段剥掉。
+
+    生产实证：图已经通过 image 段发出，正文里这条 img 只泄漏
+    发送端本机路径（用户名/QQ号/腾讯目录结构），对方也打不开。
+    """
+    raw = '别怕～ <img src="file://D:/Tencent Files/1562290139/nt_qq/nt_data/Pic/a.jpg" />'
+    out, n = _strip_fake_sticker_mark(raw)
+    assert n >= 1
+    assert "img" not in out.lower()
+    assert "file://" not in out.lower()
+    assert "别怕" in out
+
+
+def test_strips_bare_file_url():
+    raw = "看看这个 file://D:/pics/a.jpg 好看吗"
+    out, n = _strip_fake_sticker_mark(raw)
+    assert n >= 1
+    assert "file://" not in out.lower()
+    assert "好看吗" in out
+
+
+def test_http_image_tag_also_stripped():
+    """http(s) 的 img 标签同样不该出现在出站正文里 —— 判据不区分协议。"""
+    raw = '给你 <img src="https://example.com/a.png"> 哈哈'
+    out, n = _strip_fake_sticker_mark(raw)
+    assert n >= 1
+    assert "<img" not in out.lower()
+    assert "哈哈" in out

@@ -628,10 +628,21 @@ class ControlledIteration:
 
             diffs = await self._generate_whitelist_patch(core, task)
             if not diffs:
-                core.tasks.set_status(task.id, "failed", "自动修复：LLM 未生成可用白名单补丁")
+                # 2026-11-27：自动补丁链路降级为「诊断 + 告警」，不再标 failed 堆僵尸单。
+                # 实测 91/134 owner_tasks failed，其中 76 个 core_patch 全是本分支产物
+                # （"LLM 未生成可用白名单补丁"）——自动打补丁成功率约 1/134，
+                # 而 Agent 直执行链路 16/16 成功。故这里只把工单标记为「诊断完成待人工/Agent」，
+                # 私聊 owner 一次，让可靠的路径接手，而不是反复失败刷屏。
+                diagnosis = (
+                    f"自动补丁未生成可用方案，已降级为诊断待办（不再自动重试）。"
+                    f"信号={task.request[:120]}；建议用 !anima agent 或 Owner Agent 处理。"
+                )
+                core.tasks.set_status(task.id, "diagnosis_ready", diagnosis)
                 self.state["last_auto_repair_at"] = time.time()
                 self._save()
-                return f"自动修复失败 task={task.id}：无可用补丁"
+                await self._notify_diagnosis_ready(core, task)
+                logger.warning("档3自动补丁降级为诊断待办 task=%s", task.id)
+                return f"自动补丁降级为诊断待办 task={task.id}：无可用补丁，已私聊 owner"
 
             self.attach_diffs(core, task.id, diffs)
             # 🔴 2026-10-21 纪律改造（owner 拍板方案 A）：
@@ -709,6 +720,35 @@ class ControlledIteration:
         except Exception:
             logger.debug("[自主补丁] 审计写入失败", exc_info=True)
 
+    async def _notify_diagnosis_ready(self, core: Any, task: Any) -> None:
+        """私聊推送「自动补丁降级为诊断待办」。fail-closed：owners 空不发、异常只记日志。"""
+        owners = list(getattr(getattr(core.config, "permissions", None), "owners", []) or [])
+        if not owners:
+            logger.warning("[自动补丁降级] permissions.owners 为空，跳过通知")
+            return
+        try:
+            from anima.core.gateway import OutboundMsg
+        except Exception:
+            logger.debug("[自动补丁降级] 无法导入 OutboundMsg", exc_info=True)
+            return
+        body = (
+            f"本喵自动写补丁没成功，就没硬改喵——把它转成诊断待办了。\n"
+            f"任务：{task.id}\n"
+            f"问题：{str(getattr(task, 'request', ''))[:100]}\n"
+            f"用 !anima iterate status 看细节，或直接让我用 Agent 处理。"
+        )
+        for oid in owners:
+            try:
+                await core.gateway.send(OutboundMsg("private", int(oid), body))
+            except Exception:
+                logger.warning("[自动补丁降级] 私聊通知失败 owner=%s", oid, exc_info=True)
+        try:
+            audit = getattr(core, "audit", None)
+            if audit is not None and hasattr(audit, "emit"):
+                audit.emit("auto_patch_downgraded_to_diagnosis", task_id=task.id)
+        except Exception:
+            logger.debug("[自动补丁降级] 审计写入失败", exc_info=True)
+
     def _pick_auto_candidate(self, core: Any) -> Any | None:
         open_status = {"awaiting_approval", "planned", "approved_pending_apply"}
         candidates = [
@@ -729,6 +769,18 @@ class ControlledIteration:
         files = [f for f in (prop.get("target_files") or prop.get("suggested_files") or []) if is_whitelisted_path(f)]
         cfg = _iter_cfg(core)
         max_chars = int(getattr(cfg, "max_file_chars", 120_000) or 120_000) if cfg else 120_000
+        # 2026-11-27：**输出预算闸门**。
+        #
+        # 生产实证：iterate 每次 input=20075 / output=**恒定 12007** token（连续 20 次），
+        # 正好撞在下方 max_tokens=12000 上 —— 说明它每次都试图输出整个文件的完整正文，
+        # 被硬截断后 _parse_llm_file_patches 必然解析失败（owner_tasks 里 76 条 core_patch
+        # 全部「LLM 未生成可用白名单补丁」）。代价：每天 10 次 × 50-60s、约 32 万 token，全废。
+        #
+        # 修法不是抬 max_tokens（成本翻倍且照样会撞），而是**在调用前判断可行性**：
+        # 单文件提示词体积超过此阈值就认定「不适合自动修」，直接跳过 LLM。
+        # 12000 token 输出预算，按中英混排约 3 字符/token 估算可写 ~36k 字符；
+        # 留足余量取 20000 字符，超过即跳过。
+        _PATCH_INPUT_CHAR_BUDGET = 20_000
         # 自动修复每次只改 1 个文件，避免输出截断导致解析失败
         files = files[:1]
         root = _project_root()
@@ -757,6 +809,19 @@ class ControlledIteration:
             f"允许文件：{', '.join(files)}\n\n"
             + "\n\n".join(blobs)
         )
+        # 2026-11-27：提示词过大就直接放弃，不浪费一次 50s/32k token 的调用。
+        # 判据：送入模型的文件正文总量超过输出预算可承载的规模。
+        _prompt_chars = sum(len(b) for b in blobs)
+        if _prompt_chars > _PATCH_INPUT_CHAR_BUDGET:
+            logger.info(
+                "自动补丁跳过：待修文件过大（%d 字符 > %d），输出预算不足以容纳完整正文",
+                _prompt_chars, _PATCH_INPUT_CHAR_BUDGET,
+            )
+            # 也推进冷却，否则每 tick 都会重试同一批超大文件（每小时烧一次调用预算）。
+            self.state["last_auto_repair_at"] = time.time()
+            self._save()
+            return []
+
         try:
             from anima.llm.usage import llm_scope
             with llm_scope("iterate", "auto_repair"):

@@ -388,8 +388,8 @@ async def tool_web_search(query: str, num_results: int = 5,
         header = (
             f"当前日期是 {_today_str}（今天）。抓取时间：{_today_str}。关于「{query}」的搜索结果"
             f"（共 {len(results)} 条，展示前 {n} 条）：\n"
-            f"【时效提示】结果摘要里的相对时间（如“X 小时前”）请以今天 {_today_str} 为基准换算；"
-            f"若网页/摘要未标注日期或明显过时，请在回答中明确说明这是陈旧信息，不要当作最新事实。"
+            f"【时效提示·内部判断，不要写进回复】相对时间（如“X 小时前”）以今天 {_today_str} 为基准换算；"
+            f"若摘要明显过时，内部按陈旧信息处理即可，不要在给用户的回答里标注来源、日期或“陈旧信息”字样。"
         )
         # Tavily include_answer 的摘要答案优先展示，作为即时可信依据
         if _tavily_answer[0]:

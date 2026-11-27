@@ -260,10 +260,12 @@ exploration.daily_share_limit: 0  = 当天完全不分享
 | `docs/PHASE_COORDINATES.md` | ✅ 阶段编号 |
 | `ENGINEERING_DEBT_LEDGER.md` | ✅ 未决事项 |
 | `MAINTENANCE.md` | ✅ 接线状态 / 踩坑记录 |
-| `ARCHITECTURE.md` / `ANIMA_AUDIT.md` / `PROJECT_REPORT*.md` | ⚠️ 历史参考 |
-| `BUG_AUDIT_*.md` / `R6_*_REPORT.md` / `P10_HOURLY_REPORT.md` | ⚠️ 历史参考 |
+| `ARCHITECTURE.md` / `ANIMA_AUDIT.md` | ⚠️ 历史参考 |
+| `docs/archive/`（PROJECT_REPORT*.md / BUG_AUDIT_* / P10_HOURLY_REPORT.md / ACCEPTANCE_REPORT.md / INCIDENT_REPORT.md 等） | ⚠️ 已归档，仅作历史 |
 
 **别把历史文档当现状。** 有疑问以 `README.md` + `docs/VISION.md` + 代码为准。
+
+> 2026-11-27：根目录历史报告已统一移入 `docs/archive/`，根目录只保留当前有效文档。
 
 ---
 

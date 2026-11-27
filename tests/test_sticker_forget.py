@@ -66,6 +66,23 @@ def test_label_pending_auto_approves_with_self_review(tmp_path):
     assert mgr.random_one(group_id=999) is None
 
 
+def test_eligible_never_releases_unconfirmed_sticker(tmp_path):
+    """2026-11-27 守卫：is_sticker=None 的条目即使 status=approved、有标签，也绝不被发送。
+    生产 11-07～11-12 那批视觉未跑的脏数据就是靠旧实现的『无 True 才回退 None』混进发送池的。"""
+    mgr = StickerManager(str(tmp_path), label_throttle_per_user=0)
+    f = _img(tmp_path, "s.jpg", b"y" * 64)
+    asyncio.run(mgr.collect([{"url": "", "file": f}], 123, 999, "笑"))
+    meta = mgr._read_meta()
+    key = next(iter(meta))
+    # 人为把状态改成 approved 且打上标签，模拟脏数据被误放行前的状态
+    meta[key]["is_sticker"] = None
+    meta[key]["status"] = "approved"
+    meta[key]["labels"] = ["开心"]
+    mgr._write_meta(meta)
+    assert mgr._eligible(meta, group_id=999, allow_cross_group=True) == []
+    assert mgr.random_one(group_id=999) is None
+
+
 def test_natural_forget_removes_old_cold_only(tmp_path):
     mgr = StickerManager(str(tmp_path), max_stickers=50, label_throttle_per_user=0,
                          natural_forget=True, forget_age_days=1.0,

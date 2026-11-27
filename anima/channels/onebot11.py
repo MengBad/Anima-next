@@ -940,6 +940,148 @@ class OneBot11Adapter(Module):
             self.last_outbound_failure_at = now
             self.last_outbound_error = error or "发送失败"
 
+    #: 出站失败告警的落盘文件（相对 data_dir）。
+    #: 2026-11-27：为什么必须落盘 —— 生产实证 05:01 与 09:00 两批失败里，
+    #: WS 断连（WS 连接异常）与 HTTP 回退（HTTP 返回 None）**同时不可用**，
+    #: 而告警本身也要走出站通道 ⇒ 那条 urgent 通知永远发不出去，
+    #: 只有下次翻 journalctl 才知道。落盘后可在通道恢复时补发。
+    _OUTBOUND_ALERT_FILE = "pending_outbound_alerts.json"
+
+    #: 连续 WS 连接失败达到此次数才告警一次（2026-11-27）。
+    #: 取 10 次（≈10 分钟，退避期内）作为「不是瞬时抖动」的判据，避免误报刷屏。
+    _WS_ALERT_AFTER_FAILURES = 10
+
+    def _alert_channel_down(self, fail_streak: int) -> None:
+        """WS 持续连不上时告警（落盘 + 尽力推送）。fail-closed。"""
+        try:
+            import asyncio
+            from anima.core.owner_notify import get_owner_notifier
+            body = (
+                f"本喵连不上 QQ 了喵……NapCat（127.0.0.1:3001）已经连续 "
+                f"{fail_streak} 次拒绝连接，去看一眼 QQ/NapCat 进程还在不在。"
+            )
+            self._persist_alert(body)
+            notifier = get_owner_notifier(getattr(self, "core", None))
+            coro = notifier.notify("urgent", body, source="channel_down")
+            try:
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(coro)
+                self._outbound_alert_tasks = getattr(self, "_outbound_alert_tasks", set())
+                self._outbound_alert_tasks.add(task)
+                task.add_done_callback(self._outbound_alert_tasks.discard)
+                task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+            except RuntimeError:
+                coro.close()
+        except Exception:
+            logger.debug("[断连告警] 构造通知失败（忽略）", exc_info=True)
+
+    def _alert_path(self):
+        try:
+            data_dir = self.core.config.persistence.data_dir
+        except Exception:
+            return None
+        try:
+            from pathlib import Path
+            return Path(data_dir) / self._OUTBOUND_ALERT_FILE
+        except Exception:
+            return None
+
+    def _persist_alert(self, body: str) -> None:
+        """把告警追加到落盘队列（最多 20 条，同文去重）。fail-closed。"""
+        path = self._alert_path()
+        if path is None:
+            return
+        try:
+            import json as _json
+            import os as _os
+            items = []
+            if path.is_file():
+                try:
+                    items = _json.loads(path.read_text(encoding="utf-8")) or []
+                except Exception:
+                    items = []
+            if not isinstance(items, list):
+                items = []
+            if any(isinstance(x, dict) and x.get("text") == body for x in items):
+                return
+            items.append({"text": body, "at": time.time()})
+            items = items[-20:]
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(_json.dumps(items, ensure_ascii=False), encoding="utf-8")
+            _os.replace(tmp, path)
+        except Exception:
+            logger.debug("[出站告警] 落盘失败（忽略）", exc_info=True)
+
+    def _drain_persisted_alerts(self) -> list[str]:
+        """取出并清空落盘告警（通道恢复后补发用）。"""
+        path = self._alert_path()
+        if path is None or not path.is_file():
+            return []
+        try:
+            import json as _json
+            items = _json.loads(path.read_text(encoding="utf-8")) or []
+            texts = [x.get("text") for x in items if isinstance(x, dict) and x.get("text")]
+            path.unlink(missing_ok=True)
+            return texts
+        except Exception:
+            logger.debug("[出站告警] 读取落盘失败（忽略）", exc_info=True)
+            return []
+
+    def _alert_outbound_failure(self, error: str) -> None:
+        """出站失败告警：**先落盘，再尝试推送**。
+
+        2026-11-27 改：原实现只 fire-and-forget 一条 urgent 私聊；
+        而通道全灭时那条私聊本身也发不出去（生产实证 05:01/09:00 两批）。
+        现在改为「落盘 + 尽力推送」，通道恢复时由 _flush_persisted_alerts 补发。
+        fail-closed：任何异常只记 debug 日志，绝不影响发送主流程。
+        """
+        try:
+            import asyncio
+            from anima.core.owner_notify import get_owner_notifier
+
+            body = (
+                f"本喵发消息失败了喵……QQ 出站连续出问题，你去看一眼 NapCat 连接和日志。"
+                f"（{str(error)[:80]}）"
+            )
+            # ① 先落盘：即使接下来推送失败，证据也不丢。
+            self._persist_alert(body)
+            # ② 再尽力推送。
+            notifier = get_owner_notifier(getattr(self, "core", None))
+            coro = notifier.notify("urgent", body, source="outbound_failure")
+            try:
+                loop = asyncio.get_running_loop()
+                task = loop.create_task(coro)
+                self._outbound_alert_tasks = getattr(self, "_outbound_alert_tasks", set())
+                self._outbound_alert_tasks.add(task)
+                task.add_done_callback(self._outbound_alert_tasks.discard)
+                task.add_done_callback(
+                    lambda t: t.exception() if not t.cancelled() else None
+                )
+            except RuntimeError:
+                coro.close()
+        except Exception:
+            logger.debug("[出站告警] 构造通知失败（忽略）", exc_info=True)
+
+    def _flush_persisted_alerts(self) -> None:
+        """通道恢复后补发落盘告警。只在发送成功后调用，避免自我放大。"""
+        try:
+            texts = self._drain_persisted_alerts()
+            if not texts:
+                return
+            import asyncio
+            from anima.core.owner_notify import get_owner_notifier
+            notifier = get_owner_notifier(getattr(self, "core", None))
+            loop = asyncio.get_running_loop()
+            for t in texts[:5]:
+                task = loop.create_task(notifier.notify("normal", t, source="outbound_alert_backlog"))
+                self._outbound_alert_tasks = getattr(self, "_outbound_alert_tasks", set())
+                self._outbound_alert_tasks.add(task)
+                task.add_done_callback(self._outbound_alert_tasks.discard)
+                task.add_done_callback(lambda x: x.exception() if not x.cancelled() else None)
+            logger.info("[出站告警] 通道恢复，补发 %d 条积压告警", min(len(texts), 5))
+        except Exception:
+            logger.debug("[出站告警] 补发失败（忽略）", exc_info=True)
+
     # ------------------------------------------------------------------
     # Module 生命周期
     # ------------------------------------------------------------------
@@ -1002,6 +1144,13 @@ class OneBot11Adapter(Module):
                     logger.info("WS 连接等待中 (%d/3): %s", connect_attempts, self.ws_url)
                 else:
                     logger.exception("WS 连接异常，%.1fs 后重连", self._reconnect_delay)
+                # 2026-11-27：断连告警（连续失败达阈值才报一次，避免刷屏）。
+                # 生产实证：00:00–11:17 NapCat(127.0.0.1:3001) 持续
+                # ConnectionRefusedError，Anima 每 60s 重试、全天累计 689 次，
+                # owner 完全不知情 —— 那 11 小时所有出站都是失败的。
+                self._ws_fail_streak = getattr(self, "_ws_fail_streak", 0) + 1
+                if self._ws_fail_streak == self._WS_ALERT_AFTER_FAILURES:
+                    self._alert_channel_down(self._ws_fail_streak)
                 await asyncio.sleep(self._reconnect_delay)
                 self._reconnect_delay = min(
                     self._reconnect_delay * 1.5, self._reconnect_max_delay
@@ -1020,6 +1169,7 @@ class OneBot11Adapter(Module):
         ) as ws:
             self._ws = ws
             self._reconnect_delay = 1.0  # 连接成功重置退避
+            self._ws_fail_streak = 0  # 2026-11-27：连上了，重置断连计数
             self.connected_at = time.time()
             logger.info("OneBot11 WS 已连接")
             try:
@@ -1253,6 +1403,8 @@ class OneBot11Adapter(Module):
             msg_id = await self._ws_send_action(action, params)
             if msg_id is not None:
                 self._record_outbound(True)
+                # 2026-11-27：通道恢复了，把积压的落盘告警补发出去。
+                self._flush_persisted_alerts()
                 return msg_id
             logger.warning("WS action 发送失败，回退 HTTP")
 
@@ -1264,6 +1416,7 @@ class OneBot11Adapter(Module):
                 msg_id = result.get("data", {}).get("message_id") or result.get("message_id")
                 if msg_id is not None:
                     self._record_outbound(True)
+                    self._flush_persisted_alerts()
                     return msg_id
                 # 返回成功但无 message_id，也算成功
                 if result.get("status") == "ok" or result.get("retcode") == 0:
@@ -1281,6 +1434,9 @@ class OneBot11Adapter(Module):
 
         logger.warning("消息发送失败（HTTP 已重试 %d 次）: %s", retry, last_error)
         self._record_outbound(False, "OneBot 未返回成功回执")
+        # 2026-11-27：出站失败即时私聊 owner（owner_notify urgent 自带频控/冷却），
+        # 不再只靠每天写故障工单——那样 owner 要等一天才知道 bot 发不出消息。
+        self._alert_outbound_failure(str(last_error or "OneBot 未返回成功回执"))
         return None
 
     async def send_group_msg(

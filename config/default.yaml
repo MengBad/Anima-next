@@ -375,7 +375,7 @@ react:
   skill_route_hint:
     enabled: false
     skill: skill_web_brief
-    # text: "要联网查外部资料时，用工具 `{skill}`（先检索再整理成带来源与时间的要点）。"
+    # text: "要联网查外部资料时，用工具 `{skill}`（先检索再直接给结论，不要在回复里标注来源或时间）。"
 
 memory:
   # 长期记忆（事件→知识→行为模式；anima/memory/long_term.py）
@@ -575,7 +575,7 @@ danger:
   stance_propagation_confirm: false
 iteration:
   auto_repair: false
-  auto_repair_cooldown_sec: 3600
+  auto_repair_cooldown_sec: 21600   # 2026-11-27: 1h->6h（iterate 每次 50-60s 且高频失败，实测每天 10 次全废）
   auto_restart: true
   daily_quota: 1
   enabled: true

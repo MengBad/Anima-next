@@ -360,6 +360,10 @@ class StickerManager:
                 emotion = ""
                 scenes: list[str] = []
                 desc = ""
+                # LLM 视觉闸门：判定是否为表情包并分类打标（否则拒收）。
+                # 2026-11-27：无视觉判定(is_sticker=None)的条目仍入库，但由
+                # _initial_status 强制 pending_review，且 _eligible 只放行
+                # is_sticker is True —— 双闸确保它永远不会进入发送池。
                 if llm is not None and self.classify_at_collect:
                     verdict = await self._classify(data, img, llm)
                     is_sticker = verdict["is_sticker"]
@@ -448,6 +452,14 @@ class StickerManager:
                 verdict = await self._classify(data, {"file": name, "ext": ext}, llm)
                 if verdict.get("is_sticker") is False:
                     rejected += 1; continue
+                if verdict.get("is_sticker") is None:
+                    # 视觉含糊时：owner 主动上传即视为确认（与自动收集不同——
+                    # 那条路径 fail-closed；这里是 owner 明确导入，给放行通道）。
+                    verdict["is_sticker"] = True
+            elif not auto_analyze:
+                # 2026-11-27：owner 上传且未开视觉分析 ⇒ owner 的导入动作本身就是确认。
+                # 否则 is_sticker=None 会被 _eligible 新契约挡住，send_meme 永远发不出 owner 导入的图。
+                verdict["is_sticker"] = True
             (self._dir / f"{digest}{ext}").write_bytes(data)
             meta[digest] = {
                 "hash": digest, "ext": ext, "src_user": "owner_upload", "src_group": "",
@@ -660,10 +672,14 @@ class StickerManager:
             if labels is None:
                 continue
             m["labels"] = labels
-            if (self.self_review and m.get("status") == "pending_review"
+            # 2026-11-27：文本推断只补标签，不能替代视觉判定。
+            # is_sticker 非 True 的条目永远保持 pending_review，绝不自动放行。
+            if m.get("is_sticker") is not True:
+                m["status"] = "pending_review"
+            elif (self.self_review and m.get("status") == "pending_review"
                     and self._self_review_pass(m.get("labels"), m.get("category"),
                                                m.get("emotion"), m.get("is_sticker"))):
-                # 自过审：标签补齐后判定明确 -> 自动入库可发
+                # 自过审：视觉已确认 + 标签补齐 -> 自动入库可发
                 m["status"] = "approved"
                 m["review_method"] = "self"
                 m["reviewed_at"] = now
@@ -752,11 +768,11 @@ class StickerManager:
             if sz > max_sz:
                 continue
             rows.append((h, item))
-        # 优先已确认表情包（is_sticker=True）；库里没有 True 才回退未知(None)，
-        # 避免把未分类旧库/视觉失败条目直接排除导致无图可用。
-        true_rows = [(h, it) for h, it in rows if it.get("is_sticker") is True]
-        if true_rows:
-            rows = true_rows
+        # 2026-11-27 收紧：只发【视觉确认为表情包】的条目（is_sticker is True）。
+        # 旧实现「库里没有 True 才回退 None」会把视觉未跑/失败的图片当表情发出去
+        # ——生产 11-07～11-12 那批 is_sticker=None 就是这么混进发送池的。
+        # 现在 fail-closed：没有确认条目就返回空，调用方自然降级到不发表情。
+        rows = [(h, it) for h, it in rows if it.get("is_sticker") is True]
         if not exclude_recent:
             return rows
         recent = set(self._recent_by_group.get(group_key, [])[-self.recent_window:])

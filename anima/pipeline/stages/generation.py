@@ -618,6 +618,35 @@ _FAKE_STICKER_MARK_RE = re.compile(
     re.I,
 )
 
+#: 2026-11-27 新增：圆括号形态的伪表情包括注。
+#:
+#: 生产实证（19:20:00，群 727631526）：
+#:     「别啊主人！从windows飞出去会摔坏的，快回来钻被窝喵～ （附带表情）」
+#: 同一时刻真正发出的是 img 段 —— 图已经发了，正文里还挂一句括注。
+#:
+#: 为什么不把圆括号并进上一条正则：正文里的正常括注（笑 / 来自某处 / 大概吧）
+#: 很常见，按「括号内出现表情二字」笼统匹配会误删正常语义。
+#: 故只认固定搭配：附带|附|带上|带了|配个|配上|发个|发一张|加个 + 表情类词。
+#: 判据偏窄，宁可漏删也不错删正文。
+_FAKE_STICKER_PAREN_RE = re.compile(
+    r"[（(]\s*(?:附带|附|带|带上|带了|配个|配上|发个|发一张|加个)\s*"
+    r"(?:表情包|表情|贴纸|sticker)\s*[)）]",
+    re.I,
+)
+
+#: 2026-11-27 新增：出站正文里混入的本地文件路径 / img 标签。
+#:
+#: 生产实证（随上一条同轮）出站正文直接带：
+#:     <img src="file://D:\Tencent Files\1562290139\nt_qq\nt_data\Pic\...jpg" />
+#: 后果三条，均实测：1) 对方打不开（file:// 指向发送端本机）；
+#: 2) 泄漏发送端目录结构（用户名 / QQ 号 / 腾讯文件布局）；
+#: 3) 与真正的图片出站段重复 —— 图已通过 image 段发出。
+#:
+#: anima/agent/guardrails.py 早有「拒绝 file://」规则，但只覆盖 agent 工具入参；
+#: 出站正文这条路径此前无任何检查。此处补齐。
+_IMG_TAG_RE = re.compile(r"<img\b[^>]*>", re.I)
+_FILE_URL_RE = re.compile(r"file://[^\s\"<>']+", re.I)
+
 
 def _strip_fake_sticker_mark(text: str) -> tuple[str, int]:
     """剥掉模型自造的伪表情包标记。返回 `(清理后文本, 剥离数)`。
@@ -633,10 +662,28 @@ def _strip_fake_sticker_mark(text: str) -> tuple[str, int]:
     """
     if not text:
         return "", 0
-    out, n = _FAKE_STICKER_MARK_RE.subn("", text)
+    out = text
+    n = 0
+
+    # 1) 方括号形态（2026-10-28 起）
+    out, _n1 = _FAKE_STICKER_MARK_RE.subn("", out)
+    n += _n1
+
+    # 2) 圆括号形态（2026-11-27 生产实证）
+    out, _n2 = _FAKE_STICKER_PAREN_RE.subn("", out)
+    n += _n2
+
+    # 3) img 标签与其内部本地路径（2026-11-27 生产实证）
+    #    先整段删 <img ...>（含 src），再兜底清裸 file:// 路径。
+    out, _n3 = _IMG_TAG_RE.subn("", out)
+    n += _n3
+    out, _n4 = _FILE_URL_RE.subn("", out)
+    n += _n4
+
     if n:
         # 剥完可能留下「……  」这类尾随空白/重复标点
         out = re.sub(r"[ \t]+$", "", out.rstrip())
+        out = re.sub(r"[ \t]{2,}", " ", out)
         out = re.sub(r"([。！？~～])\1{2,}", r"\1", out)
     return out, n
 
