@@ -75,8 +75,17 @@ def test_failed_carrying_is_filtered_not_faked():
 
     assert out["status"] == "filtered", out
     assert out["records"] == 0
-    assert _episodes(auth) == before, "filtered 不得写入任何记录"
-    assert sed.ingested == 0
+    assert _episodes(auth) == before, "filtered 不得写入任何 episode"
+    # 2026-11-29：D-13 层二后，filtered 仍会写 **1 条数值 trait 证据**（delivery_fail）。
+    # 这不是"伪造失败记忆"—— 它是独立于 reflect() 输出的计数证据；
+    # 若不写，reliability 会把 7 胜 3 负算成 8/9（实测踩过）。
+    # 见 design/D13-layer2-numeric-traits.md §5.1。
+    # ingested 只统计 reflect() 沉淀的记录（本场景为 0），
+    # trait 证据走独立计数器，语义分开才能各自断言。
+    assert sed.ingested == 0, "filtered 不产生 reflect 沉淀记录"
+    assert sed._trait_evidence == 1, "但必须写入 1 条 trait 证据（失败也要计数）"
+    traits = derive_identity(auth.snapshot_memory()).traits
+    assert set(traits) <= {"reliability"}, f"只允许白名单 trait，实得 {traits}"
 
 
 def test_carrying_to_execution_result_maps_status():
@@ -195,9 +204,21 @@ def test_loop_does_not_fabricate_numeric_traits():
 
     assert sed.ingested > 0, "前置条件：闭环确实写入了记录"
     ident = derive_identity(auth.snapshot_memory())
-    assert ident.traits == {}, f"闭环不得凭空造出 traits，实得 {ident.traits}"
+    # 2026-11-29（owner 授权，D-13 层二）：本断言由「不得产任何 traits」改为
+    # 「只允许 owner 批准的白名单 trait」。
+    #
+    # 原断言的目的（防执行层擅自定义"什么算 trait"）**依然成立** ——
+    # 只是 `reliability` 已通过 RFC-0101 vs RFC-0103 的边界审查
+    # （三条判据 C1 跨会话稳定 / C2 行为倾向 / C3 由经历累积推出），
+    # 见 design/D13-layer2-numeric-traits.md §2.2 与 §8 决策 1。
+    _APPROVED = {"reliability"}
+    assert set(ident.traits) <= _APPROVED, (
+        f"闭环不得产出白名单外的 trait，实得 {ident.traits}"
+    )
     assert ident.self_model.get("episodes"), "carrying episode 应进入 self_model 叙事"
-    assert derive_need(ident).urgency == 0.0
+    # urgency 现在由 reliability 驱动，必须在开区间 (0,1) 内 —— 不得饱和
+    _urgency = derive_need(ident).urgency
+    assert 0.0 < _urgency < 1.0, f"urgency 应在开区间内（不饱和），实得 {_urgency}"
 
 
 # ---------------------------------------------------------------------------

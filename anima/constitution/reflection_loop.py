@@ -104,6 +104,13 @@ class ReflectionSedimenter:
         self._max_records = max(0, int(max_records))
         self._seen: set[str] = set()
         self._ingested = 0
+        # 2026-11-29：D-13 层二——交付可靠性计数（owner 授权白名单 trait）。
+        # 来源是**真实承载**，不是 prompt 自评。失败承载也必须计入，
+        # 否则 reliability 恒为 1.0（详见 design/D13-layer2-numeric-traits.md §5）。
+        self._carried_ok = 0
+        self._carried_fail = 0
+        # trait 证据条数（独立于 _ingested，供观测/审计用）
+        self._trait_evidence = 0
 
     # --- read surface (for audit / tests) -----------------------------------
     @property
@@ -126,6 +133,43 @@ class ReflectionSedimenter:
         except Exception:  # noqa: BLE001 - 观测辅助，绝不因它失败而影响沉淀
             logger.debug("identity_traits 探针失败", exc_info=True)
             return 0
+
+    # --- D-13 层二：数值 trait 证据 -------------------------------------------
+
+    def _ingest_trait_evidence(self, succeeded: bool, ref: str,
+                               timestamp: "float | None" = None) -> None:
+        """写入一条**数值 trait 证据**（2026-11-29，D-13 层二）。
+
+        这条记录**不属于 `reflect()` 的输出** —— reflect 属 RFC-0109 的 M1.9
+        纯度契约，改它要走 Foundation Evolution F1 流程。本方法是 sedimenter
+        层新增的证据通道，已获 owner 授权的白名单 trait（见 design/
+        `D13-layer2-numeric-traits.md` §8 决策 1/2）。
+
+        三个实现要点（三轮验算确认，改动时勿踩）：
+          1. `records` 必须是 **dict** 而非 MemoryRecord ——
+             `MemoryAuthority.ingest` 内部按 `rec.get("kind")` 读，传对象会
+             AttributeError 并被 except 吞掉（已踩过一次）；
+          2. `salience` 必须 1.0 —— 累加公式是 `v*salience`，
+             用 0.5 会让计数减半、破坏 Laplace 平滑先验；
+          3. 写**计数**而非比率 —— 比率由 `derive_identity` 转换（见 identity.py）。
+
+        fail-closed：任何异常只记 debug，绝不影响沉淀主流程。
+        """
+        try:
+            from anima.constitution.state import ReflectionResult
+            _key = "delivery_ok" if succeeded else "delivery_fail"
+            _refl = ReflectionResult(
+                result_ref=f"{ref}#trait",
+                records=[{"kind": "semantic", "content": {_key: 1.0}, "salience": 1.0}],
+                timestamp=float(timestamp or 0.0),
+            )
+            self._authority.ingest(_refl)
+            # 注意：**不增加 `_ingested`**。该属性的语义是「reflect() 沉淀的记录数」，
+            # trait 证据是独立通道，混进来会让 `ingested == out["records"]` 的
+            # 契约失效（既有测试正是这么断言的）。
+            self._trait_evidence += 1
+        except Exception:  # noqa: BLE001 - 证据失败不影响沉淀本身
+            logger.debug("trait 证据写入失败（已隔离）", exc_info=True)
 
     # --- the producer act ---------------------------------------------------
     def sediment(
@@ -162,8 +206,22 @@ class ReflectionSedimenter:
             "lesson_count": len(list(lessons)),
         }
 
+        # 2026-11-29：**先计数，再分流**。
+        # 必须放在 filtered/duplicate/capped 之前 —— 因为：
+        #   1. FAILED 承载走 filtered 分支（reflect() 不产记录），
+        #      但它**确实发生过**，必须计入分母，否则 reliability 恒 1.0；
+        #   2. duplicate 表示"同一承载重复观测"，不是"没发生"。
+        # 计数是**观测事实**，沉淀是**存储行为**，两者不能混。
+        if succeeded:
+            self._carried_ok += 1
+        else:
+            self._carried_fail += 1
+
         if not refl.records:
             # reflect() 对 FAILED 不产记录 —— 如实上报，不伪造一条"失败记忆"。
+            # 但**失败承载的真实性必须被记录**：trait 证据独立于 reflect 输出，
+            # 否则 reliability 永远只统计成功（实测 7 胜 3 负会算成 8/9 而非 7/10）。
+            self._ingest_trait_evidence(succeeded, ref, refl.timestamp)
             return {**base, "status": "filtered", "records": 0,
                     "identity_traits": self.identity_traits()}
 
@@ -183,6 +241,21 @@ class ReflectionSedimenter:
         self._authority.ingest(refl)
         self._seen.add(ref)
         self._ingested += len(refl.records)
+
+        # 2026-11-29：D-13 层二 —— 追加一条**数值 trait 证据**。
+        #
+        # 为什么不放在 reflect() 里：reflect() 属 RFC-0109（M1.9 纯度契约），
+        # 改它要走 Foundation Evolution F1 流程。本条是**本层新增**的证据记录，
+        # 不是 reflect 的输出 —— 这一点必须在 docstring 与本注释中如实写明。
+        #
+        # 为什么写「计数」而不是「比率」：
+        # `derive_identity` 的累加语义是为「多条证据叠加」设计的，
+        # 写比率会被反复叠加顶爆 peak_intensity（验算实测 4.676），
+        # 由 identity 层负责把计数转成比率才是语义正确的分工。
+        #
+        # salience 必须 = 1.0：累加公式是 v*salience，
+        # 用 0.5 会让计数减半，破坏 Laplace 平滑的先验（验算实测）。
+        self._ingest_trait_evidence(succeeded, ref, refl.timestamp)
 
         return {**base, "status": "ingested", "records": len(refl.records),
                 "identity_traits": self.identity_traits()}
