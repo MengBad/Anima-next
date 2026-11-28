@@ -1221,7 +1221,10 @@ class IterationConfig(BaseModel):
     auto_restart: bool = True            # apply 成功后尝试 systemctl restart anima
     daily_quota: int = 1                 # 每日自主生成补丁上限
     ticket_cooldown_sec: int = 6 * 3600
-    auto_repair_cooldown_sec: int = 3600 # 两次自动修复最小间隔
+    # 2026-11-27：3600 -> 21600（1h -> 6h）。生产实测 iterate 每次 50-60s、
+    # output 恒定撞 12000 上限被截断、76 条 core_patch 全部失败，
+    # 每小时重试纯属空烧。与 config/default.yaml 必须一致（D-06 纪律）。
+    auto_repair_cooldown_sec: int = 21600 # 两次自动修复最小间隔
     max_files_per_patch: int = 2         # 单次最多改几个白名单文件
     max_file_chars: int = 120_000        # 读入 LLM 的单文件上限
     pytest_timeout_sec: int = 120
