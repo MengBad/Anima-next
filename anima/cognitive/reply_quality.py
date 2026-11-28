@@ -193,6 +193,18 @@ class ReplyQuality:
         gate_keys = [k for k in m if k.startswith("gate_skip_")]
         gated = sum(int(m.get(k, 0) or 0) for k in gate_keys)
         other = max(0, inbound - replied - gated)
+        # 🔴 2026-11-28：**分母截断检测**。
+        #
+        # 生产实测：11-28 部署当天 inbound=57 而 gated=130 ⇒ gate_rate=228%，
+        # 逻辑上不可能。根因是 inbound_total 这项**当天中途才开始记录**
+        # （09:53 埋点上线），而 gate_skip_* 从 00:00 就在累计
+        # ⇒ 分子分母窗口不对齐，比率失真。
+        #
+        # 处置：既然 gated 不可能超过 inbound，一旦超过就说明窗口错位，
+        # 此时**不输出比率**（置 None）并标记 `window_misaligned=True`，
+        # 让调用方知道这份数据不可用于判断闸门松紧。
+        # 什么时候恢复：跨过一个完整自然日后两者窗口自然对齐。
+        window_misaligned = gated > inbound
         denom = inbound or 1
         return {
             "day": day,
@@ -200,9 +212,10 @@ class ReplyQuality:
             "replied": replied,
             "gated": gated,
             "other": other,
-            "reply_rate": round(replied / denom, 4),
-            "gate_rate": round(gated / denom, 4),
-            "other_rate": round(other / denom, 4),
+            "window_misaligned": window_misaligned,
+            "reply_rate": None if window_misaligned else round(replied / denom, 4),
+            "gate_rate": None if window_misaligned else round(gated / denom, 4),
+            "other_rate": None if window_misaligned else round(other / denom, 4),
             "gate_breakdown": {
                 k.replace("gate_skip_", ""): int(m.get(k, 0) or 0)
                 for k in sorted(gate_keys) if int(m.get(k, 0) or 0) > 0

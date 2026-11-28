@@ -96,3 +96,42 @@ def test_d41_marked_fixed():
     led = Path("ENGINEERING_DEBT_LEDGER.md").read_text(encoding="utf-8")
     assert "只能发群 —— `FIXED`" in led
     assert "2026-11-27 复核：三条验收全部达成" in led
+
+
+def test_funnel_flags_window_misalignment():
+    """分母截断时不能输出误导性比率。
+
+    生产实证（11-28）：inbound=57 而 gated=130 ⇒ gate_rate=228%，逻辑上不可能。
+    根因是 inbound_total 当天中途才上线，而 gate_skip 从 00:00 就在累计。
+    """
+    from anima.cognitive.reply_quality import ReplyQuality
+    import tempfile
+
+    q = ReplyQuality(tempfile.mkdtemp())
+    for _ in range(57):
+        q.record_inbound()
+    q.record_reply("x", detail_type="group", target_id=1)
+    for _ in range(130):
+        q.record_gate_skip("idle")
+
+    f = q.funnel()
+    assert f["window_misaligned"] is True
+    assert f["reply_rate"] is None
+    assert f["gate_rate"] is None
+
+
+def test_funnel_normal_window_keeps_rates():
+    """窗口正常时必须照常给比率（不能让上一项的保护把正常数据也屏蔽）。"""
+    from anima.cognitive.reply_quality import ReplyQuality
+    import tempfile
+
+    q = ReplyQuality(tempfile.mkdtemp())
+    for _ in range(10):
+        q.record_inbound()
+    q.record_reply("x", detail_type="group", target_id=1)
+    q.record_gate_skip("idle")
+
+    f = q.funnel()
+    assert f["window_misaligned"] is False
+    assert f["reply_rate"] == 0.1
+    assert f["gate_rate"] == 0.1
