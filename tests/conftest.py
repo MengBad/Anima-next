@@ -135,3 +135,47 @@ def _isolate_mood_data_dir(tmp_path, monkeypatch):
     yield
     mood_mod._mood_system = saved_singleton
     mood_mod._default_dir = saved_default
+
+
+@pytest.fixture(autouse=True)
+def _reset_shared_caches():
+    """逐测清空**按 data_dir / uid 索引**的模块级缓存（2026-11-27）。
+
+    与 `_reset_data_dir_ignoring_singletons` 同一纪律：
+    只收录**已证会造成跨用例污染**的缓存，不做全量清理。
+
+    收录依据（这四处的 key 都是 `data_dir` 或纯 `uid`，前一个用例留下的
+    条目会被后一个用例命中，表现为「全量跑偶发、单跑通过」）：
+
+      bot_social._KNOWN_BOTS_CACHE  dict[data_dir -> (ts, store)]
+      bot_social._recent            dict[uid -> list]      ← 只按 uid 索引，最易串
+      exploration._managers         dict[data_dir -> manager]
+      group_presence._managers      dict[data_dir -> manager]
+
+    stickers/vision 的单例**不清**：它们被多数测试有意共享，
+    清掉会破坏「复用同一 manager」的断言（与 39 处单例同理）。
+    """
+    import anima.cognitive.bot_social as _bs
+    import anima.cognitive.exploration as _ex
+    import anima.cognitive.group_presence as _gp
+
+    saved_bots = dict(getattr(_bs, "_KNOWN_BOTS_CACHE", {}) or {})
+    saved_recent = {k: list(v) for k, v in (getattr(_bs, "_recent", {}) or {}).items()}
+    saved_ex = dict(getattr(_ex, "_managers", {}) or {})
+    saved_gp = dict(getattr(_gp, "_managers", {}) or {})
+
+    _bs._KNOWN_BOTS_CACHE.clear()
+    _bs._recent.clear()
+    _ex._managers.clear()
+    _gp._managers.clear()
+
+    yield
+
+    _bs._KNOWN_BOTS_CACHE.clear()
+    _bs._KNOWN_BOTS_CACHE.update(saved_bots)
+    _bs._recent.clear()
+    _bs._recent.update(saved_recent)
+    _ex._managers.clear()
+    _ex._managers.update(saved_ex)
+    _gp._managers.clear()
+    _gp._managers.update(saved_gp)

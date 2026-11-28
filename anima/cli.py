@@ -625,6 +625,60 @@ def ops_cleanup_cmd(data_dir, keep_running):
     click.echo(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
 
 
+@cli.command("llm-health")
+@click.option("--data-dir", "data_dir", default="data", help="运行时数据目录（含 llm_usage.sqlite3）")
+@click.option("--hours", "hours", default=24, type=int, help="回看小时数（默认 24）")
+@click.option("--min-calls", "min_calls", default=5, type=int, help="样本下限，低于此数不参与调权")
+@click.option("--json-out", "json_out", is_flag=True, help="输出原始 JSON（默认表格）")
+def llm_health_cmd(data_dir, hours, min_calls, json_out):
+    """按模型聚合上游健康度，给出路由调权建议（P1-1 网关健康度回流）。
+
+    只读 llm_usage.sqlite3，不触网、不改任何配置。
+    典型用法：主模型疑似下架时先跑这个，看 recommend=drop 的是不是它，
+    再决定要不要在网关侧摘除或调权。
+    """
+    import os
+    import time as _time
+    from anima.llm.usage import UsageLedger
+
+    db = os.path.join(data_dir, "llm_usage.sqlite3")
+    if not os.path.isfile(db):
+        click.echo(f"未找到账本: {db}", err=True)
+        sys.exit(1)
+
+    ledger = UsageLedger(data_dir)
+    end = _time.time()
+    start = end - max(1, int(hours)) * 3600
+    report = ledger.model_health(start=start, end=end, min_calls=int(min_calls))
+
+    if json_out:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    models = report.get("models") or []
+    if not models:
+        click.echo(f"过去 {hours}h 无调用记录。")
+        return
+    click.echo(f"窗口 {hours}h | 样本下限 {min_calls} | 模型 {len(models)} 个")
+    click.echo("")
+    click.echo(f"{'模型':<34} {'调用':>6} {'成功率':>7} {'p50ms':>8} {'p95ms':>9} {'权重':>6} {'建议':>18}")
+    click.echo("-" * 96)
+    for m in models:
+        click.echo(
+            f"{str(m['model'])[:33]:<34} {m['calls']:>6} "
+            f"{m['success_rate']:>7.2%} {m['p50_latency_ms']:>8.0f} "
+            f"{m['p95_latency_ms']:>9.0f} {m['weight']:>6.2f} "
+            f"{m['recommend']:>18}"
+        )
+        errs = m.get("errors") or {}
+        if errs:
+            click.echo(f"  └ 错误分布: {errs}")
+    drops = [m["model"] for m in models if m["recommend"] == "drop" and m["confident"]]
+    if drops:
+        click.echo("")
+        click.echo(f"🔴 建议摘除（失败率过高）: {', '.join(drops)}")
+
+
 @cli.command("x-diag")
 @click.option("--config", "config_path", default="config.yaml", help="配置文件路径")
 @click.option("--live", is_flag=True, help="真实启动受管浏览器探一次登录态（会触碰 X 账号，较慢）")

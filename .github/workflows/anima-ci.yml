@@ -80,11 +80,23 @@ jobs:
               print("::warning::触碰核心/安全代码，需 Owner 审查后方可合并/部署：", r.get("core_protected_touched"))
           PY
 
+  docs:
+    name: Docs health (links + staleness)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Check doc links and [HISTORICAL] leftovers
+        run: python scripts/check_docs_health.py
+
   evidence:
     name: CI evidence aggregation
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    needs: [backend, security]
+    needs: [backend, security, docs]
     steps:
       - uses: actions/checkout@v4
         with:

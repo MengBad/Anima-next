@@ -291,6 +291,147 @@ class UsageLedger:
         data["p95_latency_ms"] = self._percentile_latency(start, end, 0.95)
         return data
 
+    def model_health(self, *, start: float | None = None,
+                     end: float | None = None, min_calls: int = 5) -> dict[str, Any]:
+        """按 **actual_model** 聚合健康度，输出可供网关路由消费的权重建议。
+
+        2026-11-27 新增（路线图 P1-1「网关健康度回流」）。
+
+        ## 为什么需要它
+
+        目前 Anima 对上游的理解只有「这一枪成功没有」。主模型下架（400）
+        或持续 429 时，只能等 fallback 链逐个撞过去，或者人工发现后改配置。
+        而 `llm_usage_events` 里其实**已经存了每次调用的成功/失败与延迟**
+        —— 缺的只是按模型聚合出来、并且给出可直接用于调权的数字。
+
+        ## 权重口径
+
+        `weight` 是 0–1 的连续值，供上层做加权随机或阈值摘除：
+
+          weight = success_rate * latency_factor
+
+          latency_factor = 中位延迟在 [fast_ms, slow_ms] 区间的线性映射，
+                           越快越接近 1，越慢越接近 `min_latency_factor`。
+
+        这样「成功率一样」时选更快的；「延迟一样」时选更稳的。
+
+        ## 边界
+
+        - `calls < min_calls` 的模型 `weight=0`、`confident=False`：
+          样本不足时**不参与调权**，避免一两枪的运气决定路由。
+        - 失败率 100% 的模型 `weight=0` 且 `confident=True`：明确可摘除。
+        - 只读账本，不写任何东西；不触发网络。
+        """
+        where, params = self._where(start, end)
+        with self._db() as conn:
+            rows = conn.execute(
+                "SELECT actual_model model, COUNT(*) calls, "
+                "COALESCE(SUM(CASE WHEN status='ok' THEN 1 ELSE 0 END),0) ok_calls, "
+                "COALESCE(AVG(latency_ms),0) avg_latency_ms, "
+                "COALESCE(MAX(latency_ms),0) max_latency_ms "
+                "FROM llm_usage_events" + where +
+                " GROUP BY actual_model ORDER BY calls DESC", params
+            ).fetchall()
+            # 延迟分位单独取（SQLite 无内置 percentile）
+            lat_by_model: dict[str, list[float]] = {}
+            for m_row in conn.execute(
+                "SELECT actual_model model, latency_ms FROM llm_usage_events" + where +
+                " ORDER BY actual_model", params
+            ):
+                lat_by_model.setdefault(m_row["model"], []).append(
+                    float(m_row["latency_ms"] or 0)
+                )
+            # 错误分布：只取失败行的 error 前缀，用于区分「下架」vs「限流」vs「网络」
+            err_by_model: dict[str, dict[str, int]] = {}
+            for e_row in conn.execute(
+                "SELECT actual_model model, error FROM llm_usage_events" + where +
+                (" AND status!='ok'" if where else " WHERE status!='ok'"), params
+            ):
+                bucket = self._classify_error(str(e_row["error"] or ""))
+                slot = err_by_model.setdefault(e_row["model"], {})
+                slot[bucket] = slot.get(bucket, 0) + 1
+
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            model = str(row["model"] or "")
+            calls = int(row["calls"] or 0)
+            ok_calls = int(row["ok_calls"] or 0)
+            success_rate = (ok_calls / calls) if calls else 0.0
+            lats = sorted(lat_by_model.get(model, []))
+            p50 = lats[len(lats) // 2] if lats else 0.0
+            p95 = lats[min(len(lats) - 1, int(len(lats) * 0.95))] if lats else 0.0
+            confident = calls >= max(1, int(min_calls))
+            weight = self._health_weight(success_rate, p50) if confident else 0.0
+            out.append({
+                "model": model,
+                "calls": calls,
+                "ok_calls": ok_calls,
+                "success_rate": round(success_rate, 4),
+                "avg_latency_ms": round(float(row["avg_latency_ms"] or 0), 1),
+                "p50_latency_ms": round(p50, 1),
+                "p95_latency_ms": round(p95, 1),
+                "max_latency_ms": round(float(row["max_latency_ms"] or 0), 1),
+                "errors": err_by_model.get(model, {}),
+                "confident": confident,
+                "weight": round(weight, 4),
+                "recommend": self._health_recommend(confident, success_rate, calls),
+            })
+        out.sort(key=lambda x: (-x["weight"], -x["calls"]))
+        return {
+            "generated_at": time.time(),
+            "window": {"start": start, "end": end},
+            "min_calls": int(min_calls),
+            "models": out,
+        }
+
+    @staticmethod
+    def _classify_error(error: str) -> str:
+        """把上游错误归到少数几类，便于判断「该摘除」还是「该重试」。"""
+        e = (error or "").lower()
+        if not e:
+            return "unknown"
+        if "model_not_found" in e or "unknown provider" in e or "404" in e:
+            return "gone"          # 模型下架 / provider 不存在 → 该摘除
+        if "429" in e or "rate" in e or "quota" in e:
+            return "rate_limited"  # 限流 → 该降权、冷却后恢复
+        if any(k in e for k in ("timeout", "clientoserror", "disconnect",
+                                "connection", "transport")):
+            return "transport"     # 网络 → 与模型本身无关
+        if "400" in e or "invalid" in e:
+            return "bad_request"   # 参数/协议问题
+        if "auth" in e or "401" in e or "403" in e:
+            return "auth"          # 凭据问题
+        return "other"
+
+    @staticmethod
+    def _health_weight(success_rate: float, p50_latency_ms: float,
+                       *, fast_ms: float = 1500.0, slow_ms: float = 15000.0,
+                       min_latency_factor: float = 0.4) -> float:
+        """成功率 × 延迟因子，得到 0–1 的连续权重。"""
+        sr = max(0.0, min(1.0, float(success_rate)))
+        if sr <= 0:
+            return 0.0
+        if p50_latency_ms <= fast_ms:
+            lf = 1.0
+        elif p50_latency_ms >= slow_ms:
+            lf = min_latency_factor
+        else:
+            ratio = (p50_latency_ms - fast_ms) / (slow_ms - fast_ms)
+            lf = 1.0 - ratio * (1.0 - min_latency_factor)
+        return max(0.0, min(1.0, sr * lf))
+
+    @staticmethod
+    def _health_recommend(confident: bool, success_rate: float, calls: int) -> str:
+        if not confident:
+            return "insufficient_samples"
+        if success_rate >= 0.98:
+            return "keep"
+        if success_rate >= 0.9:
+            return "keep_demote"
+        if success_rate >= 0.5:
+            return "demote"
+        return "drop"
+
     def _count_estimated(self, start: float | None, end: float | None) -> int:
         where, params = self._where(start, end)
         with self._db() as conn:
