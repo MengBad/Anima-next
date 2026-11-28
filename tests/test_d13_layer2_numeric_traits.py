@@ -12,7 +12,7 @@ from anima.constitution.identity import derive_identity
 from anima.constitution.memory_authority import MemoryAuthority
 from anima.constitution.need import derive_need
 from anima.constitution.reflection_loop import ReflectionSedimenter
-from anima.constitution.state import Memory, MemoryRecord
+from anima.constitution.state import Memory, MemoryRecord, WantVector
 
 
 def _memory(ok: int, fail: int) -> Memory:
@@ -190,3 +190,120 @@ def test_drive_gate_still_off():
     from anima.core.config import AutonomyConfig
 
     assert AutonomyConfig().drive_gate is False
+
+
+# ── 5. 每日翻门就绪巡检（阶段 3 自动化）────────────────────────────
+
+def _fake_heartbeat(traits: dict, peak: float, curiosity: list[str]):
+    """构造一个只够跑巡检的最小 Heartbeat 替身。"""
+    from types import SimpleNamespace
+    from anima.core.autonomy import Heartbeat
+
+    sent: list[str] = []
+
+    class _GW:
+        async def send(self, msg):
+            sent.append(getattr(msg, "message", ""))
+            return 1
+
+    # 必须返回真实的空 Memory（不是 None）—— derive_identity 会遍历它的字段
+    from anima.constitution.state import Memory
+    auth = SimpleNamespace(snapshot_memory=lambda: Memory())
+    hb = object.__new__(Heartbeat)
+    hb.core = SimpleNamespace(
+        config=SimpleNamespace(
+            permissions=SimpleNamespace(owners=[12345]),
+            autonomy=SimpleNamespace(drive_gate_readiness_check_enabled=True),
+        ),
+        gateway=_GW(),
+        memory_authority=auth,
+    )
+    hb._drive_gate_mark = {}
+    return hb, sent
+
+
+def test_readiness_tick_skips_when_not_ready(monkeypatch):
+    """未就绪时**不打扰** owner（项目取向：宁可安静）。"""
+    import anima.constitution.identity as ident_mod
+    import anima.constitution.need as need_mod
+    from types import SimpleNamespace
+    from anima.core.autonomy import Heartbeat
+
+    monkeypatch.setattr(ident_mod, "derive_identity",
+                        lambda m: SimpleNamespace(traits={}, peak_intensity=0.0))
+    monkeypatch.setattr(need_mod, "derive_need",
+                        lambda i: SimpleNamespace(vectors={WantVector.CURIOSITY: []}))
+
+    hb, sent = _fake_heartbeat({}, 0.0, [])
+    hb._bj_date_str = lambda ts: "2026-11-29"
+    import asyncio
+    asyncio.run(hb._drive_gate_readiness_tick(0.0))
+    assert sent == [], f"未就绪不应发消息，实发 {sent}"
+
+
+def test_readiness_tick_notifies_once_on_transition(monkeypatch):
+    """就绪时提醒**一次**，同日不重复（不打卡）。"""
+    import anima.constitution.identity as ident_mod
+    import anima.constitution.need as need_mod
+    from types import SimpleNamespace
+
+    # 注意：被测方法内部是 `from X import Y`，故必须 patch 模块属性；
+    # 且 `snapshot_memory` 必须返回非 None（真实实现会遍历它）。
+    monkeypatch.setattr(ident_mod, "derive_identity",
+                        lambda m: SimpleNamespace(
+                            traits={"reliability": 0.667}, peak_intensity=0.667))
+    monkeypatch.setattr(need_mod, "derive_need", lambda i: SimpleNamespace(
+        vectors={WantVector.CURIOSITY: ["explore: reliability"]}))
+
+    hb, sent = _fake_heartbeat({"reliability": 0.667}, 0.667, ["explore: reliability"])
+    hb._bj_date_str = lambda ts: "2026-11-29"
+    import asyncio
+
+    asyncio.run(hb._drive_gate_readiness_tick(0.0))
+    assert len(sent) == 1, f"首次就绪应提醒一次，实发 {len(sent)}"
+    assert "drive_gate" in sent[0]
+
+    # 同日再跑：已提醒过，不再发
+    asyncio.run(hb._drive_gate_readiness_tick(1.0))
+    assert len(sent) == 1, "同日不得重复提醒"
+
+
+def test_readiness_tick_resets_after_not_ready(monkeypatch):
+    """状态回落（不再就绪）后清标记，将来重新就绪能再提醒一次。"""
+    import anima.constitution.identity as ident_mod
+    import anima.constitution.need as need_mod
+    from types import SimpleNamespace
+    import asyncio
+
+    hb, sent = _fake_heartbeat({}, 0.0, [])
+    hb._bj_date_str = lambda ts: "2026-11-29"
+    hb._drive_gate_mark = {"notified_ready": "2026-11-28"}
+
+    monkeypatch.setattr(ident_mod, "derive_identity",
+                        lambda m: SimpleNamespace(traits={}, peak_intensity=0.0))
+    monkeypatch.setattr(need_mod, "derive_need",
+                        lambda i: SimpleNamespace(vectors={WantVector.CURIOSITY: []}))
+
+    asyncio.run(hb._drive_gate_readiness_tick(0.0))
+    assert "notified_ready" not in hb._drive_gate_mark, (
+        "未就绪时应清除已提醒标记，否则将来就绪不会再提醒"
+    )
+
+
+def test_readiness_rejects_saturated_peak(monkeypatch):
+    """peak 饱和(>=1.0) 不算就绪 —— 那正是我们要防的退化形态。"""
+    import anima.constitution.identity as ident_mod
+    import anima.constitution.need as need_mod
+    from types import SimpleNamespace
+    import asyncio
+
+    monkeypatch.setattr(ident_mod, "derive_identity",
+                        lambda m: SimpleNamespace(
+                            traits={"reliability": 1.0}, peak_intensity=1.0))
+    monkeypatch.setattr(need_mod, "derive_need", lambda i: SimpleNamespace(
+        vectors={WantVector.CURIOSITY: ["explore: reliability"]}))
+
+    hb, sent = _fake_heartbeat({}, 0.0, [])
+    hb._bj_date_str = lambda ts: "2026-11-29"
+    asyncio.run(hb._drive_gate_readiness_tick(0.0))
+    assert sent == [], "peak 饱和时不应判定就绪"

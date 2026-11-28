@@ -1425,6 +1425,107 @@ class Heartbeat:
         except Exception:
             logger.debug("owner 交付标记落盘失败（内存仍生效）", exc_info=True)
 
+    async def _drive_gate_readiness_tick(self, now: float) -> None:
+        """D-13 阶段 3：每日检查 `drive_gate` 是否可以翻转（2026-11-29）。
+
+        只在**从未就绪变为就绪**时私聊 owner 一次，不每天打卡。
+
+        ## 为什么不做成每日打卡
+
+        项目既有取向是「宁可安静」（见 `_owner_digest_tick` 里
+        「没东西可推就不发 —— 不做今日无异常这类自我打卡」）。
+        每天推「还不能翻」等于制造噪音；只有状态跃迁才值得打扰。
+
+        ## 判定
+
+        复用 `scripts/check_drive_gate_readiness.py` 的同源逻辑：
+          peak_intensity ∈ (0,1) 且 CURIOSITY 非空。
+        （第三条「主动发言量不下降」需要两窗口对比，只适合人工执行，
+          自动巡检不做 —— 它会在脚本里提示。）
+
+        fail-closed：任何异常只记日志。
+        """
+        _today = self._bj_date_str(now)
+        mark = getattr(self, "_drive_gate_mark", None)
+        if not isinstance(mark, dict):
+            mark = self._drive_gate_mark = {}
+
+        auth = getattr(self.core, "memory_authority", None)
+        if auth is None:
+            return
+
+        # 🔴 顺序很关键：**先派生再判日切**。
+        # 若先判日切就 return，则「同日第二次调用」无法清理 notified_ready 标记，
+        # 状态回落时也不会重置 ⇒ 将来真就绪时永远不再提醒（实测踩到）。
+        # 日切只用于**抑制重复推送**，不能用来跳过状态评估。
+
+        try:
+            from anima.constitution.identity import derive_identity
+            from anima.constitution.need import derive_need
+
+            ident = derive_identity(auth.snapshot_memory())
+            need = derive_need(ident)
+            traits = dict(ident.traits or {})
+            peak = float(ident.peak_intensity or 0.0)
+            # 按 WantVector 名取 CURIOSITY，而不是按位置 ——
+            # 位置索引在 vectors 不完整时会 IndexError（已踩），
+            # 且语义上「第 1 个」本就不可靠。
+            _cur_raw = []
+            for _k, _v in (need.vectors or {}).items():
+                if "CURIOSITY" in str(getattr(_k, "name", _k)).upper():
+                    _cur_raw = list(_v or [])
+                    break
+            curiosity = [str(x) for x in _cur_raw if str(x).startswith("explore:")]
+        except Exception:
+            logger.debug("[翻门巡检] 派生失败（已隔离）", exc_info=True)
+            return
+
+        ready = bool(traits) and 0.0 < peak < 1.0 and bool(curiosity)
+        logger.info("[翻门巡检] traits=%d peak=%.3f curiosity=%d ready=%s",
+                    len(traits), peak, len(curiosity), ready)
+
+        if not ready:
+            # 未就绪：清掉「已提醒过」标记，这样将来真就绪时能再提醒一次。
+            mark.pop("notified_ready", None)
+            mark["last_checked"] = _today
+            return
+
+        if mark.get("notified_ready"):
+            return  # 已提醒过（同日或跨日），不重复打扰 —— 只在跃迁时说话
+
+        # 日切抑制：同一天已经评估并推送过就不再推。
+        mark["last_checked"] = _today
+
+        owners = getattr(getattr(self.core.config, "permissions", None), "owners", None) or []
+        if not owners:
+            logger.warning("[翻门巡检] permissions.owners 为空，跳过（不伪造发送）")
+            return
+
+        _trait_brief = "、".join(f"{k}={v}" for k, v in sorted(traits.items()))
+        # 注意：多个 f-string 必须用**隐式拼接**（相邻即可），
+        # 混进逗号会变成 tuple，`OutboundMsg` 拿到非 str 直接抛异常（已踩）。
+        body = (
+            f"本喵的宪法链好像真的活起来了喵：{_trait_brief}（强度 {peak:.2f}）。\n"
+            f"这意味着 drive_gate 现在可能有条件翻转了 —— 但翻了之后"
+
+            f"主动发言会改由 Drive 判定，翻错方向会把话憋死。\n"
+            f"想翻的话先跑一次：\n"
+            f"  python scripts/check_drive_gate_readiness.py --data-dir data\n"
+            f"确认「主动发言量不下降」之后再动。本喵没有自己翻。"
+        )
+
+        from anima.core.gateway import OutboundMsg
+        sent = False
+        for oid in owners:
+            try:
+                await self.core.gateway.send(OutboundMsg("private", int(oid), body))
+                sent = True
+            except Exception:
+                logger.warning("[翻门巡检] 私聊发送失败 owner=%s", oid, exc_info=True)
+        if sent:
+            mark["notified_ready"] = _today
+            logger.info("[翻门巡检] 已私聊告知 owner 可以评估翻门")
+
     async def _owner_digest_tick(self, now: float) -> None:
         """D-41：每日一次把 owner 待办推到私聊（此前只落 WebUI，从不推送）。
 
@@ -1947,6 +2048,24 @@ class Heartbeat:
                     logger.warning("[成长] 快照采集返回空，下次心跳重试")
         except Exception:
             logger.warning("[成长] 快照失败（已隔离）", exc_info=True)
+
+        # 2026-11-29：**D-13 阶段 3 翻门就绪巡检**（每日一次，只在「刚就绪」时提醒）。
+        #
+        # 为什么需要它：`drive_gate` 翻转的后果是双向的 ——
+        # 对了更「有自我」，错了**主动发言被静默压死**。所以不能靠感觉翻，
+        # 也不该让 owner 自己去记「什么时候该看一眼」。
+        #
+        # 纪律与 digest 一致：
+        #   - 日切一次（持久化日期标记，重启不重复推）；
+        #   - **只在状态从「未就绪」变成「就绪」时提醒一次**，
+        #     不每天打卡（那会变成噪音，与「宁可安静」的既有取向冲突）；
+        #   - fail-closed：任何异常只记日志，绝不影响心跳。
+        try:
+            if bool(getattr(getattr(self.core.config, "autonomy", None),
+                            "drive_gate_readiness_check_enabled", True)):
+                await self._drive_gate_readiness_tick(now)
+        except Exception:
+            logger.debug("[翻门巡检] 失败（已隔离）", exc_info=True)
 
         # 🔴 2026-10-23：**情感桥接放在 _tick 的无条件路径上**。
         #   第二次踩坑：上一版把它放在「主动发言分支」里（`has_hook` 之后），
