@@ -214,6 +214,38 @@ gateway.send() 直发       ← 主动发言 / Agent 交付 / owner 通知
 
 ---
 
+## 3.4 本轮执行结论（2026-11-27 P0→P2）
+
+### P0（全完成）
+
+| 项 | 结论 |
+|---|---|
+| 网关出站结构约束 | `_ALLOWED_SEG_TYPES` 白名单 + `_sanitize_seg_text`；生产实测三类泄漏全清 |
+| 交互漏斗埋点 | `inbound_total` + `funnel()`，`prefilter` 最前记分母 |
+| NapCat 托管 | **复核：本来已就绪**（`anima-napcat.service` enabled + Restart=always）；此前诊断用错服务名 |
+| D-41 改判 | 三条验收全部满足（5 处私聊出站 + 6 处 fail-closed + owner_notify 节流）→ `FIXED`，台账 OPEN 归零 |
+
+### P1（全完成）
+
+| 项 | 结论 |
+|---|---|
+| 网关健康度回流 | `UsageLedger.model_health()` + `anima llm-health` CLI。生产实跑：560 次 / 100% / p50 2702ms / weight 0.95 |
+| 测试隔离 | conftest 追加 `_reset_shared_caches`（只清 4 处已证污染点，沿用原纪律） |
+| 工程纪律自动化 | `check_docs_health.py` 进 CI；`pre-commit.sh` + `install-hooks.sh` |
+| 出站全覆盖 | **复核：已天然闭环**（48 处出站全经 gateway.send） |
+
+### P2（结论：两项不动的理由）
+
+| 项 | 结论 | 理由 |
+|---|---|---|
+| 多模态输出 | **已完整实现** | `upload_file`/`send_file`/`gateway.send_file`/`_format_text_attachments` 全在，视频/语音/任意文件同链路 |
+| 记忆语义召回 | **刻意保持 OFF** | 1024 维是 bge-m3 原生输出，改维度需换模型 + 重建向量表；而 `long_term_semantic=false` 是设计选择（避免每条消息走远程 embedding）。缓存已做 v2 base64 + array（省 172MB）+ 6000 上限 |
+| **多 Agent 协作** | **已启用** ✅ | 原判「显著增加 token」**经复核不成立**：`multi_agent_society` 是确定性论坛（3 立场 + Judge，零 LLM 调用）。边际成本≈0，已把 `SOCIETY_REVIEW_ENABLED` 置 True |
+
+> **教训**：本轮三条 P2 判断里，两条（NapCat、多 Agent）的原始结论都是**基于过时或错误信息**得出的。诊断前先读代码/实测，比读文档结论可靠。
+
+---
+
 ## 3.5 未来展望（2027 视角）
 
 > 本节是**方向判断**，不是承诺。每条都标了「现在能不能做」，避免变成空想清单。

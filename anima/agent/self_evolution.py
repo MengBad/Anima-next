@@ -26,7 +26,15 @@ from typing import Any
 _GATE_SINGLETON: "EvolutionGate | None" = None
 
 # R12 多 Agent 评议入评审: 默认关(fail-closed, 须 Owner 开闸才给 Owner 附上评议建议)。
-SOCIETY_REVIEW_ENABLED = False
+# 2026-11-27：False -> True。
+#
+# 原判「会显著增加 token 消耗」经复核**不成立**：
+# `multi_agent_society.py` 是**确定性论坛**（3 个固定立场 Debater + Judge，
+# 纯立场投票，全文件零 LLM 调用，grep "llm|chat(" = 0 命中）。
+# 因此开启的边际成本 ≈ 0，而收益是把「自进化提案」从单点判断
+# 升级为「正/反/中立三立场 + 裁决」的参考意见（仍纯建议性，不授权任何动作）。
+# 失败 fail-open：裁决不可用时不阻塞提案本身。
+SOCIETY_REVIEW_ENABLED = True
 
 
 # 受保护的核心文件：R9 闭环**绝不自动修改**（触碰即提案被拒，需 Owner 人工 PR）。
