@@ -111,6 +111,12 @@ class ReflectionSedimenter:
         self._carried_fail = 0
         # trait 证据条数（独立于 _ingested，供观测/审计用）
         self._trait_evidence = 0
+        # 2026-11-29（阶段 2）：**韧性**计数 —— 失败后仍继续尝试的次数。
+        # 与 reliability **正交**：可以很不可靠但很坚持，也可以很可靠但一败就停。
+        # 注意：不能把 caution 定义为 fail/total —— 那与 reliability 恒互补（和为 1），
+        # 会制造伪多样性，让 derive_need 的 CURIOSITY(>0.5) 与 AVERSION(<0.1) 对称冲突。
+        self._continued_after_fail = 0
+        self._last_failed = False
 
     # --- read surface (for audit / tests) -----------------------------------
     @property
@@ -158,9 +164,15 @@ class ReflectionSedimenter:
         try:
             from anima.constitution.state import ReflectionResult
             _key = "delivery_ok" if succeeded else "delivery_fail"
+            _content: dict = {_key: 1.0}
+            # 阶段 2（2026-11-29）：失败后继续尝试 —— 独立的韧性证据。
+            # 由调用方在 sediment 里判定并置位 _pending_resilience。
+            if getattr(self, "_pending_resilience", False):
+                _content["continued_after_fail"] = 1.0
+                self._pending_resilience = False
             _refl = ReflectionResult(
                 result_ref=f"{ref}#trait",
-                records=[{"kind": "semantic", "content": {_key: 1.0}, "salience": 1.0}],
+                records=[{"kind": "semantic", "content": _content, "salience": 1.0}],
                 timestamp=float(timestamp or 0.0),
             )
             self._authority.ingest(_refl)
@@ -214,8 +226,15 @@ class ReflectionSedimenter:
         # 计数是**观测事实**，沉淀是**存储行为**，两者不能混。
         if succeeded:
             self._carried_ok += 1
+            # 上一次失败了、这次继续尝试 => 韧性 +1（正交于可靠率）
+            if self._last_failed:
+                self._continued_after_fail += 1
+                # 传给 _ingest_trait_evidence：本条记录额外携带韧性证据
+                self._pending_resilience = True
+            self._last_failed = False
         else:
             self._carried_fail += 1
+            self._last_failed = True
 
         if not refl.records:
             # reflect() 对 FAILED 不产记录 —— 如实上报，不伪造一条"失败记忆"。

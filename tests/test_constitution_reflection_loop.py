@@ -257,8 +257,21 @@ def test_production_call_site_exists():
     )
 
 
-def test_flag_defaults_off():
-    """开关默认关：不给任何仓库默认值打开（生产行为不变是本次变更的前提）。"""
+def test_flag_defaults_on_after_layer2():
+    """开关默认**开**（2026-11-29 变更，原为默认关）。
+
+    原契约「默认关」的前提是：开了也产不出数值 trait（reflect 只产文本），
+    所以开着毫无收益、只增风险。D-13 层二落地后该前提失效 ——
+    开启后 traits 非空、urgency 有区分度（实测 0.667）。
+
+    仍可随时回滚：改回 False 即恢复「沉淀器不跑、traits 恒空」的旧行为。
+    drive_gate 仍为 False，主动发言行为零变化。
+    """
     from anima.core.config import AutonomyConfig
 
-    assert AutonomyConfig().constitution_reflection_loop is False
+    cfg = AutonomyConfig()
+    assert cfg.constitution_reflection_loop is True
+    # 关键：开关开了，但 drive_gate 必须仍然是关的 —— 两者互不连带
+    assert cfg.drive_gate is False, (
+        "drive_gate 不得因层二落地而自动翻转：翻转需真实流量验证（设计稿 §6 阶段 3）"
+    )

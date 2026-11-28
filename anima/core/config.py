@@ -241,7 +241,7 @@ class AutonomyConfig(BaseModel):
     # 🔴 该闭环**不产生数值 trait**：reflect() 只产文本 lesson，而 derive_identity 只聚合
     #      semantic 的数值字段 ⇒ 开它之后 `identity_traits` 仍为 0。它补的是"闭环有生产
     #      producer"这一条，**不等于** drive_gate 可以翻转（后者还需一条数值 trait 生产路径）。
-    constitution_reflection_loop: bool = False
+    constitution_reflection_loop: bool = True   # 2026-11-29：D-13 层二落地后开启（回滚改回 False）
     # 群最近一次人类发言距今 ≥ 该秒数，才考虑主动插话（避免对话正嗨时打断）。
     active_silence_min_sec: int = 300
     # 全局两次主动发言的最小间隔（秒），防止多群同时刷屏。

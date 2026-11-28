@@ -55,12 +55,33 @@ def derive_identity(memory: Memory) -> Identity:
     # Laplace 平滑 (ok+1)/(total+2)：样本少时向 0.5 收缩，避免 1/1 就判定 1.0。
     # 下限 0.15：跳出 `derive_need` 的 AVERSION 阈值(<0.1)，
     # 否则全失败时会产出 `avoid losing: reliability` 这种荒谬目标。
-    if "delivery_ok" in traits or "delivery_fail" in traits:
-        _ok = traits.pop("delivery_ok", 0.0)
-        _fail = traits.pop("delivery_fail", 0.0)
-        if _ok + _fail > 0:
-            _ratio = (_ok + 1.0) / (_ok + _fail + 2.0)
-            traits["reliability"] = round(max(0.15, _ratio), 3)
+    # 先取三个计数值（都 pop 掉，避免它们作为原始计数进入 traits）。
+    # `_fail` 要留到 resilience 计算完再用，故用局部变量而非立即丢弃。
+    _ok = traits.pop("delivery_ok", 0.0)
+    _fail = traits.pop("delivery_fail", 0.0)
+    _cont = traits.pop("continued_after_fail", 0.0)
+
+    if _ok + _fail > 0:
+        # Laplace 平滑 (ok+1)/(total+2)：样本少时向 0.5 收缩，
+        # 避免 1/1 就判定 1.0（验算：1/1 -> 0.667 而非 1.0）。
+        # 下限 0.15：跳出 derive_need 的 AVERSION 阈值(<0.1)，
+        # 否则全失败会产出 `avoid losing: reliability` 这种荒谬目标。
+        _ratio = (_ok + 1.0) / (_ok + _fail + 2.0)
+        traits["reliability"] = round(max(0.15, _ratio), 3)
+
+    # 2026-11-29 阶段 2：**韧性**（resilience）—— 失败后仍继续尝试的比例。
+    #
+    # 为什么不用 caution（fail/total）：它与 reliability **恒为互补**（和为 1），
+    # 等于同一信息的两种写法（验算 7/10 => rel=0.667 cau=0.333，和恒 1.000）。
+    # 后果是 derive_need 的 CURIOSITY(>0.5) 与 AVERSION(<0.1) 对称冲突，
+    # 且无法表达「很不可靠但很坚持」这种真实组合。
+    #
+    # resilience 与 reliability **正交**：验算确认能区分
+    #   低可靠+高韧性 (0.333 / 0.889) vs 高可靠+低韧性 (0.833 / 0.333)。
+    #
+    # 无失败样本时不产此 trait —— 「没失败过」推不出韧性，不编造。
+    if _cont > 0 and _fail > 0:
+        traits["resilience"] = round((_cont + 1.0) / (_fail + 2.0), 3)
 
     # normalize trait weights to a 0..1 peak so Identity is comparable across sessions
     # 🔴 2026-10-23：归一化便于跨会话比较，但会**抹掉绝对强度**。故额外保留
@@ -70,11 +91,12 @@ def derive_identity(memory: Memory) -> Identity:
     if traits:
         _peak_raw = round(max(traits.values()), 3)
         peak = max(traits.values()) or 1.0
-        # 🔴 2026-11-29：`reliability` **豁免归一化**。
-        # 它已是 0–1 的状态量（比率），再除以峰值会被抬到 1.0，
+        # 🔴 2026-11-29：`reliability` / `resilience` **豁免归一化**。
+        # 它们已是 0–1 的状态量（比率），再除以峰值会被抬到 1.0，
         # 语义被破坏且 urgency 恒饱和（三轮验算实测确认）。
+        _RATIO_TRAITS = frozenset({"reliability", "resilience"})
         traits = {
-            k: (round(v, 3) if k == "reliability" else round(v / peak, 3))
+            k: (round(v, 3) if k in _RATIO_TRAITS else round(v / peak, 3))
             for k, v in traits.items()
         }
 

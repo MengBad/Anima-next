@@ -123,3 +123,70 @@ def test_ingested_excludes_trait_evidence():
         "ingested 应等于 reflect 沉淀的记录数，不含 trait 证据"
     )
     assert sed._trait_evidence == 1
+
+
+# ── 3. 阶段 2：resilience 与 reliability 正交 ────────────────────────
+
+def _seq(name: str, seq: list[bool]) -> dict:
+    """按给定成败序列跑真实 sedimenter，返回 traits。"""
+    auth = MemoryAuthority()
+    sed = ReflectionSedimenter(auth, max_records=500)
+    for i, ok in enumerate(seq):
+        sed.sediment(plan_ref=f"{name}#{i}", succeeded=ok, outcome="x")
+    return derive_identity(auth.snapshot_memory()).traits
+
+
+def test_resilience_is_orthogonal_to_reliability():
+    """resilience 必须提供 reliability 之外的信息。
+
+    若把 caution 定义为 fail/total，它与 reliability 恒互补（和为 1）——
+    那是同一信息的两种写法，无法表达「很不可靠但很坚持」。
+    """
+    # 低可靠 + 高韧性：交替失败/继续
+    low_rel_high_res = []
+    for _ in range(8):
+        low_rel_high_res.extend([False, True])
+    t1 = _seq("lrhr", low_rel_high_res)
+
+    # 低可靠 + 低韧性：连续失败后不再尝试
+    t2 = _seq("lrlr", [True] + [False] * 8)
+
+    assert t1["reliability"] < 0.6, f"应低可靠，实得 {t1}"
+    assert t1.get("resilience", 0) > 0.8, f"应高韧性，实得 {t1}"
+    assert t2["reliability"] < 0.6, f"也应低可靠，实得 {t2}"
+    assert "resilience" not in t2, f"没有继续尝试就不该有韧性 trait，实得 {t2}"
+
+
+def test_resilience_absent_without_failures():
+    """从没失败过 ⇒ 推不出韧性，不编造该 trait。"""
+    t = _seq("allok", [True] * 10)
+    assert "resilience" not in t, f"无失败样本不应产 resilience，实得 {t}"
+    assert "reliability" in t
+
+
+def test_resilience_exempt_from_normalization():
+    """resilience 与 reliability 同为 0–1 状态量，都必须豁免归一化。"""
+    t = _seq("mix", [True] * 8 + [False, True])
+    assert t.get("resilience") is not None
+    assert t["resilience"] < 1.0, f"归一化会把 0-1 状态量抬到 1.0，实得 {t}"
+
+
+# ── 4. 阶段 3：翻门前置检查脚本 ─────────────────────────────────────
+
+def test_drive_gate_readiness_script_exists():
+    """必须有可执行的翻门检查，不能靠感觉翻。"""
+    from pathlib import Path
+
+    script = Path("scripts/check_drive_gate_readiness.py")
+    assert script.is_file()
+    body = script.read_text(encoding="utf-8")
+    assert "peak_intensity" in body
+    assert "CURIOSITY" in body
+    assert "主动发言" in body, "必须检查条件 3：翻转后主动发言量不下降"
+
+
+def test_drive_gate_still_off():
+    """层二落地**不得**顺带翻转 drive_gate —— 那是独立决策。"""
+    from anima.core.config import AutonomyConfig
+
+    assert AutonomyConfig().drive_gate is False
