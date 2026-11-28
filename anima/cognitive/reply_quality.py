@@ -35,6 +35,11 @@ def _empty() -> dict[str, int]:
         "space_link_ok": 0,        # B 站主页链接被处理且有信息性结果
         "space_link_fail": 0,      # 主页链接路径失败/空结果
         "react_max_rounds": 0,     # ReAct 触顶轮次次数
+        # 2026-11-27 新增：交互漏斗基数。
+        # 背景：11-27 全天 562 次 LLM 调用只产出 7 条回复，而当时无从判断
+        # 「是群本来没话说」还是「闸门太紧」—— 缺的就是入站总数这个分母。
+        # 只计数不存正文（与 L0 telemetry 同一纪律）。
+        "inbound_total": 0,        # 收到并进入 pipeline 的入站消息数
         # 闸门跳过（不存正文，只计原因桶）
         "gate_skip_other_bot": 0,
         "gate_skip_idle": 0,
@@ -160,6 +165,49 @@ class ReplyQuality:
         else:
             metrics["space_link_fail"] += 1
         self._save()
+
+    def record_inbound(self) -> None:
+        """记录一次入站（漏斗分母）。2026-11-27 新增。
+
+        与 `record_gate_skip` 配对使用，才能算出「入站 -> 闸门 -> 回复」三段漏斗。
+        只计数，不保存正文。
+        """
+        metrics = self._metrics()
+        metrics["inbound_total"] = int(metrics.get("inbound_total", 0) or 0) + 1
+        self._save()
+
+    def funnel(self, day: str | None = None) -> dict[str, Any]:
+        """返回交互漏斗三段读数与各闸门占比（2026-11-27 新增）。
+
+        用途：判断「交互量低」的真实原因 —— 是入站本来就少，还是闸门挡掉太多。
+        口径：
+          inbound   入站总数（分母）
+          replied   实际回复数
+          gated     被闸门挡掉的总数（各原因桶之和）
+          other     既没回复也没被闸门记录（可能仍在处理或异常）
+        三项占比之和应为 1（`other` 兜底）。
+        """
+        m = self._metrics(day)
+        inbound = int(m.get("inbound_total", 0) or 0)
+        replied = int(m.get("total_replies", 0) or 0)
+        gate_keys = [k for k in m if k.startswith("gate_skip_")]
+        gated = sum(int(m.get(k, 0) or 0) for k in gate_keys)
+        other = max(0, inbound - replied - gated)
+        denom = inbound or 1
+        return {
+            "day": day,
+            "inbound": inbound,
+            "replied": replied,
+            "gated": gated,
+            "other": other,
+            "reply_rate": round(replied / denom, 4),
+            "gate_rate": round(gated / denom, 4),
+            "other_rate": round(other / denom, 4),
+            "gate_breakdown": {
+                k.replace("gate_skip_", ""): int(m.get(k, 0) or 0)
+                for k in sorted(gate_keys) if int(m.get(k, 0) or 0) > 0
+            },
+        }
 
     def record_gate_skip(self, reason: str) -> None:
         """记录群回复闸门跳过原因（other_bot / idle / mention_only / unfamiliar / end_signal / other）。"""

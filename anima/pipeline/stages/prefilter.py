@@ -120,6 +120,19 @@ async def prefilter_stage(ctx: PipelineContext) -> StageResult:
 async def _prefilter_inner(ctx: PipelineContext) -> StageResult:
     """睡眠 / 免打扰 / 群策略 / 忽略名单 / 回复闸门 / 被动冷却（原样迁移）。"""
     h = _handler_of(ctx)
+
+    # 🔴 2026-11-27：交互漏斗分母。必须打在**任何闸门之前**，
+    # 否则算不出「入站 -> 闸门 -> 回复」的真实比例
+    # （11-27 全天 562 次 LLM 调用只出 7 条回复，当时无从判断是流量稀疏
+    #  还是闸门过紧 —— 缺的就是这个分母）。
+    # 只计数不存正文；失败静默，绝不影响消息处理。
+    try:
+        quality = getattr(h.core, "reply_quality", None)
+        if quality is not None:
+            quality.record_inbound()
+    except Exception:
+        logger.debug("inbound telemetry failed", exc_info=True)
+
     # r28 P1-1：转发正文先拉回，后面所有判定（含闸门）才看得见真实内容。
     await _expand_forward_text(ctx)
     event, text = ctx.event, ctx.text

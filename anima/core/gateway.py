@@ -32,28 +32,76 @@ class OutboundMsg:
         return isinstance(self.message, list)
 
 
-def _filter_outbound_message(message: "str | list[dict]") -> "str | list[dict]":
-    """P0 纵深防御：出站前统一过滤内心独白（自我反思 / 自言自语）。
+#: 2026-11-27 新增：出站**段类型白名单**。
+#:
+#: 背景（生产三连事故，均来自「网关直发」这条缺少净化的路径）：
+#:   1. 正文带「（附带表情）」—— 模型自造占位符；
+#:   2. 正文带 `<img src="file://D:\Tencent Files\...">` —— 泄漏本机目录，
+#:      对方也打不开，且与真正的 image 段重复；
+#:   3. 早前还有 `【步骤1】`/`[已交付 abc]` 这类内部脚手架。
+#:
+#: pipeline 路径有 guardrail 兜底，但 `gateway.send()` 是**直发**通道
+#: （主动发言 / Agent 交付 / owner 通知），此前只过滤内心独白，没有内容净化。
+#: 这里补两层：
+#:   · **结构层**：只允许白名单段类型，未知段直接丢弃并记审计；
+#:   · **内容层**：文本段过 `sanitize_outbound_text`（与 guardrail 同一套规则）。
+_ALLOWED_SEG_TYPES = frozenset({
+    "text", "image", "at", "face", "reply", "record", "video", "forward",
+})
 
-    覆盖主动发言、生活模拟、以及任何未显式过滤的路径。文本段经
-    filter_inner_monologue（幂等，重复调用安全）处理；非文本消息原样返回。
+
+def _sanitize_seg_text(text: str) -> str:
+    """文本段净化：复用 generation 的剥离器，避免两处规则漂移。
+
+    剥离内容：方括号伪表情标记 / 圆括号伪表情括注 / `<img>` 标签 / 裸 file:// 路径。
+    任何 import 或执行失败都原样返回（绝不因净化失败丢消息）。
+    """
+    if not text:
+        return text
+    try:
+        from anima.pipeline.stages.generation import _strip_fake_sticker_mark
+        cleaned, _n = _strip_fake_sticker_mark(text)
+        return cleaned
+    except Exception:
+        logger.debug("出站文本净化失败（保持原样）", exc_info=True)
+        return text
+
+
+def _filter_outbound_message(message: "str | list[dict]") -> "str | list[dict]":
+    """P0 纵深防御：出站前统一过滤内心独白 + 内容净化 + 结构约束。
+
+    2026-11-27 扩展：原实现只过滤内心独白，覆盖不到「占位符 / 本地路径」
+    这类内容泄漏（详见 `_ALLOWED_SEG_TYPES` 注释里的三起生产事故）。
+    现在三层依次执行：
+      1. `filter_inner_monologue` —— 内心独白（幂等）；
+      2. `_sanitize_seg_text` —— 伪表情标记 / img 标签 / file:// 路径；
+      3. 段类型白名单 —— 未知类型段丢弃（防止内部结构漏到 QQ）。
     """
     from anima.core.reply_splitter import filter_inner_monologue
 
     if isinstance(message, str):
         # 可能返回 None（整段都是独白）→ 调用方抑制发送
-        return filter_inner_monologue(message)
+        filtered = filter_inner_monologue(message)
+        if filtered is None:
+            return None
+        return _sanitize_seg_text(filtered)
     if isinstance(message, list):
         out: list[dict] = []
         for seg in message:
-            if (
-                isinstance(seg, dict)
-                and seg.get("type") == "text"
-                and isinstance(seg.get("text"), str)
-            ):
+            if not isinstance(seg, dict):
+                # 非 dict 段一律丢弃（结构异常，不该进 QQ）
+                logger.warning("[出站] 丢弃非 dict 消息段: %s", type(seg).__name__)
+                continue
+            seg_type = seg.get("type")
+            if seg_type not in _ALLOWED_SEG_TYPES:
+                logger.warning("[出站] 丢弃未授权消息段类型: %s", seg_type)
+                continue
+            if seg_type == "text" and isinstance(seg.get("text"), str):
                 new_seg = dict(seg)
                 filtered = filter_inner_monologue(seg["text"])
-                new_seg["text"] = filtered if filtered is not None else ""
+                text = filtered if filtered is not None else ""
+                text = _sanitize_seg_text(text)
+                new_seg["text"] = text
                 # 过滤后为空文本的段直接丢弃（独白段不发送）
                 if new_seg["text"].strip():
                     out.append(new_seg)
