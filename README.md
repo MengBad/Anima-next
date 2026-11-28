@@ -294,14 +294,17 @@ exploration.daily_share_limit: 0  = 当天完全不分享
 
 诚实列出，不藏：
 
-| 问题 | 现状 | 影响 |
+> 2026-11-28 逐项实测更新（原表数据已过时，保留更正是为了避免误导后续维护判断）
+
+| 问题 | 实测现状 | 影响 / 处置 |
 |---|---|---|
-| `embedding_cache.json` 40MB | v2 b64 格式，7672/8000 条 | 设计内，接近上限会淘汰 |
-| `health_history.json` 9.2MB | 2880 条，已精简 `groups` | 正常 |
-| `x_search` 搜图 44s | 配 75s 超时覆盖 | 用户等得久，但能出图 |
-| 事件循环延迟 | 偶发 2–3s（阈值 2s） | 不影响功能 |
-| 单例模式 | 29 个 `get_xxx()` 各自 load/save | 已用 `ModuleRegistry` 收敛，内部实现未重写 |
-| 测试间污染 | 全量跑偶发失败，单跑通过 | 已知，未修 |
+| `embedding_cache.json` | **37.3MB / 7112 条**，LRU 上限已 **8000 → 6000** | 设计内；v2 base64 落盘 + `array('f')` 常驻（比 list 省 172MB） |
+| `health_history.json` | **8.9MB / 2880 条** | ✅ 已有环形上限（`max_samples=2880` + `[-max_samples:]`），不增长 |
+| `x_search` 搜图 | 内部预算 **65s**，外层 per-tool 覆盖 **75s**（断言 `65 < 75`） | 慢是有意的取舍；**缺中间进度反馈**（待改进） |
+| 事件循环延迟 | 近 1 小时 **0 次**告警 | ✅ 暂未复现 |
+| 单例模式 | 29 个 `get_xxx()` 各自 load/save | `ModuleRegistry` 已收敛；**内部实现刻意不重写**（风险 > 收益） |
+| 测试间污染 | ✅ **已修**（2026-11-27） | `tests/conftest.py` 加 `_reset_shared_caches`，清 4 处已证污染点 |
+| 交互漏斗 | 2026-11-28 新增 `inbound_total` + `funnel()`；含窗口错位检测 | 需跨完整自然日才有可比比率 |
 
 ---
 

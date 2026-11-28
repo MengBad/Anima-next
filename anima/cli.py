@@ -625,6 +625,38 @@ def ops_cleanup_cmd(data_dir, keep_running):
     click.echo(json.dumps(report.as_dict(), ensure_ascii=False, indent=2))
 
 
+@cli.command("funnel")
+@click.option("--data-dir", "data_dir", default="data", help="运行时数据目录")
+@click.option("--days", "days", default=7, type=int, help="回看天数（默认 7）")
+@click.option("--json-out", "json_out", is_flag=True, help="输出原始 JSON")
+def funnel_cmd(data_dir, days, json_out):
+    """交互漏斗：入站 -> 闸门 -> 回复的三段趋势（2026-11-28）。
+
+    用来回答「交互量低是群没话说，还是闸门太紧」。
+    只读 reply_quality.json，不触网、不改配置。
+    """
+    from anima.cognitive.reply_quality import ReplyQuality
+
+    q = ReplyQuality(data_dir)
+    report = q.funnel_trend(days=days)
+
+    if json_out:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    click.echo(f"窗口 {days} 天 | 可用天数 {report['reliable_days']} | "
+               f"均值回复率 {report['avg_reply_rate']} | 判定 {report['verdict']}")
+    if report.get("note"):
+        click.echo(f"注：{report['note']}")
+    click.echo("")
+    click.echo(f"{'日期':<12} {'入站':>6} {'回复':>6} {'闸门':>6} {'回复率':>8} {'可用':>6}")
+    click.echo("-" * 56)
+    for r in report["days"]:
+        rate = f"{r['reply_rate']:.1%}" if r["reply_rate"] is not None else "—"
+        click.echo(f"{r['day']:<12} {r['inbound']:>6} {r['replied']:>6} "
+                   f"{r['gated']:>6} {rate:>8} {'是' if r['reliable'] else '否':>6}")
+
+
 @cli.command("llm-health")
 @click.option("--data-dir", "data_dir", default="data", help="运行时数据目录（含 llm_usage.sqlite3）")
 @click.option("--hours", "hours", default=24, type=int, help="回看小时数（默认 24）")

@@ -222,6 +222,58 @@ class ReplyQuality:
             },
         }
 
+    def funnel_trend(self, days: int = 7) -> dict[str, Any]:
+        """多日漏斗趋势（2026-11-28 新增）。
+
+        `funnel()` 只回答「某一天怎么样」，但判断闸门松紧需要**趋势**：
+        单日 1.8% 可能是那天群里没话说，连续一周都低才说明闸门有问题。
+
+        数据源就是 reply_quality.json 里已有的按日计数（不新建文件）；
+        窗口错位的日子 `reliable=False`，聚合时**排除**，避免假比率污染趋势。
+
+        返回：
+          days        逐日明细（含 reliable 标记）
+          reliable_days  可用于判断的天数
+          avg_reply_rate 仅在 reliable 日上求均值（无有效日则 None）
+          verdict     基于趋势的一句话判断
+        """
+        all_days = sorted((self.data.get("days") or {}).keys())
+        window = all_days[-max(1, int(days)):] if all_days else []
+        rows: list[dict[str, Any]] = []
+        rates: list[float] = []
+        for d in window:
+            f = self.funnel(d)
+            reliable = bool(f.get("inbound")) and not f.get("window_misaligned")
+            rows.append({
+                "day": d,
+                "inbound": f.get("inbound"),
+                "replied": f.get("replied"),
+                "gated": f.get("gated"),
+                "reply_rate": f.get("reply_rate"),
+                "reliable": reliable,
+                "window_misaligned": f.get("window_misaligned"),
+            })
+            if reliable and f.get("reply_rate") is not None:
+                rates.append(float(f["reply_rate"]))
+
+        verdict = "insufficient_data"
+        avg = (sum(rates) / len(rates)) if rates else None
+        if avg is not None:
+            if avg < 0.05:
+                verdict = "gate_too_tight_or_low_traffic"
+            elif avg < 0.20:
+                verdict = "moderate"
+            else:
+                verdict = "healthy"
+        return {
+            "days": rows,
+            "reliable_days": len(rates),
+            "avg_reply_rate": round(avg, 4) if avg is not None else None,
+            "verdict": verdict,
+            "note": ("需跨完整自然日才有可比比率；窗口错位日已排除"
+                     if len(rates) < 2 else ""),
+        }
+
     def record_gate_skip(self, reason: str) -> None:
         """记录群回复闸门跳过原因（other_bot / idle / mention_only / unfamiliar / end_signal / other）。"""
         key = {

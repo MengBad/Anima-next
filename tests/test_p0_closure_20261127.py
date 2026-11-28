@@ -135,3 +135,42 @@ def test_funnel_normal_window_keeps_rates():
     assert f["window_misaligned"] is False
     assert f["reply_rate"] == 0.1
     assert f["gate_rate"] == 0.1
+
+
+def test_funnel_trend_excludes_misaligned_days():
+    """趋势聚合必须排除窗口错位日，否则假比率会污染判断。"""
+    from anima.cognitive.reply_quality import ReplyQuality
+    import tempfile
+
+    q = ReplyQuality(tempfile.mkdtemp())
+    # 干净数据
+    for _ in range(100):
+        q.record_inbound()
+    for _ in range(10):
+        q.record_reply("x", detail_type="group", target_id=1)
+    for _ in range(60):
+        q.record_gate_skip("idle")
+
+    t = q.funnel_trend()
+    assert t["reliable_days"] >= 1
+    assert t["avg_reply_rate"] == pytest.approx(0.1, abs=1e-3)
+    assert t["verdict"] in ("moderate", "healthy")
+
+
+def test_funnel_cli_registered():
+    """漏斗必须有 CLI 入口，否则数据只能靠手工写脚本取。"""
+    from click.testing import CliRunner
+    from anima.cli import cli
+
+    res = CliRunner().invoke(cli, ["funnel", "--help"])
+    assert res.exit_code == 0
+    assert "reply_quality.json" in res.output
+
+
+def test_health_history_has_ring_limit():
+    """health_history 必须有环形上限（防只增不减）。"""
+    from pathlib import Path
+
+    src = Path("anima/core/health_history.py").read_text(encoding="utf-8")
+    assert "max_samples" in src
+    assert "-self.max_samples:" in src or "[-self.max_samples:]" in src
